@@ -23,13 +23,6 @@
 
 
     <dependencies>
-
-        <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>16.0.1</version>
-        </dependency>
-
         <dependency>
             <groupId>com.datastax.spark</groupId>
             <artifactId>spark-cassandra-connector_${scala.binary.version}</artifactId>
@@ -43,7 +36,7 @@
             <!--<scope>provided</scope>-->
         </dependency>
 
-        <!-- scala 依赖包-->
+        <!-- scala deps -->
         <dependency>
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-library</artifactId>
@@ -65,7 +58,7 @@
 <!--            <scope>${local.scope}</scope>-->
         </dependency>
 
-        <!-- spark 依赖包-->
+        <!-- spark deps -->
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.binary.version}</artifactId>
@@ -149,7 +142,7 @@
         </dependency>
 
 
-        <!--      测试依赖        -->
+        <!--      test deps        -->
         <dependency>
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_${scala.binary.version}</artifactId>
@@ -274,27 +267,6 @@
                     <skip>true</skip>
                 </configuration>
             </plugin>
-<!--            <plugin>-->
-<!--                <groupId>net.alchim31.maven</groupId>-->
-<!--                <artifactId>scala-maven-plugin</artifactId>-->
-<!--                <executions>-->
-<!--                    <execution>-->
-<!--                        <id>scala-compile-first</id>-->
-<!--                        <phase>process-resources</phase>-->
-<!--                        <goals>-->
-<!--                            <goal>add-source</goal>-->
-<!--                            <goal>compile</goal>-->
-<!--                        </goals>-->
-<!--                    </execution>-->
-<!--                    <execution>-->
-<!--                        <id>scala-test-compile</id>-->
-<!--                        <phase>process-test-resources</phase>-->
-<!--                        <goals>-->
-<!--                            <goal>testCompile</goal>-->
-<!--                        </goals>-->
-<!--                    </execution>-->
-<!--                </executions>-->
-<!--            </plugin>-->
             <plugin>
                 <groupId>org.scala-tools</groupId>
                 <artifactId>maven-scala-plugin</artifactId>
