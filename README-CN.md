@@ -5,7 +5,7 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 
 更多特性和其他产品对比请参考：[特性介绍](https://github.com/meta-soul/LakeSoul/wiki/%E4%B8%80%E3%80%81%E7%89%B9%E6%80%A7%E4%BB%8B%E7%BB%8D)
 
-和其他数据湖方案特性和性能对比：[和其他数据湖框架对比](https://github.com/meta-soul/LakeSoul/wiki/%E4%B8%80%E3%80%81%E7%89%B9%E6%80%A7%E4%BB%8B%E7%BB%8D)
+和其他数据湖方案特性和性能对比：[和其他数据湖框架对比](https://github.com/meta-soul/LakeSoul/wiki/%E4%BA%8C%E3%80%81%E5%92%8C%E5%85%B6%E4%BB%96%E6%95%B0%E6%8D%AE%E6%B9%96%E6%A1%86%E6%9E%B6%E5%AF%B9%E6%AF%94)
 
 # 使用文档
 [使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%B8%89%E3%80%81%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
