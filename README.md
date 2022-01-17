@@ -12,6 +12,8 @@ Some features and performance comparisons: [Data Lake Comparison](https://github
 # Usage Documentations
 [Usage Doc](https://github.com/meta-soul/LakeSoul/wiki/02.-Usage-Doc)
 
+[使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%B8%89%E3%80%81%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
+
 # Feature Roadmap
 * Meta Management
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
