@@ -40,5 +40,8 @@ Some features and performance comparisons: [Data Lake Comparison](https://github
 # Feedback and Contribution
 Please feel free to open an issue if you have any questions.
 
+# Contact Us
+[opensource@dmetasoul.com](mailto:opensource@dmetasoul.com)
+
 # Opensource License
 LakeSoul is opensourced under Apache License v2.0.
