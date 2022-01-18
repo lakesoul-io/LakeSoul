@@ -21,6 +21,13 @@
         <spark.cassandra.connector.version>2.4.3</spark.cassandra.connector.version>
     </properties>
 
+    <distributionManagement>
+        <repository>
+            <id>github-lakesoul</id>
+            <name>GitHub OWNER Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/meta-soul/LakeSoul</url>
+        </repository>
+    </distributionManagement>
 
     <dependencies>
         <dependency>
