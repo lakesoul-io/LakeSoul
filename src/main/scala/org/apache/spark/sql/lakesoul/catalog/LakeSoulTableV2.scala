@@ -97,7 +97,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   override def capabilities(): java.util.Set[TableCapability] = Set(
-    ACCEPT_ANY_SCHEMA, BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
+    /* ACCEPT_ANY_SCHEMA, */ BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
     V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
   ).asJava
 
