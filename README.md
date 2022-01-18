@@ -5,14 +5,14 @@ LakeSoul is a unified streaming and batch table storage for fast data processing
 
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates on the same partition. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales meta data management by using distributed NoSQL DB Cassandra.
 
-More detailed features please refer to our wiki page: [Wiki Home](https://github.com/meta-soul/LakeSoul/wiki/00.-Introduction)
+More detailed features please refer to our wiki page: [Wiki Home](https://github.com/meta-soul/LakeSoul/wiki/Home)
 
 Some features and performance comparisons: [Data Lake Comparison](https://github.com/meta-soul/LakeSoul/wiki/01.-Data-Lake-Comparison)
 
 # Usage Documentations
-[Usage Doc](https://github.com/meta-soul/LakeSoul/wiki/02.-Usage-Doc)
+[Usage Doc](https://github.com/meta-soul/LakeSoul/wiki/03.-Usage-Doc)
 
-[使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%B8%89%E3%80%81%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
+[使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
 
 # Feature Roadmap
 * Meta Management
