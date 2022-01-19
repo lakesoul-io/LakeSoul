@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, MetaUtils}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.datasources.BucketingUtils
+import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
 import org.apache.spark.sql.lakesoul.material_view.QueryInfo
 import org.apache.spark.sql.types.{DataType, StructType}
 
@@ -113,9 +114,7 @@ case class TableInfo(table_name: String,
   }
 
   lazy val format: Format = Format()
-
 }
-
 
 //single file info
 case class DataFileInfo(file_path: String,

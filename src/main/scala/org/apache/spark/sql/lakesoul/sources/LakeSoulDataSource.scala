@@ -99,7 +99,7 @@ class LakeSoulDataSource
       snapshot_manage,
       mode = mode,
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
-      Map.empty,
+      parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
 
     snapshot_manage.createRelation()

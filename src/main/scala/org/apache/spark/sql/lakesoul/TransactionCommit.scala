@@ -242,7 +242,6 @@ trait Transaction extends TransactionalWrite with Logging {
     files
   }
 
-
   def commit(addFiles: Seq[DataFileInfo],
              expireFiles: Seq[DataFileInfo],
              newTableInfo: TableInfo): Unit = {
