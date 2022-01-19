@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
-import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulOptions, TransactionCommit}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableProperties, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.StructType
 
 /**
@@ -149,7 +149,7 @@ case class CreateTableCommand(table: CatalogTable,
         snapshotManagement,
         newMode,
         options,
-        configuration = Map.empty, //table.properties,
+        configuration = table.properties.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty), //table.properties,
         data).write(tc, sparkSession)
 
       tc.commit(newFiles, deletedFiles)

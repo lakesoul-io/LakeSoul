@@ -32,6 +32,8 @@ import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.util.Utils
+import org.scalatest.matchers.must.Matchers.contain
+import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
 import scala.language.implicitConversions
 
@@ -1387,6 +1389,52 @@ trait TableCreationTests
     }
   }
 
+  test("create table sql with tbl properties") {
+    withTempPath { dir =>
+      val tableName = "test_table"
+      withTable(s"$tableName") {
+        spark.sql(s"CREATE TABLE $tableName(a int, change_kind string) USING lakesoul LOCATION '${dir.toURI}'" +
+          s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind')")
+
+        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
+        table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
+      }
+    }
+  }
+
+  test("create table with TableCreator - with tbl properties") {
+    withTable("tt") {
+      withTempDir(dir => {
+        val path = dir.getCanonicalPath
+        val data = Seq((1, "a"), (2, "insert")).toDF("id", "change_kind")
+        LakeSoulTable.createTable(data, path)
+          .shortTableName("tt")
+          .hashPartitions("id")
+          .hashBucketNum(1)
+          .tableProperty("lakesoul_cdc_change_column" -> "change_kind")
+          .create()
+
+        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+      })
+    }
+  }
+
+  test("create table with DataFrameWriter - with tbl properties") {
+    withTable("tt") {
+      withTempDir(dir => {
+        val path = dir.getCanonicalPath
+        val data = Seq((1, "a"), (2, "insert")).toDF("id", "change_kind")
+          .write
+          .mode("overwrite")
+          .format("lakesoul")
+          .option("lakesoul_cdc_change_column", "change_kind")
+          .save(path)
+        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+      })
+    }
+  }
 }
 
 class TableCreationSuite

@@ -489,6 +489,11 @@ object LakeSoulTable {
       this
     }
 
+    def tableProperty(kv: (String, String)): TableCreator = {
+      options.put(kv._1, kv._2)
+      this
+    }
+
     def create(): Unit = {
       val writer = writeData.write.format(LakeSoulSourceUtils.NAME).mode("overwrite")
       options.foreach(f => writer.option(f._1, f._2))

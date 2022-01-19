@@ -20,17 +20,23 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 
 import java.io.File
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
 import org.apache.spark.util.Utils
+import org.scalatest.matchers.must.Matchers.contain
+import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
-trait AlterTableSoulTestBase
+import scala.collection.JavaConverters.mapAsScalaMapConverter
+
+trait AlterTableLakeSoulTestBase
   extends QueryTest
     with SharedSparkSession with LakeSoulTestUtils {
 
@@ -84,7 +90,7 @@ trait AlterTableSoulTestBase
   }
 }
 
-trait AlterTableTests extends AlterTableSoulTestBase {
+trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   import testImplicits._
 
@@ -1174,13 +1180,39 @@ trait AlterTableByNameTests extends AlterTableTests {
     }
   }
 
+  def catalog: TableCatalog = {
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+  }
+
+  protected def getProperties(table: Table): Map[String, String] = {
+    table.properties().asScala.toMap.filterKeys(
+      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(_))
+  }
+
+  test("SET TBLPROPERTIES") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+        val path = dir.getCanonicalPath
+        Seq((1, "update"), (2, "insert")).toDF("col1", "cdc_change_kind")
+          .write
+          .format("lakesoul")
+          .option("path", path)
+          .saveAsTable("lakesoul_test")
+        sql("ALTER TABLE lakesoul_test SET TBLPROPERTIES ('lakesoul_cdc_column'='cdc_change_kind')")
+
+        val table = catalog.loadTable(Identifier.of(Array("default"), "lakesoul_test"))
+        getProperties(table) should contain ("lakesoul_cdc_column" -> "cdc_change_kind")
+      }
+    }
+  }
+
 }
 
 /**
   * For ByPath tests, we select a test case per ALTER TABLE command to simply test identifier
   * resolution.
   */
-trait AlterTableByPathTests extends AlterTableSoulTestBase {
+trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
   override protected def createTable(schema: String, tblProperties: Map[String, String]): String = {
     val tmpDir = Utils.createTempDir().getCanonicalPath
     val snapshotManagement = getSnapshotManagement(tmpDir)

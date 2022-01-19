@@ -157,6 +157,20 @@
 <!--            <scope>test</scope>-->
         </dependency>
 
+        <dependency>
+            <groupId>org.pegdown</groupId>
+            <artifactId>pegdown</artifactId>
+            <version>1.6.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.vladsch.flexmark</groupId>
+            <artifactId>flexmark-all</artifactId>
+            <version>0.35.10</version>
+            <scope>test</scope>
+        </dependency>
+
 
         <dependency>
             <groupId>junit</groupId>
@@ -314,6 +328,7 @@
                 <configuration>
                     <testFailureIgnore>true</testFailureIgnore>
                     <runpath>target/scala-2.12/classes,target/scala-2.12/test-classes</runpath>
+                    <htmlreporters>${project.build.directory}/html/scalatest</htmlreporters>
                 </configuration>
                 <executions>
                     <execution>

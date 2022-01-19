@@ -246,6 +246,16 @@ object LakeSoulTableV2ScanRelation {
   }
 }
 
+object LakeSoulTableProperties {
+
+  val lakeSoulCDCChangePropKey = "lakesoul_cdc_change_column"
+
+  val extraTblProps = Set(lakeSoulCDCChangePropKey)
+
+  def isLakeSoulTableProperty(name: String): Boolean = {
+    extraTblProps.contains(name)
+  }
+}
 
 class MergeOpLong extends MergeOperator[Long] {
   override def mergeData(input: Seq[Long]): Long = {
