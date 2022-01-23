@@ -39,19 +39,19 @@ class UpsertSuiteBase extends QueryTest
 
   var snapshotManagement: SnapshotManagement = _
 
-  protected def tempPath = tempDir.getCanonicalPath
+  protected def tempPath: String = tempDir.getCanonicalPath
 
   protected def readLakeSoulTable(path: String): DataFrame = {
     spark.read.format("lakesoul").load(path)
   }
 
-  override def beforeEach() {
+  override def beforeEach(): Unit = {
     super.beforeEach()
     tempDir = Utils.createTempDir()
     snapshotManagement = SnapshotManagement(new Path(tempPath))
   }
 
-  override def afterEach() {
+  override def afterEach(): Unit = {
     try {
       Utils.deleteRecursively(tempDir)
       try {

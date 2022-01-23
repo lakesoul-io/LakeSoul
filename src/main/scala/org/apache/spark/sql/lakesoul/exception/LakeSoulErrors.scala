@@ -386,10 +386,14 @@ object LakeSoulErrors {
       s"Operation not allowed: `$operation` is not supported for LakeSoul tables")
   }
 
-  def operationNotSupportedException(operation: String, tableIdentifier: TableIdentifier): Throwable = {
-    new AnalysisException(
-      s"Operation not allowed: `$operation` is not supported " +
-        s"for lakesoul tables: $tableIdentifier")
+  def operationNotSupportedException(operation: String, tableIdentifier: Option[TableIdentifier]): Throwable = {
+    tableIdentifier match {
+      case None => operationNotSupportedException(operation)
+      case Some(identifier) =>
+        new AnalysisException(
+          s"Operation not allowed: `$operation` is not supported " +
+            s"for lakesoul tables: $tableIdentifier")
+    }
   }
 
   def alterTableChangeColumnException(oldColumns: String, newColumns: String): Throwable = {

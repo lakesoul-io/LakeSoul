@@ -243,7 +243,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
                                      query: Option[LogicalPlan]): CatalogTable = {
 
     if (tableDesc.bucketSpec.isDefined) {
-      throw LakeSoulErrors.operationNotSupportedException("Bucketing", tableDesc.identifier)
+      throw LakeSoulErrors.operationNotSupportedException("Bucketing", Some(tableDesc.identifier))
     }
 
     val ori_schema = query.map { plan =>

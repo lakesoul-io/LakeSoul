@@ -17,20 +17,16 @@ case class PreprocessTableMergeInto(sqlConf: SQLConf) extends Rule[LogicalPlan] 
 
       EliminateSubqueryAliases(targetTable) match {
         case LakeSoulTableRelationV2(tbl: LakeSoulTableV2) =>
-          if (lakeSoulTableHasHashPartition(tbl)
-            && isMergeConditionOnPrimaryKey(mergeCondition, tbl)
-            && matchedActionIsOneUpdateOnly(matchedActions)
-            && notMatchedActionIsOneInsertOnly(notMatchedActions))
-          {
-            logInfo(s"Merge into ${tbl.name()} is optimized to Upsert")
-            LakeSoulUpsert(targetTable, sourceTable, "")
-          } else {
-            throw LakeSoulErrors.operationNotSupportedException("Merge into with (not)matched conditions")
-          }
+          checkLakeSoulTableHasHashPartition(tbl)
+          checkMergeConditionOnPrimaryKey(mergeCondition, tbl)
+          checkMatchedActionIsOneUpdateOnly(matchedActions, tbl)
+          checkNotMatchedActionIsOneInsertOnly(notMatchedActions, tbl)
+          logInfo(s"Merge into ${tbl.name()} is optimized to Upsert")
+          LakeSoulUpsert(targetTable, sourceTable, "")
       }
   }
 
-  private def isMergeConditionOnPrimaryKey(mergeCondition: Expression, tbl: LakeSoulTableV2): Boolean = {
+  private def checkMergeConditionOnPrimaryKey(mergeCondition: Expression, tbl: LakeSoulTableV2): Unit = {
     val hashColumnNameHit = scala.collection.mutable.Map(
       tbl.snapshotManagement.snapshot.getTableInfo
         .hash_partition_schema.fieldNames.map(k => k -> false): _*)
@@ -43,11 +39,17 @@ case class PreprocessTableMergeInto(sqlConf: SQLConf) extends Rule[LogicalPlan] 
       case And(_, _) | AttributeReference(_, _, _, _) =>
       case _ => notQualifiedCondition = true
     }
-    !notQualifiedCondition && hashColumnNameHit.forall(_._2)
+    if (notQualifiedCondition || !hashColumnNameHit.forall(_._2)) {
+      throw LakeSoulErrors.operationNotSupportedException(s"Convert merge into to upsert with merge condition $mergeCondition",
+        tbl.catalogTable.map(_.identifier))
+    }
   }
 
-  private def lakeSoulTableHasHashPartition(table: LakeSoulTableV2): Boolean = {
-    table.snapshotManagement.snapshot.getTableInfo.hash_column.nonEmpty
+  private def checkLakeSoulTableHasHashPartition(table: LakeSoulTableV2): Unit = {
+    if (table.snapshotManagement.snapshot.getTableInfo.hash_column.isEmpty) {
+      throw LakeSoulErrors.operationNotSupportedException("Merge into none hash partitioned table",
+        table.catalogTable.map(_.identifier))
+    }
   }
 
   private def assignmentsIsAttributeOnly(assignments: Seq[Assignment]): Boolean = {
@@ -55,22 +57,23 @@ case class PreprocessTableMergeInto(sqlConf: SQLConf) extends Rule[LogicalPlan] 
       && a.value.isInstanceOf[AttributeReference])
   }
 
-  private def matchedActionIsOneUpdateOnly(matchedAction: Seq[MergeAction]): Boolean = {
+  private def checkMatchedActionIsOneUpdateOnly(matchedAction: Seq[MergeAction], table: LakeSoulTableV2): Unit = {
     matchedAction match {
       case Seq(UpdateAction(condition, assignments))
         if condition.isEmpty && assignmentsIsAttributeOnly(assignments) =>
-        true
-      case _ => false
+      case _ =>
+        throw LakeSoulErrors.operationNotSupportedException(s"Convert merge into to upsert with MatchedAction $matchedAction",
+          table.catalogTable.map(_.identifier))
     }
   }
 
-  private def notMatchedActionIsOneInsertOnly(notMatchedAction: Seq[MergeAction]): Boolean = {
+  private def checkNotMatchedActionIsOneInsertOnly(notMatchedAction: Seq[MergeAction], table: LakeSoulTableV2): Unit = {
     notMatchedAction match {
       case Seq(InsertAction(condition, assignments))
         if condition.isEmpty && assignmentsIsAttributeOnly(assignments) =>
-        true
-      case _ => false
+      case _ =>
+        throw LakeSoulErrors.operationNotSupportedException(s"Convert merge into to upsert with NotMatchedAction $notMatchedAction",
+          table.catalogTable.map(_.identifier))
     }
   }
-
 }
