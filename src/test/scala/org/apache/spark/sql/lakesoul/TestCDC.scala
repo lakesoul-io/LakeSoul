@@ -113,8 +113,7 @@ class TestCDC
           .save(tablePath)
         val data1 = spark.read.format("lakesoul").load(tablePath)
         val data2 = data1.select(col = "hash", cols = "change_kind")
-        data2.explain(true)
-        data2.show()
+        checkAnswer(data2, Seq(("hash1", "insert"), ("hash3", "update")).toDF("hash", "change_kind"))
       })
     }
   }
