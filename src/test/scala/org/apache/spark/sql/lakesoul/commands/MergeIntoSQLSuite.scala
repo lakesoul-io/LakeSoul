@@ -56,10 +56,10 @@ class MergeIntoSQLSuite extends UpsertSuiteBase with LakeSQLCommandSoulTest {
       val e = intercept[AnalysisException] {
         sql(s"MERGE INTO lakesoul.`${snapshotManagement.table_name}` AS t USING source_table AS s" +
           s" ON t.hash = s.hash" +
-          s" WHEN MATCHED THEN UPDATE SET *" +
+          s" WHEN MATCHED AND t.VALUE=5 THEN UPDATE SET *" +
           s" WHEN NOT MATCHED THEN INSERT *")
       }
-      e.getMessage() should (include("Convert merge into to upsert with merge condition") and include("is not supported"))
+      e.getMessage() should (include("Convert merge into to upsert with MatchedAction") and include("is not supported"))
     }
   }
 }

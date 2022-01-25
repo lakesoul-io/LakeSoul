@@ -17,6 +17,7 @@
 package org.apache.spark.sql.lakesoul.catalog
 
 import com.dmetasoul.lakesoul.meta.{MaterialView, MetaCommit}
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions
@@ -46,14 +47,14 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
                                options: CaseInsensitiveStringMap,
                                tableInfo: TableInfo)
   extends FileScanBuilder(sparkSession, fileIndex, dataSchema) with SupportsPushDownFilters with Logging {
-  lazy val hadoopConf = {
+  lazy val hadoopConf: Configuration = {
     val caseSensitiveMap = options.asCaseSensitiveMap.asScala.toMap
       .filter(!_._1.startsWith(LakeSoulUtils.MERGE_OP_COL))
     // Hadoop Configurations are case sensitive.
     sparkSession.sessionState.newHadoopConfWithOptions(caseSensitiveMap)
   }
 
-  lazy val pushedParquetFilters = {
+  lazy val pushedParquetFilters: Array[Filter] = {
     val sqlConf = sparkSession.sessionState.conf
     val pushDownDate = sqlConf.parquetFilterPushDownDate
     val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp

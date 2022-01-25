@@ -27,7 +27,7 @@ import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
@@ -96,10 +96,16 @@ case class LakeSoulTableV2(spark: SparkSession,
     base
   }
 
-  override def capabilities(): java.util.Set[TableCapability] = Set(
-    /* ACCEPT_ANY_SCHEMA, */ BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-    V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
-  ).asJava
+  override def capabilities(): java.util.Set[TableCapability] = {
+    var caps = Set(
+      BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
+      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
+    )
+    if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
+      caps += ACCEPT_ANY_SCHEMA
+    }
+    caps.asJava
+  }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): LakeSoulScanBuilder = {
     if (mergeOperatorInfo.getOrElse(Map.empty[String, String]).nonEmpty) {

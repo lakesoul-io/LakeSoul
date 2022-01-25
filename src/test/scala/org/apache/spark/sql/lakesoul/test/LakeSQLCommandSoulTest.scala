@@ -16,20 +16,20 @@
 
 package org.apache.spark.sql.lakesoul.test
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
-import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.types.{DataType, StructField, StructType}
 import org.apache.spark.util.Utils
 
 import java.io.File
-
 
 trait LakeSoulTestUtils extends Logging {
   self: SharedSparkSession =>
@@ -65,6 +65,24 @@ trait LakeSoulTestUtils extends Logging {
         case e: Exception =>
       }
     }
+  }
+
+  def createDF(seq: Seq[Product], names: Seq[String],
+                                  types: Seq[String], nullables: Option[Seq[Boolean]] = None): DataFrame = {
+    val fields = nullables match {
+      case None =>
+        names.zip(types).map(nt => StructField(nt._1, CatalystSqlParser.parseDataType(nt._2), nullable = false))
+      case Some(nullableSeq) =>
+        names.zip(types).zip(nullableSeq).map(
+          nt => StructField(nt._1._1, CatalystSqlParser.parseDataType(nt._1._2), nullable = nt._2))
+    }
+
+    val rows = seq.map(Row.fromTuple)
+
+    spark.createDataFrame(
+      spark.sparkContext.parallelize(rows),
+      StructType(fields)
+    )
   }
 }
 

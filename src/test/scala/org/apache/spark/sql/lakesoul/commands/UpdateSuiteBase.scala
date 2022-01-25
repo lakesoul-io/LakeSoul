@@ -71,11 +71,11 @@ abstract class UpdateSuiteBase
     }
   }
 
-  protected def executeUpdate(tarTable: String, set: Seq[String], where: String): Unit = {
-    executeUpdate(tarTable, set.mkString(", "), where)
+  protected def executeUpdate(lakeSoulTable: String, set: Seq[String], where: String): Unit = {
+    executeUpdate(lakeSoulTable, set.mkString(", "), where)
   }
 
-  protected def executeUpdate(tarTable: String, set: String, where: String = null): Unit
+  protected def executeUpdate(lakeSoulTable: String, set: String, where: String = null): Unit
 
   protected def append(df: DataFrame, partitionBy: Seq[String] = Nil): Unit = {
     val writer = df.write.format("lakesoul").mode("append")
@@ -121,7 +121,7 @@ abstract class UpdateSuiteBase
 
   Seq(true, false).foreach { isPartitioned =>
     test(s"basic update - LakeSoul table by path - Partition=$isPartitioned") {
-      withTable("starTable") {
+      withTable("lakeSoulTable") {
         val partitions = if (isPartitioned) "key" :: Nil else Nil
         append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"), partitions)
 
@@ -137,7 +137,7 @@ abstract class UpdateSuiteBase
 
   Seq(true, false).foreach { isPartitioned =>
     test(s"basic update - LakeSoul table by path with hash partition - Partition=$isPartitioned") {
-      withTable("starTable") {
+      withTable("lakeSoulTable") {
         val partitions = if (isPartitioned) "key" :: Nil else Nil
         appendHashPartition(Seq((2, 2, 2), (1, 4, 4), (1, 1, 1), (0, 3, 3))
           .toDF("key", "hash", "value"), partitions)
@@ -390,7 +390,13 @@ abstract class UpdateSuiteBase
   //  }
 
   test("different variations of column references") {
-    append(Seq((99, 2), (100, 4), (101, 3), (102, 5)).toDF("key", "value"))
+    append(
+      createDF(
+        Seq((99, 2), (100, 4), (101, 3), (102, 5)),
+        Seq("key", "value"),
+        Seq("int", "int")
+      )
+    )
 
     spark.read.format("lakesoul").load(tempPath).createOrReplaceTempView("tblName")
 
@@ -408,20 +414,20 @@ abstract class UpdateSuiteBase
       Seq("key", "value"), Some("tblName"))
   }
 
-  test("tarTable columns can have db and table qualifiers") {
-    withTable("tarTable") {
+  test("LakeSoul Table columns can have db and table qualifiers") {
+    withTable("lakeSoulTable") {
       spark.read.json(
         """
           {"a": {"b.1": 1, "c.e": 'random'}, "d": 1}
           {"a": {"b.1": 3, "c.e": 'string'}, "d": 2}"""
-          .split("\n").toSeq.toDS()).write.format("lakesoul").saveAsTable("`tarTable`")
+          .split("\n").toSeq.toDS()).write.format("lakesoul").saveAsTable("`lakeSoulTable`")
 
       executeUpdate(
-        tarTable = "tarTable",
-        set = "`default`.`tarTable`.a.`b.1` = -1, tarTable.a.`c.e` = 'RANDOM'",
+        lakeSoulTable = "lakeSoulTable",
+        set = "`default`.`lakeSoulTable`.a.`b.1` = -1, lakeSoulTable.a.`c.e` = 'RANDOM'",
         where = "d = 1")
 
-      checkAnswer(spark.table("tarTable"),
+      checkAnswer(spark.table("lakeSoulTable"),
         spark.read.json(
           """
             {"a": {"b.1": -1, "c.e": 'RANDOM'}, "d": 1}
@@ -430,16 +436,16 @@ abstract class UpdateSuiteBase
     }
   }
 
-  test("Negative case - non-lakesoul tarTable") {
+  test("Negative case - non-lakesoul lakeSoulTable") {
     Seq((1, 1), (0, 3), (1, 5)).toDF("key1", "value")
       .write.mode("overwrite").format("parquet").save(tempPath)
     val e = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`", set = "key1 = 3")
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`", set = "key1 = 3")
     }.getMessage
     assert(e.contains("doesn't exist"))
   }
 
-  test("Negative case - check tarTable columns during analysis") {
+  test("Negative case - check lakeSoulTable columns during analysis") {
 
     withTable("table") {
       sql(s"CREATE TABLE table (s int, t string) USING lakesoul PARTITIONED BY (s) LOCATION '${tempDir.getCanonicalPath}'")
@@ -449,27 +455,27 @@ abstract class UpdateSuiteBase
       assert(ae.message.contains("cannot resolve"))
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        executeUpdate(tarTable = "table", set = "S = 1, T = 'b'", where = "T = 'a'")
+        executeUpdate(lakeSoulTable = "table", set = "S = 1, T = 'b'", where = "T = 'a'")
         ae = intercept[AnalysisException] {
-          executeUpdate(tarTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
+          executeUpdate(lakeSoulTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
         }
         assert(ae.message.contains("There is a conflict from these SET columns"))
       }
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
         ae = intercept[AnalysisException] {
-          executeUpdate(tarTable = "table", set = "S = 1", where = "t = 'a'")
+          executeUpdate(lakeSoulTable = "table", set = "S = 1", where = "t = 'a'")
         }
         assert(ae.message.contains("cannot resolve"))
 
         ae = intercept[AnalysisException] {
-          executeUpdate(tarTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
+          executeUpdate(lakeSoulTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
         }
         assert(ae.message.contains("cannot resolve"))
 
         // unresolved column in condition
         ae = intercept[AnalysisException] {
-          executeUpdate(tarTable = "table", set = "s = 1", where = "T = 'a'")
+          executeUpdate(lakeSoulTable = "table", set = "s = 1", where = "T = 'a'")
         }
         assert(ae.message.contains("cannot resolve"))
       }
@@ -482,7 +488,7 @@ abstract class UpdateSuiteBase
 
     // basic subquery
     val e0 = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
         set = "key = 1",
         where = "key < (SELECT max(c) FROM source)")
     }.getMessage
@@ -490,7 +496,7 @@ abstract class UpdateSuiteBase
 
     // subquery with EXISTS
     val e1 = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
         set = "key = 1",
         where = "EXISTS (SELECT max(c) FROM source)")
     }.getMessage
@@ -498,7 +504,7 @@ abstract class UpdateSuiteBase
 
     // subquery with NOT EXISTS
     val e2 = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
         set = "key = 1",
         where = "NOT EXISTS (SELECT max(c) FROM source)")
     }.getMessage
@@ -506,7 +512,7 @@ abstract class UpdateSuiteBase
 
     // subquery with IN
     val e3 = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
         set = "key = 1",
         where = "key IN (SELECT max(c) FROM source)")
     }.getMessage
@@ -514,7 +520,7 @@ abstract class UpdateSuiteBase
 
     // subquery with NOT IN
     val e4 = intercept[AnalysisException] {
-      executeUpdate(tarTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
         set = "key = 1",
         where = "key NOT IN (SELECT max(c) FROM source)")
     }.getMessage
@@ -523,7 +529,7 @@ abstract class UpdateSuiteBase
 
   test("nested data support") {
     // set a nested field
-    checkUpdateJson(tarTable =
+    checkUpdateJson(lakeSoulTable =
       """
         {"a": {"c": {"d": 'random', "e": 'str'}, "g": 1}, "z": 10}
         {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -539,14 +545,14 @@ abstract class UpdateSuiteBase
       """
         {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
         {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}"""
-    checkUpdateJson(tarTable = unchanged,
+    checkUpdateJson(lakeSoulTable = unchanged,
       updateWhere = "z = 30",
       set = "a.c.d = 'RANDOMMMMM'" :: Nil,
       expected = unchanged)
 
     // set multiple nested fields at different levels
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -559,7 +565,7 @@ abstract class UpdateSuiteBase
 
     // set nested fields to null
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -572,7 +578,7 @@ abstract class UpdateSuiteBase
 
     // set a top struct type column to null
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -585,7 +591,7 @@ abstract class UpdateSuiteBase
 
     // set a nested field using named_struct
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'RANDOM', "e": 'str'}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -598,7 +604,7 @@ abstract class UpdateSuiteBase
 
     // set an integer nested field with a string that can be casted into an integer
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
         {"a": {"c": {"d": 'random', "e": 'str'}, "g": 1}, "z": 10}
         {"a": {"c": {"d": 'random2', "e": 'str2'}, "g": 2}, "z": 20}""",
@@ -611,7 +617,7 @@ abstract class UpdateSuiteBase
 
     // set the nested data that has an Array field
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'random', "e": [1, 11]}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'RANDOM2', "e": [2, 22]}, "g": 2}, "z": 20}""",
@@ -624,7 +630,7 @@ abstract class UpdateSuiteBase
 
     // set an array field
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": {"c": {"d": 'random', "e": [1, 11]}, "g": 1}, "z": 10}
           {"a": {"c": {"d": 'RANDOM22', "e": [2, 22]}, "g": -2}, "z": 20}""",
@@ -637,7 +643,7 @@ abstract class UpdateSuiteBase
 
     // set an array field as a top-level attribute
     checkUpdateJson(
-      tarTable =
+      lakeSoulTable =
         """
           {"a": [1, 11], "b": 'Z'}
           {"a": [2, 22], "b": 'Y'}""",
@@ -696,7 +702,7 @@ abstract class UpdateSuiteBase
 
 
   protected def checkUpdateJson(
-                                 tarTable: Seq[String],
+                                 lakeSoulTable: Seq[String],
                                  source: Seq[String] = Nil,
                                  updateWhere: String,
                                  set: Seq[String],
@@ -705,7 +711,7 @@ abstract class UpdateSuiteBase
       withTempView("source") {
         def toDF(jsonStrs: Seq[String]) = spark.read.json(jsonStrs.toDS)
 
-        toDF(tarTable).write.format("lakesoul").mode("overwrite").save(dir.toString)
+        toDF(lakeSoulTable).write.format("lakesoul").mode("overwrite").save(dir.toString)
         if (source.nonEmpty) {
           toDF(source).createOrReplaceTempView("source")
         }
@@ -723,7 +729,7 @@ abstract class UpdateSuiteBase
     withTempDir { dir =>
       targetDF.write.format("lakesoul").save(dir.toString)
       val e = intercept[AnalysisException] {
-        executeUpdate(tarTable = s"lakesoul.`$dir`", set, where)
+        executeUpdate(lakeSoulTable = s"lakesoul.`$dir`", set, where)
       }
       errMsgs.foreach { msg =>
         assert(e.getMessage.toLowerCase(Locale.ROOT).contains(msg.toLowerCase(Locale.ROOT)))

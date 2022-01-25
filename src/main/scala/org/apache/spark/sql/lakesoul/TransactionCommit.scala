@@ -29,7 +29,8 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils._
 
 import java.util.ConcurrentModificationException
-import scala.collection.mutable.{ArrayBuffer, HashSet}
+import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 
 class TransactionCommit(override val snapshotManagement: SnapshotManagement) extends Transaction {
 
@@ -39,7 +40,7 @@ object TransactionCommit {
   private val active = new ThreadLocal[TransactionCommit]
 
   /** Get the active transaction */
-  def getActive(): Option[TransactionCommit] = Option(active.get())
+  def getActive: Option[TransactionCommit] = Option(active.get())
 
   /**
     * Sets a transaction as the active transaction.
@@ -62,8 +63,6 @@ object TransactionCommit {
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
-
-
 }
 
 class PartMergeTransactionCommit(override val snapshotManagement: SnapshotManagement) extends Transaction {
@@ -74,7 +73,7 @@ object PartMergeTransactionCommit {
   private val active = new ThreadLocal[PartMergeTransactionCommit]
 
   /** Get the active transaction */
-  def getActive(): Option[PartMergeTransactionCommit] = Option(active.get())
+  def getActive: Option[PartMergeTransactionCommit] = Option(active.get())
 
   /**
     * Sets a transaction as the active transaction.
@@ -97,10 +96,7 @@ object PartMergeTransactionCommit {
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
-
-
 }
-
 
 trait Transaction extends TransactionalWrite with Logging {
   val snapshotManagement: SnapshotManagement
@@ -152,14 +148,13 @@ trait Transaction extends TransactionalWrite with Logging {
   protected val readPredicates = new ArrayBuffer[Expression]
 
   /** Tracks specific files that have been seen by this transaction. */
-  protected val readFiles = new HashSet[DataFileInfo]
+  protected val readFiles = new mutable.HashSet[DataFileInfo]
 
   /** Tracks if this transaction has already committed. */
   protected var committed = false
 
   /** Stores the updated TableInfo (if any) that will result from this tc. */
   protected var newTableInfo: Option[TableInfo] = None
-
 
   /** For new tables, fetch global configs as TableInfo. */
   private val snapshotTableInfo: TableInfo = if (snapshot.isFirstCommit) {
@@ -236,7 +231,7 @@ trait Transaction extends TransactionalWrite with Logging {
       partitionInfo.range_id,
       partitionInfo.range_value,
       partitionInfo.read_version,
-      true)
+      allow_filtering = true)
 
     readFiles ++= files
     files
@@ -384,10 +379,7 @@ trait Transaction extends TransactionalWrite with Logging {
       }
 
       committed = true
-
     }
     snapshotManagement.updateSnapshot()
   }
-
-
 }
