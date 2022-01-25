@@ -37,7 +37,7 @@ trait LakeSoulTestUtils extends Logging {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "test_lakesoul_meta")
+    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "lakesoul_meta")
     session.sparkContext.setLogLevel("ERROR")
     session
   }
@@ -92,7 +92,7 @@ trait LakeSQLCommandSoulTest extends LakeSoulTestUtils {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "test_lakesoul_meta")
+    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "lakesoul_meta")
     session.conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[LakeSoulCatalog].getName)
     session.sparkContext.setLogLevel("ERROR")
 
