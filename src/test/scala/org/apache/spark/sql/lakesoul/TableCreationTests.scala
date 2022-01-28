@@ -46,7 +46,7 @@ trait TableCreationTests
 
   val format = "lakesoul"
 
-  private def createTableByPath(path: File,
+  protected def createTableByPath(path: File,
                                 df: DataFrame,
                                 tableName: String,
                                 partitionedBy: Seq[String] = Nil): Unit = {
@@ -179,10 +179,19 @@ trait TableCreationTests
       withTempDir { dir =>
         val tbl = "lakesoul_test"
         withTable(tbl) {
-          createTableByPath(dir, Seq(1L -> "a").toDF("v1", "v2"), tbl, cols)
+          createTableByPath(dir,
+            createDF(
+              Seq(1L -> "a"),
+              Seq("v1", "v2"),
+              Seq("long", "string")
+            ),
+            tbl, cols)
 
-          Seq(2L -> "b").toDF("v1", "v2")
-            .write
+          createDF(
+            Seq(2L -> "b"),
+            Seq("v1", "v2"),
+            Seq("long", "string")
+          ).write
             .partitionBy(cols: _*)
             .mode(SaveMode.Append)
             .format(format)
@@ -257,8 +266,11 @@ trait TableCreationTests
   test("saveAsTable (append) + insert to a table created without a schema") {
     withTempDir { dir =>
       withTable("lakesoul_test") {
-        Seq(1L -> "a").toDF("v1", "v2")
-          .write
+        createDF(
+          Seq(1L -> "a"),
+          Seq("v1", "v2"),
+          Seq("long", "string")
+        ).write
           .mode(SaveMode.Append)
           .partitionBy("v2")
           .format(format)
@@ -266,15 +278,21 @@ trait TableCreationTests
           .saveAsTable("lakesoul_test")
 
         // Out of order
-        Seq("b" -> 2L).toDF("v2", "v1")
-          .write
+        createDF(
+          Seq("b" -> 2L),
+          Seq("v2", "v1"),
+          Seq("string", "long")
+        ).write
           .partitionBy("v2")
           .mode(SaveMode.Append)
           .format(format)
           .saveAsTable("lakesoul_test")
 
-        Seq(3L -> "c").toDF("v1", "v2")
-          .write
+        createDF(
+          Seq(3L -> "c"),
+          Seq("v1", "v2"),
+          Seq("long", "string")
+        ).write
           .format(format)
           .insertInto("lakesoul_test")
 
@@ -1474,5 +1492,4 @@ class TableCreationSuite
       }
     }
   }
-
 }

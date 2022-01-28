@@ -95,7 +95,6 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
         // Not a well-defined LakeSoul table
         throw LakeSoulErrors.notALakeSoulSourceException("UPDATE", Some(u))
       }
-
   }
 
   /**

@@ -34,7 +34,7 @@ case class LakeSoulUnsupportedOperationsCheck(spark: SparkSession)
 
   private def fail(operation: String, tableIdent: TableIdentifier): Unit = {
     if (LakeSoulUtils.isLakeSoulTable(spark, tableIdent)) {
-      throw LakeSoulErrors.operationNotSupportedException(operation, tableIdent)
+      throw LakeSoulErrors.operationNotSupportedException(operation, Some(tableIdent))
     }
   }
 

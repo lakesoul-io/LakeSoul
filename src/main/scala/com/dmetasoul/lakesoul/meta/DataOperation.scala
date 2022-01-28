@@ -17,7 +17,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.lakesoul.exception.{MetaRerunErrors, LakeSoulErrors}
+import org.apache.spark.sql.lakesoul.exception.MetaRerunErrors
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, undoLogInfo}
 
 import scala.collection.mutable.ArrayBuffer
@@ -29,7 +29,7 @@ object DataOperation extends Logging {
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfo]): Array[DataFileInfo] = {
 
-    var file_info_buf = new ArrayBuffer[DataFileInfo]()
+    val file_info_buf = new ArrayBuffer[DataFileInfo]()
 
     for (partition_info <- partition_info_arr) {
       val table_id = partition_info.table_id
@@ -42,7 +42,7 @@ object DataOperation extends Logging {
         range_id,
         range_value,
         read_version,
-        true)
+        allow_filtering = true)
     }
 
     file_info_buf.toArray
@@ -60,17 +60,18 @@ object DataOperation extends Logging {
       Map.empty[String, String]
     }
 
-    var file_arr_buf = new ArrayBuffer[DataFileInfo]()
+    val file_arr_buf = new ArrayBuffer[DataFileInfo]()
     cassandraConnector.withSessionDo(session => {
       //allow cassandra to do its own filtering
       if (allow_filtering) {
-        val res = session.executeAsync(
+        val query =
           s"""
              |select file_path,size,modification_time,file_exist_cols,write_version,is_base_file
              |from $database.data_info
              |where table_id='$table_id' and range_id='$range_id'
              |and write_version<=$read_version and expire_version>$read_version allow filtering
-      """.stripMargin)
+          """.stripMargin
+        val res = session.executeAsync(query)
 
         val itr = res.getUninterruptibly.iterator()
         while (itr.hasNext) {
@@ -174,12 +175,13 @@ object DataOperation extends Logging {
                            commit_id: String,
                            modification_time: Long): Unit = {
     cassandraConnector.withSessionDo(session => {
-      session.execute(
+      val update =
         s"""
            |update $database.data_info
            |set expire_version=$write_version,commit_id='$commit_id',modification_time=$modification_time
            |where table_id='$table_id' and range_id='$range_id' and file_path='$file_path'
-      """.stripMargin)
+      """.stripMargin
+      session.execute(update)
     })
   }
 

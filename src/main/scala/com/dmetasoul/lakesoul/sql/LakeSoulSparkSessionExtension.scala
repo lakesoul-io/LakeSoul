@@ -95,9 +95,15 @@ class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     extensions.injectPostHocResolutionRule { session =>
       PreprocessTableUpdate(session.sessionState.conf)
     }
+
+    extensions.injectPostHocResolutionRule { session =>
+      PreprocessTableMergeInto(session.sessionState.conf)
+    }
+
     extensions.injectPostHocResolutionRule { session =>
       PreprocessTableUpsert(session.sessionState.conf)
     }
+
     extensions.injectPostHocResolutionRule { session =>
       PreprocessTableDelete(session.sessionState.conf)
     }
