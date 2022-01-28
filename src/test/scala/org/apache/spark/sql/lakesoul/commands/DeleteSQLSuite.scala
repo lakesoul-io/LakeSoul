@@ -16,9 +16,9 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 
-class DeleteSQLSuite extends DeleteSuiteBase with LakeSQLCommandSoulTest {
+class DeleteSQLSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
 
   override protected def executeDelete(target: String, where: String = null): Unit = {
     val whereClause = Option(where).map(c => s"WHERE $c").getOrElse("")

@@ -20,7 +20,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
@@ -28,7 +28,7 @@ import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import scala.collection.JavaConverters._
 
 class DDLSuite extends DDLTestBase with SharedSparkSession
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
 
   override protected def verifyDescribeTable(tblName: String): Unit = {
     val res = sql(s"DESCRIBE TABLE $tblName").collect()

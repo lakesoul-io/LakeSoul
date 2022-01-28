@@ -17,49 +17,15 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
 import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.lakesoul.test.LakeSoulTestBeforeAndAfterEach
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.util.Utils
-import org.scalatest.BeforeAndAfterEach
 
 abstract class DeleteSuiteBase extends QueryTest
-  with SharedSparkSession with BeforeAndAfterEach {
+  with SharedSparkSession with LakeSoulTestBeforeAndAfterEach {
 
   import testImplicits._
-
-  var tempDir: File = _
-
-  var snapshotManagement: SnapshotManagement = _
-
-  protected def tempPath: String = tempDir.getCanonicalPath
-
-  protected def readLakeSoulTable(path: String): DataFrame = {
-    spark.read.format("lakesoul").load(path)
-  }
-
-  override def beforeEach() {
-    super.beforeEach()
-    tempDir = Utils.createTempDir()
-    snapshotManagement = SnapshotManagement(tempPath)
-  }
-
-  override def afterEach() {
-    try {
-      Utils.deleteRecursively(tempDir)
-      try {
-        snapshotManagement.updateSnapshot()
-        LakeSoulTable.forPath(snapshotManagement.table_name).dropTable()
-      } catch {
-        case e: Exception =>
-      }
-    } finally {
-      super.afterEach()
-    }
-  }
 
   protected def executeDelete(target: String, where: String = null): Unit
 

@@ -19,12 +19,12 @@ package org.apache.spark.sql.lakesoul.commands
 import com.dmetasoul.lakesoul
 import com.dmetasoul.lakesoul.tables.{LakeSoulTable, LakeSoulTableTestUtils}
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.{Row, functions}
 
 import java.util.Locale
 
-class UpdateScalaSuite extends UpdateSuiteBase with LakeSQLCommandSoulTest {
+class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

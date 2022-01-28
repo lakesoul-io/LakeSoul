@@ -21,14 +21,14 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.apache.spark.util.Utils
 import org.scalatest.BeforeAndAfter
 
 class MaterialViewSuite extends QueryTest
-  with SharedSparkSession with LakeSQLCommandSoulTest with BeforeAndAfter {
+  with SharedSparkSession with LakeSoulSQLCommandTest with BeforeAndAfter {
 
   import testImplicits._
 

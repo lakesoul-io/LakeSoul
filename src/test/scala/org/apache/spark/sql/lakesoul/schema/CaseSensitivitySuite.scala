@@ -22,7 +22,7 @@ import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
@@ -30,7 +30,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, Dataset, QueryTest, Row}
 
 class CaseSensitivitySuite extends QueryTest
-  with SharedSparkSession with SQLTestUtils with LakeSQLCommandSoulTest {
+  with SharedSparkSession with SQLTestUtils with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

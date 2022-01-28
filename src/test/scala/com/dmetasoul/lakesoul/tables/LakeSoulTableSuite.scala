@@ -19,13 +19,13 @@ package com.dmetasoul.lakesoul.tables
 import java.util.Locale
 
 import org.apache.spark.sql.lakesoul.LakeSoulUtils
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 
 class LakeSoulTableSuite extends QueryTest
   with SharedSparkSession
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
 
   test("forPath") {
     withTempDir { dir =>

@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.scalatest.BeforeAndAfter
@@ -36,7 +36,7 @@ import org.scalatest.BeforeAndAfter
 import scala.collection.JavaConverters._
 
 class InsertIntoSQLSuite extends InsertIntoTests(false, true)
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
@@ -48,7 +48,7 @@ class InsertIntoSQLSuite extends InsertIntoTests(false, true)
 }
 
 class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
@@ -85,7 +85,7 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
 }
 
 class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {
@@ -96,7 +96,7 @@ class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
 }
 
 class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {

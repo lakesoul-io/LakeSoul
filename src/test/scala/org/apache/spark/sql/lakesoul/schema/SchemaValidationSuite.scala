@@ -21,7 +21,7 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 
@@ -33,7 +33,7 @@ import java.util.concurrent.CountDownLatch
   * command completes analysis but before the command starts the transaction. We want to make sure
   * That we do not corrupt tables.
   */
-class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeSQLCommandSoulTest {
+class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
 
   class BlockingRule(
                       blockActionLatch: CountDownLatch,

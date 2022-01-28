@@ -23,7 +23,7 @@ import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulOptions}
 import org.apache.spark.sql.streaming.StreamingQueryException
 import org.apache.spark.sql.test.SharedSparkSession
@@ -300,7 +300,7 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
 }
 
 trait AppendOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkSession
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -730,7 +730,7 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
 }
 
 trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSparkSession
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

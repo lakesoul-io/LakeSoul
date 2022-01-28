@@ -20,7 +20,7 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 
 import java.util.Locale
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 
@@ -30,7 +30,7 @@ import scala.util.control.NonFatal
 class NotSupportedDDLSuite
   extends NotSupportedDDLBase
     with SharedSparkSession
-    with LakeSQLCommandSoulTest
+    with LakeSoulSQLCommandTest
 
 
 abstract class NotSupportedDDLBase extends QueryTest

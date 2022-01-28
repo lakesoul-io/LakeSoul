@@ -1,21 +1,39 @@
 package org.apache.spark.sql.lakesoul.commands
 
-import org.apache.spark.sql.{AnalysisException, DataFrame, Row}
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.util.Utils
 import org.scalatest._
 import matchers.should.Matchers._
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
+import org.apache.spark.sql.test.SharedSparkSession
 
-class MergeIntoSQLSuite extends UpsertSuiteBase with LakeSQLCommandSoulTest {
+class MergeIntoSQLSuite extends QueryTest
+  with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
+  with LakeSoulTestUtils with LakeSoulSQLCommandTest {
 
   import testImplicits._
+
+  protected def initTable(df: DataFrame,
+                          rangePartition: Seq[String] = Nil,
+                          hashPartition: Seq[String] = Nil,
+                          hashBucketNum: Int = 2): Unit = {
+    val writer = df.write.format("lakesoul").mode("overwrite")
+
+    writer
+      .option("rangePartitions", rangePartition.mkString(","))
+      .option("hashPartitions", hashPartition.mkString(","))
+      .option("hashBucketNum", hashBucketNum)
+      .save(snapshotManagement.table_name)
+  }
 
   private def initHashTable(): Unit = {
     initTable(
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4))
         .toDF("range", "hash", "value"),
-      "range",
-      "hash")
+      Seq("range"),
+      Seq("hash")
+    )
   }
 
   private def withViewNamed(df: DataFrame, viewName: String)(f: => Unit): Unit = {

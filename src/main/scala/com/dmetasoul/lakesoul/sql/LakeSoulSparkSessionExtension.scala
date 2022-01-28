@@ -107,12 +107,15 @@ class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     extensions.injectPostHocResolutionRule { session =>
       PreprocessTableDelete(session.sessionState.conf)
     }
+
     extensions.injectPostHocResolutionRule { session =>
       LakeSoulPostHocAnalysis(session)
     }
-    extensions.injectResolutionRule{ session =>
+
+    extensions.injectResolutionRule { session =>
       ProcessCDCTableMergeOnRead(session.sessionState.conf)
     }
+
     extensions.injectResolutionRule { session =>
       RewriteQueryByMaterialView(session)
     }

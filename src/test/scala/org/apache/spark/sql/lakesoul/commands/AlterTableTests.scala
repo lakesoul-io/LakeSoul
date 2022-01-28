@@ -25,7 +25,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
@@ -1300,9 +1300,9 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
 
 class AlterTableByNameSuite
   extends AlterTableByNameTests
-    with LakeSQLCommandSoulTest {
+    with LakeSoulSQLCommandTest {
 
 
 }
 
-class AlterTableByPathSuite extends AlterTableByPathTests with LakeSQLCommandSoulTest
+class AlterTableByPathSuite extends AlterTableByPathTests with LakeSoulSQLCommandTest

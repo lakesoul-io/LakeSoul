@@ -104,7 +104,7 @@ class LakeSoulTestSparkSession(sparkConf: SparkConf) extends TestSparkSession(sp
   * A trait for tests that are testing a fully set up SparkSession with all of LakeSoul's requirements,
   * such as the configuration of the LakeSoulCatalog and the addition of all LakeSoul extensions.
   */
-trait LakeSQLCommandSoulTest extends LakeSoulTestUtils {
+trait LakeSoulSQLCommandTest extends LakeSoulTestUtils {
   self: SharedSparkSession =>
 
   override protected def createSparkSession: TestSparkSession = {
