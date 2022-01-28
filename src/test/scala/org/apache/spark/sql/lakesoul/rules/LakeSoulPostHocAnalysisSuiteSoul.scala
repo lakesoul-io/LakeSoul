@@ -19,10 +19,10 @@ package org.apache.spark.sql.lakesoul.rules
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, TestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, TestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 
-class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession with LakeSQLCommandSoulTest {
+class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

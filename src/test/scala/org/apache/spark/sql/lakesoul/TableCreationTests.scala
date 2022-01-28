@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
@@ -1457,7 +1457,7 @@ trait TableCreationTests
 
 class TableCreationSuite
   extends TableCreationTests
-    with LakeSQLCommandSoulTest {
+    with LakeSoulSQLCommandTest {
 
   private def loadTable(tableName: String): Table = {
     val ti = spark.sessionState.sqlParser.parseMultipartIdentifier(tableName)

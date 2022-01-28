@@ -17,9 +17,9 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import org.apache.spark.sql.Row
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 
-class UpdateSQLSuite extends UpdateSuiteBase with LakeSQLCommandSoulTest {
+class UpdateSQLSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

@@ -20,13 +20,13 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.functions.{col, last}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, TestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, TestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.scalatest.BeforeAndAfterEach
 
 class ParquetScanSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
-  with LakeSQLCommandSoulTest {
+  with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

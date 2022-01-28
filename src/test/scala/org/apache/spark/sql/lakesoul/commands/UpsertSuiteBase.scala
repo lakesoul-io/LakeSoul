@@ -17,53 +17,17 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
-import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.util.Utils
-import org.scalatest.BeforeAndAfterEach
 
 class UpsertSuiteBase extends QueryTest
-  with SharedSparkSession with BeforeAndAfterEach
+  with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils {
 
   import testImplicits._
-
-  var tempDir: File = _
-
-  var snapshotManagement: SnapshotManagement = _
-
-  protected def tempPath: String = tempDir.getCanonicalPath
-
-  protected def readLakeSoulTable(path: String): DataFrame = {
-    spark.read.format("lakesoul").load(path)
-  }
-
-  override def beforeEach(): Unit = {
-    super.beforeEach()
-    tempDir = Utils.createTempDir()
-    snapshotManagement = SnapshotManagement(new Path(tempPath))
-  }
-
-  override def afterEach(): Unit = {
-    try {
-      Utils.deleteRecursively(tempDir)
-      try {
-        snapshotManagement.updateSnapshot()
-        LakeSoulTable.forPath(snapshotManagement.table_name).dropTable()
-      } catch {
-        case e: Exception =>
-      }
-    } finally {
-      super.afterEach()
-    }
-  }
 
   //  protected def executeUpsert(df: DataFrame, condition: Option[String], tableName: String): Unit
   protected def executeUpsert(df: DataFrame, condition: Option[String], tableName: String): Unit = {

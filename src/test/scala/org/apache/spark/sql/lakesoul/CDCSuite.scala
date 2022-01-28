@@ -15,30 +15,17 @@
  */
 
 package org.apache.spark.sql.lakesoul
-import org.apache.spark.sql.lakesoul.SnapshotManagement
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import java.io.File
-import java.util.Locale
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
-import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
-import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSQLCommandSoulTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{MetadataBuilder, StructType}
-import org.apache.spark.util.Utils
-import org.scalatest.matchers.must.Matchers.contain
-import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
+import org.apache.spark.sql.types.StructType
 
 import scala.language.implicitConversions
 
-class TestCDC
+class CDCSuite
   extends QueryTest
     with SharedSparkSession
     with LakeSoulTestUtils {
@@ -46,24 +33,6 @@ class TestCDC
   import testImplicits._
 
   val format = "lakesoul"
-
-  private def createTableByPath(path: File,
-                                df: DataFrame,
-                                tableName: String,
-                                partitionedBy: Seq[String] = Nil): Unit = {
-    df.write
-      .partitionBy(partitionedBy: _*)
-      .mode(SaveMode.Append)
-      .format(format)
-      .save(path.getCanonicalPath)
-
-    sql(
-      s"""
-         |CREATE TABLE lakesoul_test
-         |USING lakesoul
-         |LOCATION '${path.getCanonicalPath}'
-         """.stripMargin)
-  }
 
   private implicit def toTableIdentifier(tableName: String): TableIdentifier = {
     spark.sessionState.sqlParser.parseTableIdentifier(tableName)
@@ -83,14 +52,6 @@ class TestCDC
 
   protected def getSchema(tableName: String): StructType = {
     spark.sessionState.catalog.getTableMetadata(tableName).schema
-  }
-
-  private def getSnapshotManagement(table: CatalogTable): SnapshotManagement = {
-    getSnapshotManagement(new Path(table.storage.locationUri.get))
-  }
-
-  private def getSnapshotManagement(tableName: String): SnapshotManagement = {
-    getSnapshotManagement(spark.sessionState.catalog.getTableMetadata(tableName))
   }
 
   protected def getSnapshotManagement(path: Path): SnapshotManagement = {

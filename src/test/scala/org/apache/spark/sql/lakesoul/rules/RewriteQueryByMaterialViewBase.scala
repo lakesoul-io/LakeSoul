@@ -17,14 +17,14 @@
 package org.apache.spark.sql.lakesoul.rules
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.apache.spark.util.Utils
 import org.scalatest.BeforeAndAfterAll
 
 abstract class RewriteQueryByMaterialViewBase extends QueryTest
-  with SharedSparkSession with LakeSQLCommandSoulTest with BeforeAndAfterAll {
+  with SharedSparkSession with LakeSoulSQLCommandTest with BeforeAndAfterAll {
 
   import testImplicits._
 

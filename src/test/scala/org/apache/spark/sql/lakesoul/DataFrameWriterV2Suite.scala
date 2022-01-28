@@ -22,7 +22,7 @@ import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table,
 import org.apache.spark.sql.connector.expressions._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
@@ -411,7 +411,7 @@ trait DataFrameWriterV2Tests
 
 class DataFrameWriterV2Suite
   extends DataFrameWriterV2Tests
-    with LakeSQLCommandSoulTest {
+    with LakeSoulSQLCommandTest {
 
   import testImplicits._
 

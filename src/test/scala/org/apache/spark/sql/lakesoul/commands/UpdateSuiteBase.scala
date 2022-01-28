@@ -17,59 +17,24 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
-import java.util.Locale
-import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.util.Utils
-import org.scalatest.BeforeAndAfterEach
 
+import java.util.Locale
 import scala.language.implicitConversions
 
 abstract class UpdateSuiteBase
   extends QueryTest
     with SharedSparkSession
-    with BeforeAndAfterEach
+    with LakeSoulTestBeforeAndAfterEach
     with SQLTestUtils
     with LakeSoulTestUtils {
 
   import testImplicits._
-
-  var tempDir: File = _
-
-  var snapshotManagement: SnapshotManagement = _
-
-  protected def tempPath = tempDir.getCanonicalPath
-
-  protected def readLakeSoulTable(path: String): DataFrame = {
-    spark.read.format("lakesoul").load(path)
-  }
-
-  override def beforeEach() {
-    super.beforeEach()
-    tempDir = Utils.createTempDir()
-    snapshotManagement = SnapshotManagement(new Path(tempPath))
-  }
-
-  override def afterEach() {
-    try {
-      Utils.deleteRecursively(tempDir)
-      try {
-        LakeSoulTable.forPath(snapshotManagement.table_name).dropTable()
-      } catch {
-        case e: Exception =>
-      }
-    } finally {
-      super.afterEach()
-    }
-  }
 
   protected def executeUpdate(lakeSoulTable: String, set: Seq[String], where: String): Unit = {
     executeUpdate(lakeSoulTable, set.mkString(", "), where)

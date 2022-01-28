@@ -20,7 +20,13 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.util.Utils
+import org.scalatest.{BeforeAndAfterEach, Suite}
+
+import java.io.File
 
 object TestUtils {
 
@@ -177,17 +183,13 @@ object TestUtils {
 
     checkDFResult(lakeSoulData, expectedResults)
   }
-
-
 }
-
 
 class MergeOpInt extends MergeOperator[Int] {
   override def mergeData(input: Seq[Int]): Int = {
     input.sum
   }
 }
-
 
 class MergeOpString extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
@@ -198,5 +200,39 @@ class MergeOpString extends MergeOperator[String] {
 class MergeOpString02 extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
     input.mkString(";")
+  }
+}
+
+trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
+  self: Suite with SharedSparkSession =>
+
+  var tempDir: File = _
+
+  var snapshotManagement: SnapshotManagement = _
+
+  protected def tempPath: String = tempDir.getCanonicalPath
+
+  protected def readLakeSoulTable(path: String): DataFrame = {
+    spark.read.format("lakesoul").load(path)
+  }
+
+  override def beforeEach(): Unit = {
+    super.beforeEach()
+    tempDir = Utils.createTempDir()
+    snapshotManagement = SnapshotManagement(tempPath)
+  }
+
+  override def afterEach(): Unit = {
+    try {
+      Utils.deleteRecursively(tempDir)
+      try {
+        snapshotManagement.updateSnapshot()
+        LakeSoulTable.forPath(snapshotManagement.table_name).dropTable()
+      } catch {
+        case _: Exception =>
+      }
+    } finally {
+      super.afterEach()
+    }
   }
 }

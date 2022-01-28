@@ -19,13 +19,12 @@ package org.apache.spark.sql.lakesoul.commands
 import com.dmetasoul.lakesoul
 import com.dmetasoul.lakesoul.tables.{LakeSoulTable, LakeSoulTableTestUtils}
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.{Row, functions}
 
-class DeleteScalaSuite extends DeleteSuiteBase with LakeSQLCommandSoulTest {
+class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._
-
 
   test("delete cached table by path") {
     Seq((2, 2), (1, 4)).toDF("key", "value")
@@ -64,7 +63,7 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSQLCommandSoulTest {
         case tableName :: Nil => tableName -> None // just table name
         case tableName :: alias :: Nil => // tablename SPACE alias OR tab SPACE lename
           val ordinary = (('a' to 'z') ++ ('A' to 'Z') ++ ('0' to '9')).toSet
-          if (!alias.forall(ordinary.contains(_))) {
+          if (!alias.forall(ordinary.contains)) {
             (tableName + " " + alias) -> None
           } else {
             tableName -> Some(alias)
@@ -84,7 +83,7 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSQLCommandSoulTest {
         LakeSoulTableTestUtils.createTable(spark.table(tableNameOrPath),
           SnapshotManagement(tableNameOrPath))
       }
-      optionalAlias.map(table.as(_)).getOrElse(table)
+      optionalAlias.map(table.as).getOrElse(table)
     }
 
     if (where != null) {

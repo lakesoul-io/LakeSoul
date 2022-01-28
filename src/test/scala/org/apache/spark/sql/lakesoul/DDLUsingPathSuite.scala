@@ -19,7 +19,7 @@ package org.apache.spark.sql.lakesoul
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.test.LakeSQLCommandSoulTest
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.scalatest.Tag
@@ -130,6 +130,6 @@ trait DDLUsingPathTests extends QueryTest
 
 }
 
-class DDLUsingPathSuite extends DDLUsingPathTests with LakeSQLCommandSoulTest {
+class DDLUsingPathSuite extends DDLUsingPathTests with LakeSoulSQLCommandTest {
 }
 
