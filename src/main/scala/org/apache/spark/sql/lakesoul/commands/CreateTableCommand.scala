@@ -226,11 +226,15 @@ case class CreateTableCommand(table: CatalogTable,
   private def getProvidedTableInfo(tc: TransactionCommit,
                                    table: CatalogTable,
                                    schemaString: String): TableInfo = {
+    val hashParitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
+    val hashBucketNum = table.properties.getOrElse(LakeSoulOptions.HASH_BUCKET_NUM, "-1").toInt
     TableInfo(table_name = tc.tableInfo.table_name,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
-      range_column = table.partitionColumnNames.mkString(",")
-      //      ,configuration = table.properties
+      range_column = table.partitionColumnNames.mkString(","),
+      hash_column = hashParitions,
+      bucket_num = hashBucketNum,
+      configuration = table.properties
     )
   }
 
