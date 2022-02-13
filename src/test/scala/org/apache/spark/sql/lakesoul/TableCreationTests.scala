@@ -29,6 +29,7 @@ import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.util.Utils
@@ -1416,6 +1417,30 @@ trait TableCreationTests
 
         val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
         table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
+      }
+    }
+  }
+
+  test("create table sql with range and hash partition") {
+    withTempPath { dir =>
+      val tableName = "test_table"
+      withTable(s"$tableName") {
+        spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
+          s" PARTITIONED BY (date)" +
+          s" LOCATION '${dir.toURI}'" +
+          s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
+          s" 'hashPartitions'='id'," +
+          s" 'hashBucketNum'='2')")
+
+        val path = dir.getCanonicalPath
+        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
+        table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
+        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        assert(tableInfo.short_table_name.get.equals(tableName))
+        assert(tableInfo.range_partition_columns.equals(Seq("date")))
+        assert(tableInfo.hash_partition_columns.equals(Seq("id")))
+        assert(tableInfo.bucket_num == 2)
+        assert(!tableInfo.is_material_view)
       }
     }
   }
