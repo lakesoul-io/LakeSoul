@@ -28,14 +28,15 @@ import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.LakeSoulTableProperties.lakeSoulCDCChangePropKey
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
-
+import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 
 object LakeSoulUtils extends PredicateHelper {
 
@@ -254,6 +255,18 @@ object LakeSoulTableProperties {
 
   def isLakeSoulTableProperty(name: String): Boolean = {
     extraTblProps.contains(name)
+  }
+}
+object LakeSoulTableForCdc{
+  def getLakeSoulTableFilterForCDC(tif:TableInfo):Filter={
+    val name=getLakeSoulTableCdcColumnName(tif)
+    Not(EqualTo(name.get,"delete"))
+  }
+  def isLakeSoulCdcTable(tif:TableInfo):Boolean={
+    tif.configuration.contains(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
+  }
+  def getLakeSoulTableCdcColumnName(tif:TableInfo):Option[String]={
+    tif.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
 }
 

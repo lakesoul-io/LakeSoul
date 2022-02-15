@@ -62,19 +62,23 @@ class CDCSuite
     withTable("tt") {
       withTempDir(dir => {
         val tablePath = dir.getCanonicalPath
-        Seq(("range1", "hash1", "insert"), ("range1", "hash2", "delete"), ("range1", "hash3", "update"))
-          .toDF("range", "hash", "change_kind")
+        Seq(("range1", "hash1", "insert"),("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "insert"))
+          .toDF("range", "hash", "op")
           .write
           .mode("overwrite")
           .format("lakesoul")
           .option("rangePartitions", "range")
           .option("hashPartitions", "hash")
-          .option("hashBucketNum", "1")
-          .option("lakesoul_cdc_change_column", "change_kind")
+          .option("hashBucketNum", "2")
+          .option("lakesoul_cdc_change_column", "op")
           .save(tablePath)
+        val lake=LakeSoulTable.forPath(tablePath);
+        val tableForUpsert=Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
+          .toDF("range", "hash", "op")
+        lake.upsert(tableForUpsert)
         val data1 = spark.read.format("lakesoul").load(tablePath)
-        val data2 = data1.select(col = "hash", cols = "change_kind")
-        checkAnswer(data2, Seq(("hash1", "insert"), ("hash3", "update")).toDF("hash", "change_kind"))
+        val data2 = data1.select("range","hash","op")
+        checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
       })
     }
   }
