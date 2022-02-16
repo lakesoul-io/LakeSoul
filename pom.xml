@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <inceptionYear>2022</inceptionYear>
     <properties>
         <!-- 文件拷贝时的编码 -->
