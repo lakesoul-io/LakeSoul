@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, P
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.{MergeFilePartitionReaderFactory, MergeParquetPartitionReaderFactory}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
@@ -187,19 +187,28 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.MergeParquetPartitionAsyncReaderFactory"
     val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
 
+    //remove cdc filter from pushedFilters;cdc filter Not(EqualTo("cdccolumn","detete"))
+    var newFilters = pushedFilters
+    if (LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo)){
+        newFilters=pushedFilters.filter(_ match {
+        case  Not(EqualTo(attribute,value)) if value=="delete" && LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo)=> false
+        case _=>true
+      })
+    }
+
     if (enableAsyncIO && hasAsyncClass) {
       logInfo("================  async merge scan   ==============================")
 
       cls.getConstructors()(0)
         .newInstance(sparkSession.sessionState.conf, broadcastedConf,
-          dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo)
+          dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
         .asInstanceOf[MergeFilePartitionReaderFactory]
 
     } else {
       logInfo("================  merge scan no async  ==============================")
 
       MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-        dataSchema, readDataSchema, readPartitionSchema, pushedFilters, mergeOperatorInfo)
+        dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
     }
 
   }
@@ -409,7 +418,6 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
     val fileWithBucketId: Map[Int, Map[String, Seq[MergePartitionedFile]]] = partitionedFiles
       .groupBy(_.fileBucketId)
       .map(f => (f._1, f._2.groupBy(_.rangeKey)))
-
     val isSingleFile = fileWithBucketId.forall(f1 => f1._2.forall(f2 => f2._2.size == 1))
 
     Seq.tabulate(bucketNum) { bucketId =>
