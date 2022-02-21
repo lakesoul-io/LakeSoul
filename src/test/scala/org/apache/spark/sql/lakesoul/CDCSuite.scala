@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -72,8 +73,8 @@ class CDCSuite
           .option("hashBucketNum", "2")
           .option("lakesoul_cdc_change_column", "op")
           .save(tablePath)
-        val lake=LakeSoulTable.forPath(tablePath);
-        val tableForUpsert=Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
+        val lake = LakeSoulTable.forPath(tablePath);
+        val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
           .toDF("range", "hash", "op")
         lake.upsert(tableForUpsert)
         val data1 = spark.read.format("lakesoul").load(tablePath)
