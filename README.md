@@ -32,6 +32,9 @@ Some features and performance comparisons: [Data Lake Comparison](https://github
     - [x] Shuffle/Join elimination for operations on primary key
   - [x] Merge UDF (Merge operator)
   - [ ] Merge Into SQL support
+* Flink Integration
+  - [ ] Table API
+  - [ ] Flink CDC
 * Realtime Data Warehousing
   - [ ] CDC ingestion and time travel
   - [ ] Event driven materialized view build and compaction
