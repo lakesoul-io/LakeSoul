@@ -12,7 +12,7 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 
 [快速开始](https://github.com/meta-soul/LakeSoul/wiki/%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B)
 
-[CDC 入湖示例]() : 提供了一个 MySQL + Debezium + Kafka 将在线数据库表通过 CDC 方式实时摄入 LakeSoul 表的示例。
+[CDC 入湖示例](https://github.com/meta-soul/LakeSoul/tree/main/examples/cdc_ingestion_debezium) : 提供了一个 MySQL + Debezium + Kafka 将在线数据库表通过 CDC 方式实时摄入 LakeSoul 表的示例。
 
 # 特性路线
 [Feature Roadmap](https://github.com/meta-soul/LakeSoul#Feature-Roadmap)

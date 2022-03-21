@@ -17,7 +17,7 @@ Please find usage documentations in project's wiki:
 
 Follow the [Quick Start](https://github.com/meta-soul/LakeSoul/wiki/02.-QuickStart) to quickly setup a test env.
 
-Checkout the [CDC Ingestion with Debezium and Kafka]() example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
+Checkout the [CDC Ingestion with Debezium and Kafka](https://github.com/meta-soul/LakeSoul/tree/main/examples/cdc_ingestion_debezium) example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
 
 # Feature Roadmap
 * Meta Management
