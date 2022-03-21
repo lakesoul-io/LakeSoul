@@ -10,9 +10,14 @@ More detailed features please refer to our wiki page: [Wiki Home](https://github
 Some features and performance comparisons: [Data Lake Comparison](https://github.com/meta-soul/LakeSoul/wiki/01.-Data-Lake-Comparison)
 
 # Usage Documentations
+Please find usage documentations in project's wiki:
 [Usage Doc](https://github.com/meta-soul/LakeSoul/wiki/03.-Usage-Doc)
 
 [使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
+
+Follow the [Quick Start](https://github.com/meta-soul/LakeSoul/wiki/02.-QuickStart) to quickly setup a test env.
+
+Checkout the [CDC Ingestion with Debezium and Kafka]() example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
 
 # Feature Roadmap
 * Meta Management
@@ -32,6 +37,8 @@ Some features and performance comparisons: [Data Lake Comparison](https://github
     - [x] Shuffle/Join elimination for operations on primary key
   - [x] Merge UDF (Merge operator)
   - [ ] Merge Into SQL support
+    - [x] Merge Into SQL with Primary Key
+    - [ ] Merge Into SQL with non-pk
 * Flink Integration
   - [ ] Table API
   - [ ] Flink CDC
