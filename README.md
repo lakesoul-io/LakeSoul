@@ -51,7 +51,8 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [ ] Multi-layer storage classes support with data tiering
 
 # Feedback and Contribution
-Please feel free to open an issue or dicusstion if you have any questions.
+Please feel free to open an issue or dicussion if you have any questions.
+
 Join our [slack user group](https://join.slack.com/t/dmetasoul-user/shared_invite/zt-1681xagg3-4YouyW0Y4wfhPnvji~OwFg)
 
 # Contact Us
