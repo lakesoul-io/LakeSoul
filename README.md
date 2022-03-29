@@ -2,6 +2,7 @@
 
 # LakeSoul
 LakeSoul is a unified streaming and batch table storage for fast data processing built on top of the Apache Spark engine by the [DMetaSoul](https://www.dmetasoul.com) team, and supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and streaming & batch unification.
+![LakeSoul Arch](doc/LakeSoul.png)
 
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates on the same partition. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales meta data management by using distributed NoSQL DB Cassandra.
 
@@ -50,10 +51,11 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [ ] Multi-layer storage classes support with data tiering
 
 # Feedback and Contribution
-Please feel free to open an issue if you have any questions.
+Please feel free to open an issue or dicusstion if you have any questions.
+Join our [slack user group](https://join.slack.com/t/dmetasoul-user/shared_invite/zt-1681xagg3-4YouyW0Y4wfhPnvji~OwFg)
 
 # Contact Us
-[opensource@dmetasoul.com](mailto:opensource@dmetasoul.com)
+Email us at [opensource@dmetasoul.com](mailto:opensource@dmetasoul.com).
 
 # Opensource License
 LakeSoul is opensourced under Apache License v2.0.
