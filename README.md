@@ -5,19 +5,19 @@ LakeSoul is a unified streaming and batch table storage for fast data processing
 
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates on the same partition. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales meta data management by using distributed NoSQL DB Cassandra.
 
-More detailed features please refer to our wiki page: [Wiki Home](https://github.com/meta-soul/LakeSoul/wiki/Home)
+More detailed features please refer to our wiki page: [Wiki Home](../../wiki/Home)
 
-Some features and performance comparisons: [Data Lake Comparison](https://github.com/meta-soul/LakeSoul/wiki/01.-Data-Lake-Comparison)
+Some features and performance comparisons: [Data Lake Comparison](../../wiki/01.-Data-Lake-Comparison)
 
 # Usage Documentations
 Please find usage documentations in project's wiki:
-[Usage Doc](https://github.com/meta-soul/LakeSoul/wiki/03.-Usage-Doc)
+[Usage Doc](../../wiki/03.-Usage-Doc)
 
-[使用文档](https://github.com/meta-soul/LakeSoul/wiki/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
+[使用文档](../../wiki/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
 
-Follow the [Quick Start](https://github.com/meta-soul/LakeSoul/wiki/02.-QuickStart) to quickly setup a test env.
+Follow the [Quick Start](../../wiki/02.-QuickStart) to quickly setup a test env.
 
-Checkout the [CDC Ingestion with Debezium and Kafka](https://github.com/meta-soul/LakeSoul/tree/main/examples/cdc_ingestion_debezium) example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
+Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debezium) example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
 
 # Feature Roadmap
 * Meta Management
