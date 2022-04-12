@@ -159,7 +159,7 @@ LakeSoul 提供了一套独立的 CDC 语义表达规范，通过表属性设置
 ## 5. Spark + Lakesoul CDC 入湖
 ### 5.1 安装
 
-请参考 [LakeSoul 最小化部署测试文档](../../../wiki/快速开始.md)
+请参考 [快速开始](../../../../wiki/快速开始)
 
 ### 5.2 使用 Spark Streaming，消费 Kafka 数据并同步更新至 LakeSoul
 
