@@ -252,7 +252,18 @@ object SnapshotManagement {
         throw e.getCause
     }
   }
-
+  def getSM(path: String): SnapshotManagement = {
+    try {
+      snapshotManagementCache.get(path, () => {
+        AnalysisHelper.allowInvokingTransformsInAnalyzer {
+          new SnapshotManagement(path)
+        }
+      })
+    } catch {
+      case e: com.google.common.util.concurrent.UncheckedExecutionException =>
+        throw e.getCause
+    }
+  }
 
   def invalidateCache(path: String): Unit = {
     val table_path: String = MetaUtils.modifyTableString(path)
