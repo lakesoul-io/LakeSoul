@@ -1,35 +1,35 @@
 /*
- * Copyright [2022] [DMetaSoul Team]
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ *  * Copyright [2022] [DMetaSoul Team]
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  *     http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
-package com.dmetasoul.lakesoul.meta
-
+package com.dmetasoul.lakesoul.Newmeta
 import java.util
-
 import com.datastax.driver.core.exceptions.InvalidQueryException
+import com.dmetasoul.lakesoul.Newmeta.{NewFragmentValue, MetaTableManagement, MetaCommon}
 import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetaRerunErrors}
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo, undoLogInfo}
-
 import scala.collection.convert.ImplicitConversions.`map AsScala`
 import scala.collection.mutable.ArrayBuffer
 import scala.util.matching.Regex
 
-object MetaVersion {
-  private val cassandraConnector = MetaUtils.cassandraConnector
-  private val database = MetaUtils.DATA_BASE
-  private val defaultValue = MetaUtils.UNDO_LOG_DEFAULT_VALUE
+object NewMetaUtil {
+  private val cassandraConnector = MetaCommon.cassandraConnector
+  private val database = MetaCommon.DATA_BASE
+  private val defaultValue = MetaCommon.UNDO_LOG_DEFAULT_VALUE
 
   def isTableExists(table_name: String): Boolean = {
     cassandraConnector.withSessionDo(session => {
@@ -42,7 +42,7 @@ object MetaVersion {
       } catch {
         case e: InvalidQueryException if e.getMessage
           .contains(s"Keyspace $database does not exist") =>
-          MetaTableManage.initDatabaseAndTables()
+          MetaTableManagement.initDatabaseAndTables()
           return isTableExists(table_name)
         case _: NullPointerException => return false
         case e: Exception => throw e
@@ -132,12 +132,19 @@ object MetaVersion {
                      bucket_num: Int,
                      is_material_view: Boolean): Unit = {
     cassandraConnector.withSessionDo(session => {
-      val table_schema_index = if (table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE) {
-        FragmentValue.splitLargeValueIntoFragmentValues(table_id, table_schema)
+      val table_schema_index = if (table_schema.length > MetaCommon.MAX_SIZE_PER_VALUE) {
+        NewFragmentValue.splitLargeValueIntoFragmentValues(table_id, table_schema)
       } else {
         table_schema
       }
-
+      println(  s"""
+                   |insert into $database.table_info
+                   |(table_name,table_id,table_schema,range_column,hash_column,setting,read_version,pre_write_version,
+                   |bucket_num,short_table_name,is_material_view)
+                   |values ('$table_name','$table_id','$table_schema_index','$range_column','$hash_column',$setting,1,1,
+                   |$bucket_num,'$defaultValue',$is_material_view)
+                   |if not exists
+      """.stripMargin)
       val res = session.execute(
         s"""
            |insert into $database.table_info
@@ -204,7 +211,7 @@ object MetaVersion {
 
       val pattern = new Regex("\\w{8}(-\\w{4}){3}-\\w{12}")
       val table_schema = if (pattern.findFirstIn(tmp_table_schema).isDefined) {
-        FragmentValue.getEntireValue(table_id, tmp_table_schema)
+        NewFragmentValue.getEntireValue(table_id, tmp_table_schema)
       } else {
         tmp_table_schema
       }
@@ -330,7 +337,7 @@ object MetaVersion {
                         table_schema: String,
                         config: Map[String, String],
                         new_read_version: Int): Unit = {
-    val setting = MetaUtils.toCassandraSetting(config)
+    val setting = MetaCommon.toCassandraSetting(config)
     val ori_read_version = new_read_version - 1
     cassandraConnector.withSessionDo(session => {
       session.execute(
@@ -417,4 +424,3 @@ object MetaVersion {
 
 
 }
-

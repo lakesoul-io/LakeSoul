@@ -22,7 +22,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expressi
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset}
-
+import com.dmetasoul.lakesoul.Newmeta.NewSnapshot;
 object PartitionFilter {
 
   def partitionsForScan(snapshot: Snapshot, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
@@ -43,6 +43,7 @@ object PartitionFilter {
       partitionFilters).as[PartitionFilterInfo].collect()
   }
 
+
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
     val partitionIds = partitionsForScan(snapshot, filters).map(_.range_id)
@@ -50,6 +51,7 @@ object PartitionFilter {
 
     DataOperation.getTableDataInfo(partitionInfo)
   }
+
 
   /**
     * Filters the given [[Dataset]] by the given `partitionFilters`, returning those that match.
