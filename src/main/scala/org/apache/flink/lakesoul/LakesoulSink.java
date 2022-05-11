@@ -50,10 +50,11 @@ public class LakesoulSink {
             Configuration conf) {
         LakesoulFileWriter<T> fileWriter =
                 new LakesoulFileWriter<T>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf,outputFile);
+
         return inputStream
                 .transform(LakesoulFileWriter.class.getSimpleName(),
                         TypeInformation.of(DataInfo.class),
-                        fileWriter)
+                        fileWriter).name( "DataInfo" )
                 .setParallelism(parallelism);
     }
 
@@ -79,7 +80,7 @@ public class LakesoulSink {
             stream =
                     writer.transform(
                             DataInfoCommitter.class.getSimpleName(), Types.VOID, committer)
-                            .setParallelism(1)
+                            .setParallelism(1).name( "DataCommit" )
                             .setMaxParallelism(1);
         }
 

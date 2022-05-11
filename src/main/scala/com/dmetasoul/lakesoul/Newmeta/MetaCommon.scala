@@ -49,6 +49,9 @@ object MetaCommon extends Logging{
   lazy val LakesoulMetaHostKey:String = "lakesoul_meta_host"
   lazy val LakesoulMetaHostPortKey:String = "lakesoul_meta_host_port"
 
+  lazy val LakesoulCdcColumnName:String="lakesoul_cdc_change_column"
+  lazy val LakesoulCdcKey:String="lakesoul_cdc"
+
   var DATA_BASE: String = "test_lakesoul_meta";
   var Meta_host:String = "127.0.0.1";
   var Meta_port:Int = 9042
@@ -243,6 +246,7 @@ object MetaCommon extends Logging{
       case "decimal" => DecimalType.USER_DEFAULT
       case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
       case CHAR_TYPE(length) => CharType(length.toInt)
+      case VARCHAR_TYPE(length) => VarcharType(length.toInt)
       case "varchar" => StringType
     }
     convert
@@ -262,6 +266,16 @@ object MetaCommon extends Logging{
       case FIXED_DECIMAL(precision, scale) => "DECIMAL("+precision.toInt+","+scale.toInt+")"
       case CHAR_TYPE(length) => "CHAR("+length.toInt+")"
       case "varchar" => "VARCHAR"
+    }
+    convert
+  }
+  def RowkindToOpration(rowkind: String): String = {
+
+    val convert = rowkind match {
+      case "+I" => "insert"
+      case "-U" => "update"
+      case "+U" => "update"
+      case "-D" => "delete"
     }
     convert
   }

@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.MetaUtils._
 import com.dmetasoul.lakesoul.meta._
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging

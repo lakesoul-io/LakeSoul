@@ -19,16 +19,12 @@
 package org.apache.flink.lakesoul;
 
 import com.dmetasoul.lakesoul.Newmeta.*;
-import com.dmetasoul.lakesoul.meta.MetaTableManage;
-import org.apache.flink.lakesoul.tools.FlinkUtil;
-import org.apache.flink.table.api.Schema;
+import org.apache.flink.lakesoul.tools.*;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
-import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.util.StringUtils;
 import org.apache.spark.sql.lakesoul.commands.DropTableCommand;
-import org.apache.spark.sql.lakesoul.utils.MetaInfo;
 import org.apache.spark.sql.lakesoul.utils.PartitionInfo;
 import org.apache.spark.sql.lakesoul.utils.TableInfo;
 import org.slf4j.Logger;
@@ -168,15 +164,16 @@ public class LakesoulCatalog implements Catalog {
                 throw new TableAlreadyExistException(LakesoulDatabaseName, tablePath);
             }
         } else {
-            FlinkUtil.UpdateTableOption(table.getOptions());
+            Map<String, String> tableOptions = table.getOptions();
+            FlinkUtil.UpdateCassendraInfo(tableOptions);
             String tableName = tablePath.getFullName();
             TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
             NewMetaUtil.createNewTable(tableName,
                     tableInfo.table_id(),
-                    FlinkUtil.toSparkSchema( tsc ).json(),
+                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
                     FlinkUtil.getTableRangeColumns(table),
                     FlinkUtil.getTablePrimaryKey(table),
-                    FlinkUtil.serialOptionsToCasStr(table.getOptions()),
+                    FlinkUtil.serialOptionsToCasStr(FlinkUtil.UpdateLakesoulCdcTable( tableOptions )),
                     tableInfo.bucket_num(),
                     FlinkUtil.isMaterialTable(table)
             );

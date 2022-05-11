@@ -18,7 +18,9 @@ package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
+import javolution.util.ReentrantLock
 import org.apache.hadoop.fs.Path
+import org.apache.spark.api.java
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -27,15 +29,12 @@ import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulSourceUtils, LakeSoulBaseRelation}
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, TableInfo}
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession}
 
-import java.io.File
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.locks.ReentrantLock
 import scala.collection.JavaConverters._
 
 class SnapshotManagement(path: String) extends Logging {
