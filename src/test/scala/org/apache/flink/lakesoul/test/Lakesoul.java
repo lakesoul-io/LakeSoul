@@ -23,7 +23,7 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.formats.parquet.avro.ParquetAvroWriters;
-import org.apache.flink.lakesoul.LakesoulCatalog;
+import org.apache.flink.lakesoul.*;
 import org.apache.flink.lakesoul.LakesoulCatalogFactory;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.CheckpointingMode;
@@ -157,10 +157,35 @@ public class Lakesoul {
         Catalog lakesoulCatalog = new LakesoulCatalog();
         tableEnv.registerCatalog("lakesoul",lakesoulCatalog);
         tableEnv.useCatalog("lakesoul");
-        tableEnv.getConfig().getConfiguration().set(
-                ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
-        tableEnv.executeSql( "CREATE TABLE user_behavior ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with('connector' = 'lakesoul','format'='parquet','path'='D://lakesoultest')" );
+//        tableEnv.getConfig().getConfiguration().set(
+//                ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
+     //   tableEnv.executeSql( "CREATE TABLE user_behavior ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with('connector' = 'lakesoul','format'='parquet','path'='D://lakesoultest','lakesoul_cdc'='true')" );
         tableEnv.executeSql("insert into user_behavior values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
         tableEnv.executeSql("insert into user_behavior values (11,'key1','value1'),(22,'key1','value2'),(33,'key3','value3')");
+        tableEnv.executeSql("insert into user_behavior values (111,'key1','value1'),(222,'key1','value2'),(333,'key3','value3')");
+    }
+
+    @Test
+    public void sqlLakesoulTableBatchsink(){
+        //TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        EnvironmentSettings bbSettings = EnvironmentSettings.newInstance().inBatchMode().build();
+        TableEnvironment tableEnv = TableEnvironment.create(bbSettings);
+        Catalog lakesoulCatalog = new LakesoulCatalog();
+        tableEnv.registerCatalog("lakesoul",lakesoulCatalog);
+        tableEnv.useCatalog("lakesoul");
+        tableEnv.executeSql("insert into user_behavior values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
+        tableEnv.executeSql("insert into user_behavior values (11,'key1','value1'),(22,'key1','value2'),(33,'key3','value3')");
+        tableEnv.executeSql("insert into user_behavior values (111,'key1','value1'),(222,'key1','value2'),(333,'key3','value3')");
+    }
+    @Test
+    public void sqlDefaultsink(){
+        //TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        //StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+       // env.enableCheckpointing(10);
+        EnvironmentSettings bbSettings = EnvironmentSettings.newInstance().inBatchMode().build();
+        TableEnvironment tableEnv = TableEnvironment.create(bbSettings);
+        //StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+        tableEnv.executeSql( "CREATE TABLE user_behavior ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with('connector' = 'filesystem','format'='parquet','path'='D://lakesoultest')" );
+        tableEnv.executeSql("insert into user_behavior values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
     }
 }

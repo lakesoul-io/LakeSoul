@@ -15,7 +15,6 @@
  */
 
 package com.dmetasoul.lakesoul.meta
-
 import java.util.Locale
 
 object CommitState extends Enumeration {

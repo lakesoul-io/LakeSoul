@@ -141,6 +141,7 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
         headPartitions.values().forEach(partitions::addAll);
         headPartitions.clear();
         String taskPathPre=outputFileConfig.getPartPrefix ()+"-";
+        System.out.println( "path----" + taskPathPre );
         output.collect(
                 new StreamRecord<>(
                         new DataInfo(

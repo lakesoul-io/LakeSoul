@@ -19,25 +19,21 @@
 package org.apache.flink.lakesoul.tools;
 
 import com.dmetasoul.lakesoul.Newmeta.MetaCommon;
-import com.dmetasoul.lakesoul.meta.MetaUtils;
-import org.apache.flink.core.fs.Path;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.DataType;
 import org.apache.spark.sql.lakesoul.utils.TableInfo;
 import org.apache.spark.sql.types.StructType;
-import scala.collection.JavaConverters.*;
 import scala.collection.JavaConverters;
 import org.apache.spark.sql.types.*;
-import scala.Predef;
 import scala.collection.Map$;
 
 import java.util.*;
-
-import static com.dmetasoul.lakesoul.Newmeta.MetaCommon.Meta_port_$eq;
 
 public class FlinkUtil {
     private FlinkUtil(){
@@ -81,7 +77,7 @@ public class FlinkUtil {
         return MetaCommon.toCassandraSetting(getScalaMap( CatalogPropertiesUtil.serializeCatalogTable(table)));
     }
 
-    public static void UpdateTableOption(Map<String, String> options){
+    public static void UpdateCassendraInfo(Map<String, String> options){
         if(options.containsKey( MetaCommon.LakesoulMetaHostKey() )){
             MetaCommon.Meta_host_$eq( options.get( MetaCommon.LakesoulMetaHostKey() ) );
         }
@@ -90,7 +86,25 @@ public class FlinkUtil {
         }
 
     }
-    public static StructType toSparkSchema(TableSchema tsc){
+    public static Map<String, String> UpdateLakesoulCdcTable(Map<String, String> options){
+        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
+            options.put( MetaCommon.LakesoulCdcColumnName(),MetaCommon.LakesoulCdcColumnName() );
+        }
+        return options;
+    }
+    public static Boolean isLakesoulCdcTable(Map<String, String> options){
+        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
+            return true;
+        }
+        return false;
+    }
+    public static Boolean isLakesoulCdcTable(Configuration options){
+        if(options.containsKey( MetaCommon.LakesoulCdcColumnName() )){
+            return true;
+        }
+        return false;
+    }
+    public static StructType toSparkSchema(TableSchema tsc,Boolean isCdc){
         StructType st = new StructType(  );
         StructType stNew=st;
         for(int i=0;i<tsc.getFieldCount();i++){
@@ -99,13 +113,34 @@ public class FlinkUtil {
             String dtName=dt.getLogicalType().getTypeRoot().name();
             stNew=stNew.add( name ,MetaCommon.convertDatatype( dtName ),dt.getLogicalType().isNullable());
         }
+        if(isCdc){
+            stNew=stNew.add( MetaCommon.LakesoulCdcColumnName(),MetaCommon.convertDatatype( "varchar(30)" ),false );
+        }
 
         return stNew;
     }
+    public static StringData RowkindToOperation(String rowkind){
+        if("+I".equals( rowkind ) ) {
+            return StringData.fromString( "insert" );
+        }
+        if("-U".equals( rowkind ) ){
+            return StringData.fromString( "update" );
+        }
+        if("+U".equals( rowkind ) ) {
+            return StringData.fromString( "update" );
+        }
+        if("-D".equals( rowkind ) ){
+            return StringData.fromString( "delete" );
+        }
+        return null;
+    }
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo)  {
-            StructType st = tableInfo.schema();
+        StructType st = tableInfo.schema();
         Builder bd = Schema.newBuilder();
         for(StructField sf : st.fields()) {
+            if(sf.name().equals( MetaCommon.LakesoulCdcColumnName() )){
+                continue;
+            }
             String tyname = MetaCommon.convertToFlinkDatatype( sf.dataType().typeName() );
             if(!sf.nullable()){
                 tyname+=" NOT NULL";
@@ -123,8 +158,6 @@ public class FlinkUtil {
     public static CatalogTable deserialCassendraStringToResolvedTable(String casStr)  {
         return CatalogPropertiesUtil.deserializeCatalogTable(JavaConverters.mapAsJavaMap( MetaCommon.fromCassandraSetting(casStr)));
     }
-
-
     public static boolean isMaterialTable(CatalogBaseTable table)  {
         if(CatalogTable.TableKind.VIEW.equals(table.getTableKind())){
             return true;

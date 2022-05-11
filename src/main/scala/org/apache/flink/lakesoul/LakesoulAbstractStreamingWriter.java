@@ -84,6 +84,7 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void initializeState(StateInitializationContext context) throws Exception {
+        System.out.println( "initializeState" );
         super.initializeState(context);
         buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
 
@@ -117,6 +118,7 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void snapshotState(StateSnapshotContext context) throws Exception {
+        System.out.println( "spapshotstate" );
         super.snapshotState(context);
         helper.snapshotState(context.getCheckpointId());
     }
@@ -129,6 +131,7 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void processElement(StreamRecord<IN> element) throws Exception {
+        System.out.println( "processElement" );
         helper.onElement(
                 element.getValue(),
                 getProcessingTimeService().getCurrentProcessingTime(),
@@ -138,12 +141,14 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
+        System.out.println( "notifycheckpoint" );
         super.notifyCheckpointComplete(checkpointId);
         commitUpToCheckpoint(checkpointId);
     }
 
     @Override
     public void endInput() throws Exception {
+        System.out.println( "endInput" );
         buckets.onProcessingTime(Long.MAX_VALUE);
         helper.snapshotState(Long.MAX_VALUE);
         output.emitWatermark(new Watermark(Long.MAX_VALUE));
@@ -152,9 +157,15 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void close() throws Exception {
+        System.out.println( "close" );
+
         super.close();
         if (helper != null) {
             helper.close();
         }
+    }
+    @Override
+    public void finish() throws Exception{
+        System.out.println( "finish" );
     }
 }
