@@ -44,7 +44,8 @@ case class PartitionInfo(table_id: String,
     s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
   }
 }
-
+case class Format(provider: String = "parquet",
+                  options: Map[String, String] = Map.empty)
 // table_schema is json format data
 // range_column and hash_column are string， not json format ; hash_partition_column contains multi keys，concat with `,`
 //table name -> tablepath
@@ -112,29 +113,29 @@ case class TableInfo(table_name:  Option[String] = None,
   lazy val format: Format = Format()
 }
 
-case class DataFileOp(
+case class DataFileInfo(
                      path:String,
-                     file_op:String
-                     )
+                     file_op:String,
+                     size:Long,
+                     modification_time:Long
+                     ) {
+  lazy val file_bucket_id: Int = BucketingUtils
+    .getBucketId(new Path(path).getName)
+    .getOrElse(sys.error(s"Invalid bucket file $path"))
+  //trans to files which need to delete
+  def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
+}
 //single file info
 case class DataCommitInfo(table_id: String,
                         range_value: String,
                         commit_id: String,
                         commit_type: String,
                           modification_time:Long = -1L,
-                        file_ops:Array[DataFileOp]=Array.empty[DataFileOp]
+                        file_ops:Array[DataFileInfo]=Array.empty[DataFileInfo]
                       ) {
   lazy val range_key: String = range_value
-
   //identify for merge read
   lazy val range_version: String = range_key
-
-  lazy val file_bucket_id: Int = BucketingUtils
-    .getBucketId(new Path(file_path).getName)
-    .getOrElse(sys.error(s"Invalid bucket file $file_path"))
-
-  //trans to files which need to delete
-  def expire(deleteTime: Long): DataCommitInfo = this.copy(modification_time = deleteTime)
 }
 
 
