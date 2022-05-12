@@ -19,6 +19,7 @@ package org.apache.spark.sql.lakesoul
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
+import java.util.UUID;
 import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java
 import org.apache.spark.internal.Logging
@@ -66,8 +67,8 @@ class SnapshotManagement(path: String) extends Logging {
       throw LakeSoulErrors.failedCreateTableException(table_name)
     }
 
-    val table_id = "table_" + java.util.UUID.randomUUID().toString
-    val range_id = "range_" + java.util.UUID.randomUUID().toString
+    val table_id = "table_" + UUID.randomUUID().toString
+    val range_id = "range_" + UUID.randomUUID().toString
     val table_info = TableInfo(table_name, table_id)
     val partition_arr = Array(
       PartitionInfo(table_id, range_id, table_name, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 1, 1)
