@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.rules
 
-import com.dmetasoul.lakesoul.meta.{MaterialView, MetaVersion}
+import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.analysis.MultiAlias

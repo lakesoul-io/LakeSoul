@@ -17,10 +17,6 @@
 package com.dmetasoul.lakesoul.meta
 
 import java.util.concurrent.TimeUnit
-
-import Redo._
-import RollBack._
-import UndoLog._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.lakesoul.commands.{DropPartitionCommand, DropTableCommand}
