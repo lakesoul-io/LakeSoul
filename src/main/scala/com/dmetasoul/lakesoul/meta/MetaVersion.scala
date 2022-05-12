@@ -132,11 +132,8 @@ object MetaVersion {
                      bucket_num: Int,
                      is_material_view: Boolean): Unit = {
     cassandraConnector.withSessionDo(session => {
-      val table_schema_index = if (table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE) {
-        FragmentValue.splitLargeValueIntoFragmentValues(table_id, table_schema)
-      } else {
-        table_schema
-      }
+      val table_schema_index = table_schema
+
 
       val res = session.execute(
         s"""

@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{MaterialView, MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.SnapshotManagement
