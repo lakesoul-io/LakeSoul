@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.lakesoul.utils
 
+import java.util.UUID
+
 import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, MetaUtils}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
@@ -32,26 +34,21 @@ case class MetaInfo(table_info: TableInfo,
                     batch_id: Long = -1L)
 
 case class PartitionInfo(table_id: String,
-                         range_id: String,
-                         table_name: String,
                          range_value: String,
-                         read_version: Long,
-                         pre_write_version: Long,
-                         read_files: Array[DataFileInfo] = Array.empty[DataFileInfo],
-                         add_files: Array[DataFileInfo] = Array.empty[DataFileInfo],
-                         expire_files: Array[DataFileInfo] = Array.empty[DataFileInfo],
-                         last_update_timestamp: Long = -1L,
-                         delta_file_num: Int = 0, //approximate value of delta files
-                         be_compacted: Boolean = false) {
+                         version: Int,
+                         read_files: Array[UUID] = Array.empty[UUID],
+                         expression:String=""
+                      ) {
   override def toString: String = {
-    s"partition info: {\ntable_name: $table_name,\nrange_value: $range_value,\nread_version: $read_version," +
-      s"\ndelta_file_num: $delta_file_num,\nbe_compacted: $be_compacted\n}"
+    s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
   }
 }
 
 // table_schema is json format data
 // range_column and hash_column are string， not json format
 //hash_partition_column contains multi keys，concat with `,`
+//table name -> tablepath
+//shorttablename -> tablename
 case class TableInfo(table_name: String,
                      table_id: String,
                      table_schema: String = null,
@@ -59,9 +56,8 @@ case class TableInfo(table_name: String,
                      hash_column: String = "",
                      bucket_num: Int = -1,
                      configuration: Map[String, String] = Map.empty,
-                     schema_version: Int = 1,
-                     short_table_name: Option[String] = None,
-                     is_material_view: Boolean = false) {
+                     short_table_name: Option[String] = None
+                     ) {
 
   lazy val table_path: Path = new Path(table_name)
   lazy val range_partition_columns: Seq[String] = range_partition_schema.fieldNames
@@ -116,18 +112,23 @@ case class TableInfo(table_name: String,
   lazy val format: Format = Format()
 }
 
+case class DataFileOp(
+                     path:String,
+                     file_op:String
+                     )
 //single file info
-case class DataFileInfo(file_path: String,
-                        range_partitions: Map[String, String],
+case class DataFileInfo(table_id: String,
+                        range_value: String,
+                        commit_id: String,
                         size: Long,
                         modification_time: Long,
-                        write_version: Long,
-                        is_base_file: Boolean,
-                        file_exist_cols: String = "") {
-  lazy val range_key: String = MetaUtils.getPartitionKeyFromMap(range_partitions)
+                        commit_type: String,
+                        fileops:Array[DataFileOp]=Array.empty[DataFileOp]
+                      ) {
+  lazy val range_key: String = range_value
 
   //identify for merge read
-  lazy val range_version: String = range_key + "-" + write_version.toString
+  lazy val range_version: String = range_key
 
   lazy val file_bucket_id: Int = BucketingUtils
     .getBucketId(new Path(file_path).getName)
@@ -159,57 +160,7 @@ case class commitStateInfo(state: CommitState.Value,
                            tag: Int,
                            timestamp: Long)
 
-/**
-  * undo log info
-  *
-  * @param tag commit identifier，0 is committing，greater than 0 is rollback，-1 is redoing
-  */
-case class undoLogInfo(commit_type: String,
-                       table_id: String,
-                       commit_id: String,
-                       range_id: String,
-                       file_path: String,
-                       table_name: String,
-                       range_value: String,
-                       tag: Int,
-                       write_version: Long,
-                       timestamp: Long,
-                       size: Long,
-                       modification_time: Long,
-                       table_schema: String,
-                       setting: Map[String, String],
-                       file_exist_cols: String,
-                       delta_file_num: Int,
-                       be_compacted: Boolean,
-                       is_base_file: Boolean,
-                       query_id: String,
-                       batch_id: Long,
-                       short_table_name: String,
-                       sql_text: String,
-                       relation_tables: String,
-                       auto_update: Boolean,
-                       is_creating_view: Boolean,
-                       view_info: String)
 
-case class Format(provider: String = "parquet",
-                  options: Map[String, String] = Map.empty)
-
-
-case class CommitOptions(shortTableName: Option[String],
-                         materialInfo: Option[MaterialViewInfo])
-
-/**
-  * Material View Info
-  *
-  * @param sqlText        sql in text format to create material view
-  * @param relationTables relation tables, the value is a format "table_id->table_name,table1->oss://test/path"
-  */
-case class MaterialViewInfo(viewName: String,
-                            sqlText: String,
-                            relationTables: Seq[RelationTable],
-                            autoUpdate: Boolean,
-                            isCreatingView: Boolean = false,
-                            info: QueryInfo)
 
 case class RelationTable(tableName: String,
                          tableId: String,
