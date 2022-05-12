@@ -21,6 +21,7 @@ import java.util.UUID
 import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, MetaUtils}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.web.resources.ModificationTimeParam
 import org.apache.spark.sql.execution.datasources.BucketingUtils
 import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
 import org.apache.spark.sql.lakesoul.material_view.QueryInfo
@@ -32,7 +33,7 @@ case class MetaInfo(table_info: TableInfo,
                     commit_id: String = "",
                     query_id: String = "",
                     batch_id: Long = -1L)
-
+//range_value -> partition_desc
 case class PartitionInfo(table_id: String,
                          range_value: String,
                          version: Int,
@@ -45,11 +46,10 @@ case class PartitionInfo(table_id: String,
 }
 
 // table_schema is json format data
-// range_column and hash_column are string， not json format
-//hash_partition_column contains multi keys，concat with `,`
+// range_column and hash_column are string， not json format ; hash_partition_column contains multi keys，concat with `,`
 //table name -> tablepath
 //shorttablename -> tablename
-case class TableInfo(table_name: String,
+case class TableInfo(table_name:  Option[String] = None,
                      table_id: String,
                      table_schema: String = null,
                      range_column: String = "",
@@ -117,13 +117,12 @@ case class DataFileOp(
                      file_op:String
                      )
 //single file info
-case class DataFileInfo(table_id: String,
+case class DataCommitInfo(table_id: String,
                         range_value: String,
                         commit_id: String,
-                        size: Long,
-                        modification_time: Long,
                         commit_type: String,
-                        fileops:Array[DataFileOp]=Array.empty[DataFileOp]
+                          modification_time:Long = -1L,
+                        file_ops:Array[DataFileOp]=Array.empty[DataFileOp]
                       ) {
   lazy val range_key: String = range_value
 
@@ -135,7 +134,7 @@ case class DataFileInfo(table_id: String,
     .getOrElse(sys.error(s"Invalid bucket file $file_path"))
 
   //trans to files which need to delete
-  def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
+  def expire(deleteTime: Long): DataCommitInfo = this.copy(modification_time = deleteTime)
 }
 
 
