@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -27,7 +27,7 @@ import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableProperties, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.StructType
 
@@ -93,7 +93,11 @@ case class CreateTableCommand(table: CatalogTable,
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
     val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
+    val modifiedPath=SparkUtil.makeQualifiedTablePath(tableLocation)
 
+    if(SparkUtil.TablePathExisted(fs,modifiedPath)){
+      throw LakeSoulErrors.failedCreateTableException(table.identifier.table)
+    }
     // external options to store replace and partition properties
     var externalOptions = Map.empty[String, String]
     if (table.partitionColumnNames.nonEmpty) {
@@ -104,7 +108,7 @@ case class CreateTableCommand(table: CatalogTable,
       table.storage.properties ++ externalOptions,
       sparkSession.sessionState.conf)
 
-    val snapshotManagement = SnapshotManagement(fs.makeQualified(tableLocation))
+    val snapshotManagement = SnapshotManagement(modifiedPath.toString)
 
     // don't support replace table
     operation match {
