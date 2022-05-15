@@ -51,7 +51,7 @@ public class TableInfoDao {
                 tableInfo.setTablePath(rs.getString("table_path"));
                 tableInfo.setTableSchema(rs.getString("table_schema"));
                 tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
-                tableInfo.setPartitions(DBUtil.stringToJSONArray(rs.getString("partitions")));
+                tableInfo.setPartitions(rs.getString("partitions"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -61,9 +61,10 @@ public class TableInfoDao {
         return tableInfo;
     }
 
-    public void insert(TableInfo tableInfo) {
+    public boolean insert(TableInfo tableInfo) {
         Connection conn = null;
         PreparedStatement pstmt = null;
+        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions) " +
@@ -73,13 +74,15 @@ public class TableInfoDao {
             pstmt.setString(3, tableInfo.getTablePath());
             pstmt.setString(4, tableInfo.getTableSchema());
             pstmt.setString(5, DBUtil.jsonToString(tableInfo.getProperties()));
-            pstmt.setString(6, tableInfo.getPartitions().toJSONString());
+            pstmt.setString(6, tableInfo.getPartitions());
             pstmt.execute();
         } catch (SQLException e) {
+            result = false;
             e.printStackTrace();
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+        return result;
     }
 
     public void deleteByTableId(String tableId) {

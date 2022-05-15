@@ -31,9 +31,10 @@ public class TableNameIdDao {
         return tableNameId;
     }
 
-    public void insert(TableNameId tableNameId) {
+    public boolean insert(TableNameId tableNameId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
+        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into table_name_id (table_name, table_id) values (?, ?)");
@@ -41,10 +42,12 @@ public class TableNameIdDao {
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.execute();
         } catch (SQLException e) {
+            result = false;
             e.printStackTrace();
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+        return result;
     }
 
     public void delete(String tableName) {

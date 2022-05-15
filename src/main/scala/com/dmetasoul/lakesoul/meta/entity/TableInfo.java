@@ -14,7 +14,7 @@ public class TableInfo {
 
     private JSONObject properties;
 
-    private JSONArray partitions;
+    private String partitions;
 
     public String getTableId() {
         return tableId;
@@ -56,11 +56,11 @@ public class TableInfo {
         this.properties = properties;
     }
 
-    public JSONArray getPartitions() {
+    public String getPartitions() {
         return partitions;
     }
 
-    public void setPartitions(JSONArray partitions) {
+    public void setPartitions(String partitions) {
         this.partitions = partitions;
     }
 }

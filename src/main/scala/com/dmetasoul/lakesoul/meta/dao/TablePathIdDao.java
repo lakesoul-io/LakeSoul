@@ -79,9 +79,10 @@ public class TablePathIdDao {
         return list;
     }
 
-    public void insert(TablePathId tablePathId) {
+    public boolean insert(TablePathId tablePathId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
+        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id) values (?, ?)");
@@ -89,10 +90,12 @@ public class TablePathIdDao {
             pstmt.setString(2, tablePathId.getTableId());
             pstmt.execute();
         } catch (SQLException e) {
+            result = false;
             e.printStackTrace();
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+        return result;
     }
 
     public void delete(String tablePath) {

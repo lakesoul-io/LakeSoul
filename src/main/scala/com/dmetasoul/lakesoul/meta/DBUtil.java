@@ -57,7 +57,9 @@ public class DBUtil {
                 ")";
         String dataFileOp = "create type data_file_op as (" +
                 "path text," +
-                "file_op text" +
+                "file_op text," +
+                "size bigint," +
+                "modification_time bigint" +
                 ")";
         String dataCommitInfo = "create table if not exists data_commit_info (" +
                 "table_id text," +
@@ -141,7 +143,9 @@ public class DBUtil {
         for (DataFileOp dataFileOp : dataFileOpList) {
             String path = dataFileOp.getPath();
             String fileOp = dataFileOp.getFileOp();
-            sb.append(String.format("\"(%s,%s)\",", path, fileOp));
+            long size = dataFileOp.getSize();
+            long modificationTime = dataFileOp.getModificationTime();
+            sb.append(String.format("\"(%s,%s,%s,%s)\",", path, fileOp, size, modificationTime));
         }
         sb = new StringBuilder(sb.substring(0, sb.length()-1));
         sb.append("}");
@@ -162,13 +166,15 @@ public class DBUtil {
                 continue;
             }
             String[] dataFileOpArray = tmpElem.substring(1, tmpElem.length()-1).split(",");
-            if (dataFileOpArray.length != 2) {
+            if (dataFileOpArray.length != 4) {
                 //todo
                 break;
             }
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(dataFileOpArray[0]);
             dataFileOp.setFileOp(dataFileOpArray[1]);
+            dataFileOp.setSize(Long.parseLong(dataFileOpArray[2]));
+            dataFileOp.setModificationTime(Long.parseLong(dataFileOpArray[3]));
             rsList.add(dataFileOp);
         }
         return rsList;
