@@ -73,6 +73,10 @@ public class DBManager {
         return false;
     }
 
+    public TableNameId shortTableName(String tableName) {
+        return tableNameIdDao.findByTableName(tableName);
+    }
+
     //tableName == tablePath,shortTableName == tableName
     //返回tablePath
     public String getTableNameFromShortTableName(String tableName) {
@@ -93,7 +97,7 @@ public class DBManager {
     /**
      * table_name table_id table_schema range_column hash_column setting bucket_num is_material_view
      */
-    public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema, JSONObject properties, JSONArray partitions) {
+    public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema, JSONObject properties, String partitions) {
         // todo 之前这里有table_schema长度检测 table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE
         TableInfo tableInfo = new TableInfo();
         tableInfo.setTableId(tableId);
@@ -105,10 +109,14 @@ public class DBManager {
         tableInfo.setProperties(properties);
 
         // todo 是否考虑事物机制
-         tableInfoDao.insert(tableInfo);
-         tableNameIdDao.insert(new TableNameId(tableName, tableId));
-         tablePathIdDao.insert(new TablePathId(tablePath, tableId));
-
+        boolean insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId));
+        boolean insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId));
+        if (insertNameFlag && insertPathFlag) {
+            tableInfoDao.insert(tableInfo);
+        } else {
+            tableNameIdDao.delete(tableName);
+            tablePathIdDao.delete(tablePath);
+        }
         // todo 之前无返回值，false直接 throw 报错
     }
 

@@ -3,6 +3,8 @@ package com.dmetasoul.lakesoul.meta.entity;
 public class DataFileOp {
     String path;
     String fileOp;
+    long size;
+    long modificationTime;
 
     public String getPath() {
         return path;
@@ -18,5 +20,21 @@ public class DataFileOp {
 
     public void setFileOp(String fileOp) {
         this.fileOp = fileOp;
+    }
+
+    public long getSize() {
+        return size;
+    }
+
+    public void setSize(long size) {
+        this.size = size;
+    }
+
+    public long getModificationTime() {
+        return modificationTime;
+    }
+
+    public void setModificationTime(long modificationTime) {
+        this.modificationTime = modificationTime;
     }
 }
