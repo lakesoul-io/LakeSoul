@@ -53,7 +53,14 @@ trait MergeOperator[T] extends Serializable {
 
 class DefaultMergeOp[T] extends MergeOperator[T] {
   override def mergeData(input: Seq[T]): T = {
+    input.filter(!_.equals("null")).last
+  }
+}
+
+class MergeNullUpdate[T] extends MergeOperator[T] {
+  override def mergeData(input: Seq[T]): T = {
     input.last
+    //input.last
   }
 }
 

@@ -83,4 +83,30 @@ class CDCSuite
       })
     }
   }
+
+  test("test upsert with non-partition update ") {
+    withTable("tt") {
+      withTempDir(dir => {
+        val tablePath = dir.getCanonicalPath
+        Seq(("1","1","1","insert"))
+          .toDF("range", "hash","value", "op")
+          .write
+          .mode("overwrite")
+          .format("lakesoul")
+          .option("rangePartitions", "range")
+          .option("hashPartitions", "hash")
+          .option("hashBucketNum", "2")
+          .save(tablePath)
+        val lake = LakeSoulTable.forPath(tablePath);
+        val table1=Seq(("range1", "hash2","value1", "insert"),("range2", "hash2","value1", "insert"),("range3", "hash3","value1", "insert"),("range4", "hash3","value1", "insert")).toDF("range", "hash","value", "op")
+        lake.upsert(table1)
+        val tableForUpsert1 = Seq(("range1", "hash2", "delete","value2"), ("range3", "hash3", "null","value2"),("range4", "hash3", "null","null"))
+          .toDF("range", "hash", "op","value")
+        lake.upsert(tableForUpsert1)
+        val lake1 = LakeSoulTable.forPath(tablePath);
+        val data2=lake1.toDF.select("range", "hash", "op","value")
+        checkAnswer(data2, Seq(("range2", "hash2", "insert","value1"),("range3", "hash3", "insert","value2"),("range4", "hash3", "insert","value1"),("1", "1", "insert","1"), ("range1", "hash2", "delete","value2")).toDF("range", "hash", "op","value"))
+      })
+    }
+  }
 }
