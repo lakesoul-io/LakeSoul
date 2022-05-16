@@ -30,7 +30,6 @@ object MetaCommit extends Logging {
   //meta commit process
   def doMetaCommit(meta_info: MetaInfo,
                    changeSchema: Boolean,
-                   commitOptions: CommitOptions,
                    times: Int = 0): Unit = {
     //add commit type undo log, generate commit_id
     val commit_id = generateCommitIdToAddUndoLog(
