@@ -29,6 +29,7 @@ import org.apache.spark.sql.types.{DataType, StructType}
 
 case class MetaInfo(table_info: TableInfo,
                     partitionInfoArray: Array[PartitionInfo],
+                    dataCommitInfo: Array[DataCommitInfo],
                     commit_type: CommitType,
                     commit_id: String = "",
                     query_id: String = "",
