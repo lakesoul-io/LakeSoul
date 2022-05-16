@@ -317,27 +317,27 @@ public class DBManager {
             return false;
         }
 
-        boolean conflict = partitionInfoDao.transactionInsert(newPartitionList);
-        if (!conflict) {
+        boolean notConflict = partitionInfoDao.transactionInsert(newPartitionList);
+        if (!notConflict) {
             switch(commitOp){
                 case "append":
-                    conflict = appendConflict(tableId, partitionDescList, rawMap, newMap,0);
+                    notConflict = appendConflict(tableId, partitionDescList, rawMap, newMap,0);
                     break;
                 case "compact":
-                    conflict = compactionConflict(tableId, partitionDescList, rawMap, newMap,0);
+                    notConflict = compactionConflict(tableId, partitionDescList, rawMap, newMap,0);
                     break;
                 case "update":
-                    conflict = updateConflict(tableId, partitionDescList, rawMap, newMap, 0);
+                    notConflict = updateConflict(tableId, partitionDescList, rawMap, newMap, 0);
                     break;
                 case "merge":
-                    conflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, 0);
+                    notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, 0);
             }
         }
 
-        if (conflict && changeSchema) {
-            updateTableSchema(tableId, tableInfo.getTableSchema());
-        }
-        return conflict;
+//        if (notConflict && changeSchema) {
+//            updateTableSchema(tableId, tableInfo.getTableSchema());
+//        }
+        return notConflict;
     }
 
 /* 优化之前的代码
@@ -562,7 +562,7 @@ public class DBManager {
         return conflictFlag;
     }
 
-    public List<DataCommitInfo> getTableDataInfo(PartitionInfo partitionInfo) {
+    public List<DataCommitInfo> getTableSinglePartitionDataInfo(PartitionInfo partitionInfo) {
         String tableId = partitionInfo.getTableId();
         String partitionDesc = partitionInfo.getPartitionDesc();
         List<UUID> snapshotList = partitionInfo.getSnapshot();

@@ -129,7 +129,7 @@ case class DataFileInfo(
 //single file info
 case class DataCommitInfo(table_id: String,
                         range_value: String,
-                        commit_id: String,
+                        commit_id: UUID,
                         commit_type: String,
                           modification_time:Long = -1L,
                         file_ops:Array[DataFileInfo]=Array.empty[DataFileInfo]
