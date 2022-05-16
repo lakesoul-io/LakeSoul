@@ -139,7 +139,7 @@ object MetaVersion {
     false
   }
 
-  //todo
+  //todo 少了configuration参数值
   def createNewTable(table_name: String,
                      table_id: String,
                      table_schema: String,
