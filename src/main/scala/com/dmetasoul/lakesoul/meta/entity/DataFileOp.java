@@ -4,7 +4,7 @@ public class DataFileOp {
     String path;
     String fileOp;
     long size;
-    long modificationTime;
+    String fileExistCols;
 
     public String getPath() {
         return path;
@@ -30,11 +30,11 @@ public class DataFileOp {
         this.size = size;
     }
 
-    public long getModificationTime() {
-        return modificationTime;
+    public String getFileExistCols() {
+        return fileExistCols;
     }
 
-    public void setModificationTime(long modificationTime) {
-        this.modificationTime = modificationTime;
+    public void setFileExistCols(String fileExistCols) {
+        this.fileExistCols = fileExistCols;
     }
 }

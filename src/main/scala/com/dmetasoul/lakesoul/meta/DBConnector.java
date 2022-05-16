@@ -64,7 +64,7 @@ public class DBConnector {
                 e.printStackTrace();
             }
         }
-        //closeConn(conn);
+        closeConn(conn);
     }
 
     public static void closeConn(ResultSet set, Statement statement, Connection conn) {

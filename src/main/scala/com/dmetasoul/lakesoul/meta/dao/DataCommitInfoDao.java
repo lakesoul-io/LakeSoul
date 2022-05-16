@@ -16,8 +16,8 @@ public class DataCommitInfoDao {
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op)" +
-                    " values (?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp)" +
+                    " values (?, ?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, dataCommitInfo);
         } catch (SQLException e) {
             e.printStackTrace();
@@ -60,6 +60,7 @@ public class DataCommitInfoDao {
                 dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
                 dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
                 dataCommitInfo.setCommitOp(rs.getString("commit_op"));
+                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -89,6 +90,7 @@ public class DataCommitInfoDao {
                 dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
                 dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
                 dataCommitInfo.setCommitOp(rs.getString("commit_op"));
+                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
                 commitInfoList.add(dataCommitInfo);
             }
         } catch (SQLException e) {
@@ -105,8 +107,8 @@ public class DataCommitInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op)" +
-                    " values (?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp)" +
+                    " values (?, ?, ?, ?, ?, ?)");
             conn.setAutoCommit(false);
             for (DataCommitInfo dataCommitInfo : listData) {
                 dataCommitInsert(pstmt, dataCommitInfo);
@@ -132,6 +134,7 @@ public class DataCommitInfoDao {
         pstmt.setString(3, dataCommitInfo.getCommitId().toString());
         pstmt.setString(4, DBUtil.changeDataFileOpListToString(dataCommitInfo.getFileOps()));
         pstmt.setString(5, dataCommitInfo.getCommitOp());
+        pstmt.setLong(6, dataCommitInfo.getTimestamp());
         pstmt.execute();
     }
 }

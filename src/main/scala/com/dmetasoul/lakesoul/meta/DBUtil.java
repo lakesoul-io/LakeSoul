@@ -59,7 +59,7 @@ public class DBUtil {
                 "path text," +
                 "file_op text," +
                 "size bigint," +
-                "modification_time bigint" +
+                "file_exist_cols text" +
                 ")";
         String dataCommitInfo = "create table if not exists data_commit_info (" +
                 "table_id text," +
@@ -67,6 +67,7 @@ public class DBUtil {
                 "commit_id UUID," +
                 "file_ops data_file_op[]," +
                 "commit_op text," +
+                "timestamp bigint," +
                 "primary key(table_id, partition_desc, commit_id)" +
                 ")";
         String partitionInfo = "create table if not exists partition_info (" +
@@ -86,7 +87,7 @@ public class DBUtil {
             stmt.execute(tableInfo);
             stmt.execute(tableNameId);
             stmt.execute(tablePathId);
-           //stmt.execute(dataFileOp);
+            stmt.execute(dataFileOp);
             stmt.execute(dataCommitInfo);
             stmt.execute(partitionInfo);
         } catch (SQLException e) {
@@ -144,8 +145,8 @@ public class DBUtil {
             String path = dataFileOp.getPath();
             String fileOp = dataFileOp.getFileOp();
             long size = dataFileOp.getSize();
-            long modificationTime = dataFileOp.getModificationTime();
-            sb.append(String.format("\"(%s,%s,%s,%s)\",", path, fileOp, size, modificationTime));
+            String fileExistCols = dataFileOp.getFileExistCols();
+            sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
         }
         sb = new StringBuilder(sb.substring(0, sb.length()-1));
         sb.append("}");
@@ -160,21 +161,25 @@ public class DBUtil {
         }
         String[] fileOpTmp = s.substring(1, s.length()-1).split("\",\"");
         for (int i=0;i<fileOpTmp.length;i++) {
-            String tmpElem = fileOpTmp[i].replace("\"","");
+            String tmpElem = fileOpTmp[i].replace("\"","").replace("\\","");
             if (!tmpElem.startsWith("(") || !tmpElem.endsWith(")")) {
                 // todo 报错
                 continue;
             }
-            String[] dataFileOpArray = tmpElem.substring(1, tmpElem.length()-1).split(",");
-            if (dataFileOpArray.length != 4) {
-                //todo
-                break;
-            }
+//            String[] dataFileOpArray = tmpElem.substring(1, tmpElem.length()-1).split(",");
+//            if (dataFileOpArray.length != 4) {
+//                //todo
+//                break;
+//            }
+            tmpElem = tmpElem.substring(1, tmpElem.length()-1);
             DataFileOp dataFileOp = new DataFileOp();
-            dataFileOp.setPath(dataFileOpArray[0]);
-            dataFileOp.setFileOp(dataFileOpArray[1]);
-            dataFileOp.setSize(Long.parseLong(dataFileOpArray[2]));
-            dataFileOp.setModificationTime(Long.parseLong(dataFileOpArray[3]));
+            dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
+            tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
+            dataFileOp.setFileOp(tmpElem.substring(0, tmpElem.indexOf(",")));
+            tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
+            dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
+            tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
+            dataFileOp.setFileExistCols(tmpElem);
             rsList.add(dataFileOp);
         }
         return rsList;
