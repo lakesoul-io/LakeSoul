@@ -32,6 +32,8 @@ public class DataCommitInfo {
 
     private String commitOp;
 
+    private long timestamp;
+
     public String getTableId() {
         return tableId;
     }
@@ -70,5 +72,13 @@ public class DataCommitInfo {
 
     public void setCommitOp(String commitOp) {
         this.commitOp = commitOp == null ? null : commitOp.trim();
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(long timestamp) {
+        this.timestamp = timestamp;
     }
 }

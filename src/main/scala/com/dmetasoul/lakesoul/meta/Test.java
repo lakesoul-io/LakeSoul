@@ -107,7 +107,7 @@ public class Test {
         jsonArray.add(jsonObject);
         System.out.println(jsonArray);
 
-        tableInfo.setPartitions(jsonArray);
+        tableInfo.setPartitions(jsonArray.toJSONString());
         tableInfo.setProperties(jsonObject);
         metaInfo.setTableInfo(tableInfo);
 
@@ -225,7 +225,7 @@ public class Test {
         String commitOp = "append";
         UUID u1 = UUID.randomUUID();
         UUID u2 = UUID.randomUUID();
-        List<UUID> uuidList = new ArrayList<>() {
+        List<UUID> uuidList = new ArrayList<UUID>() {
             {
                 add(u1);
                 add(u2);
@@ -269,7 +269,7 @@ public class Test {
 
     public static void testDataCommitInfo() {
         DataCommitInfo dataCommitInfo = new DataCommitInfo();
-        String tableId = "id_1";
+        String tableId = "id_2";
         String partitionDesc = "1-1-1";
         dataCommitInfo.setTableId(tableId);
         dataCommitInfo.setPartitionDesc(partitionDesc);
@@ -282,21 +282,26 @@ public class Test {
         DataFileOp dataFileOp = new DataFileOp();
         dataFileOp.setPath("path_10");
         dataFileOp.setFileOp("add");
+        dataFileOp.setSize(100l);
+        dataFileOp.setFileExistCols("a,b");
         DataFileOp dataFileOp1 = new DataFileOp();
         dataFileOp1.setPath("path_11");
         dataFileOp1.setFileOp("add");
+        dataFileOp1.setSize(100l);
+        dataFileOp1.setFileExistCols("a,b");
         fList.add(dataFileOp);
         fList.add(dataFileOp1);
         dataCommitInfo.setFileOps(fList);
 
         dataCommitInfo.setCommitOp("append");
+        dataCommitInfo.setTimestamp(1234567891123l);
 
         dataCommitInfoDao.insert(dataCommitInfo);
 
-        //dataCommitInfoDao.deleteByPrimaryKey(tableId, partitionDesc, uuid);
+        DataCommitInfo dataCommitInfo1 = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, uuid);
+        System.out.println(DBUtil.changeDataFileOpListToString(dataCommitInfo1.getFileOps()));
 
-        DataCommitInfo dataCommitInfo1 = dataCommitInfoDao.selectByPrimaryKey("id_1", "1-1-1", uuid);
-        System.out.println( DBUtil.changeDataFileOpListToString(dataCommitInfo1.getFileOps()));
+        dataCommitInfoDao.deleteByPrimaryKey(tableId, partitionDesc, uuid);
 
     }
 
@@ -355,7 +360,7 @@ public class Test {
         jsonObject.add( DBUtil.stringToJSON(properties));
         jsonObject.add( DBUtil.stringToJSON(properties1));
         tableInfo.setProperties( DBUtil.stringToJSON(properties));
-        tableInfo.setPartitions(jsonObject);
+        tableInfo.setPartitions(jsonObject.toString());
         tableInfoDao.insert(tableInfo);
     }
 
