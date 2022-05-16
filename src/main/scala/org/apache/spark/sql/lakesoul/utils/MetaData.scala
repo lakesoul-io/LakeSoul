@@ -113,12 +113,13 @@ case class TableInfo(table_name:  Option[String] = None,
 
   lazy val format: Format = Format()
 }
-
+//file_exist_cols col1,col2.col3
 case class DataFileInfo(
                      path:String,
                      file_op:String,
                      size:Long,
-                     modification_time:Long
+                     modification_time:Long = -1L,
+                     file_exist_cols:String
                      ) {
   lazy val file_bucket_id: Int = BucketingUtils
     .getBucketId(new Path(path).getName)
