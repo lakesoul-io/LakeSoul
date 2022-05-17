@@ -19,13 +19,10 @@ package com.dmetasoul.lakesoul.meta
 import com.alibaba.fastjson.{JSON, JSONObject}
 
 import java.util
-import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetaRerunErrors}
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo}
 
 import scala.collection.JavaConverters.asScalaBufferConverter
-import scala.collection.convert.ImplicitConversions.`map AsScala`
 import scala.collection.mutable.ArrayBuffer
-import scala.util.matching.Regex
 
 object MetaVersion {
 //  private val cassandraConnector = MetaUtils.cassandraConnector
@@ -195,54 +192,10 @@ object MetaVersion {
 
   def listTables(): util.List[String] = {
     dbManager.listTables()
-//    cassandraConnector.withSessionDo(session => {
-//      val tables = new util.ArrayList[String]()
-//      val res_itr = session.executeAsync(
-//        s"""
-//           |selec table_name
-//           |from $database.table_info
-//      """.stripMargin).getUninterruptibly.iterator()
-//      while (res_itr.hasNext) {
-//        val res = res_itr.next()
-//        tables.add(res.getString("table_name"));
-//      }
-//      tables
-//    })
   }
 
   //todo
   def getTableInfo(table_name: String): TableInfo = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select table_id,table_schema,range_column,hash_column,setting,read_version,bucket_num,
-//           |short_table_name,is_material_view
-//           |from $database.table_info where table_name='$table_name'
-//      """.stripMargin).one()
-//      val table_id = res.getString("table_id")
-//      val tmp_table_schema = res.getString("table_schema")
-//
-//      val pattern = new Regex("\\w{8}(-\\w{4}){3}-\\w{12}")
-//      val table_schema = if (pattern.findFirstIn(tmp_table_schema).isDefined) {
-//        FragmentValue.getEntireValue(table_id, tmp_table_schema)
-//      } else {
-//        tmp_table_schema
-//      }
-//      val short_table_name = res.getString("short_table_name")
-//
-//      TableInfo(
-//        table_name,
-//        table_id,
-//        table_schema,
-//        res.getString("range_column"),
-//        res.getString("hash_column"),
-//        res.getInt("bucket_num"),
-//        res.getMap("setting", classOf[String], classOf[String]).toMap,
-//        res.getInt("read_version"),
-//        if (short_table_name.equals(defaultValue)) None else Some(short_table_name),
-//        res.getBool("is_material_view")
-//      )
-//    })
     val info = dbManager.getTableInfo(table_name)
     val short_table_name = info.getTableName
     val partitions = info.getPartitions
@@ -316,7 +269,6 @@ object MetaVersion {
     (false, "")
   }
 
-  //todo
   def getAllPartitionInfo(table_id: String): Array[PartitionInfo] = {
 //    cassandraConnector.withSessionDo(session => {
 //      val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()

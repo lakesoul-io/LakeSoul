@@ -109,7 +109,17 @@ object MetaCommit extends Logging {
       metaDataCommitInfo.setPartitionDesc(dataCommitInfo.range_value)
       metaDataCommitInfo.setCommitOp(commitType)
       metaDataCommitInfo.setCommitId(dataCommitInfo.commit_id)
-      metaDataCommitInfo.setFileOps(JavaConverters.bufferAsJavaList(dataCommitInfo.file_ops.toBuffer))
+      val fileOps = new util.ArrayList[entity.DataFileOp]()
+      for (file_info <- dataCommitInfo.file_ops) {
+        val metaDataFileInfo = new entity.DataFileOp()
+        metaDataFileInfo.setPath(file_info.path)
+        metaDataFileInfo.setFileOp(file_info.file_op)
+        metaDataFileInfo.setSize(file_info.size)
+        metaDataFileInfo.setFileExistCols(file_info.file_exist_cols)
+        fileOps.add(metaDataFileInfo)
+      }
+      metaDataCommitInfo.setFileOps(fileOps)
+      metaDataCommitInfo.setTimestamp(dataCommitInfo.modification_time)
       metaDataCommitInfoList.add(metaDataCommitInfo)
     }
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
