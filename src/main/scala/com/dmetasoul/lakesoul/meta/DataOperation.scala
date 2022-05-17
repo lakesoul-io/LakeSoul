@@ -55,7 +55,8 @@ object DataOperation extends Logging {
           file.getPath(),
           file.getFileOp(),
           file.getSize(),
-          file.getModificationTime()
+          metaDataCommitInfo.getTimestamp(),
+          file.getFileExistCols()
         )
       }
     }
@@ -72,12 +73,14 @@ object DataOperation extends Logging {
                      file_op: String,
                      commit_type: String,
                      size: Long,
+                     file_exist_cols: String,
                      modification_time: Long): Unit = {
     val dataFileInfo = DataFileInfo(
       file_path,
       file_op,
       size,
-      modification_time
+      modification_time,
+      file_exist_cols
     )
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
     file_arr_buf += dataFileInfo
