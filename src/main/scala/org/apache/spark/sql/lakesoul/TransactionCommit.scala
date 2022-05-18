@@ -24,7 +24,6 @@ import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils._
 
 import java.util.ConcurrentModificationException
@@ -102,6 +101,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
   def snapshot: Snapshot = snapshotManagement.snapshot
 
+  //todo
   private val spark = SparkSession.active
 
   /** Whether this commit is delta commit */
@@ -109,9 +109,6 @@ trait Transaction extends TransactionalWrite with Logging {
 
   /** Whether this table has a short table name */
   override protected var shortTableName: Option[String] = None
-
-  /** Whether this table is a material view */
-  override protected var materialInfo: Option[MaterialViewInfo] = None
 
   def setCommitType(value: String): Unit = {
     assert(commitType.isEmpty, "Cannot set commit type more than once in a transaction.")
@@ -129,16 +126,9 @@ trait Transaction extends TransactionalWrite with Logging {
     }
   }
 
-  def setMaterialInfo(value: MaterialViewInfo): Unit = {
-    assert(shortTableName.isDefined || tableInfo.short_table_name.isDefined,
-      "Material view should has a short table name")
-    assert(materialInfo.isEmpty, "Cannot set materialInfo more than once in a transaction.")
-    materialInfo = Some(value)
-  }
-
   def isFirstCommit: Boolean = snapshot.isFirstCommit
 
-  protected lazy val table_name: String = tableInfo.table_name
+  protected lazy val table_name: String = tableInfo.table_name.get
 
   /**
     * Tracks the data that could have been seen by recording the partition
@@ -160,7 +150,7 @@ trait Transaction extends TransactionalWrite with Logging {
     val updatedConfig = LakeSoulConfig.mergeGlobalConfigs(
       spark.sessionState.conf, Map.empty)
     TableInfo(
-      table_name = snapshot.getTableName,
+      table_name = Some(snapshot.getTableName),
       table_id = snapshot.getTableInfo.table_id,
       configuration = updatedConfig)
   } else {
@@ -194,7 +184,8 @@ trait Transaction extends TransactionalWrite with Logging {
       val updatedConfigs = LakeSoulConfig.mergeGlobalConfigs(
         spark.sessionState.conf, table_info.configuration)
       table_info.copy(
-        configuration = updatedConfigs,
+        configuration = updatedConfigs
+          //todo
         schema_version = snapshotTableInfo.schema_version)
     } else {
       table_info.copy(schema_version = snapshotTableInfo.schema_version)
@@ -225,12 +216,7 @@ trait Transaction extends TransactionalWrite with Logging {
   }
 
   def getCompactionPartitionFiles(partitionInfo: PartitionInfo): Seq[DataFileInfo] = {
-    val files = DataOperation.getSinglePartitionDataInfo(
-      partitionInfo.table_id,
-      partitionInfo.range_id,
-      partitionInfo.range_value,
-      partitionInfo.read_version,
-      allow_filtering = true)
+    val files = DataOperation.getSinglePartitionDataInfo(partitionInfo)
 
     readFiles ++= files
     files
@@ -253,125 +239,60 @@ trait Transaction extends TransactionalWrite with Logging {
       assert(!committed, "Transaction already committed.")
 
       if (isFirstCommit) {
-        val is_material_view = if (materialInfo.isDefined) true else false
+//        val is_material_view = if (materialInfo.isDefined) true else false
         MetaVersion.createNewTable(
           table_name,
           tableInfo.table_id,
           tableInfo.table_schema,
           tableInfo.range_column,
           tableInfo.hash_column,
-          toCassandraSetting(tableInfo.configuration),
+          tableInfo.configuration,
           tableInfo.bucket_num,
-          is_material_view
+          //todo changed
+          false
         )
       }
 
-      val partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
+      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
+      val expire_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
 
       val depend_files = readFiles.toSeq ++ addFiles ++ expireFiles
 
       //Gets all the partition names that need to be changed
       val depend_partitions = depend_files
         .groupBy(_.range_partitions).keys
-        .map(getPartitionKeyFromMap)
+//        .map(getPartitionKeyFromMap)
         .toSet
 
+      val add_file_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val expire_file_arr_buf = new ArrayBuffer[DataFileInfo]()
 
       depend_partitions.map(range_key => {
-        //Get the read/write version number of the partition
-        var partition_info: Option[PartitionInfo] = None
-        for (exists_partition <- snapshot.getPartitionInfoArray) {
-          if (exists_partition.range_value.equalsIgnoreCase(range_key)) {
-            partition_info = Option(exists_partition)
-          }
-        }
-        //If the partition does not exist, add a new partition first.
-        //The new partition will be created in the META table when committing.
-        //range_id
-        if (partition_info.isEmpty) {
-          partition_info = Option(PartitionInfo(
-            table_id = tableInfo.table_id,
-            range_id = "range_" + java.util.UUID.randomUUID().toString,
-            table_name = tableInfo.table_name,
-            range_value = range_key,
-            read_version = 1,
-            pre_write_version = 1))
-        }
-
-        val read_file_arr_buf = new ArrayBuffer[DataFileInfo]()
-        val add_file_arr_buf = new ArrayBuffer[DataFileInfo]()
-        val expire_file_arr_buf = new ArrayBuffer[DataFileInfo]()
-
-        for (file <- readFiles) {
-          if (file.range_key.equalsIgnoreCase(range_key)) {
-            read_file_arr_buf += file
-          }
-        }
         for (file <- addFiles) {
-          if (file.range_key.equalsIgnoreCase(range_key)) {
+          if (file.range_partitions.equalsIgnoreCase(range_key)) {
             add_file_arr_buf += file
           }
         }
         for (file <- expireFiles) {
-          if (file.range_key.equalsIgnoreCase(range_key)) {
+          if (file.range_partitions.equalsIgnoreCase(range_key)) {
             expire_file_arr_buf += file
           }
         }
-
-        //update delta file num according to commit type
-        if (commitType.nonEmpty) {
-          commitType.get match {
-
-            case DeltaCommit =>
-              assert(expire_file_arr_buf.isEmpty, "delta commit should only append files")
-              val deltaNum = partition_info.get.delta_file_num + 1
-              partition_info_arr_buf += partition_info.get.copy(
-                read_files = read_file_arr_buf.toArray,
-                add_files = add_file_arr_buf.toArray,
-                delta_file_num = deltaNum,
-                be_compacted = false)
-
-            case CompactionCommit =>
-              partition_info_arr_buf += partition_info.get.copy(
-                read_files = read_file_arr_buf.toArray,
-                add_files = add_file_arr_buf.toArray,
-                expire_files = expire_file_arr_buf.toArray,
-                delta_file_num = 0,
-                be_compacted = true)
-
-            case PartCompactionCommit =>
-              val compactionFileNum = sqlConf.getConf(LakeSoulSQLConf.PART_MERGE_FILE_MINIMUM_NUM)
-              val deltaNum = Math.max(1, partition_info.get.delta_file_num - compactionFileNum + 1)
-              partition_info_arr_buf += partition_info.get.copy(
-                read_files = read_file_arr_buf.toArray,
-                add_files = add_file_arr_buf.toArray,
-                expire_files = expire_file_arr_buf.toArray,
-                delta_file_num = deltaNum,
-                be_compacted = false)
-
-            case _ => throw new IllegalArgumentException("Unsupported CommitType")
-          }
-        } else {
-          partition_info_arr_buf += partition_info.get.copy(
-            read_files = read_file_arr_buf.toArray,
-            add_files = add_file_arr_buf.toArray,
-            expire_files = expire_file_arr_buf.toArray,
-            delta_file_num = 0,
-            be_compacted = false)
-        }
       })
+      expire_file_arr_buf.groupBy(_.range_partitions)
+
 
       val meta_info = MetaInfo(
         table_info = tableInfo,
-        partitionInfoArray = partition_info_arr_buf.toArray,
-        commit_type = commitType.getOrElse(CommitType("simple")),
+        partitionInfoArray = add_partition_info_arr_buf.toArray,
+        commit_type = commitType.getOrElse(CommitType("append")),
         query_id = query_id,
         batch_id = batch_id)
 
       try {
-        val commitOptions = CommitOptions(shortTableName, materialInfo)
+//        val commitOptions = CommitOptions(shortTableName, materialInfo)
         val changeSchema = !isFirstCommit && newTableInfo.nonEmpty
-        MetaCommit.doMetaCommit(meta_info, changeSchema, commitOptions)
+        MetaCommit.doMetaCommit(meta_info, changeSchema)
       } catch {
         case e: MetaRerunException => throw e
         case e: Throwable => throw e

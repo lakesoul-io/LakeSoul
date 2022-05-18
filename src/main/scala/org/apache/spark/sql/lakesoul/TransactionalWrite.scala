@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, SchemaUtils}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, MaterialViewInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -42,8 +42,6 @@ trait TransactionalWrite {
   protected var commitType: Option[CommitType]
 
   protected var shortTableName: Option[String]
-
-  protected var materialInfo: Option[MaterialViewInfo]
 
   protected var hasWritten = false
 
@@ -117,10 +115,6 @@ trait TransactionalWrite {
     if (writeOptions.isDefined) {
       updateMaterialView = writeOptions.get.updateMaterialView
     }
-    //can't update material view
-    if (snapshot.getTableInfo.is_material_view && !updateMaterialView) {
-      throw LakeSoulErrors.updateMaterialViewWithCommonOperatorException()
-    }
 
     val data = if (tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
@@ -130,7 +124,6 @@ trait TransactionalWrite {
 
     hasWritten = true
     val spark = data.sparkSession
-
     spark.sessionState.conf.setConfString(SQLConf.UNSUPPORTED_OPERATION_CHECK_ENABLED.key, "false")
 
     //If this is the first time to commit, you need to check if there is data in the path where the table is located.
@@ -187,7 +180,6 @@ trait TransactionalWrite {
           tableInfo.hash_partition_columns))
       }
 
-
       val sqlConf = spark.sessionState.conf
       val writeOptions = new mutable.HashMap[String, String]()
       if (sqlConf.getConf(LakeSoulSQLConf.PARQUET_COMPRESSION_ENABLE)) {
@@ -220,8 +212,10 @@ trait TransactionalWrite {
     //Returns the absolute path to the file
     val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
     committer.addedStatuses.map(file => file.copy(
-      file_exist_cols = real_write_cols,
-      is_base_file = is_base_file))
+      file_exist_cols = real_write_cols
+//      todo
+//      is_base_file = is_base_file
+    ))
   }
 
 

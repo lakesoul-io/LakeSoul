@@ -25,67 +25,19 @@ import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.mutable.ArrayBuffer
 
 object MetaVersion {
-//  private val cassandraConnector = MetaUtils.cassandraConnector
-//  private val database = MetaUtils.DATA_BASE
-//  private val defaultValue = MetaUtils.UNDO_LOG_DEFAULT_VALUE
 
   val dbManager = new DBManager();
 
   def isTableExists(table_name: String): Boolean = {
     dbManager.isTableExists(table_name)
-//    cassandraConnector.withSessionDo(session => {
-//      try {
-//        val res = session.execute(
-//          s"""
-//             |select table_name from $database.table_info where table_name='$table_name'
-//      """.stripMargin).one()
-//        res.getString("table_name")
-//      } catch {
-//        case e: InvalidQueryException if e.getMessage
-//          .contains(s"Keyspace $database does not exist") =>
-//          MetaTableManage.initDatabaseAndTables()
-//          return isTableExists(table_name)
-//        case _: NullPointerException => return false
-//        case e: Exception => throw e
-//      }
-//      true
-//    })
-
   }
 
   def isTableIdExists(table_name: String, table_id: String): Boolean = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select table_name from $database.table_info
-//           |where table_name='$table_name' and table_id='$table_id' allow filtering
-//      """.stripMargin)
-//      try {
-//        res.one().getString("table_name")
-//      } catch {
-//        case _: Exception => return false
-//      }
-//      true
-//    })
     dbManager.isTableIdExists(table_name, table_id)
   }
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String): (Boolean, String) = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select table_name from $database.table_relation
-//           |where short_table_name='$short_table_name'
-//        """.stripMargin)
-//      val table_name = try {
-//        res.one().getString("table_name")
-//      } catch {
-//        case _: NullPointerException => return (false, "-1")
-//        case e: Exception => throw e
-//      }
-//      (true, table_name)
-//    })
     val tableNameId = dbManager.shortTableName(short_table_name)
     val table_name = try {
       tableNameId.getTableName
@@ -98,19 +50,6 @@ object MetaVersion {
 
   //get table path, if not exists, return "not found"
   def getTableNameFromShortTableName(short_table_name: String): String = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select table_name from $database.table_relation
-//           |where short_table_name='$short_table_name'
-//        """.stripMargin)
-//      try {
-//        res.one().getString("table_name")
-//      } catch {
-//        case _: NullPointerException => return "not found"
-//        case e: Exception => throw e
-//      }
-//    })
     dbManager.getTableNameFromShortTableName(short_table_name)
   }
 
@@ -142,29 +81,14 @@ object MetaVersion {
                      table_schema: String,
                      range_column: String,
                      hash_column: String,
-                     setting: String,
+                     configuration: Map[String, String],
                      bucket_num: Int,
                      is_material_view: Boolean): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      val table_schema_index = table_schema
-//
-//
-//      val res = session.execute(
-//        s"""
-//           |insert into $database.table_info
-//           |(table_name,table_id,table_schema,range_column,hash_column,setting,read_version,pre_write_version,
-//           |bucket_num,short_table_name,is_material_view)
-//           |values ('$table_name','$table_id','$table_schema_index','$range_column','$hash_column',$setting,1,1,
-//           |$bucket_num,'$defaultValue',$is_material_view)
-//           |if not exists
-//      """.stripMargin)
-//      if (!res.wasApplied()) {
-//        throw LakeSoulErrors.failedInitTableException(table_name)
-//      }
-//    })
-    // todo 参数值需要调整
+
     val partitions = range_column + ";" + hash_column
-    dbManager.createNewTable(table_id, "", table_name, table_schema, new JSONObject(), partitions)
+    val json = new JSONObject()
+    configuration.foreach(x => json.put(x._1,x._2))
+    dbManager.createNewTable(table_id, "", table_name, table_schema, json, partitions)
   }
 
 
@@ -223,25 +147,6 @@ object MetaVersion {
 
   //todo
   def getSinglePartitionInfo(table_id: String, range_value: String, range_id: String): PartitionInfo = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select table_id,range_id,table_name,range_value,read_version,pre_write_version,
-//           |last_update_timestamp,delta_file_num,be_compacted
-//           |from $database.partition_info
-//           |where table_id='$table_id' and range_value='$range_value' and range_id='$range_id' allow filtering
-//      """.stripMargin).one()
-//      PartitionInfo(
-//        table_id = res.getString("table_id"),
-//        range_id = res.getString("range_id"),
-//        table_name = res.getString("table_name"),
-//        range_value = res.getString("range_value"),
-//        read_version = res.getLong("read_version"),
-//        pre_write_version = res.getLong("pre_write_version"),
-//        last_update_timestamp = res.getLong("last_update_timestamp"),
-//        delta_file_num = res.getInt("delta_file_num"),
-//        be_compacted = res.getBool("be_compacted"))
-//    })
     val info = dbManager.getSinglePartitionInfo(table_id, range_value)
     PartitionInfo(
       table_id = info.getTableId,
@@ -270,30 +175,6 @@ object MetaVersion {
   }
 
   def getAllPartitionInfo(table_id: String): Array[PartitionInfo] = {
-//    cassandraConnector.withSessionDo(session => {
-//      val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
-//      val res_itr = session.executeAsync(
-//        s"""
-//           |select table_id,range_id,table_name,range_value,read_version,pre_write_version,
-//           |last_update_timestamp,delta_file_num,be_compacted
-//           |from $database.partition_info
-//           |where table_id='$table_id'
-//      """.stripMargin).getUninterruptibly.iterator()
-//      while (res_itr.hasNext) {
-//        val res = res_itr.next()
-//        partitionVersionBuffer += PartitionInfo(
-//          table_id = res.getString("table_id"),
-//          range_id = res.getString("range_id"),
-//          table_name = res.getString("table_name"),
-//          range_value = res.getString("range_value"),
-//          read_version = res.getLong("read_version"),
-//          pre_write_version = res.getLong("pre_write_version"),
-//          last_update_timestamp = res.getLong("last_update_timestamp"),
-//          delta_file_num = res.getInt("delta_file_num"),
-//          be_compacted = res.getBool("be_compacted"))
-//      }
-//      partitionVersionBuffer.toArray
-//    })
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
     val res_itr = dbManager.getAllPartitionInfo(table_id).iterator()
     while (res_itr.hasNext) {
@@ -363,80 +244,30 @@ object MetaVersion {
 
 
   def deleteTableInfo(table_name: String, table_id: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |delete from $database.table_info
-//           |where table_name='$table_name'
-//           |if table_id='$table_id'
-//      """.stripMargin)
-//    })
     dbManager.deleteTableInfo(table_name, table_id)
   }
 
   def deletePartitionInfoByTableId(table_id: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |delete from $database.partition_info
-//           |where table_id='$table_id'
-//      """.stripMargin)
-//    })
     dbManager.deletePartitionInfoByTableId(table_id)
   }
 
   def deletePartitionInfoByRangeId(table_id: String, range_value: String, range_id: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |delete from $database.partition_info
-//           |where table_id='$table_id' and range_value='$range_value'
-//           |if range_id='$range_id'
-//      """.stripMargin)
-//    })
     dbManager.deletePartitionInfoByRangeId(table_id, range_value)
   }
 
+  //todo table_info中short_name置为空？
   def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |delete from $database.table_relation
-//           |where short_table_name='$short_table_name'
-//           |if table_name='$table_name'
-//        """.stripMargin)
-//    })
     dbManager.deleteShortTableName(short_table_name, table_name)
   }
 
   def addShortTableName(short_table_name: String,
                         table_name: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |insert into $database.table_relation
-//           |(short_table_name,table_name)
-//           |values ('$short_table_name', '$table_name')
-//           |if not exists
-//        """.stripMargin)
-//      if (!res.wasApplied()) {
-//        throw LakeSoulErrors.failedAddShortTableNameException(short_table_name)
-//      }
-//    })
     dbManager.addShortTableName(short_table_name, table_name)
   }
 
   def updateTableShortName(table_name: String,
                            table_id: String,
                            short_table_name: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |update $database.table_info set short_table_name='$short_table_name'
-//           |where table_name='$table_name'
-//           |if short_table_name='$defaultValue' and table_id='$table_id'
-//        """.stripMargin)
-//    })
     dbManager.updateTableShortName(table_name, table_id, short_table_name)
   }
 
