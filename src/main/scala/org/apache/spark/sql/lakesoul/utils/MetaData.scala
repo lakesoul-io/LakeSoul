@@ -115,6 +115,7 @@ case class TableInfo(table_name:  Option[String] = None,
 }
 //file_exist_cols col1,col2.col3
 case class DataFileInfo(
+                     range_partitions: String,
                      path:String,
                      file_op:String,
                      size:Long,
@@ -132,7 +133,7 @@ case class DataCommitInfo(table_id: String,
                         range_value: String,
                         commit_id: UUID,
                         commit_type: String,
-                          modification_time:Long = -1L,
+                        modification_time:Long = -1L,
                         file_ops:Array[DataFileInfo]=Array.empty[DataFileInfo]
                       ) {
   lazy val range_key: String = range_value
