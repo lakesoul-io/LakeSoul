@@ -26,7 +26,7 @@ import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils._
 
-import java.util.ConcurrentModificationException
+import java.util.{ConcurrentModificationException, UUID}
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
@@ -237,7 +237,6 @@ trait Transaction extends TransactionalWrite with Logging {
              batch_id: Long = -1L): Unit = {
     snapshotManagement.lockInterruptibly {
       assert(!committed, "Transaction already committed.")
-
       if (isFirstCommit) {
 //        val is_material_view = if (materialInfo.isDefined) true else false
         MetaVersion.createNewTable(
@@ -253,9 +252,6 @@ trait Transaction extends TransactionalWrite with Logging {
         )
       }
 
-      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
-      val expire_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
-
       val depend_files = readFiles.toSeq ++ addFiles ++ expireFiles
 
       //Gets all the partition names that need to be changed
@@ -264,30 +260,42 @@ trait Transaction extends TransactionalWrite with Logging {
 //        .map(getPartitionKeyFromMap)
         .toSet
 
-      val add_file_arr_buf = new ArrayBuffer[DataFileInfo]()
-      val expire_file_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val add_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
+      val expire_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
 
-      depend_partitions.map(range_key => {
+      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
+      val expire_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
+
+      for (range_key <- depend_partitions) {
+        val add_file_arr_buf_tmp = new ArrayBuffer[DataFileInfo]()
         for (file <- addFiles) {
           if (file.range_partitions.equalsIgnoreCase(range_key)) {
-            add_file_arr_buf += file
+            add_file_arr_buf_tmp += file
           }
         }
-        for (file <- expireFiles) {
-          if (file.range_partitions.equalsIgnoreCase(range_key)) {
-            expire_file_arr_buf += file
-          }
-        }
-      })
-      expire_file_arr_buf.groupBy(_.range_partitions)
-
+        val addUUID = UUID.randomUUID()
+        add_file_arr_buf += DataCommitInfo(
+          tableInfo.table_id,
+          range_key,
+          addUUID,
+          commitType.getOrElse(CommitType("append")).name,
+          //todo
+          System.currentTimeMillis(),
+          add_file_arr_buf_tmp.toArray
+        )
+        add_partition_info_arr_buf += PartitionInfo(
+          table_id = tableInfo.table_id,
+          range_value = range_key,
+          read_files = Array(addUUID)
+        )
+      }
 
       val meta_info = MetaInfo(
         table_info = tableInfo,
+        dataCommitInfo = add_file_arr_buf.toArray,
         partitionInfoArray = add_partition_info_arr_buf.toArray,
         commit_type = commitType.getOrElse(CommitType("append")),
-        query_id = query_id,
-        batch_id = batch_id)
+      )
 
       try {
 //        val commitOptions = CommitOptions(shortTableName, materialInfo)

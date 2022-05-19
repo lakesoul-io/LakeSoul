@@ -37,7 +37,7 @@ case class MetaInfo(table_info: TableInfo,
 //range_value -> partition_desc
 case class PartitionInfo(table_id: String,
                          range_value: String,
-                         version: Int,
+                         version: Int = -1,
                          read_files: Array[UUID] = Array.empty[UUID],
                          expression:String=""
                       ) {
