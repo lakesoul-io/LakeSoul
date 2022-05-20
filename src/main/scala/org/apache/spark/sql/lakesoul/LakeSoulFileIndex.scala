@@ -59,7 +59,9 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
       .groupBy(_.range_partitions).map {
       case (partitionValues, files) =>
         val rowValues: Array[Any] = partitionSchema.map { p =>
-          Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
+          //todo p.name参数类型 不对 这块没看明白
+//          Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
+          Cast(Literal(partitionValues(0)), p.dataType, Option(timeZone)).eval()
         }.toArray
 
         //file status
@@ -70,7 +72,7 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
             /* blockReplication */ 0,
             /* blockSize */ 1,
             /* modificationTime */ f.modification_time,
-            absolutePath(f.file_path, tableName))
+            absolutePath(f.path, tableName))
         }.toArray
 
         PartitionDirectory(new GenericInternalRow(rowValues), fileStats)
@@ -111,7 +113,7 @@ case class DataSoulFileIndexV2(override val spark: SparkSession,
 
   override def inputFiles: Array[String] = {
     PartitionFilter.filesForScan(snapshotManagement.snapshot, partitionFilters)
-      .map(f => absolutePath(f.file_path, tableName).toString)
+      .map(f => absolutePath(f.path, tableName).toString)
   }
 
   override def sizeInBytes: Long = snapshotManagement.snapshot.sizeInBytes(partitionFilters)
@@ -141,7 +143,7 @@ case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
 
 
   override def inputFiles: Array[String] = {
-    files.map(file => absolutePath(file.file_path, tableName).toString).toArray
+    files.map(file => absolutePath(file.path, tableName).toString).toArray
   }
 
 

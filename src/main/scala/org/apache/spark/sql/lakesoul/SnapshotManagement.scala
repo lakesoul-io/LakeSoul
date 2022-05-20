@@ -68,7 +68,7 @@ class SnapshotManagement(path: String) extends Logging {
   private def initSnapshot: Snapshot = {
     val table_path = new Path(table_name)
     val table_id = "table_" + UUID.randomUUID().toString
-    val table_info = TableInfo(table_name, table_id)
+    val table_info = TableInfo(Some(table_name), table_id)
     val partition_arr = Array(
       PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
     )
@@ -102,7 +102,7 @@ class SnapshotManagement(path: String) extends Logging {
       MetaVersion.getTableInfo(table_name)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
-      TableInfo(table_name, table_id)
+      TableInfo(Some(table_name), table_id)
     }
   }
 
@@ -228,8 +228,9 @@ object SnapshotManagement {
   }
 
   def invalidateCache(path: String): Unit = {
-    val table_path: String = MetaUtils.modifyTableString(path)
-    snapshotManagementCache.invalidate(table_path)
+    //todo path是否还需要转义
+//    val table_path: String = MetaUtils.modifyTableString(path)
+    snapshotManagementCache.invalidate(path)
   }
 
   def clearCache(): Unit = {

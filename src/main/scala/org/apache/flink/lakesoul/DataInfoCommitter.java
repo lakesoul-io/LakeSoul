@@ -108,7 +108,8 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
         }
         String filenamePrefix = element.getTaskDataPath();
 
-        LakesoulTableMetaStore ltms = new LakesoulTableMetaStore(tableIdentifier);
+        //todo
+//        LakesoulTableMetaStore ltms = new LakesoulTableMetaStore(tableIdentifier);
         int fileNumInPartitions=0;
         for (String partition : partitions) {
             Path path = new Path(locationPath, partition);
@@ -119,17 +120,19 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
                     if(onepath.contains( filenamePrefix )){
                         long len=fs.getLen();
                         long modify_time=fs.getModificationTime();
-                        ltms.withData( partition ,new LakesoulTableData( fs.getPath().toString(),modify_time,len,partition ));
+                        //todo
+//                        ltms.withData( partition ,new LakesoulTableData( fs.getPath().toString(),modify_time,len,partition ));
                     }
                     fileNumInPartitions++;
                 }
             }
         }
-        if(fileNumInPartitions>0){
-            ltms.commit();
-        }else{
-            ltms=null;
-        }
+        //todo
+//        if(fileNumInPartitions>0){
+//            ltms.commit();
+//        }else{
+//            ltms=null;
+//        }
     }
 
     @Override

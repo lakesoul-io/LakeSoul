@@ -18,7 +18,6 @@
 
 package org.apache.flink.lakesoul;
 
-import com.dmetasoul.lakesoul.Newmeta.MetaCommon;
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo;
 
 public class LakesoulTableData {
@@ -66,6 +65,7 @@ public class LakesoulTableData {
     }
 
     public DataFileInfo toScalaDataFileInfo(){
-        return new DataFileInfo(this.file_path, MetaCommon.getPartitionMapFromKey( this.range_Partition ),this.size,this.modification_time,this.write_version,this.is_base_file,this.file_exist_cols);
+        //todo append需要修改
+        return new DataFileInfo(this.range_Partition, this.file_path, "append", this.size, this.modification_time,this.file_exist_cols);
     }
 }

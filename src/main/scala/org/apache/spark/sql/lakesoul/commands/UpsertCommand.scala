@@ -20,7 +20,7 @@ import org.apache.spark.sql.catalyst.expressions.And
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 //import org.apache.spark.sql.lakesoul.actions.AddFile
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Literal, NamedExpression, PredicateHelper}
@@ -165,8 +165,9 @@ case class UpsertCommand(source: LogicalPlan,
   private def buildTargetPlanWithFiles(tc: TransactionCommit,
                                        files: Seq[DataFileInfo],
                                        selectCols: Seq[String]): LogicalPlan = {
-    val plan = tc.snapshotManagement
-      .createDataFrame(files, selectCols)
+    val plan = SparkUtil
+      //todo createDataFrame（） 感觉这个参数值需要修改 SnapshotManagement.getSM("")这个肯定不对
+      .createDataFrame(files, selectCols, SnapshotManagement.getSM(""))
       .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and

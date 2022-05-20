@@ -18,12 +18,16 @@
 
 package org.apache.flink.lakesoul;
 
-import com.dmetasoul.lakesoul.Newmeta.*;
+import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.MetaVersion;
 import org.apache.flink.lakesoul.tools.*;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.util.StringUtils;
+import org.apache.spark.sql.lakesoul.Snapshot;
+import org.apache.spark.sql.lakesoul.SnapshotManagement;
 import org.apache.spark.sql.lakesoul.commands.DropTableCommand;
 import org.apache.spark.sql.lakesoul.utils.PartitionInfo;
 import org.apache.spark.sql.lakesoul.utils.TableInfo;
@@ -39,9 +43,9 @@ import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakesoulCatalog implements Catalog {
-    private final String LakesoulDatabaseName = MetaCommon.DATA_BASE();
+    private final String LakesoulDatabaseName = "MetaCommon.DATA_BASE()";
     private static final Logger LOG = LoggerFactory.getLogger(LakesoulCatalog.class);
-    private String defaultDatabase = MetaCommon.DATA_BASE();
+    private String defaultDatabase = "MetaCommon.DATA_BASE()";
 
     public LakesoulCatalog() {
     }
@@ -91,7 +95,8 @@ public class LakesoulCatalog implements Catalog {
 
     @Override
     public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws DatabaseAlreadyExistException, CatalogException {
-        MetaTableManagement.initDatabaseAndTables();
+        //todo
+//        MetaTableManagement.initDatabaseAndTables();
     }
 
     @Override
@@ -108,7 +113,7 @@ public class LakesoulCatalog implements Catalog {
     public List<String> listTables(String databaseName) throws DatabaseNotExistException, CatalogException {
         checkArgument(!StringUtils.isNullOrWhitespaceOnly(databaseName),
                 "databaseName cannot be null or empty");
-        return NewMetaUtil.listTables();
+        return MetaVersion.listTables();
     }
 
     @Override
@@ -122,7 +127,7 @@ public class LakesoulCatalog implements Catalog {
             throw new TableNotExistException(LakesoulDatabaseName, tablePath);
         }
         String tableName = tablePath.getFullName();
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
         return FlinkUtil.toFlinkCatalog( tableInfo );
     }
 
@@ -130,8 +135,8 @@ public class LakesoulCatalog implements Catalog {
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
         String tableName = tablePath.getFullName();
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-        if (NewMetaUtil.isTableExists(tableInfo.table_name())) {
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+        if (MetaVersion.isTableExists(tableInfo.table_name().get())) {
             return true;
         }else{
             return false;
@@ -142,7 +147,7 @@ public class LakesoulCatalog implements Catalog {
     public void dropTable(ObjectPath tablePath, boolean b) throws TableNotExistException, CatalogException {
         checkNotNull(tablePath);
         String tableName = tablePath.getFullName();
-        DropTableCommand.dropTable(NewSnapshotManagement.apply(tableName).snapshot());
+        DropTableCommand.dropTable(SnapshotManagement.apply(tableName).snapshot());
     }
 
     @Override
@@ -165,18 +170,20 @@ public class LakesoulCatalog implements Catalog {
             }
         } else {
             Map<String, String> tableOptions = table.getOptions();
-            FlinkUtil.UpdateCassendraInfo(tableOptions);
+            //todo
+//            FlinkUtil.UpdateCassendraInfo(tableOptions);
             String tableName = tablePath.getFullName();
-            TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-            NewMetaUtil.createNewTable(tableName,
-                    tableInfo.table_id(),
-                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
-                    FlinkUtil.getTableRangeColumns(table),
-                    FlinkUtil.getTablePrimaryKey(table),
-                    FlinkUtil.serialOptionsToCasStr(FlinkUtil.UpdateLakesoulCdcTable( tableOptions )),
-                    tableInfo.bucket_num(),
-                    FlinkUtil.isMaterialTable(table)
-            );
+            TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+            //todo
+//            MetaVersion.createNewTable(tableName,
+//                    tableInfo.table_id(),
+//                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
+//                    FlinkUtil.getTableRangeColumns(table),
+//                    FlinkUtil.getTablePrimaryKey(table),
+//                    FlinkUtil.serialOptionsToCasStr(FlinkUtil.UpdateLakesoulCdcTable( tableOptions )),
+//                    tableInfo.bucket_num(),
+//                    FlinkUtil.isMaterialTable(table)
+//            );
         }
     }
 
@@ -192,11 +199,12 @@ public class LakesoulCatalog implements Catalog {
             throw new CatalogException("table path not exist");
         }
         String tableName = tablePath.getFullName();
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-        PartitionInfo[] allPartitionInfo = NewMetaUtil.getAllPartitionInfo(tableInfo.table_id());
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+        PartitionInfo[] allPartitionInfo = MetaVersion.getAllPartitionInfo(tableInfo.table_id());
         ArrayList cpsList = new ArrayList<CatalogPartitionSpec>();
         for (PartitionInfo pif : allPartitionInfo) {
-            cpsList.add(new LakesoulCatalogPartition(FlinkUtil.getRangeValue(pif.range_value()), ""));
+            //todo
+//            cpsList.add(new LakesoulCatalogPartition(FlinkUtil.getRangeValue(pif.range_value()), ""));
         }
         return cpsList;
     }
@@ -218,10 +226,11 @@ public class LakesoulCatalog implements Catalog {
         }
         String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
         String tableName = tablePath.getFullName();
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-        Tuple2<Object, String> partitionId = NewMetaUtil.getPartitionId(tableInfo.table_id(), rangeValue);
-        PartitionInfo pif=NewMetaUtil.getSinglePartitionInfo(tableInfo.table_id(),rangeValue,partitionId._2);
-        LakesoulCatalogPartition lcp = new LakesoulCatalogPartition(FlinkUtil.getRangeValue(pif.range_value()),"");
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+        Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.table_id(), rangeValue);
+        PartitionInfo pif=MetaVersion.getSinglePartitionInfo(tableInfo.table_id(),rangeValue,partitionId._2);
+        //todo
+        LakesoulCatalogPartition lcp = null;//new LakesoulCatalogPartition(FlinkUtil.getRangeValue(pif.range_value()),"");
         return lcp;
     }
 
@@ -233,8 +242,10 @@ public class LakesoulCatalog implements Catalog {
         }
         String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
         String tableName = tablePath.getFullName();
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-        Tuple2<Object, String> partitionId = NewMetaUtil.getPartitionId(tableInfo.table_id(), rangeValue);
+        //todo
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+        //todo rangeValue
+        Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.table_id(), rangeValue);
         boolean partitionExisted=(boolean)partitionId._1();
         if(partitionExisted){
             return true;
@@ -250,10 +261,11 @@ public class LakesoulCatalog implements Catalog {
             throw new PartitionAlreadyExistsException(LakesoulDatabaseName,tablePath,catalogPartitionSpec);
         }
         String tableName = tablePath.getFullName();
-        NewSnapshot sh = NewSnapshotManagement.apply(tableName).snapshot();
+        Snapshot sh = SnapshotManagement.apply(tableName).snapshot();
         TableInfo tableInfo =sh.getTableInfo();
         PartitionInfo pif = sh.getPartitionInfoArray()[0];
-        NewMetaUtil.addPartition(tableInfo.table_id(),tableInfo.table_name(),pif.range_id(),FlinkUtil.getRangeValue(catalogPartitionSpec));
+        //todo
+//        NewMetaUtil.addPartition(tableInfo.table_id(),tableInfo.table_name(),pif.range_id(),FlinkUtil.getRangeValue(catalogPartitionSpec));
     }
 
     @Override
@@ -263,9 +275,9 @@ public class LakesoulCatalog implements Catalog {
         }
         String tableName = tablePath.getFullName();
         String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
-        TableInfo tableInfo = NewSnapshotManagement.apply(tableName).getTableInfoOnly();
-        Tuple2<Object, String> partitionId = NewMetaUtil.getPartitionId(tableInfo.table_id(), rangeValue);
-        NewMetaUtil.deletePartitionInfoByRangeId(tableInfo.table_id(),rangeValue,partitionId._2);
+        TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
+        Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.table_id(), rangeValue);
+        MetaVersion.deletePartitionInfoByRangeId(tableInfo.table_id(),rangeValue,partitionId._2);
     }
 
     @Override

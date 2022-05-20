@@ -31,7 +31,7 @@ import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.PartitionUtils
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -101,8 +101,8 @@ class LakeSoulDataSource
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
-
-    snapshot_manage.createRelation()
+//todo SparkUtil.createRelation（）？
+    SparkUtil.createRelation(Nil, snapshot_manage, SparkUtil.spark)
   }
 
 

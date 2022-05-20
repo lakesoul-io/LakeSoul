@@ -28,7 +28,7 @@ class Snapshot(table_info: TableInfo,
                partition_info_arr: Array[PartitionInfo],
                is_first_commit: Boolean = false
               ) {
-  def getTableName: String = table_info.table_name
+  def getTableName: String = table_info.table_name.get
   def getTableInfo: TableInfo = table_info
   def sizeInBytes(filters: Seq[Expression] = Nil): Long = {
     PartitionFilter.filesForScan(this, filters).map(_.size).sum

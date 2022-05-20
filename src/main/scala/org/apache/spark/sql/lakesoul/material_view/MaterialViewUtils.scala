@@ -228,10 +228,11 @@ object MaterialViewUtils extends PredicateHelper {
 
 
       case DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) =>
-        if (table.snapshotManagement.getTableInfoOnly.is_material_view) {
-          throw LakeSoulErrors.canNotCreateMaterialViewOrRewriteQueryException(
-            "A material view can't be used to create or rewrite another material view")
-        }
+        //todo
+//        if (table.snapshotManagement.getTableInfoOnly.is_material_view) {
+//          throw LakeSoulErrors.canNotCreateMaterialViewOrRewriteQueryException(
+//            "A material view can't be used to create or rewrite another material view")
+//        }
         constructInfo.addTableInfo(table.name(), s"lakesoul.`${table.snapshotManagement.table_name}`")
 
       case DataSourceV2Relation(table, _, _, _, _) if !table.isInstanceOf[LakeSoulTableV2] =>
@@ -381,10 +382,10 @@ object MaterialViewUtils extends PredicateHelper {
         val snapshot = fileIndex.snapshotManagement.snapshot
         val partitionInfo = PartitionFilter.partitionsForScan(snapshot, filters)
           .map(m => (m.range_id, m.read_version.toString))
-
-        if (snapshot.getTableInfo.is_material_view) {
-          throw LakeSoulErrors.materialViewBuildWithAnotherMaterialViewException()
-        }
+//todo
+//        if (snapshot.getTableInfo.is_material_view) {
+//          throw LakeSoulErrors.materialViewBuildWithAnotherMaterialViewException()
+//        }
 
         array += RelationTable(tableName, snapshot.getTableInfo.table_id, partitionInfo)
 

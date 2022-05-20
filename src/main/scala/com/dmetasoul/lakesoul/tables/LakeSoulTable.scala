@@ -335,12 +335,12 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       s"Table `${snapshotManagement.table_name}` is not a range partitioned table, dropTable command can't use on it.")
     executeDropPartition(snapshotManagement, condition)
   }
-
+  //todo
   def updateMaterialView(): Unit = {
     val tableInfo = snapshotManagement.snapshot.getTableInfo
-    if (!tableInfo.is_material_view) {
-      throw LakeSoulErrors.notMaterialViewException(tableInfo.table_name, tableInfo.short_table_name.getOrElse("None"))
-    }
+//    if (!tableInfo.is_material_view) {
+//      throw LakeSoulErrors.notMaterialViewException(tableInfo.table_name, tableInfo.short_table_name.getOrElse("None"))
+//    }
 
     executeUpdateForMaterialView(snapshotManagement)
   }
