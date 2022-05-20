@@ -18,7 +18,7 @@
 
 package org.apache.spark.sql.lakesoul.utils
 
-]import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
 import org.apache.spark.sql.catalyst.expressions.Expression
