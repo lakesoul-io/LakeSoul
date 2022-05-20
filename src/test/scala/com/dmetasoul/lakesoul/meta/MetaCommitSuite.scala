@@ -35,7 +35,7 @@ trait MetaCommitSuiteBase extends QueryTest
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    MetaTableManage.initDatabaseAndTables()
+    //MetaTableManage.initDatabaseAndTables()
   }
 
 
