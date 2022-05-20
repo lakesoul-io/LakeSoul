@@ -28,6 +28,7 @@ import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
@@ -139,8 +140,8 @@ case class LakeSoulTableV2(spark: SparkSession,
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
-
-    snapshotManagement.createRelation(partitionPredicates)
+    //todo 参数是否合适
+    SparkUtil.createRelation(partitionPredicates, snapshotManagement, spark)
   }
 
 
@@ -187,7 +188,8 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer
         // to this data source relation. This is the behavior for InsertInto
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(snapshotManagement.createRelation()))
+          //todo 参数看是否有问题
+          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
       }
     }
   }

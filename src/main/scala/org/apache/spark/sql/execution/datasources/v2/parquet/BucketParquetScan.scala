@@ -82,7 +82,7 @@ case class BucketParquetScan(sparkSession: SparkSession,
     val broadcastedConf = sparkSession.sparkContext.broadcast(
       new SerializableConfiguration(hadoopConf))
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name, sparkSession.sessionState.conf)
+    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
 
     val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.ParquetPartitionAsyncReaderFactory"
     val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)

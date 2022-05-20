@@ -83,14 +83,14 @@ public class LakesoulTablePartition {
 
 
 
-
-    public PartitionInfo toScalaPartitonInfo(List<LakesoulTableData> lakeTableDatas){
-        int size = lakeTableDatas.size();
-        DataFileInfo[] al = new DataFileInfo[size];
-        for(int i=0;i<size;i++){
-            al[i]=lakeTableDatas.get( i ).toScalaDataFileInfo();
-        }
-
-       return new PartitionInfo(this.table_id,this.range_id,this.table_name,this.range_value,this.read_version,this.pre_write_version,new DataFileInfo[0],al ,new DataFileInfo[0],this.last_update_time,this.delta_file_num,this.be_compacted);
-    }
+    //todo
+//    public PartitionInfo toScalaPartitonInfo(List<LakesoulTableData> lakeTableDatas){
+//        int size = lakeTableDatas.size();
+//        DataFileInfo[] al = new DataFileInfo[size];
+//        for(int i=0;i<size;i++){
+//            al[i]=lakeTableDatas.get( i ).toScalaDataFileInfo();
+//        }
+//
+//       return new PartitionInfo(this.table_id,this.range_id,this.table_name,this.range_value,this.read_version,this.pre_write_version,new DataFileInfo[0],al ,new DataFileInfo[0],this.last_update_time,this.delta_file_num,this.be_compacted);
+//    }
 }

@@ -52,18 +52,19 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                                  partitionInfo: PartitionInfo): Boolean = {
     val timestampLimit = System.currentTimeMillis() - spark.conf.get(LakeSoulSQLConf.COMPACTION_TIME)
 
-    if (force) {
-      !partitionInfo.be_compacted
-    } else {
-      if (partitionInfo.delta_file_num >= spark.conf.get(LakeSoulSQLConf.MAX_DELTA_FILE_NUM)) {
-        true
-      } else if (partitionInfo.last_update_timestamp <= timestampLimit
-        && !partitionInfo.be_compacted) {
-        true
-      } else {
-        false
-      }
-    }
+//    if (force) {
+//      !partitionInfo.be_compacted
+//    } else {
+//      if (partitionInfo.delta_file_num >= spark.conf.get(LakeSoulSQLConf.MAX_DELTA_FILE_NUM)) {
+//        true
+//      } else if (partitionInfo.last_update_timestamp <= timestampLimit
+//        && !partitionInfo.be_compacted) {
+//        true
+//      } else {
+//        false
+//      }
+//    }
+    false
 
   }
 
@@ -78,7 +79,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       Option(mergeOperatorInfo)
     )
     val option = new CaseInsensitiveStringMap(
-      Map("basePath" -> tc.tableInfo.table_name, "isCompaction" -> "true"))
+      Map("basePath" -> tc.tableInfo.table_name.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
@@ -123,7 +124,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         val files = tc.filterFiles(targetOnlyPredicates)
 
         //ensure only one partition execute compaction command
-        val partitionSet = files.map(_.range_key).toSet
+        //todo range_partitions
+        val partitionSet = files.map(_.range_partitions).toSet
+//        val partitionSet = files.map(_.range_id).toSet
         if (partitionSet.isEmpty) {
           throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)
         } else if (partitionSet.size > 1) {
@@ -134,7 +137,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         val table_id = tc.tableInfo.table_id
         val range_id = tc.snapshot.getPartitionInfoArray
           .filter(part => part.range_value.equals(range_value))
-          .head.range_id
+          //todo range_value
+//          .head.range_id
+          .head.range_value
 
         val partitionInfo = MetaVersion.getSinglePartitionInfo(table_id, range_value, range_id)
 
@@ -144,11 +149,12 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           files.groupBy(_.file_bucket_id).forall(_._2.size == 1)
         }
 
-        if (partitionInfo.be_compacted || hasNoDeltaFile) {
-          logInfo("== Compaction: This partition has been compacted or has no delta file.")
-        } else {
-          executeCompaction(sparkSession, tc, files)
-        }
+        //todo
+//        if (partitionInfo.be_compacted || hasNoDeltaFile) {
+//          logInfo("== Compaction: This partition has been compacted or has no delta file.")
+//        } else {
+//          executeCompaction(sparkSession, tc, files)
+//        }
 
       })
     } else {

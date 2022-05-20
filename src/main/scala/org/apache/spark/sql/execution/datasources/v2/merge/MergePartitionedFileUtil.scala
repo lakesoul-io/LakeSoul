@@ -59,15 +59,15 @@ object MergePartitionedFileUtil {
     val filePathStr = filePath
       .getFileSystem(sparkSession.sessionState.newHadoopConf())
       .makeQualified(filePath).toString
-    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(f.file_path))
+    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(f.path))
       .getOrElse(throw LakeSoulErrors.filePathNotFoundException(filePathStr, fileInfo.mkString(",")))
 
-    val touchedFileSchema = requestFilesSchemaMap(touchedFileInfo.range_version).fieldNames
+    val touchedFileSchema = requestFilesSchemaMap(touchedFileInfo.range_partitions).fieldNames
 
     val keyInfo = tableInfo.hash_partition_schema.map(f => {
       KeyIndex(touchedFileSchema.indexOf(f.name), f.dataType)
     })
-    val fileSchemaInfo = requestFilesSchemaMap(touchedFileInfo.range_version).map(m => (m.name, m.dataType))
+    val fileSchemaInfo = requestFilesSchemaMap(touchedFileInfo.range_partitions).map(m => (m.name, m.dataType))
     val partitionSchemaInfo = requestPartitionFields.map(m => (m, tableInfo.range_partition_schema(m).dataType))
     val requestDataInfo = requestDataSchema.map(m => (m.name, m.dataType))
 
@@ -77,12 +77,12 @@ object MergePartitionedFileUtil {
       start = 0,
       length = file.getLen,
       qualifiedName = filePathStr,
-      rangeKey = touchedFileInfo.range_key,
+      rangeKey = touchedFileInfo.range_partitions,
       keyInfo = keyInfo,
       resultSchema = (requestDataInfo ++ partitionSchemaInfo).map(m => FieldInfo(m._1, m._2)),
       fileInfo = (fileSchemaInfo ++ partitionSchemaInfo).map(m => FieldInfo(m._1, m._2)),
-      writeVersion = touchedFileInfo.write_version,
-      rangeVersion = touchedFileInfo.range_version,
+      writeVersion = 1,
+      rangeVersion = touchedFileInfo.range_partitions,
       fileBucketId = touchedFileInfo.file_bucket_id,
       locations = hosts)
   }

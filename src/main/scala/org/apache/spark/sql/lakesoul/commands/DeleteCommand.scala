@@ -112,7 +112,7 @@ case class DeleteCommand(snapshotManagement: SnapshotManagement,
                 .select(new Column(InputFileName())).distinct()
                 .as[String].collect()
             } else {
-              candidateFiles.map(_.file_path).toArray
+              candidateFiles.map(_.path).toArray
             }
 
           if (filesToRewrite.isEmpty) {

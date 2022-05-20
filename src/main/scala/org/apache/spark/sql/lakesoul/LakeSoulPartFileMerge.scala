@@ -49,56 +49,57 @@ object LakeSoulPartFileMerge {
 
     var needMergeFiles = groupAndSortedFiles
 
-    while (notFinish) {
-      //take first iter(a group of files with same bucket id)
-      val iter = needMergeFiles.head.iterator
-      breakable {
-        while (iter.hasNext) {
-          val file = iter.next()
-          currentSize += (Math.min(file.size, 134217728) + conf.filesOpenCostInBytes)
-          currentVersion = file.write_version
-          currentFiles += 1
-
-          if (currentSize > limitMergeSize && currentFiles > minimumNum) {
-            snapshotManagement.withNewPartMergeTransaction(pmtc => {
-              //merge part of files
-              val partFiles = needMergeFiles.flatMap(_.filter(_.write_version < currentVersion)).toSeq
-              val (flag, newFiles) = executePartFileCompaction(
-                sparkSession,
-                snapshotManagement,
-                pmtc,
-                partFiles,
-                mergeOperatorInfo,
-                commitFlag)
-
-              //compaction should commit success
-              if (isCompactionCommand && !flag) {
-                throw LakeSoulErrors.compactionFailedWithPartMergeException()
-              } else {
-                commitFlag = flag
-              }
-
-              //
-              val notMergedFiles = needMergeFiles.flatMap(_.filter(_.write_version >= currentVersion)).toSeq
-              val newFilesChangeWriteVersion = newFiles.map(_.copy(write_version = 0))
-              needMergeFiles = (newFilesChangeWriteVersion ++ notMergedFiles)
-                .groupBy(_.file_bucket_id).values.map(m => m.sortBy(_.write_version))
-
-              currentSize = 0
-              currentVersion = 0
-              currentFiles = 0
-            })
-            break
-          }
-
-
-        }
-
-
-        notFinish = false
-      }
-
-    }
+    //todo
+//    while (notFinish) {
+//      //take first iter(a group of files with same bucket id)
+//      val iter = needMergeFiles.head.iterator
+//      breakable {
+//        while (iter.hasNext) {
+//          val file = iter.next()
+//          currentSize += (Math.min(file.size, 134217728) + conf.filesOpenCostInBytes)
+//          currentVersion = file.write_version
+//          currentFiles += 1
+//
+//          if (currentSize > limitMergeSize && currentFiles > minimumNum) {
+//            snapshotManagement.withNewPartMergeTransaction(pmtc => {
+//              //merge part of files
+//              val partFiles = needMergeFiles.flatMap(_.filter(_.write_version < currentVersion)).toSeq
+//              val (flag, newFiles) = executePartFileCompaction(
+//                sparkSession,
+//                snapshotManagement,
+//                pmtc,
+//                partFiles,
+//                mergeOperatorInfo,
+//                commitFlag)
+//
+//              //compaction should commit success
+//              if (isCompactionCommand && !flag) {
+//                throw LakeSoulErrors.compactionFailedWithPartMergeException()
+//              } else {
+//                commitFlag = flag
+//              }
+//
+//              //
+//              val notMergedFiles = needMergeFiles.flatMap(_.filter(_.write_version >= currentVersion)).toSeq
+//              val newFilesChangeWriteVersion = newFiles.map(_.copy(write_version = 0))
+//              needMergeFiles = (newFilesChangeWriteVersion ++ notMergedFiles)
+//                .groupBy(_.file_bucket_id).values.map(m => m.sortBy(_.write_version))
+//
+//              currentSize = 0
+//              currentVersion = 0
+//              currentFiles = 0
+//            })
+//            break
+//          }
+//
+//
+//        }
+//
+//
+//        notFinish = false
+//      }
+//
+//    }
 
     needMergeFiles.flatten.toSeq
   }
@@ -119,8 +120,7 @@ object LakeSoulPartFileMerge {
       Option(fileIndex),
       Option(mergeOperatorInfo)
     )
-    val option = new CaseInsensitiveStringMap(
-      Map("basePath" -> pmtc.tableInfo.table_name, "isCompaction" -> "true"))
+    val option = new CaseInsensitiveStringMap(Map("basePath" -> pmtc.tableInfo.table_name.get, "isCompaction" -> "true"))
 
     val compactDF = Dataset.ofRows(
       spark,

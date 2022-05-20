@@ -102,34 +102,36 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
     //if table is a material view, quickly failed if data is stale
-    if (tableInfo.is_material_view
-      && !sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.ALLOW_STALE_MATERIAL_VIEW)) {
-
-      //forbid using material rewrite this plan
-      LakeSoulUtils.executeWithoutQueryRewrite(sparkSession) {
-        val materialInfo = MaterialView.getMaterialViewInfo(tableInfo.short_table_name.get)
-        assert(materialInfo.isDefined)
-
-        val data = sparkSession.sql(materialInfo.get.sqlText)
-        val currentRelationTableVersion = new ArrayBuffer[RelationTable]()
-        MaterialViewUtils.parseRelationTableInfo(data.queryExecution.executedPlan, currentRelationTableVersion)
-        val currentRelationTableVersionMap = currentRelationTableVersion.map(m => (m.tableName, m)).toMap
-        val isConsistent = materialInfo.get.relationTables.forall(f => {
-          val currentVersion = currentRelationTableVersionMap(f.tableName)
-          f.toString.equals(currentVersion.toString)
-        })
-
-        if (!isConsistent) {
-          throw LakeSoulErrors.materialViewHasStaleDataException(tableInfo.short_table_name.get)
-        }
-      }
-    }
+    //todo
+//    if (tableInfo.is_material_view
+//      && !sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.ALLOW_STALE_MATERIAL_VIEW)) {
+//
+//      //forbid using material rewrite this plan
+//      LakeSoulUtils.executeWithoutQueryRewrite(sparkSession) {
+//        val materialInfo = MaterialView.getMaterialViewInfo(tableInfo.short_table_name.get)
+//        assert(materialInfo.isDefined)
+//
+//        val data = sparkSession.sql(materialInfo.get.sqlText)
+//        val currentRelationTableVersion = new ArrayBuffer[RelationTable]()
+//        MaterialViewUtils.parseRelationTableInfo(data.queryExecution.executedPlan, currentRelationTableVersion)
+//        val currentRelationTableVersionMap = currentRelationTableVersion.map(m => (m.tableName, m)).toMap
+//        val isConsistent = materialInfo.get.relationTables.forall(f => {
+//          val currentVersion = currentRelationTableVersionMap(f.tableName)
+//          f.toString.equals(currentVersion.toString)
+//        })
+//
+//        if (!isConsistent) {
+//          throw LakeSoulErrors.materialViewHasStaleDataException(tableInfo.short_table_name.get)
+//        }
+//      }
+//    }
 
     val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
-    val hasNoDeltaFile = fileInfo.forall(f => f._2.forall(_.is_base_file))
+    //todo
+    val hasNoDeltaFile = false//fileInfo.forall(f => f._2.forall(_.is_base_file))
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name, sparkSession.sessionState.conf)
+    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
 
     if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan(enableAsyncIO)

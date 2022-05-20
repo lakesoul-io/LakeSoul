@@ -67,19 +67,22 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
 
   lazy val fileInfo: Seq[DataFileInfo] = newFileIndex.getFileInfo(partitionFilters)
-    .map(f => if (f.is_base_file) {
-      f.copy(write_version = 0)
-    } else f)
+        // todo 需要修改
+//    .map(f => if (f.is_base_file) {
+//      f.copy(write_version = 0)
+//    } else f)
 
   /** if there are too many delta files, we will execute compaction first */
   private def compactAndReturnNewFileIndex(oriFileIndex: LakeSoulFileIndexV2): LakeSoulFileIndexV2 = {
     val files = oriFileIndex.getFileInfo(partitionFilters)
-      .map(f => if (f.is_base_file) {
-        f.copy(write_version = 0)
-      } else f)
+        //todo 需要修改
+//      .map(f => if (f.is_base_file) {
+//        f.copy(write_version = 0)
+//      } else f)
 
     val partitionGroupedFiles = files
-      .groupBy(_.range_key)
+      // todo range_partitions？
+      .groupBy(_.range_partitions)
       .values
       .map(m => {
         m.groupBy(_.file_bucket_id).values
@@ -106,17 +109,18 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     //compacted files + not merged files
     val remainFiles = new ArrayBuffer[DataFileInfo]()
 
-    partitionGroupedFiles.foreach(partition => {
-      val sortedFiles = partition.map(m => m.sortBy(_.write_version))
-
-      remainFiles ++= LakeSoulPartFileMerge.partMergeCompaction(
-        sparkSession,
-        snapshotManagement,
-        sortedFiles,
-        mergeOperatorStringInfo,
-        isCompactionCommand)
-
-    })
+    //todo 需要修改
+//    partitionGroupedFiles.foreach(partition => {
+//      val sortedFiles = partition.map(m => m.sortBy(_.write_version))
+//
+//      remainFiles ++= LakeSoulPartFileMerge.partMergeCompaction(
+//        sparkSession,
+//        snapshotManagement,
+//        sortedFiles,
+//        mergeOperatorStringInfo,
+//        isCompactionCommand)
+//
+//    })
 
     BatchDataSoulFileIndexV2(sparkSession, snapshotManagement, remainFiles)
   }
@@ -128,7 +132,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val requestedFields = readDataSchema.fieldNames
     val requestFilesSchema =
       fileInfo
-        .groupBy(_.range_version)
+        //todo range_partitions？
+        .groupBy(_.range_partitions)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
           m._1 + "->" + StructType(
@@ -182,7 +187,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         (realColName, mergeClass)
       }).toMap
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name, sparkSession.sessionState.conf)
+    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
 
     val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.MergeParquetPartitionAsyncReaderFactory"
     val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
@@ -254,7 +259,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       // produce requested schema
       val requestedFields = readDataSchema.fieldNames
       val requestFilesSchemaMap = fileInfo
-        .groupBy(_.range_version)
+        //todo range_partitions？
+        .groupBy(_.range_partitions)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
           (m._1, StructType(

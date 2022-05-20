@@ -18,7 +18,6 @@
 
 package org.apache.flink.lakesoul.tools;
 
-import com.dmetasoul.lakesoul.Newmeta.MetaCommon;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -66,56 +65,59 @@ public class FlinkUtil {
             return partionKeys.get(0);
         }
     }
-
+    //todo
     public static String getRangeValue(CatalogPartitionSpec cps){
-       return  MetaCommon.getPartitionKeyFromMap((scala.collection.immutable.Map<String, String>) cps.getPartitionSpec());
+       return  "Null";//MetaCommon.getPartitionKeyFromMap((scala.collection.immutable.Map<String, String>) cps.getPartitionSpec());
     }
-    public static Map<String,String> getRangeValue(String rangestr){
-        return (Map<String, String>) MetaCommon.getPartitionMapFromKey(rangestr);
-    }
-    public static String serialResoledTableToCassendraStr(ResolvedCatalogTable table)  {
-        return MetaCommon.toCassandraSetting(getScalaMap( CatalogPropertiesUtil.serializeCatalogTable(table)));
-    }
+//    public static Map<String,String> getRangeValue(String rangestr){
+//        return (Map<String, String>) MetaCommon.getPartitionMapFromKey(rangestr);
+//    }
+//    public static String serialResoledTableToCassendraStr(ResolvedCatalogTable table)  {
+//        return MetaCommon.toCassandraSetting(getScalaMap( CatalogPropertiesUtil.serializeCatalogTable(table)));
+//    }
 
-    public static void UpdateCassendraInfo(Map<String, String> options){
-        if(options.containsKey( MetaCommon.LakesoulMetaHostKey() )){
-            MetaCommon.Meta_host_$eq( options.get( MetaCommon.LakesoulMetaHostKey() ) );
-        }
-        if(options.containsKey( MetaCommon.LakesoulMetaHostPortKey() )) {
-            MetaCommon.Meta_port_$eq( Integer.parseInt(  options.get( MetaCommon.LakesoulMetaHostPortKey() ) ));
-        }
-
-    }
+//    public static void UpdateCassendraInfo(Map<String, String> options){
+//        if(options.containsKey( MetaCommon.LakesoulMetaHostKey() )){
+//            MetaCommon.Meta_host_$eq( options.get( MetaCommon.LakesoulMetaHostKey() ) );
+//        }
+//        if(options.containsKey( MetaCommon.LakesoulMetaHostPortKey() )) {
+//            MetaCommon.Meta_port_$eq( Integer.parseInt(  options.get( MetaCommon.LakesoulMetaHostPortKey() ) ));
+//        }
+//
+//    }
     public static Map<String, String> UpdateLakesoulCdcTable(Map<String, String> options){
-        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
-            options.put( MetaCommon.LakesoulCdcColumnName(),MetaCommon.LakesoulCdcColumnName() );
-        }
+//        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
+//            options.put( MetaCommon.LakesoulCdcColumnName(),MetaCommon.LakesoulCdcColumnName() );
+//        }
         return options;
     }
+    //todo
     public static Boolean isLakesoulCdcTable(Map<String, String> options){
-        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
-            return true;
-        }
+//        if(options.containsKey( MetaCommon.LakesoulCdcKey() )&&options.get(  MetaCommon.LakesoulCdcKey() ).toLowerCase().equals( "true" )){
+//            return true;
+//        }
         return false;
     }
+    //todo
     public static Boolean isLakesoulCdcTable(Configuration options){
-        if(options.containsKey( MetaCommon.LakesoulCdcColumnName() )){
-            return true;
-        }
+//        if(options.containsKey( MetaCommon.LakesoulCdcColumnName() )){
+//            return true;
+//        }
         return false;
     }
+    //todo
     public static StructType toSparkSchema(TableSchema tsc,Boolean isCdc){
         StructType st = new StructType(  );
         StructType stNew=st;
-        for(int i=0;i<tsc.getFieldCount();i++){
-            String name = tsc.getFieldName( i ).get();
-            DataType dt = tsc.getFieldDataType( i ).get();
-            String dtName=dt.getLogicalType().getTypeRoot().name();
-            stNew=stNew.add( name ,MetaCommon.convertDatatype( dtName ),dt.getLogicalType().isNullable());
-        }
-        if(isCdc){
-            stNew=stNew.add( MetaCommon.LakesoulCdcColumnName(),MetaCommon.convertDatatype( "varchar(30)" ),false );
-        }
+//        for(int i=0;i<tsc.getFieldCount();i++){
+//            String name = tsc.getFieldName( i ).get();
+//            DataType dt = tsc.getFieldDataType( i ).get();
+//            String dtName=dt.getLogicalType().getTypeRoot().name();
+//            stNew=stNew.add( name ,MetaCommon.convertDatatype( dtName ),dt.getLogicalType().isNullable());
+//        }
+//        if(isCdc){
+//            stNew=stNew.add( MetaCommon.LakesoulCdcColumnName(),MetaCommon.convertDatatype( "varchar(30)" ),false );
+//        }
 
         return stNew;
     }
@@ -137,27 +139,29 @@ public class FlinkUtil {
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo)  {
         StructType st = tableInfo.schema();
         Builder bd = Schema.newBuilder();
-        for(StructField sf : st.fields()) {
-            if(sf.name().equals( MetaCommon.LakesoulCdcColumnName() )){
-                continue;
-            }
-            String tyname = MetaCommon.convertToFlinkDatatype( sf.dataType().typeName() );
-            if(!sf.nullable()){
-                tyname+=" NOT NULL";
-            }
-            bd=bd.column( sf.name() , tyname);
-        }
+        //todo
+//        for(StructField sf : st.fields()) {
+//            if(sf.name().equals( MetaCommon.LakesoulCdcColumnName() )){
+//                continue;
+//            }
+//            String tyname = MetaCommon.convertToFlinkDatatype( sf.dataType().typeName() );
+//            if(!sf.nullable()){
+//                tyname+=" NOT NULL";
+//            }
+//            bd=bd.column( sf.name() , tyname);
+//        }
         bd.primaryKey(  Arrays.asList( tableInfo.hash_column().split( "," ) ) );
         CatalogTable catalogtable = CatalogTable.of( bd.build(),"", JavaConverters.seqAsJavaList(tableInfo.range_partition_columns()), JavaConverters.mapAsJavaMap( tableInfo.configuration() ));
         return catalogtable;
     }
+    //todo
 //    public static String serialTableSchemaToCassendraStr(Schema table)  {
 //        table.getColumns();
 //        return MetaCommon.toCassandraSetting(getScalaMap( CatalogPropertiesUtil.serializeCatalogTable(table)));
 //    }
-    public static CatalogTable deserialCassendraStringToResolvedTable(String casStr)  {
-        return CatalogPropertiesUtil.deserializeCatalogTable(JavaConverters.mapAsJavaMap( MetaCommon.fromCassandraSetting(casStr)));
-    }
+//    public static CatalogTable deserialCassendraStringToResolvedTable(String casStr)  {
+//        return CatalogPropertiesUtil.deserializeCatalogTable(JavaConverters.mapAsJavaMap( MetaCommon.fromCassandraSetting(casStr)));
+//    }
     public static boolean isMaterialTable(CatalogBaseTable table)  {
         if(CatalogTable.TableKind.VIEW.equals(table.getTableKind())){
             return true;
@@ -166,9 +170,10 @@ public class FlinkUtil {
         }
     }
 
-    public static String serialOptionsToCasStr(Map<String,String> options){
-        return MetaCommon.toCassandraSetting(getScalaMap(options));
-    }
+    //todo
+//    public static String serialOptionsToCasStr(Map<String,String> options){
+//        return MetaCommon.toCassandraSetting(getScalaMap(options));
+//    }
 
     public static String generatePartitionPath(LinkedHashMap<String, String> partitionSpec) {
         if (partitionSpec.isEmpty()) {

@@ -96,7 +96,7 @@ object LakeSoulUtils extends PredicateHelper {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
-    isLakeSoulTable(sparkSession, new Path(MetaUtils.modifyTableString(tablePath)))
+    isLakeSoulTable(sparkSession, new Path(tablePath))
   }
 
   def findTableRootPath(spark: SparkSession, path: Path): Option[Path] = {

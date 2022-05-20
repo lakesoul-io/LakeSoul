@@ -19,7 +19,6 @@
 package org.apache.flink.lakesoul;
 
 
-import com.dmetasoul.lakesoul.Newmeta.MetaCommon;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -298,7 +297,8 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         final List<String> names = getFieldNames(dataType);
         final List<DataType> dataTypes = getFieldDataTypes(dataType);
         if(isCdc){
-            names.add( MetaCommon.LakesoulCdcColumnName() );
+            //todo MetaCommon.LakesoulCdcColumnName()
+            names.add( "MetaCommon.LakesoulCdcColumnName()" );
             dataTypes.add(DataTypes.VARCHAR( 30 ));
         }
         return IntStream.range(0, names.size())

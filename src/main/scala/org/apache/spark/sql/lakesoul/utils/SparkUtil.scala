@@ -39,22 +39,26 @@ object SparkUtil {
 
   lazy val allPartitionFilterInfoDF: DataFrame = {
     import spark.implicits._
-    partitionFilterInfoCached = true
-    val allPartitionFilterInfo: Seq[PartitionFilterInfo] = {
-      partition_info_arr
-        .map(part =>
-          PartitionFilterInfo(
-            part.range_id,
-            part.range_value,
-            MetaUtils.getPartitionMapFromKey(part.range_value),
-            part.read_version))
-    }
+    val partitionFilterInfoCached = false
+    //todo allPartitionFilterInfo需要重写
+    val allPartitionFilterInfo: Seq[PartitionFilterInfo] = Nil//{
+//      val partition_info_arr: Array[PartitionInfo]
+//      partition_info_arr
+//        .map(part =>
+//          PartitionFilterInfo(
+//            part.range_id,
+//            part.range_value,
+//            MetaUtils.getPartitionMapFromKey(part.range_value),
+//            part.read_version))
+//    }
     spark.sparkContext.parallelize(allPartitionFilterInfo).toDF()
   }.persist()
 
+  //todo allDataInfo需要重写
   def allDataInfo: Array[DataFileInfo] = {
     import spark.implicits._
-    allDataInfoDS.as[DataFileInfo].collect()
+//    allDataInfoDS.as[DataFileInfo].collect()
+    new Array[DataFileInfo](10000)
   }
 
 /*  def modifyTableString(tablePath: String): String = {

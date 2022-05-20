@@ -27,8 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
-import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulOptions}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.types.StructType
 
 object LakeSoulSourceUtils {
@@ -139,8 +139,9 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
       case _ => LakeSoulSourceUtils.translateFilters(filters)
     }
 
-    snapshotManagement
-      .createDataFrame(files, requiredColumns, Option(predicts))
+    SparkUtil
+      //todo createDataFrame（） SnapshotManagement.getSM("")
+      .createDataFrame(files, requiredColumns, SnapshotManagement.getSM(""), Option(predicts))
       .filter(Column(predicts))
       .select(requiredColumns.map(col): _*)
       .rdd

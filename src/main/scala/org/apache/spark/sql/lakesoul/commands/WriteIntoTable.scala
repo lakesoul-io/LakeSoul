@@ -129,9 +129,10 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
         if (invalidFiles.nonEmpty) {
           val badPartitions = invalidFiles
             .map(_.range_partitions)
-            .map {
-              _.map { case (k, v) => s"$k=$v" }.mkString("/")
-            }
+            //todo 逻辑修改
+//            .map {
+//              _.map { case (k, v) => s"$k=$v" }.mkString("/")
+//            }
             .mkString(", ")
           throw LakeSoulErrors.replaceWhereMismatchException(replaceWhere.get, badPartitions)
         }

@@ -76,9 +76,9 @@ trait Command {
     */
   protected def generateCandidateFileMap(candidateFiles: Seq[DataFileInfo]): Map[String, DataFileInfo] = {
     val nameToFileMap = candidateFiles.map(file =>
-      new Path(file.file_path).toString -> file).toMap
+      new Path(file.path).toString -> file).toMap
     assert(nameToFileMap.size == candidateFiles.length,
-      s"File name collisions found among:\n${candidateFiles.map(_.file_path).mkString("\n")}")
+      s"File name collisions found among:\n${candidateFiles.map(_.path).mkString("\n")}")
     nameToFileMap
   }
 
