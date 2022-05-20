@@ -184,12 +184,11 @@ trait Transaction extends TransactionalWrite with Logging {
       val updatedConfigs = LakeSoulConfig.mergeGlobalConfigs(
         spark.sessionState.conf, table_info.configuration)
       table_info.copy(
-        configuration = updatedConfigs
-          //todo
-        schema_version = snapshotTableInfo.schema_version)
-    } else {
-      table_info.copy(schema_version = snapshotTableInfo.schema_version)
+        configuration = updatedConfigs)
+    } else{
+      table_info
     }
+    // if task run maybe inconsistent with new update tableinfo; no two phase protocol
     verifyNewMetadata(updatedTableInfo)
     newTableInfo = Some(updatedTableInfo)
   }
