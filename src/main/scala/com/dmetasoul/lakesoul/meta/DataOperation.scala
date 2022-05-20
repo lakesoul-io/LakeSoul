@@ -16,6 +16,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
+import com.dmetasoul.lakesoul.meta.entity.DataFileOp
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
 
@@ -52,6 +53,7 @@ object DataOperation extends Logging {
       val fileOps = metaDataCommitInfo.getFileOps.asScala.toArray
       for (file <- fileOps) {
         file_arr_buf += DataFileInfo(
+          partition_info.range_value,
           file.getPath(),
           file.getFileOp(),
           file.getSize(),
@@ -75,14 +77,12 @@ object DataOperation extends Logging {
                      size: Long,
                      file_exist_cols: String,
                      modification_time: Long): Unit = {
-    val dataFileInfo = DataFileInfo(
-      file_path,
-      file_op,
-      size,
-      modification_time,
-      file_exist_cols
-    )
-    val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+    val dataFileInfo = new DataFileOp
+    dataFileInfo.setPath(file_path)
+    dataFileInfo.setFileOp(file_op)
+    dataFileInfo.setSize(size)
+    dataFileInfo.setFileExistCols(file_exist_cols)
+    val file_arr_buf = new ArrayBuffer[DataFileOp]()
     file_arr_buf += dataFileInfo
 
     val metaDataCommitInfoList = new util.ArrayList[entity.DataCommitInfo]()
@@ -92,6 +92,7 @@ object DataOperation extends Logging {
     metaDataCommitInfo.setCommitOp(commit_type)
     metaDataCommitInfo.setCommitId(commit_id)
     metaDataCommitInfo.setFileOps(JavaConverters.bufferAsJavaList(file_arr_buf))
+    metaDataCommitInfo.setTimestamp(modification_time)
     metaDataCommitInfoList.add(metaDataCommitInfo)
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
 
