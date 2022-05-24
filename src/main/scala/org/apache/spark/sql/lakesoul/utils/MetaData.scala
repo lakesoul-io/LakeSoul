@@ -120,7 +120,7 @@ case class DataFileInfo(
                      file_op:String,
                      size:Long,
                      modification_time:Long = -1L,
-                     file_exist_cols:String
+                     file_exist_cols:String = ""
                      ) {
   lazy val file_bucket_id: Int = BucketingUtils
     .getBucketId(new Path(path).getName)
