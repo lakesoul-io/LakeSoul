@@ -16,9 +16,10 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.MetaUtils
+
 import java.net.URI
 import java.util.UUID
-
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
 import org.apache.spark.internal.Logging
@@ -131,20 +132,19 @@ class DelayedCommitProtocol(jobId: String,
 
   override def commitTask(taskContext: TaskAttemptContext): TaskCommitMessage = {
     //todo
-//    if (addedFiles.nonEmpty) {
-//      val fs = new Path(path, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
-//      val statuses: Seq[DataFileInfo] = addedFiles.map { f =>
-//
-//        val filePath = new Path(new URI(f._2))
-//        val stat = fs.getFileStatus(filePath)
-//        DataFileInfo(f._2, f._1, stat.getLen, stat.getModificationTime, -1, true)
-//      }
-//
-//      new TaskCommitMessage(statuses)
-//    } else {
-//      new TaskCommitMessage(Nil)
-//    }
-    new TaskCommitMessage(Nil)
+    if (addedFiles.nonEmpty) {
+      val fs = new Path(path, addedFiles.head._2).getFileSystem(taskContext.getConfiguration)
+      val statuses: Seq[DataFileInfo] = addedFiles.map { f =>
+
+        val filePath = new Path(new URI(f._2))
+        val stat = fs.getFileStatus(filePath)
+        DataFileInfo(f._2, MetaUtils.getPartitionKeyFromMap(f._1), "add", stat.getLen, stat.getModificationTime)
+      }
+
+      new TaskCommitMessage(statuses)
+    } else {
+      new TaskCommitMessage(Nil)
+    }
   }
 
   override def abortTask(taskContext: TaskAttemptContext): Unit = {

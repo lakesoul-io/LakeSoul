@@ -105,7 +105,7 @@ case class UpsertCommand(source: LogicalPlan,
       /** If delta file can be used, just write new data and delete nothing.
         * Else a merge data should be built and overwrite all files. */
       if (canUseDeltaFile) {
-        tc.setCommitType("delta")
+        tc.setCommitType("merge")
 
         val newFiles = tc.writeFiles(Dataset.ofRows(spark, source))
         tc.commit(newFiles, Seq.empty[DataFileInfo])
