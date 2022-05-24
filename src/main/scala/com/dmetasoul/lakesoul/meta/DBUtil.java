@@ -214,7 +214,7 @@ public class DBUtil {
     public static String changePartitionDescListToString(List<String> partitionDescList) {
         StringBuilder sb = new StringBuilder();
         if (partitionDescList.size() < 1) {
-            sb.toString();
+            return sb.append("''").toString();
         }
         for (String s : partitionDescList) {
             sb.append(String.format("'%s',", s));

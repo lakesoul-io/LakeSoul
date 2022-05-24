@@ -16,7 +16,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.alibaba.fastjson.{JSON}
+import com.alibaba.fastjson.{JSON, JSONObject}
 
 import java.util
 import org.apache.spark.internal.Logging
@@ -45,7 +45,9 @@ object MetaCommit extends Logging {
     tableInfo.setTablePath(table_info.table_name.toString)
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
-    tableInfo.setProperties(JSON.parseObject(table_info.configuration.toString()))
+    val json = new JSONObject()
+    table_info.configuration.foreach(x => json.put(x._1,x._2))
+    tableInfo.setProperties(json)
     info.setTableInfo(tableInfo)
 
     val javaPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()

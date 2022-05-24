@@ -109,8 +109,14 @@ public class DBManager {
         tableInfo.setProperties(properties);
 
         // todo 是否考虑事物机制
-        boolean insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId));
-        boolean insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId));
+        boolean insertNameFlag = true;
+        if (StringUtils.isNotBlank(tableName)) {
+            insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId));
+        }
+        boolean insertPathFlag = true;
+        if (StringUtils.isNotBlank(tablePath)) {
+            insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId));
+        }
         if (insertNameFlag && insertPathFlag) {
             tableInfoDao.insert(tableInfo);
         } else {
@@ -268,7 +274,7 @@ public class DBManager {
             curMap.put(partitionDesc, curPartition);
         }
 
-        if (commitOp.equals("append")|| commitOp.equals("merge")) {
+        if (commitOp.equals("AppendCommit")|| commitOp.equals("MergeCommit")) {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
@@ -291,7 +297,7 @@ public class DBManager {
                 newMap.put(partitionDesc, curPartitionInfo);
                 newPartitionList.add(curPartitionInfo);
             }
-        } else if (commitOp.equals("compact")|| commitOp.equals("update")) {
+        } else if (commitOp.equals("CompactionCommit")|| commitOp.equals("UpdateCommit")) {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
@@ -320,16 +326,16 @@ public class DBManager {
         boolean notConflict = partitionInfoDao.transactionInsert(newPartitionList);
         if (!notConflict) {
             switch(commitOp){
-                case "append":
+                case "AppendCommit":
                     notConflict = appendConflict(tableId, partitionDescList, rawMap, newMap,0);
                     break;
-                case "compact":
+                case "CompactionCommit":
                     notConflict = compactionConflict(tableId, partitionDescList, rawMap, newMap,0);
                     break;
-                case "update":
+                case "UpdateCommit":
                     notConflict = updateConflict(tableId, partitionDescList, rawMap, newMap, 0);
                     break;
-                case "merge":
+                case "MergeCommit":
                     notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, 0);
             }
         }
@@ -410,13 +416,14 @@ public class DBManager {
                 int newVersion = curVersion + 1;
 
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-                if (curCommitOp.equals("compaction") || curCommitOp.equals("append")) {
+                if (curCommitOp.equals("CompactionCommit") || curCommitOp.equals("AppendCommit")) {
                     curSnapshot.addAll(partitionInfo.getSnapshot());
                     curPartitionInfo.setVersion(newVersion);
                     curPartitionInfo.setSnapshot(curSnapshot);
                     curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
                     curPartitionInfo.setExpression(partitionInfo.getExpression());
                     newPartitionList.add(curPartitionInfo);
+                    newMap.put(partitionDesc, curPartitionInfo);
                 } else {
                     // 其余情况均冲入，本次数据写入失败
                     return false;
@@ -448,7 +455,7 @@ public class DBManager {
                 int curVersion = curPartitionInfo.getVersion();
                 String curCommitOp = curPartitionInfo.getCommitOp();
 
-                if (curCommitOp.equals("append") || curCommitOp.equals("merge")) {
+                if (curCommitOp.equals("AppendCommit") || curCommitOp.equals("MergeCommit")) {
                     int newVersion = curVersion + 1;
                     PartitionInfo newPartitionInfo = new PartitionInfo();
                     newPartitionInfo.setTableId(tableId);
@@ -468,9 +475,10 @@ public class DBManager {
                     newPartitionInfo.setSnapshot(snapshot);
                     newPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
                     newPartitionList.add(newPartitionInfo);
+                    newMap.put(partitionDesc, newPartitionInfo);
                 } else {
-                    // 其余情况均冲入，本次数据写入失败
-                    return false;
+                    // 其余情况均或略本次操作
+                    partitionDescList.remove(partitionDesc);
                 }
             }
         }
@@ -502,12 +510,13 @@ public class DBManager {
                 int newVersion = curVersion + 1;
 
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-                if (curCommitOp.equals("compaction")) {
+                if (curCommitOp.equals("CompactionCommit")) {
                     curPartitionInfo.setVersion(newVersion);
                     curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
                     curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
                     curPartitionInfo.setExpression(partitionInfo.getExpression());
                     newPartitionList.add(curPartitionInfo);
+                    newMap.put(partitionDesc, curPartitionInfo);
                 } else {
                     // 其余情况均冲入，本次数据写入失败
                     return false;
@@ -541,13 +550,14 @@ public class DBManager {
                 int newVersion = curVersion + 1;
 
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-                if (curCommitOp.equals("compaction")) {
+                if (curCommitOp.equals("CompactionCommit")) {
                     curSnapshot.addAll(partitionInfo.getSnapshot());
                     curPartitionInfo.setVersion(newVersion);
                     curPartitionInfo.setSnapshot(curSnapshot);
                     curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
                     curPartitionInfo.setExpression(partitionInfo.getExpression());
                     newPartitionList.add(curPartitionInfo);
+                    newMap.put(partitionDesc, curPartitionInfo);
                 } else {
                     // 其余情况均冲入，本次数据写入失败
                     return false;
