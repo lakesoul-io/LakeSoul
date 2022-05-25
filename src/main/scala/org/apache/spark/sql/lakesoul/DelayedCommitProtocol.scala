@@ -138,7 +138,7 @@ class DelayedCommitProtocol(jobId: String,
 
         val filePath = new Path(new URI(f._2))
         val stat = fs.getFileStatus(filePath)
-        DataFileInfo(f._2, MetaUtils.getPartitionKeyFromMap(f._1), "add", stat.getLen, stat.getModificationTime)
+        DataFileInfo(MetaUtils.getPartitionKeyFromMap(f._1), f._2, "add", stat.getLen, stat.getModificationTime)
       }
 
       new TaskCommitMessage(statuses)

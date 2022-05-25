@@ -88,6 +88,7 @@ object MetaVersion {
     val partitions = range_column + ";" + hash_column
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1,x._2))
+    json.put("hashBucketNum", bucket_num)
     dbManager.createNewTable(table_id, "", table_name, table_schema, json, partitions)
   }
 
@@ -133,13 +134,14 @@ object MetaVersion {
 
     val range_column = partitions.split(";")(0)
     val hash_column = partitions.split(";")(1)
+    val bucket_num = configurationMap.get("hashBucketNum").get.toInt
     TableInfo(
       Some(table_name),
       info.getTableId,
       info.getTableSchema,
       range_column,
       hash_column,
-      -1,
+      bucket_num,
       configurationMap,//todo
       if (short_table_name.equals("")) None else Some(short_table_name)
     )

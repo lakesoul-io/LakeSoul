@@ -100,7 +100,7 @@ object MetaCommit extends Logging {
   }
 
   def addDataInfo(meta_info: MetaInfo): Boolean = {
-    val table_id = meta_info.table_info.table_name.get
+    val table_id = meta_info.table_info.table_id
     val dataCommitInfoArray = meta_info.dataCommitInfo
     val commitType = meta_info.commit_type.name
 
