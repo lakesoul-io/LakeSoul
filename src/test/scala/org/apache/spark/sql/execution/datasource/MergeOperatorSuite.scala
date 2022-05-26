@@ -17,9 +17,10 @@
 package org.apache.spark.sql.execution.datasource
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeNonNullOp
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{MergeOpInt, MergeOpString, MergeOpString02, LakeSoulTestUtils, TestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 
@@ -112,6 +113,36 @@ class MergeOperatorSuite extends QueryTest
 
 
   }
+
+  test("read by nonnull merge operator - string type") {
+    new MergeNonNullOp().register(spark, "NonNullOp")
+
+    withTempDir(dir => {
+      val tableName = dir.getCanonicalPath
+      Seq(("1", "1", "1"), ("2", "2", "2"), ("3", "3", "3")).toDF("hash", "v1", "v2")
+        .write
+        .mode("overwrite")
+        .format("lakesoul")
+        .option("hashPartitions", "hash")
+        .option("hashBucketNum", "1")
+        .save(tableName)
+
+      val starTable = LakeSoulTable.forPath(tableName)
+      starTable.upsert(
+        Seq(("1", "12", "13"), ("2", "null", "23"), ("3", "32",null)).toDF("hash", "v1", "v2")
+      )
+      checkAnswer(
+        starTable.toDF.withColumn("v2", expr("NonNullOp(v2)")).withColumn("v1", expr("NonNullOp(v1)"))
+          .select("hash", "v1", "v2"),
+        Seq(("1", "12", "13"), ("2", "2", "23"), ("3", "32", "3")).toDF("hash", "v1", "v2")
+      )
+
+
+    })
+
+
+  }
+
 
   test("perform merge operator on non-hash partitioned table should failed") {
     new MergeOpInt().register(spark, "intOp")
