@@ -134,7 +134,7 @@ object MetaVersion {
 
     val range_column = partitions.split(";")(0)
     val hash_column = partitions.split(";")(1)
-    val bucket_num = configurationMap.get("hashBucketNum").get.toInt
+    val bucket_num = configurationMap.get("hashBucketNum").get.asInstanceOf[Double].asInstanceOf[Int]
     TableInfo(
       Some(table_name),
       info.getTableId,
