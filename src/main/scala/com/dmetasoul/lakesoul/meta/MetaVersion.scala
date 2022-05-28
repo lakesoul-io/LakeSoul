@@ -82,8 +82,7 @@ object MetaVersion {
                      range_column: String,
                      hash_column: String,
                      configuration: Map[String, String],
-                     bucket_num: Int,
-                     is_material_view: Boolean): Unit = {
+                     bucket_num: Int): Unit = {
 
     val partitions = range_column + ";" + hash_column
     val json = new JSONObject()
@@ -186,7 +185,7 @@ object MetaVersion {
         range_value = res.getPartitionDesc,
         version = res.getVersion,
         read_files = res.getSnapshot.asScala.toArray,
-        expression = res.getExpression,
+        expression = res.getExpression
       )
     }
     partitionVersionBuffer.toArray

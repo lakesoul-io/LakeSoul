@@ -39,7 +39,6 @@ object UndoLogType extends Enumeration {
   val ExpireFile = Value("expireFile")
   val Schema = Value("schema")
   val ShortTableName = Value("shortTableName")
-  val Material = Value("material")
   val DropTable = Value("dropTable")
   val DropPartition = Value("dropPartition")
 
@@ -51,7 +50,6 @@ object UndoLogType extends Enumeration {
       ExpireFile.toString,
       Schema.toString,
       ShortTableName.toString,
-      Material.toString,
       DropTable.toString,
       DropPartition.toString)
   }

@@ -23,7 +23,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.lakesoul.commands.CreateMaterialViewCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
@@ -335,17 +334,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       s"Table `${snapshotManagement.table_name}` is not a range partitioned table, dropTable command can't use on it.")
     executeDropPartition(snapshotManagement, condition)
   }
-  //todo
-  def updateMaterialView(): Unit = {
-    val tableInfo = snapshotManagement.snapshot.getTableInfo
-//    if (!tableInfo.is_material_view) {
-//      throw LakeSoulErrors.notMaterialViewException(tableInfo.table_name, tableInfo.short_table_name.getOrElse("None"))
-//    }
-
-    executeUpdateForMaterialView(snapshotManagement)
-  }
-
-
 }
 
 object LakeSoulTable {
@@ -416,24 +404,6 @@ object LakeSoulTable {
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
       .register(spark, funName)
-  }
-
-  def createMaterialView(viewName: String,
-                         viewPath: String,
-                         sqlText: String,
-                         rangePartitions: String = "",
-                         hashPartitions: String = "",
-                         hashBucketNum: Int = -1,
-                         autoUpdate: Boolean = false): Unit = {
-    CreateMaterialViewCommand(
-      viewName,
-      viewPath,
-      sqlText,
-      rangePartitions,
-      hashPartitions,
-      hashBucketNum.toString,
-      autoUpdate)
-      .run(SparkSession.active)
   }
 
   class TableCreator {

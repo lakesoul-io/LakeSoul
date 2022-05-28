@@ -162,13 +162,6 @@ public class FlinkUtil {
 //    public static CatalogTable deserialCassendraStringToResolvedTable(String casStr)  {
 //        return CatalogPropertiesUtil.deserializeCatalogTable(JavaConverters.mapAsJavaMap( MetaCommon.fromCassandraSetting(casStr)));
 //    }
-    public static boolean isMaterialTable(CatalogBaseTable table)  {
-        if(CatalogTable.TableKind.VIEW.equals(table.getTableKind())){
-            return true;
-        }else{
-            return false;
-        }
-    }
 
     //todo
 //    public static String serialOptionsToCasStr(Map<String,String> options){

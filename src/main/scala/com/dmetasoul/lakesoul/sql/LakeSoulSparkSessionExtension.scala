@@ -116,10 +116,6 @@ class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
       ProcessCDCTableMergeOnRead(session.sessionState.conf)
     }
 
-    extensions.injectResolutionRule { session =>
-      RewriteQueryByMaterialView(session)
-    }
-
     extensions.injectPlannerStrategy { session =>
       SetPartitionAndOrdering(session)
     }

@@ -237,7 +237,6 @@ trait Transaction extends TransactionalWrite with Logging {
     snapshotManagement.lockInterruptibly {
       assert(!committed, "Transaction already committed.")
       if (isFirstCommit) {
-//        val is_material_view = if (materialInfo.isDefined) true else false
         MetaVersion.createNewTable(
           table_name,
           tableInfo.table_id,
@@ -245,9 +244,7 @@ trait Transaction extends TransactionalWrite with Logging {
           tableInfo.range_column,
           tableInfo.hash_column,
           tableInfo.configuration,
-          tableInfo.bucket_num,
-          //todo changed
-          false
+          tableInfo.bucket_num
         )
       }
 
@@ -293,11 +290,10 @@ trait Transaction extends TransactionalWrite with Logging {
         table_info = tableInfo,
         dataCommitInfo = add_file_arr_buf.toArray,
         partitionInfoArray = add_partition_info_arr_buf.toArray,
-        commit_type = commitType.getOrElse(CommitType("append")),
+        commit_type = commitType.getOrElse(CommitType("append"))
       )
 
       try {
-//        val commitOptions = CommitOptions(shortTableName, materialInfo)
         val changeSchema = !isFirstCommit && newTableInfo.nonEmpty
         MetaCommit.doMetaCommit(meta_info, changeSchema)
       } catch {

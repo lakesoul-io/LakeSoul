@@ -94,9 +94,6 @@ public class DBManager {
         return false;
     }
 
-    /**
-     * table_name table_id table_schema range_column hash_column setting bucket_num is_material_view
-     */
     public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema, JSONObject properties, String partitions) {
         // todo 之前这里有table_schema长度检测 table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE
         TableInfo tableInfo = new TableInfo();

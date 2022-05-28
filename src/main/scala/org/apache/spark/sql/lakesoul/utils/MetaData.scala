@@ -16,16 +16,13 @@
 
 package org.apache.spark.sql.lakesoul.utils
 
-import java.util.UUID
-
-import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{CommitState, CommitType}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.hdfs.web.resources.ModificationTimeParam
 import org.apache.spark.sql.execution.datasources.BucketingUtils
-import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
-import org.apache.spark.sql.lakesoul.material_view.QueryInfo
 import org.apache.spark.sql.types.{DataType, StructType}
+
+import java.util.UUID
 
 case class MetaInfo(table_info: TableInfo,
                     partitionInfoArray: Array[PartitionInfo],
