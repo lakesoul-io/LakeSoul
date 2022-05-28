@@ -80,14 +80,6 @@ object LakeSoulErrors {
        """.stripMargin.split("\n").mkString(" ").trim)
   }
 
-  def failedAddMaterialViewException(view_name: String): MetaException = {
-    new MetaException(
-      s"""
-         |Error: Failed to add material view: $view_name,
-         |this view may already exists.
-       """.stripMargin.split("\n").mkString(" ").trim)
-  }
-
   def failedAddFragmentValueException(id: String): MetaException = {
     new MetaException(
       s"""
@@ -613,45 +605,6 @@ object LakeSoulErrors {
       s"""Table `$table` is created by another user.""")
   }
 
-  def failedLockMaterialViewName(table: String): Throwable = {
-    new MetaException(
-      s"""Material view `$table` is created by another user.""")
-  }
-
-  def updateMaterialViewWithCommonOperatorException(): Throwable = {
-    new AnalysisException(
-      s"Material view can't be changed by common insert/update/upsert, you should use its own function.")
-  }
-
-  def notMaterialViewException(table: String, shortName: String): Throwable = {
-    new AnalysisException(
-      s"""Table `$table`(short table name: $shortName) is not material view.""")
-  }
-
-  def materialViewBuildWithNonLakeSoulTableException(): Throwable = {
-    new AnalysisException(
-      s"""Material view can only build with lakesoul table, but non-lakesoul table was found.""")
-  }
-
-  def materialViewBuildWithAnotherMaterialViewException(): Throwable = {
-    new AnalysisException(
-      s"""Material view can't build with another material view.""")
-  }
-
-  def materialViewHasStaleDataException(table: String): Throwable = {
-    new AnalysisException(
-      s"""Data of material view `$table` is staled, please update this view before read,
-         |or set spark.dmetasoul.lakesoul.allow.stale.materialView to true if you can accept staled data.""".stripMargin)
-  }
-
-  def unsupportedDataTypeInMaterialRewriteQueryException(dataType: DataType): Throwable = {
-    new AnalysisException(
-      s"""DataType ${dataType.simpleString} is not supported in query rewrite,
-         |if you want to use it, you can disable query rewrite by setting
-         |spark.dmetasoul.lakesoul.material.query.rewrite.enable to false.
-       """.stripMargin)
-  }
-
   def unsupportedLogicalPlanWhileRewriteQueryException(plan: String): Throwable = {
     new AnalysisException(
       s"""Found unsupported logical plan while rewrite Query.
@@ -659,13 +612,6 @@ object LakeSoulErrors {
           $plan
        """.stripMargin)
   }
-
-  def canNotCreateMaterialViewOrRewriteQueryException(reason: String): Throwable = {
-    new AnalysisException(
-      s"""Can't create material view or rewrite query plan because: $reason.""")
-  }
-
-
 }
 
 

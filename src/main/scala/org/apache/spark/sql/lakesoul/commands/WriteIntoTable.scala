@@ -65,10 +65,6 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
 
   override protected val shortTableName: Option[String] = options.shortTableName
 
-  override protected val createMaterialView: Boolean = options.createMaterialView
-  override protected val materialSQLText: String = options.materialSQLText
-  override protected val materialAutoUpdate: Boolean = options.materialAutoUpdate
-
   override def run(sparkSession: SparkSession): Seq[Row] = {
     snapshotManagement.withNewTransaction { tc =>
       val (addFiles, expireFiles) = write(tc, sparkSession)

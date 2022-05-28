@@ -182,7 +182,6 @@ public class LakesoulCatalog implements Catalog {
 //                    FlinkUtil.getTablePrimaryKey(table),
 //                    FlinkUtil.serialOptionsToCasStr(FlinkUtil.UpdateLakesoulCdcTable( tableOptions )),
 //                    tableInfo.bucket_num(),
-//                    FlinkUtil.isMaterialTable(table)
 //            );
         }
     }

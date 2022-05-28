@@ -1379,7 +1379,6 @@
 //      assert(tableInfo.hash_partition_columns.isEmpty)
 //      assert(tableInfo.bucket_num == -1)
 //      assert(tableInfo.short_table_name.isEmpty)
-//      assert(!tableInfo.is_material_view)
 //
 //    })
 //  }
@@ -1402,7 +1401,6 @@
 //        assert(tableInfo.range_partition_columns.equals(Seq("i")))
 //        assert(tableInfo.hash_partition_columns.equals(Seq("p")))
 //        assert(tableInfo.bucket_num == 1)
-//        assert(!tableInfo.is_material_view)
 //
 //      })
 //    }
@@ -1440,7 +1438,6 @@
 //        assert(tableInfo.range_partition_columns.equals(Seq("date")))
 //        assert(tableInfo.hash_partition_columns.equals(Seq("id")))
 //        assert(tableInfo.bucket_num == 2)
-//        assert(!tableInfo.is_material_view)
 //      }
 //    }
 //  }

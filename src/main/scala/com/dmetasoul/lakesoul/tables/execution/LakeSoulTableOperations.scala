@@ -127,10 +127,4 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       snapshotManagement.snapshot,
       condition)
   }
-
-
-  protected def executeUpdateForMaterialView(snapshotManagement: SnapshotManagement): Unit = {
-    toDataset(sparkSession, UpdateMaterialViewCommand(snapshotManagement))
-  }
-
 }

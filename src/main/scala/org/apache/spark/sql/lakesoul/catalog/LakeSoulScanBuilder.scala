@@ -27,17 +27,14 @@ import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, Spark
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
-import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.material_view.MaterialViewUtils
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{RelationTable, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.ArrayBuffer
 
 
 case class LakeSoulScanBuilder(sparkSession: SparkSession,
@@ -100,31 +97,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   override def build(): Scan = {
     //check and redo commit before read
     MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
-
-    //if table is a material view, quickly failed if data is stale
-    //todo
-//    if (tableInfo.is_material_view
-//      && !sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.ALLOW_STALE_MATERIAL_VIEW)) {
-//
-//      //forbid using material rewrite this plan
-//      LakeSoulUtils.executeWithoutQueryRewrite(sparkSession) {
-//        val materialInfo = MaterialView.getMaterialViewInfo(tableInfo.short_table_name.get)
-//        assert(materialInfo.isDefined)
-//
-//        val data = sparkSession.sql(materialInfo.get.sqlText)
-//        val currentRelationTableVersion = new ArrayBuffer[RelationTable]()
-//        MaterialViewUtils.parseRelationTableInfo(data.queryExecution.executedPlan, currentRelationTableVersion)
-//        val currentRelationTableVersionMap = currentRelationTableVersion.map(m => (m.tableName, m)).toMap
-//        val isConsistent = materialInfo.get.relationTables.forall(f => {
-//          val currentVersion = currentRelationTableVersionMap(f.tableName)
-//          f.toString.equals(currentVersion.toString)
-//        })
-//
-//        if (!isConsistent) {
-//          throw LakeSoulErrors.materialViewHasStaleDataException(tableInfo.short_table_name.get)
-//        }
-//      }
-//    }
 
     val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
