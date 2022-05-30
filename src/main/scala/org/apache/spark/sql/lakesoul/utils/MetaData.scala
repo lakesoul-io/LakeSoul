@@ -139,7 +139,7 @@ case class DataCommitInfo(table_id: String,
 }
 
 
-case class PartitionFilterInfo(range_id: String,
+case class PartitionFilterInfo(
                                range_value: String,
                                range_partitions: Map[String, String],
                                read_version: Long)
