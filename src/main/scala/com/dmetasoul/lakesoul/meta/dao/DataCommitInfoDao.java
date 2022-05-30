@@ -75,6 +75,9 @@ public class DataCommitInfoDao {
         PreparedStatement pstmt = null;
         ResultSet rs = null;
         List<DataCommitInfo> commitInfoList = new ArrayList<>();
+        if (commitIdList.size() < 1) {
+            return commitInfoList;
+        }
         String uuidListString = DBUtil.changeUUIDListToString(commitIdList);
         String sql = String.format("select * from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
                 "commit_id in (%s)", tableId, partitionDesc, uuidListString);
