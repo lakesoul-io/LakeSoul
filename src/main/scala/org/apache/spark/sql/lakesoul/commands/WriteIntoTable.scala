@@ -83,6 +83,11 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
       tc.tableInfo.hash_column
     }
 
+    mode match {
+      case SaveMode.ErrorIfExists | SaveMode.Append | SaveMode.Ignore => tc.setCommitType("append")
+      case SaveMode.Overwrite => tc.setCommitType("update")
+    }
+
     if (!tc.isFirstCommit) {
       // This table already exists, check if the insert is valid.
       if (mode == SaveMode.ErrorIfExists) {
