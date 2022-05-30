@@ -137,7 +137,7 @@ object DropPartitionCommand extends PredicateHelper {
         candidatePartitions.length)
     }
 
-    val range_id = candidatePartitions.head.range_id
+    val range_id = candidatePartitions.head.range_value
     val range_value = candidatePartitions.head.range_value
 
 
@@ -204,7 +204,6 @@ object DropPartitionCommand extends PredicateHelper {
 //      UndoLogType.DropPartition.toString,
 //      range_id)
 //    SnapshotManagement(table_name).updateSnapshot()
-    1
   }
 
 

@@ -30,11 +30,10 @@ object PartitionFilter {
     val partitionFilters = filters.flatMap { filter =>
       LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, SparkUtil.spark)._1
     }
-
-    val allPartitions = SparkUtil.allPartitionFilterInfoDF
+    snapshot.getPartitionInfoArray
+    val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
 
     import SparkUtil.spark.implicits._
-
 
     filterFileList(
       table_info.range_partition_schema,
@@ -45,10 +44,8 @@ object PartitionFilter {
 
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
-    val partitionIds = partitionsForScan(snapshot, filters).map(_.range_id)
-    //todo  p.range_value 是否合适
-    val partitionInfo = snapshot.getPartitionInfoArray.filter(p => partitionIds.contains(p.range_value))
-
+    val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value)
+    val partitionInfo = snapshot.getPartitionInfoArray.filter(p => partitionRangeValues.contains(p.range_value))
     DataOperation.getTableDataInfo(partitionInfo)
   }
 

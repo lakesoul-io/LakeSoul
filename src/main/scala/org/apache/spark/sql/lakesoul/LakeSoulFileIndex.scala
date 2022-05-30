@@ -25,7 +25,7 @@ import org.apache.spark.sql.lakesoul.LakeSoulFileIndexUtils._
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, SparkSession}
-
+import com.dmetasoul.lakesoul.meta.MetaUtils
 import scala.collection.mutable
 
 /** file index for data source v2 */
@@ -56,12 +56,10 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
     val timeZone = spark.sessionState.conf.sessionLocalTimeZone
 
     matchingFiles(partitionFilters, dataFilters)
-      .groupBy(_.range_partitions).map {
+      .groupBy(x=>MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
       case (partitionValues, files) =>
         val rowValues: Array[Any] = partitionSchema.map { p =>
-          //todo p.name参数类型 不对 这块没看明白
-//          Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
-          Cast(Literal(partitionValues(0)), p.dataType, Option(timeZone)).eval()
+          Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
         }.toArray
 
         //file status

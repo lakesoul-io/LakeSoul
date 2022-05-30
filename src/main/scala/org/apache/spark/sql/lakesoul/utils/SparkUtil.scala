@@ -26,9 +26,9 @@ import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
-import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation
 import org.apache.spark.sql.sources.BaseRelation
+import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import scala.collection.JavaConverters._
@@ -36,29 +36,21 @@ import scala.collection.JavaConverters._
 
 object SparkUtil {
   lazy val spark: SparkSession = SparkSession.builder().getOrCreate()
+  import spark.implicits._
 
-  lazy val allPartitionFilterInfoDF: DataFrame = {
-    import spark.implicits._
-    val partitionFilterInfoCached = false
-    //todo allPartitionFilterInfo需要重写
-    val allPartitionFilterInfo: Seq[PartitionFilterInfo] = Nil//{
-//      val partition_info_arr: Array[PartitionInfo]
-//      partition_info_arr
-//        .map(part =>
-//          PartitionFilterInfo(
-//            part.range_id,
-//            part.range_value,
-//            MetaUtils.getPartitionMapFromKey(part.range_value),
-//            part.read_version))
-//    }
-    spark.sparkContext.parallelize(allPartitionFilterInfo).toDF()
-  }.persist()
+  def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
+   val allPatition= snapshot.getPartitionInfoArray.map(part =>
+        PartitionFilterInfo(
+          part.range_value,
+          MetaUtils.getPartitionMapFromKey(part.range_value),
+          part.version))
 
-  //todo allDataInfo需要重写
-  def allDataInfo: Array[DataFileInfo] = {
+    spark.sparkContext.parallelize(allPatition).toDF().persist()
+  }
+
+  def allDataInfo(snapshot: Snapshot): Array[DataFileInfo] = {
     import spark.implicits._
-//    allDataInfoDS.as[DataFileInfo].collect()
-    new Array[DataFileInfo](10000)
+    spark.sparkContext.parallelize(DataOperation.getTableDataInfo(snapshot.getPartitionInfoArray)).toDS().persist().as[DataFileInfo].collect()
   }
 
 /*  def modifyTableString(tablePath: String): String = {

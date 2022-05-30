@@ -81,7 +81,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 //      } else f)
 
     val partitionGroupedFiles = files
-      // todo range_partitions？
       .groupBy(_.range_partitions)
       .values
       .map(m => {
@@ -110,17 +109,16 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val remainFiles = new ArrayBuffer[DataFileInfo]()
 
     //todo 需要修改
-//    partitionGroupedFiles.foreach(partition => {
-//      val sortedFiles = partition.map(m => m.sortBy(_.write_version))
-//
-//      remainFiles ++= LakeSoulPartFileMerge.partMergeCompaction(
-//        sparkSession,
-//        snapshotManagement,
-//        sortedFiles,
-//        mergeOperatorStringInfo,
-//        isCompactionCommand)
-//
-//    })
+    partitionGroupedFiles.foreach(partition => {
+     val sortedFiles = partition
+     remainFiles ++= LakeSoulPartFileMerge.partMergeCompaction(
+        sparkSession,
+       snapshotManagement,
+        sortedFiles,
+       mergeOperatorStringInfo,
+       isCompactionCommand)
+
+   })
 
     BatchDataSoulFileIndexV2(sparkSession, snapshotManagement, remainFiles)
   }
@@ -132,7 +130,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val requestedFields = readDataSchema.fieldNames
     val requestFilesSchema =
       fileInfo
-        //todo range_partitions？
         .groupBy(_.range_partitions)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
@@ -482,8 +479,8 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
       val isSingleFile = p._2.map(_.writeVersion).toSet.size == 1
       p._2.groupBy(_.fileBucketId).foreach(g => {
         val files = g._2.toArray
-        assert(files.length == files.map(_.writeVersion).toSet.size,
-          "Files has duplicate write version, it may has too many base files, have a check!")
+//        assert(files.length == files.map(_.writeVersion).toSet.size,
+//          "Files has duplicate write version, it may has too many base files, have a check!")
         partitions += MergeFilePartition(i, Array(files), isSingleFile)
         i = i + 1
       })

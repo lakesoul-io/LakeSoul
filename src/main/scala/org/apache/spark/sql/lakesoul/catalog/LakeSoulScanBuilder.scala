@@ -96,12 +96,12 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
   override def build(): Scan = {
     //check and redo commit before read
-    MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
+    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
     val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
     //todo
-    val hasNoDeltaFile = false//fileInfo.forall(f => f._2.forall(_.is_base_file))
+    val hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
 
     val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
 
