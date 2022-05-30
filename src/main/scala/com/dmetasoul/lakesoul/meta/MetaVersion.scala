@@ -39,13 +39,10 @@ object MetaVersion {
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String): (Boolean, String) = {
     val tableNameId = dbManager.shortTableName(short_table_name)
-    val table_name = try {
-      tableNameId.getTableName
-    } catch {
-      case _: NullPointerException => return (false, "-1")
-      case e: Exception => throw e
+    tableNameId.getTableName match {
+      case null => (false, null)
+      case _ => (true, tableNameId.getTableName)
     }
-    (true, table_name)
   }
 
   //get table path, if not exists, return "not found"
@@ -128,12 +125,19 @@ object MetaVersion {
     import scala.util.parsing.json.JSON
     val configuration = JSON.parseFull(properties)
     val configurationMap = configuration match {
-      case Some(map:collection.immutable.Map[String, String]) => map
+      case Some(map: collection.immutable.Map[String, String]) => map
     }
 
-    val range_column = partitions.split(";")(0)
-    val hash_column = partitions.split(";")(1)
-    val bucket_num = configurationMap.get("hashBucketNum").get.toInt
+    val partitionCols = partitions.split(";")
+    // table may have no partition at all
+    val (range_column, hash_column) = partitionCols match {
+      case Array(range, hash) => (range, hash)
+      case _ => ("", "")
+    }
+    val bucket_num = configurationMap.get("hashBucketNum") match {
+      case Some(value) => value.toInt
+      case _ => -1
+    }
     TableInfo(
       Some(table_name),
       info.getTableId,

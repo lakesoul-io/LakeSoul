@@ -81,11 +81,11 @@ object SparkUtil {
     }
   }
 
- // ------------------snapshotmanagement--------------
- def createRelation(partitionFilters: Seq[Expression] = Nil,snapmnt:SnapshotManagement,sparksess:SparkSession): BaseRelation = {
-   val files: Array[DataFileInfo] = PartitionFilter.filesForScan(snapmnt.snapshot, partitionFilters)
-   LakeSoulBaseRelation(files, snapmnt)(sparksess)
- }
+  // ------------------snapshotmanagement--------------
+  def createRelation(partitionFilters: Seq[Expression] = Nil,snapmnt:SnapshotManagement,sparksess:SparkSession): BaseRelation = {
+    val files: Array[DataFileInfo] = PartitionFilter.filesForScan(snapmnt.snapshot, partitionFilters)
+    LakeSoulBaseRelation(files, snapmnt)(sparksess)
+  }
 
 
   def createDataFrame(files: Seq[DataFileInfo],
