@@ -167,7 +167,7 @@ case class UpsertCommand(source: LogicalPlan,
                                        selectCols: Seq[String]): LogicalPlan = {
     val plan = SparkUtil
       //todo createDataFrame（） 感觉这个参数值需要修改 SnapshotManagement.getSM("")这个肯定不对
-      .createDataFrame(files, selectCols, SnapshotManagement.getSM(""))
+      .createDataFrame(files, selectCols,tc.snapshotManagement)
       .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and
