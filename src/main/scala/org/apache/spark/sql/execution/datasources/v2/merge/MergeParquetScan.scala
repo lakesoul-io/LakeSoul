@@ -473,7 +473,11 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
     groupByPartition.foreach(p => {
       val isSingleFile = p._2.toSet.size == 1
       p._2.groupBy(_.fileBucketId).foreach(g => {
-        val files = g._2.toArray
+        var files = g._2.toArray
+        if(!isSingleFile){
+         val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version)
+          files=versionFiles.toArray
+        }
         partitions += MergeFilePartition(i, Array(files), isSingleFile)
         i = i + 1
       })
