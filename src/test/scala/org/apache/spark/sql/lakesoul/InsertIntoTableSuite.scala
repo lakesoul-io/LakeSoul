@@ -18,9 +18,6 @@ package org.apache.spark.sql.lakesoul
 
 // scalastyle:off import.ordering.noEmptyLine
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
-import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.{col, lit, struct}

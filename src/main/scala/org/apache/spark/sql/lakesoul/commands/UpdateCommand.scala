@@ -61,6 +61,8 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
   private def performUpdate(sparkSession: SparkSession, tc: TransactionCommit): Unit = {
     import sparkSession.implicits._
 
+    tc.setCommitType("update")
+
     val updateCondition = condition.getOrElse(Literal(true, BooleanType))
     val (metadataPredicates, dataPredicates) =
       LakeSoulUtils.splitMetadataAndDataPredicates(
