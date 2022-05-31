@@ -197,6 +197,18 @@ public class DBUtil {
         return sb.toString();
     }
 
+    public static String changeUUIDListToOrderString(List<UUID> uuidList) {
+        StringBuilder sb = new StringBuilder();
+        if (uuidList.size() == 0) {
+            return sb.toString();
+        }
+        for (UUID uuid : uuidList) {
+            sb.append(String.format("%s,", uuid.toString()));
+        }
+        sb = new StringBuilder(sb.substring(0, sb.length()-1));
+        return sb.toString();
+    }
+
     public static List<UUID> changeStringToUUIDList(String s) {
         List<UUID> uuidList = new ArrayList<>();
         if (!s.startsWith("{") || !s.endsWith("}")) {

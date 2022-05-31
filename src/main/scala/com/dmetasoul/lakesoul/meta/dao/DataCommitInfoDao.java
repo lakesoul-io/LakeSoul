@@ -79,8 +79,11 @@ public class DataCommitInfoDao {
             return commitInfoList;
         }
         String uuidListString = DBUtil.changeUUIDListToString(commitIdList);
+        String uuidListOrderString = DBUtil.changeUUIDListToOrderString(commitIdList);
         String sql = String.format("select * from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
-                "commit_id in (%s)", tableId, partitionDesc, uuidListString);
+                "commit_id in (%s) order by position(commit_id::text in '%s') ", tableId, partitionDesc, uuidListString, uuidListOrderString);
+//        String sql = String.format("select * from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
+//                "commit_id in (%s) order by array_positions(array['%s'],commit_id::text) ", tableId, partitionDesc, uuidListString, uuidListOrderString);
 
         try {
             conn = DBConnector.getConn();
