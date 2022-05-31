@@ -256,7 +256,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       // produce requested schema
       val requestedFields = readDataSchema.fieldNames
       val requestFilesSchemaMap = fileInfo
-        //todo range_partitions？
         .groupBy(_.range_partitions)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
@@ -371,12 +370,10 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
     val fileWithBucketId = groupByPartition.head._2
       .groupBy(_.fileBucketId).map(f => (f._1, f._2.toArray))
 
-    val isSingleFile = groupByPartition.head._2.map(_.writeVersion).toSet.size == 1
+    val isSingleFile = groupByPartition.head._2.toSet.size == 1
 
     Seq.tabulate(bucketNum) { bucketId =>
       val files = fileWithBucketId.getOrElse(bucketId, Array.empty)
-      assert(files.length == files.map(_.writeVersion).toSet.size,
-        "Files has duplicate write version, it may has too many base file, have a check!")
       MergeFilePartition(bucketId, Array(files), isSingleFile)
     }
   }
@@ -426,8 +423,6 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
     Seq.tabulate(bucketNum) { bucketId =>
       val files = fileWithBucketId.getOrElse(bucketId, Map.empty[String, Seq[MergePartitionedFile]])
         .map(_._2.toArray)
-      assert(files.forall(f => f.length == f.map(_.writeVersion).toSet.size),
-        "Files has duplicate write version, it may has too many base file, have a check!")
       MergeFilePartition(bucketId, files.toArray, isSingleFile)
     }
   }
@@ -476,11 +471,9 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
     val partitions = new ArrayBuffer[MergeFilePartition]
 
     groupByPartition.foreach(p => {
-      val isSingleFile = p._2.map(_.writeVersion).toSet.size == 1
+      val isSingleFile = p._2.toSet.size == 1
       p._2.groupBy(_.fileBucketId).foreach(g => {
         val files = g._2.toArray
-//        assert(files.length == files.map(_.writeVersion).toSet.size,
-//          "Files has duplicate write version, it may has too many base files, have a check!")
         partitions += MergeFilePartition(i, Array(files), isSingleFile)
         i = i + 1
       })
