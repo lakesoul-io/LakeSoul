@@ -93,7 +93,7 @@ public class DBUtil {
         } catch (SQLException e) {
             e.printStackTrace();
         } finally {
-            //DBConnector.closeConn();
+            DBConnector.closeConn();
         }
     }
 
@@ -119,7 +119,7 @@ public class DBUtil {
         } catch (SQLException e) {
             e.printStackTrace();
         } finally {
-           // DBConnector.closeConn();
+            DBConnector.closeConn();
         }
     }
 
@@ -137,7 +137,7 @@ public class DBUtil {
 
     public static String changeDataFileOpListToString(List<DataFileOp> dataFileOpList) {
         if (dataFileOpList.size() < 1) {
-            return "";
+            return "{}";
         }
         StringBuilder sb = new StringBuilder();
         sb.append("{");
