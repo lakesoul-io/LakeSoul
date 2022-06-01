@@ -103,10 +103,8 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     //todo
     val hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
-
     if (tableInfo.hash_partition_columns.isEmpty) {
-      parquetScan(enableAsyncIO)
+      parquetScan()
     }
     else if (onlyOnePartition) {
       if (hasNoDeltaFile) {
@@ -123,34 +121,18 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       } else if (hasNoDeltaFile) {
-        parquetScan(enableAsyncIO)
+        parquetScan()
       } else {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       }
-
     }
   }
 
 
-  def parquetScan(enableAsyncIO: Boolean): Scan = {
-    val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.AsyncParquetScan"
-    val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
-
-    if (enableAsyncIO && hasAsyncClass) {
-      logInfo("======================  async scan   ========================")
-
-      val constructor = cls.getConstructors()(0)
-      constructor.newInstance(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()), Seq.empty)
-        .asInstanceOf[Scan]
-
-    } else {
-      logInfo("======================  scan no async  ========================")
-
-      ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()))
-    }
+  def parquetScan(): Scan = {
+    ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+      readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()))
   }
 
 }

@@ -184,11 +184,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         (realColName, mergeClass)
       }).toMap
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name.get, sparkSession.sessionState.conf)
-
-    val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.MergeParquetPartitionAsyncReaderFactory"
-    val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
-
     //remove cdc filter from pushedFilters;cdc filter Not(EqualTo("cdccolumn","detete"))
     var newFilters = pushedFilters
     if (LakeSoulTableForCdc.isLakeSoulCdcTable(tableInfo)){
@@ -197,22 +192,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         case _=>true
       })
     }
-
-    if (enableAsyncIO && hasAsyncClass) {
-      logInfo("================  async merge scan   ==============================")
-
-      cls.getConstructors()(0)
-        .newInstance(sparkSession.sessionState.conf, broadcastedConf,
-          dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
-        .asInstanceOf[MergeFilePartitionReaderFactory]
-
-    } else {
-      logInfo("================  merge scan no async  ==============================")
-
-      MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-        dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
-    }
-
+    MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
   }
 
   protected def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
