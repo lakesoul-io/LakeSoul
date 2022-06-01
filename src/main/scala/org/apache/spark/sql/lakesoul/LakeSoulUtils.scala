@@ -47,11 +47,6 @@ object LakeSoulUtils extends PredicateHelper {
     f
   }
 
-  def enableAsyncIO(tablePath: String, conf: SQLConf): Boolean = {
-    val validFormat = tablePath.startsWith("s3") || tablePath.startsWith("oss")
-    validFormat && conf.getConf(LakeSoulSQLConf.ASYNC_IO_ENABLE)
-  }
-
   def getClass(className: String): Class[_] = {
     Class.forName(className, true, Utils.getContextOrSparkClassLoader)
   }

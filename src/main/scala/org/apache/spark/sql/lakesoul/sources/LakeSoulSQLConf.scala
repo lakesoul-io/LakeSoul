@@ -134,53 +134,6 @@ object LakeSoulSQLConf {
       .intConf
       .createWithDefault(600)
 
-  val META_GET_LOCK_MAX_ATTEMPTS: ConfigEntry[Int] =
-    buildConf("meta.get.lock.max.attempts")
-      .doc(
-        """
-          |The maximum times for a commit attempts to acquire the lock.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(5)
-
-  val META_GET_LOCK_WAIT_INTERVAL: ConfigEntry[Int] =
-    buildConf("meta.acquire.write.lock.wait.interval")
-      .doc(
-        """
-          |The wait time when a commit failed to get write lock because another job is committing.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(5)
-
-  val META_GET_LOCK_RETRY_INTERVAL: ConfigEntry[Int] =
-    buildConf("meta.acquire.write.lock.retry.interval")
-      .doc(
-        """
-          |The interval time when a commit failed to get write lock.
-          |The commit will wait a random time between 0 and RETRY_INTERVAL seconds.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(20)
-
-  val META_COMMIT_TIMEOUT: ConfigEntry[Long] =
-    buildConf("meta.commit.timeout")
-      .doc(
-        """
-          |The maximum timeout for a committer.
-        """.stripMargin)
-      .longConf
-      .createWithDefault(20 * 1000L)
-
-  val META_UNDO_LOG_TIMEOUT: ConfigEntry[Long] =
-    buildConf("meta.undo_log.timeout")
-      .doc(
-        """
-          |The maximum timeout for undo log(exclude Commit type).
-          |This parameter will only be used in Cleanup operation.
-        """.stripMargin)
-      .longConf
-      .createWithDefault(30 * 60 * 1000L)
-
   val META_STREAMING_INFO_TIMEOUT: ConfigEntry[Long] =
     buildConf("meta.streaming_info.timeout")
       .doc(
@@ -199,16 +152,6 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .intConf
       .createWithDefault(5)
-
-  val META_MAX_SIZE_PER_VALUE: ConfigEntry[Int] =
-    buildConf("meta.max.size.per.value")
-      .doc(
-        """
-          |The maximum size for undo log value(e.g. table_info.table_schema).
-          |If value size exceed this limit, it will be split into some fragment values.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(50 * 1024)
 
   //dorp table await time
   val DROP_TABLE_WAIT_SECONDS: ConfigEntry[Int] =
@@ -301,13 +244,4 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .doubleConf
       .createWithDefault(0.1)
-
-  val ASYNC_IO_ENABLE: ConfigEntry[Boolean] =
-    buildConf("async.io.enable")
-      .doc(
-        """
-          |Whether async reader/writer can be used.
-        """.stripMargin)
-      .booleanConf
-      .createWithDefault(true)
 }

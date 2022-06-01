@@ -16,13 +16,14 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.alibaba.fastjson.{JSON, JSONObject}
-
-import java.util
+import com.alibaba.fastjson.JSONObject
+import com.google.common.base.Splitter
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo}
 
+import java.util
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.JavaConverters._
 
 object MetaVersion {
 
@@ -128,8 +129,8 @@ object MetaVersion {
       case Some(map: collection.immutable.Map[String, String]) => map
     }
 
-    val partitionCols = partitions.split(";")
-    // table may have no partition at all
+    // table may have no partition at all or only have range or hash partition
+    val partitionCols = Splitter.on(';').split(partitions).asScala.toArray
     val (range_column, hash_column) = partitionCols match {
       case Array(range, hash) => (range, hash)
       case _ => ("", "")
