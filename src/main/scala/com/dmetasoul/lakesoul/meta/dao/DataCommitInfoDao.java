@@ -29,11 +29,46 @@ public class DataCommitInfoDao {
     public void deleteByPrimaryKey(String tableId, String partitionDesc, UUID commitId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from data_commit_info where table_id = '%s' and partition_desc = '%s' and commit_id = '%s' ",
-                tableId, partitionDesc, commitId);
+        String sql = "delete from data_commit_info where table_id = ? and partition_desc = ? and commit_id = ? ";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, tableId);
+            pstmt.setString(2, partitionDesc);
+            pstmt.setString(3, commitId.toString());
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+    }
+
+    public void deleteByTableIdAndPartitionDesc(String tableId, String partitionDesc) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        String sql = "delete from data_commit_info where table_id = ? and partition_desc = ?";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, tableId);
+            pstmt.setString(2, partitionDesc);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+    }
+
+    public void deleteByTableId(String tableId) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        String sql = "delete from data_commit_info where table_id = ?";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, tableId);
             pstmt.execute();
         } catch (SQLException e) {
             e.printStackTrace();

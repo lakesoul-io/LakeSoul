@@ -17,13 +17,10 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta._
-//import com.dmetasoul.lakesoul.Newmeta._
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.FileOperation
 import org.apache.spark.sql.lakesoul.{PartitionFilter, Snapshot, SnapshotManagement}
 
 import java.util.concurrent.TimeUnit
@@ -45,9 +42,8 @@ object DropTableCommand {
       MetaVersion.deleteShortTableName(short_table_name.get, table_name.get)
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
-    val partition_info_arr = snapshot.getPartitionInfoArray
-    MetaVersion.deletePartitionInfoByTableId(table_id)
-    partition_info_arr.foreach(part => DataOperation.deleteDataInfoByRangeId(table_id, part.range_value))
+    MetaVersion.dropPartitionInfoByTableId(table_id)
+    DataOperation.dropDataInfoData(table_id)
     val path = new Path(table_name.get)
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)

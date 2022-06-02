@@ -223,11 +223,19 @@ object MetaVersion {
   }
 
   def deletePartitionInfoByTableId(table_id: String): Unit = {
-    dbManager.deletePartitionInfoByTableId(table_id)
+    dbManager.logicDeletePartitionInfoByTableId(table_id)
   }
 
   def deletePartitionInfoByRangeId(table_id: String, range_value: String, range_id: String): Unit = {
-    dbManager.deletePartitionInfoByRangeId(table_id, range_value)
+    dbManager.logicDeletePartitionInfoByRangeId(table_id, range_value)
+  }
+
+  def dropPartitionInfoByTableId(table_id: String): Unit = {
+    dbManager.deletePartitionInfoByTableId(table_id)
+  }
+
+  def dropPartitionInfoByRangeId(table_id: String, range_value: String): Unit = {
+    dbManager.deletePartitionInfoByTableAndPartition(table_id, range_value)
   }
 
   //todo table_info中short_name置为空？

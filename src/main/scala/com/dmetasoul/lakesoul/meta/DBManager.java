@@ -187,6 +187,14 @@ public class DBManager {
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
+        partitionInfoDao.deleteByTableId(tableId);
+    }
+
+    public void deletePartitionInfoByTableAndPartition(String tableId, String partitionDesc) {
+        partitionInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
+    }
+
+    public void logicDeletePartitionInfoByTableId(String tableId) {
         List<PartitionInfo> curPartitionInfoList = partitionInfoDao.getPartitionDescByTableId(tableId);
         for (PartitionInfo p : curPartitionInfoList) {
             int version = p.getVersion();
@@ -198,7 +206,7 @@ public class DBManager {
         partitionInfoDao.transactionInsert(curPartitionInfoList);
     }
 
-    public void deletePartitionInfoByRangeId(String tableId, String partitionDesc) {
+    public void logicDeletePartitionInfoByRangeId(String tableId, String partitionDesc) {
         PartitionInfo partitionInfo = getSinglePartitionInfo(tableId, partitionDesc);
         int version = partitionInfo.getVersion();
         partitionInfo.setVersion(version + 1);
@@ -206,6 +214,26 @@ public class DBManager {
         partitionInfo.setCommitOp("DeleteCommit");
         partitionInfo.setExpression("");
         partitionInfoDao.insert(partitionInfo);
+    }
+
+    public void deleteDataCommitInfo(String tableId, String partitionDesc, UUID commitId) {
+        if (StringUtils.isNotBlank(commitId.toString())) {
+            dataCommitInfoDao.deleteByPrimaryKey(tableId, partitionDesc, commitId);
+        } else {
+            deleteDataCommitInfo(tableId, partitionDesc);
+        }
+    }
+
+    public void deleteDataCommitInfo(String tableId, String partitionDesc) {
+        if (StringUtils.isNotBlank(partitionDesc)) {
+            dataCommitInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
+        } else {
+            deleteDataCommitInfo(tableId);
+        }
+    }
+
+    public void deleteDataCommitInfo(String tableId) {
+        dataCommitInfoDao.deleteByTableId(tableId);
     }
 
     public void deleteShortTableName(String tableName, String tablePath) {
