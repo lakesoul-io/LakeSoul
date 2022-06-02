@@ -32,87 +32,25 @@ object DropTableCommand {
 
   val MAX_ATTEMPTS: Int = MetaUtils.GET_LOCK_MAX_ATTEMPTS
   val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
-
   def run(snapshot: Snapshot): Unit = {
-    val table_id = snapshot.getTableInfo.table_id
-    val table_name = snapshot.getTableInfo.table_name
-
-    var i = 0
-    //todo 需要修改逻辑
-//    while (i < MAX_ATTEMPTS) {
-//      if (UndoLog.addDropTableUndoLog(table_name, table_id)) {
-//        dropTable(snapshot)
-//        i = MAX_ATTEMPTS
-//      } else {
-//        i = checkAndDropTable(snapshot, i)
-//      }
-//    }
-
+       dropTable(snapshot)
   }
-
-
-  private def checkAndDropTable(snapshot: Snapshot, i: Int): Int = {
-    //todo 需要修改逻辑
-//    val table_id = snapshot.getTableInfo.table_id
-//
-//    val (timestamp, _) = UndoLog.getCommitTimestampAndTag(
-//      UndoLogType.DropTable.toString,
-//      table_id,
-//      "dropTable")
-//
-//    if (timestamp < 0) {
-//      MAX_ATTEMPTS
-//    } else if (timestamp > System.currentTimeMillis() - MetaUtils.COMMIT_TIMEOUT) {
-//      TimeUnit.SECONDS.sleep(WAIT_TIME)
-//      checkAndDropTable(snapshot, i)
-//    } else {
-//      val update_timestamp = UndoLog.updateUndoLogTimestamp(
-//        commit_type = UndoLogType.DropTable.toString,
-//        table_id = table_id,
-//        commit_id = "dropTable",
-//        last_timestamp = timestamp
-//      )
-//      if (update_timestamp._1) {
-//        dropTable(snapshot)
-//        MAX_ATTEMPTS
-//      }
-//      else {
-//        i + 1
-//      }
-//
-//    }
-    1
-  }
-
   def dropTable(snapshot: Snapshot): Unit = {
     val tableInfo = snapshot.getTableInfo
     val table_id = tableInfo.table_id
     val table_name = tableInfo.table_name
     val short_table_name = tableInfo.short_table_name
-
     MetaVersion.deleteTableInfo(table_name.get, table_id)
-
     if (short_table_name.isDefined) {
       MetaVersion.deleteShortTableName(short_table_name.get, table_name.get)
     }
-
     TimeUnit.SECONDS.sleep(WAIT_TIME)
-
     val partition_info_arr = snapshot.getPartitionInfoArray
     MetaVersion.deletePartitionInfoByTableId(table_id)
-
-    //todo part.range_value？
-//    partition_info_arr.foreach(part => DataOperation.deleteDataInfoByRangeId(table_id, part.range_id))
     partition_info_arr.foreach(part => DataOperation.deleteDataInfoByRangeId(table_id, part.range_value))
-//    FragmentValue.deleteFragmentValueByTableId(table_id)
-    StreamingRecord.deleteStreamingInfoByTableId(table_id)
-
     val path = new Path(table_name.get)
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)
-
-    //todo
-//    UndoLog.deleteUndoLogByTableId(UndoLogType.DropTable.toString, table_id)
     SnapshotManagement.invalidateCache(table_name.get)
     fs.delete(path, true);
   }
@@ -136,74 +74,13 @@ object DropPartitionCommand extends PredicateHelper {
         condition.toString(),
         candidatePartitions.length)
     }
-
-    val range_id = candidatePartitions.head.range_value
     val range_value = candidatePartitions.head.range_value
-
-
-    var i = 0
-    //todo 逻辑修改
-    while (i < MAX_ATTEMPTS) {
-
-//      if (UndoLog.addDropPartitionUndoLog(table_name, table_id, range_value, range_id)) {
-//        dropPartition(table_name, table_id, range_value, range_id)
-//        i = MAX_ATTEMPTS
-//      } else {
-//        i = checkAndDropPartition(table_name, table_id, range_value, range_id, i)
-//      }
-    }
-
+    dropPartition(table_name, table_id, range_value)
   }
 
-  //todo 逻辑修改
-  private def checkAndDropPartition(table_name: String, table_id: String, range_value: String, range_id: String, i: Int): Int = {
-//    val (timestamp, _) = UndoLog.getCommitTimestampAndTag(
-//      UndoLogType.DropPartition.toString,
-//      table_id,
-//      UndoLogType.DropPartition.toString,
-//      range_id)
-//    if (timestamp < 0) {
-//      MAX_ATTEMPTS
-//    } else if (timestamp > System.currentTimeMillis() - MetaUtils.COMMIT_TIMEOUT) {
-//      TimeUnit.SECONDS.sleep(WAIT_TIME)
-//      checkAndDropPartition(table_name, table_id, range_value, range_id, i)
-//    } else {
-//      val update_timestamp = UndoLog.updateUndoLogTimestamp(
-//        commit_type = UndoLogType.DropPartition.toString,
-//        table_id = table_id,
-//        commit_id = UndoLogType.DropPartition.toString,
-//        range_id = range_id,
-//        last_timestamp = timestamp
-//      )
-//      if (update_timestamp._1) {
-//        dropPartition(table_name, table_id, range_value, range_id)
-//        MAX_ATTEMPTS
-//      }
-//      else {
-//        i + 1
-//      }
-//
-//    }
-    1
-  }
-
-  //todo 逻辑修改
-  def dropPartition(table_name: String, table_id: String, range_value: String, range_id: String): Unit = {
-//    MetaVersion.deletePartitionInfoByRangeId(table_id, range_value, range_id)
-//    UndoLog.deleteUndoLogByRangeId(UndoLogType.Partition.toString, table_id, range_id)
-//    UndoLog.deleteUndoLogByRangeId(UndoLogType.AddFile.toString, table_id, range_id)
-//    UndoLog.deleteUndoLogByRangeId(UndoLogType.ExpireFile.toString, table_id, range_id)
-//
-//    TimeUnit.SECONDS.sleep(WAIT_TIME)
-//
-//    DataOperation.deleteDataInfoByRangeId(table_id, range_id)
-//
-//    UndoLog.deleteUndoLogByRangeId(
-//      UndoLogType.DropPartition.toString,
-//      table_id,
-//      UndoLogType.DropPartition.toString,
-//      range_id)
-//    SnapshotManagement(table_name).updateSnapshot()
+  def dropPartition(table_name: String, table_id: String, range_value: String): Unit = {
+    //just add partition version with non-value snapshot;not delete related datainfo for SCD
+    MetaVersion.deletePartitionInfoByRangeId(table_id, range_value,"")
   }
 
 

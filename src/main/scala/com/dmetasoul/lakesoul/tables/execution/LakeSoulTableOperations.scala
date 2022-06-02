@@ -114,10 +114,10 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   protected def executeDropTable(snapshotManagement: SnapshotManagement): Unit = {
     val snapshot = snapshotManagement.snapshot
     val tableInfo = snapshot.getTableInfo
-    //todo
-//    if (!MetaVersion.isTableIdExists(tableInfo.table_name, tableInfo.table_id)) {
-//      LakeSoulErrors.tableNotFoundException(tableInfo.table_name, tableInfo.table_id)
-//    }
+
+    if (!MetaVersion.isTableIdExists(tableInfo.table_name.get, tableInfo.table_id)) {
+      LakeSoulErrors.tableNotFoundException(tableInfo.table_name.get, tableInfo.table_id)
+    }
     DropTableCommand.run(snapshot)
   }
 
