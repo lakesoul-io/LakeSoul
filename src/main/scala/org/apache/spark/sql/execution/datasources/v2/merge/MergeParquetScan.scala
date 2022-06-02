@@ -351,10 +351,13 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
     val fileWithBucketId = groupByPartition.head._2
       .groupBy(_.fileBucketId).map(f => (f._1, f._2.toArray))
 
-    val isSingleFile = groupByPartition.head._2.toSet.size == 1
-
     Seq.tabulate(bucketNum) { bucketId =>
-      val files = fileWithBucketId.getOrElse(bucketId, Array.empty)
+      var files = fileWithBucketId.getOrElse(bucketId, Array.empty)
+      val isSingleFile = files.size == 1
+      if(!isSingleFile){
+        val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version)
+        files=versionFiles.toArray
+      }
       MergeFilePartition(bucketId, Array(files), isSingleFile)
     }
   }
