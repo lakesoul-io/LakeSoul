@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
@@ -144,22 +145,10 @@ abstract class InsertIntoTests(
   import testImplicits._
 
   override def afterEach(): Unit = {
-    spark.catalog.listTables().collect().foreach(t => {
-      val location = try {
-        Option(spark.sessionState.catalog.getTableMetadata(TableIdentifier(t.name, Option(t.database))).location)
-      } catch {
-        case e: Exception => None
-      }
-      sql(s"drop table ${t.name}")
-      if (location.isDefined) {
-        try {
-          LakeSoulTable.forPath(location.get.toString).dropTable()
-        } catch {
-          case e: Exception =>
-        }
-      }
-    }
-    )
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    catalog.listTables(Array("default")).foreach(t => {
+      sql(s"drop table lakesoul.`${t.name}``")
+    })
   }
 
   // START Apache Spark tests
