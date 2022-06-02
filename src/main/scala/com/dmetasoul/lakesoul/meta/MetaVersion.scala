@@ -119,6 +119,9 @@ object MetaVersion {
   //todo
   def getTableInfo(table_name: String): TableInfo = {
     val info = dbManager.getTableInfo(table_name)
+    if (info == null) {
+      return null
+    }
     val short_table_name = info.getTableName
     val partitions = info.getPartitions
     val properties = info.getProperties.toString()
@@ -165,18 +168,6 @@ object MetaVersion {
 
   //todo
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select range_id from $database.partition_info
-//           |where table_id='$table_id' and range_value='$range_value'
-//      """.stripMargin)
-//      try {
-//        (true, res.one().getString("range_id"))
-//      } catch {
-//        case _: Exception => return (false, "")
-//      }
-//    })
     (false, "")
   }
 
@@ -195,18 +186,6 @@ object MetaVersion {
     }
     partitionVersionBuffer.toArray
   }
-
-  //todo 删除了
-//  def updatePartitionInfo(info: undoLogInfo): Unit = {
-////    updatePartitionInfo(
-////      info.table_id,
-////      info.range_value,
-////      info.range_id,
-////      info.write_version,
-////      info.delta_file_num,
-////      info.be_compacted
-////    )
-//  }
 
   def updatePartitionInfo(table_id: String,
                           range_value: String,
@@ -235,16 +214,6 @@ object MetaVersion {
                         table_schema: String,
                         config: Map[String, String],
                         new_read_version: Int): Unit = {
-//    val setting = MetaUtils.toCassandraSetting(config)
-//    val ori_read_version = new_read_version - 1
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |update $database.table_info set table_schema='$table_schema',setting=$setting,read_version=$new_read_version
-//           |where table_name='$table_name'
-//           |if read_version=$ori_read_version and table_id='$table_id'
-//        """.stripMargin)
-//    })
     dbManager.updateTableSchema(table_id, table_schema)
   }
 

@@ -18,7 +18,6 @@
 
 package com.dmetasoul.lakesoul.meta;
 
-import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
@@ -188,11 +187,25 @@ public class DBManager {
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
-        partitionInfoDao.deleteByTableId(tableId);
+        List<PartitionInfo> curPartitionInfoList = partitionInfoDao.getPartitionDescByTableId(tableId);
+        for (PartitionInfo p : curPartitionInfoList) {
+            int version = p.getVersion();
+            p.setVersion(version + 1);
+            p.setSnapshot(Arrays.asList());
+            p.setCommitOp("DeleteCommit");
+            p.setExpression("");
+        }
+        partitionInfoDao.transactionInsert(curPartitionInfoList);
     }
 
     public void deletePartitionInfoByRangeId(String tableId, String partitionDesc) {
-        partitionInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
+        PartitionInfo partitionInfo = getSinglePartitionInfo(tableId, partitionDesc);
+        int version = partitionInfo.getVersion();
+        partitionInfo.setVersion(version + 1);
+        partitionInfo.setSnapshot(Arrays.asList());
+        partitionInfo.setCommitOp("DeleteCommit");
+        partitionInfo.setExpression("");
+        partitionInfoDao.insert(partitionInfo);
     }
 
     public void deleteShortTableName(String tableName, String tablePath) {
