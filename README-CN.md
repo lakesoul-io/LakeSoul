@@ -18,6 +18,9 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 # 特性路线
 [Feature Roadmap](#Feature-Roadmap)
 
+# 社区准则
+[社区准则](community-guideline-cn.md)
+
 # 问题反馈
 
 欢迎提 issue、discussion 反馈问题。
