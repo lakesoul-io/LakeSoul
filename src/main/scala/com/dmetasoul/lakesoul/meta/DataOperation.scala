@@ -209,15 +209,12 @@ object DataOperation extends Logging {
 
   }
 
-  def deleteDataInfoByRangeId(table_id: String, range_id: String): Unit = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |delete from $database.data_info
-//           |where table_id='$table_id' and range_id='$range_id'
-//      """.stripMargin)
-//    })
-    MetaVersion.dbManager.deletePartitionInfoByRangeId(table_id, "")
+  def dropDataInfoData(table_id: String, range: String, commit_id:UUID): Unit = {
+    MetaVersion.dbManager.deleteDataCommitInfo(table_id, range, commit_id)
+  }
+
+  def dropDataInfoData(table_id: String): Unit = {
+    MetaVersion.dbManager.deleteDataCommitInfo(table_id)
   }
 
 
