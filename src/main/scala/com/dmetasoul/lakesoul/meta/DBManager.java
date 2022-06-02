@@ -178,13 +178,13 @@ public class DBManager {
      * 原参：table_name，table_id
      */
     public void deleteTableInfo(String tablePath, String tableId) {
-        tableInfoDao.deleteByIdAndPath(tableId, tablePath);
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         String tableName = tableInfo.getTableName();
         if (StringUtils.isNotBlank(tableName)) {
             tableNameIdDao.delete(tableName);
         }
+        tableInfoDao.deleteByIdAndPath(tableId, tablePath);
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
