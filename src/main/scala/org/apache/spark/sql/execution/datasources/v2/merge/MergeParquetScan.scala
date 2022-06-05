@@ -402,12 +402,18 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
     val fileWithBucketId: Map[Int, Map[String, Seq[MergePartitionedFile]]] = partitionedFiles
       .groupBy(_.fileBucketId)
       .map(f => (f._1, f._2.groupBy(_.rangeKey)))
-    val isSingleFile = fileWithBucketId.forall(f1 => f1._2.forall(f2 => f2._2.size == 1))
 
     Seq.tabulate(bucketNum) { bucketId =>
       val files = fileWithBucketId.getOrElse(bucketId, Map.empty[String, Seq[MergePartitionedFile]])
-        .map(_._2.toArray)
-      MergeFilePartition(bucketId, files.toArray, isSingleFile)
+        .map(_._2.toArray).toArray
+      val isSingleFile = files.length == 1
+      if (!isSingleFile) {
+        for (index <- 0 to files.size - 1) {
+          val versionFiles = for (elem <- 0 to files(index).size - 1) yield files(index)(elem).copy(writeVersion = elem)
+          files(index) = versionFiles.toArray
+        }
+      }
+      MergeFilePartition(bucketId, files, isSingleFile)
     }
   }
 
