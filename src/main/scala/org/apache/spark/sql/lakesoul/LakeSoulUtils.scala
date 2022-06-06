@@ -206,7 +206,7 @@ object LakeSoulFullTable {
       } else {
         throw new AnalysisException(
           s"Expect a full scan of LakeSoul sources, but found a partial scan. " +
-            s"path:${epbr.snapshotManagement.table_name}")
+            s"path:${epbr.snapshotManagement.table_path}")
       }
     // Convert V2 relations to V1 and perform the check
     case LakeSoulRelation(lr) => unapply(lr)

@@ -35,19 +35,19 @@ object DropTableCommand {
   def dropTable(snapshot: Snapshot): Unit = {
     val tableInfo = snapshot.getTableInfo
     val table_id = tableInfo.table_id
-    val table_name = tableInfo.table_name
+    val table_path = tableInfo.table_path_s
     val short_table_name = tableInfo.short_table_name
-    MetaVersion.deleteTableInfo(table_name.get, table_id)
+    MetaVersion.deleteTableInfo(table_path.get, table_id)
     if (short_table_name.isDefined) {
-      MetaVersion.deleteShortTableName(short_table_name.get, table_name.get)
+      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get)
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
     MetaVersion.dropPartitionInfoByTableId(table_id)
     DataOperation.dropDataInfoData(table_id)
-    val path = new Path(table_name.get)
+    val path = new Path(table_path.get)
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)
-    SnapshotManagement.invalidateCache(table_name.get)
+    SnapshotManagement.invalidateCache(table_path.get)
     fs.delete(path, true);
   }
 }

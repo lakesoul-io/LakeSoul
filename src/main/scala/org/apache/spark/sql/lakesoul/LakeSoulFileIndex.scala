@@ -33,7 +33,7 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
                                    val snapshotManagement: SnapshotManagement)
   extends PartitioningAwareFileIndex(spark, Map.empty[String, String], None) {
 
-  lazy val tableName: String = snapshotManagement.table_name
+  lazy val tableName: String = snapshotManagement.table_path
 
   def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = matchingFiles(filters)
 

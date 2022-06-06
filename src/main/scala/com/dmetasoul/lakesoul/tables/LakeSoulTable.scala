@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
 
 import scala.collection.JavaConverters._
@@ -331,7 +332,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   def dropPartition(condition: Expression): Unit = {
     assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns.nonEmpty,
-      s"Table `${snapshotManagement.table_name}` is not a range partitioned table, dropTable command can't use on it.")
+      s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
     executeDropPartition(snapshotManagement, condition)
   }
 }
@@ -356,12 +357,12 @@ object LakeSoulTable {
 
   /**
     * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
-    *
     */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
-    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(path))) {
-      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(path),
-        SnapshotManagement(path))
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
+      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
+        SnapshotManagement(p))
     } else {
       throw LakeSoulErrors.tableNotExistsException(path)
     }

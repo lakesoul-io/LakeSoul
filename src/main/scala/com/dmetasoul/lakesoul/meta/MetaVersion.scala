@@ -39,11 +39,8 @@ object MetaVersion {
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String): (Boolean, String) = {
-    val tableNameId = dbManager.shortTableName(short_table_name)
-    tableNameId.getTableName match {
-      case null => (false, null)
-      case _ => (true, tableNameId.getTableName)
-    }
+    val path = dbManager.getTableNameFromShortTableName(short_table_name)
+    if (path == null) (false, null) else (true, path)
   }
 
   //get table path, if not exists, return "not found"
@@ -74,7 +71,8 @@ object MetaVersion {
   }
 
   //todo 少了configuration参数值
-  def createNewTable(table_name: String,
+  def createNewTable(table_path: String,
+                     short_table_name: String,
                      table_id: String,
                      table_schema: String,
                      range_column: String,
@@ -86,7 +84,7 @@ object MetaVersion {
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1,x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
-    dbManager.createNewTable(table_id, "", table_name, table_schema, json, partitions)
+    dbManager.createNewTable(table_id, short_table_name, table_path, table_schema, json, partitions)
   }
 
 
@@ -117,8 +115,8 @@ object MetaVersion {
   }
 
   //todo
-  def getTableInfo(table_name: String): TableInfo = {
-    val info = dbManager.getTableInfo(table_name)
+  def getTableInfo(table_path: String): TableInfo = {
+    val info = dbManager.getTableInfo(table_path)
     if (info == null) {
       return null
     }
@@ -143,7 +141,7 @@ object MetaVersion {
       case _ => -1
     }
     TableInfo(
-      Some(table_name),
+      Some(table_path),
       info.getTableId,
       info.getTableSchema,
       range_column,

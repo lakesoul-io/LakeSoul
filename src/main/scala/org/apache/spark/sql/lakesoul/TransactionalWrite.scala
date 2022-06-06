@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, SchemaUtils}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -124,16 +124,16 @@ trait TransactionalWrite {
     //If this is the first time to commit, you need to check if there is data in the path where the table is located.
     //If there has data, you cannot create a new table
     if (isFirstCommit) {
-      val table_path = new Path(table_name)
-      val fs = table_path.getFileSystem(spark.sessionState.newHadoopConf())
-      if (fs.exists(table_path) && fs.listStatus(table_path).nonEmpty) {
-        throw LakeSoulErrors.failedCreateTableException(table_name)
+      val path = new Path(table_path)
+      val fs = path.getFileSystem(spark.sessionState.newHadoopConf())
+      if (fs.exists(path) && fs.listStatus(path).nonEmpty) {
+        throw LakeSoulErrors.failedCreateTableException(table_path)
       }
     }
 
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
-    val outputPath = tableInfo.table_path
+    val outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
 
     val (queryExecution, output) = normalizeData(data)
     val partitioningColumns =

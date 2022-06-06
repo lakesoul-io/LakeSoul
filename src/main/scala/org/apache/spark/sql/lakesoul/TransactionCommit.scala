@@ -119,7 +119,7 @@ trait Transaction extends TransactionalWrite with Logging {
     assert(!new Path(value).isAbsolute, s"Short Table name `$value` can't be a path")
     assert(shortTableName.isEmpty, "Cannot set short table name more than once in a transaction.")
     assert(tableInfo.short_table_name.isEmpty || tableInfo.short_table_name.get.equals(value),
-      s"Table `$table_name` already has a short name `${tableInfo.short_table_name.get}`, " +
+      s"Table `$table_path` already has a short name `${tableInfo.short_table_name.get}`, " +
         s"you can't change it to `$value`")
     if (tableInfo.short_table_name.isEmpty) {
       shortTableName = Some(value)
@@ -128,7 +128,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
   def isFirstCommit: Boolean = snapshot.isFirstCommit
 
-  protected lazy val table_name: String = tableInfo.table_name.get
+  protected lazy val table_path: String = tableInfo.table_path_s.get
 
   /**
     * Tracks the data that could have been seen by recording the partition
@@ -150,9 +150,11 @@ trait Transaction extends TransactionalWrite with Logging {
     val updatedConfig = LakeSoulConfig.mergeGlobalConfigs(
       spark.sessionState.conf, Map.empty)
     TableInfo(
-      table_name = Some(snapshot.getTableName),
+      table_path_s = Some(snapshot.getTableName),
       table_id = snapshot.getTableInfo.table_id,
-      configuration = updatedConfig)
+      configuration = updatedConfig,
+      short_table_name = shortTableName
+    )
   } else {
     snapshot.getTableInfo
   }
@@ -184,7 +186,9 @@ trait Transaction extends TransactionalWrite with Logging {
       val updatedConfigs = LakeSoulConfig.mergeGlobalConfigs(
         spark.sessionState.conf, table_info.configuration)
       table_info.copy(
-        configuration = updatedConfigs)
+        configuration = updatedConfigs,
+        short_table_name = shortTableName
+      )
     } else{
       table_info
     }
@@ -228,7 +232,6 @@ trait Transaction extends TransactionalWrite with Logging {
     commit(addFiles, expireFiles)
   }
 
-
   @throws(classOf[ConcurrentModificationException])
   def commit(addFiles: Seq[DataFileInfo],
              expireFiles: Seq[DataFileInfo],
@@ -238,7 +241,8 @@ trait Transaction extends TransactionalWrite with Logging {
       assert(!committed, "Transaction already committed.")
       if (isFirstCommit) {
         MetaVersion.createNewTable(
-          table_name,
+          table_path,
+          if (shortTableName.isDefined) shortTableName.get else "",
           tableInfo.table_id,
           tableInfo.table_schema,
           tableInfo.range_column,
@@ -287,7 +291,7 @@ trait Transaction extends TransactionalWrite with Logging {
       }
 
       val meta_info = MetaInfo(
-        table_info = tableInfo,
+        table_info = tableInfo.copy(short_table_name = shortTableName),
         dataCommitInfo = add_file_arr_buf.toArray,
         partitionInfoArray = add_partition_info_arr_buf.toArray,
         commit_type = commitType.getOrElse(CommitType("append"))

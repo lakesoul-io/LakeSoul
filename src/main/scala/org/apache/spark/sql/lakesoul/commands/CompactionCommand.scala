@@ -71,14 +71,14 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
     val table = LakeSoulTableV2(
       spark,
-      new Path(snapshotManagement.table_name),
+      new Path(snapshotManagement.table_path),
       None,
       None,
       Option(fileIndex),
       Option(mergeOperatorInfo)
     )
     val option = new CaseInsensitiveStringMap(
-      Map("basePath" -> tc.tableInfo.table_name.get, "isCompaction" -> "true"))
+      Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)

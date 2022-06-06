@@ -19,11 +19,11 @@ package org.apache.spark.sql.lakesoul
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
+
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.lang
 import java.io.File
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java
@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession}
@@ -47,7 +47,7 @@ import scala.collection.JavaConverters._
 
 class SnapshotManagement(path: String) extends Logging {
 
-  val table_name: String = path
+  val table_path: String = path
 
   lazy private val lock = new ReentrantLock()
 
@@ -56,7 +56,7 @@ class SnapshotManagement(path: String) extends Logging {
   def snapshot: Snapshot = currentSnapshot
 
   private def createSnapshot: Snapshot = {
-    val table_info = MetaVersion.getTableInfo(table_name)
+    val table_info = MetaVersion.getTableInfo(table_path)
     val partition_info_arr = MetaVersion.getAllPartitionInfo(table_info.table_id)
 
     if (table_info.table_schema.isEmpty) {
@@ -66,9 +66,8 @@ class SnapshotManagement(path: String) extends Logging {
   }
 
   private def initSnapshot: Snapshot = {
-    val table_path = new Path(table_name)
     val table_id = "table_" + UUID.randomUUID().toString
-    val table_info = TableInfo(Some(table_name), table_id)
+    val table_info = TableInfo(Some(table_path), table_id)
     val partition_arr = Array(
       PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
     )
@@ -77,11 +76,11 @@ class SnapshotManagement(path: String) extends Logging {
 
 
   private def getCurrentSnapshot: Snapshot = {
-    if (LakeSoulSourceUtils.isLakeSoulTableExists(table_name)) {
+    if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
       //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
-      if (LakeSoulUtils.isLakeSoulTable(table_name)) {
+      if (LakeSoulUtils.isLakeSoulTable(table_path)) {
         throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
       }
       initSnapshot
@@ -98,11 +97,11 @@ class SnapshotManagement(path: String) extends Logging {
 
   //get table info only
   def getTableInfoOnly: TableInfo = {
-    if (LakeSoulSourceUtils.isLakeSoulTableExists(table_name)) {
-      MetaVersion.getTableInfo(table_name)
+    if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
+      MetaVersion.getTableInfo(table_path)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
-      TableInfo(Some(table_name), table_id)
+      TableInfo(Some(table_path), table_id)
     }
   }
 
@@ -204,9 +203,10 @@ object SnapshotManagement {
 
   def apply(path: String): SnapshotManagement = {
     try {
-      snapshotManagementCache.get(path, () => {
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(path)
+          new SnapshotManagement(qualifiedPath)
         }
       })
     } catch {
@@ -216,9 +216,10 @@ object SnapshotManagement {
   }
   def getSM(path: String): SnapshotManagement = {
     try {
-      snapshotManagementCache.get(path, () => {
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(path)
+          new SnapshotManagement(qualifiedPath)
         }
       })
     } catch {
@@ -230,7 +231,8 @@ object SnapshotManagement {
   def invalidateCache(path: String): Unit = {
     //todo path是否还需要转义
 //    val table_path: String = MetaUtils.modifyTableString(path)
-    snapshotManagementCache.invalidate(path)
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    snapshotManagementCache.invalidate(qualifiedPath)
   }
 
   def clearCache(): Unit = {

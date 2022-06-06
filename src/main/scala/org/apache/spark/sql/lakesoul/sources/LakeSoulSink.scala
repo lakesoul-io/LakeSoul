@@ -92,5 +92,5 @@ class LakeSoulSink(sqlContext: SQLContext,
 
     })
 
-  override def toString: String = s"LakeSoulSink[${snapshotManagement.table_name}]"
+  override def toString: String = s"LakeSoulSink[${snapshotManagement.table_path}]"
 }

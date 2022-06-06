@@ -37,17 +37,19 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 case class LakeSoulTableV2(spark: SparkSession,
-                           path: Path,
+                           path_orig: Path,
                            catalogTable: Option[CatalogTable] = None,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
   extends Table with SupportsWrite with SupportsRead {
 
+  val path = SparkUtil.makeQualifiedTablePath(path_orig)
+
   private lazy val (rootPath, partitionFilters) =
     if (catalogTable.isDefined) {
       // Fast path for reducing path munging overhead
-      (new Path(catalogTable.get.location), Nil)
+      (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
       LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
     }
@@ -61,7 +63,7 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   override def name(): String = catalogTable.map(_.identifier.unquotedString)
     .orElse(tableIdentifier)
-    .getOrElse(s"lakesoul.`${snapshotManagement.table_name}`")
+    .getOrElse(s"lakesoul.`${snapshotManagement.table_path}`")
 
   private lazy val snapshot: Snapshot = snapshotManagement.snapshot
 

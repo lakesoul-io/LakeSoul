@@ -48,7 +48,7 @@ case class Format(provider: String = "parquet",
 // range_column and hash_column are string， not json format ; hash_partition_column contains multi keys，concat with `,`
 //table name -> tablepath
 //shorttablename -> tablename
-case class TableInfo(table_name:  Option[String] = None,
+case class TableInfo(table_path_s:  Option[String] = None,
                      table_id: String,
                      table_schema: String = null,
                      range_column: String = "",
@@ -58,7 +58,7 @@ case class TableInfo(table_name:  Option[String] = None,
                      short_table_name: Option[String] = None
                      ) {
 
-  lazy val table_path: Path = new Path(table_name.get)
+  lazy val table_path: Path = SparkUtil.makeQualifiedTablePath(new Path(table_path_s.get))
   lazy val range_partition_columns: Seq[String] = range_partition_schema.fieldNames
   lazy val hash_partition_columns: Seq[String] = hash_partition_schema.fieldNames
 
