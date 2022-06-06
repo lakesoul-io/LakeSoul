@@ -47,7 +47,7 @@ abstract class UpdateSuiteBase
     if (partitionBy.nonEmpty) {
       writer.partitionBy(partitionBy: _*)
     }
-    writer.save(snapshotManagement.table_name)
+    writer.save(snapshotManagement.table_path)
   }
 
   protected def appendHashPartition(df: DataFrame, partitionBy: Seq[String] = Nil): Unit = {
@@ -58,11 +58,11 @@ abstract class UpdateSuiteBase
     writer
       .option("hashPartitions", "hash")
       .option("hashBucketNum", "2")
-      .save(snapshotManagement.table_name)
+      .save(snapshotManagement.table_path)
   }
 
   protected def executeUpsert(df: DataFrame): Unit = {
-    LakeSoulTable.forPath(snapshotManagement.table_name)
+    LakeSoulTable.forPath(snapshotManagement.table_path)
       .upsert(df)
   }
 

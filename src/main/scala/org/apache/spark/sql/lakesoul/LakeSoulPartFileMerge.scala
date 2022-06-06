@@ -114,13 +114,13 @@ object LakeSoulPartFileMerge {
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
     val table = LakeSoulTableV2(
       spark,
-      new Path(snapshotManagement.table_name),
+      new Path(snapshotManagement.table_path),
       None,
       None,
       Option(fileIndex),
       Option(mergeOperatorInfo)
     )
-    val option = new CaseInsensitiveStringMap(Map("basePath" -> pmtc.tableInfo.table_name.get, "isCompaction" -> "true"))
+    val option = new CaseInsensitiveStringMap(Map("basePath" -> pmtc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val compactDF = Dataset.ofRows(
       spark,

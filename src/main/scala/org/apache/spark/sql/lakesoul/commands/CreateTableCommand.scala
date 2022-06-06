@@ -43,7 +43,7 @@ import org.apache.spark.sql.types.StructType
   *                - CTAS
   *                - saveAsTable
   */
-case class CreateTableCommand(table: CatalogTable,
+case class CreateTableCommand(var table: CatalogTable,
                               existingTableOpt: Option[CatalogTable],
                               mode: SaveMode,
                               query: Option[LogicalPlan],
@@ -63,6 +63,12 @@ case class CreateTableCommand(table: CatalogTable,
       return Nil
     } else if (mode == SaveMode.ErrorIfExists && tableExists) {
       throw new AnalysisException(s"Table ${table.identifier.quotedString} already exists.")
+    }
+
+    table = table.storage.locationUri match {
+      case Some(location) => table.copy(
+        storage = table.storage.copy(locationUri = Some(SparkUtil.makeQualifiedTablePath(new Path(location)).toUri)))
+      case _ => table
     }
 
     val tableWithLocation = if (tableExists) {
@@ -93,11 +99,11 @@ case class CreateTableCommand(table: CatalogTable,
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
     val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
-    val modifiedPath=SparkUtil.makeQualifiedTablePath(tableLocation)
+    val modifiedPath = SparkUtil.makeQualifiedTablePath(tableLocation)
 
-    if(SparkUtil.TablePathExisted(fs,modifiedPath)){
-      throw LakeSoulErrors.failedCreateTableException(table.identifier.table)
-    }
+//    if(SparkUtil.TablePathExisted(fs, modifiedPath)){
+//      throw LakeSoulErrors.failedCreateTableException(table.identifier.table)
+//    }
     // external options to store replace and partition properties
     var externalOptions = Map.empty[String, String]
     if (table.partitionColumnNames.nonEmpty) {
@@ -232,7 +238,7 @@ case class CreateTableCommand(table: CatalogTable,
                                    schemaString: String): TableInfo = {
     val hashParitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
     val hashBucketNum = table.properties.getOrElse(LakeSoulOptions.HASH_BUCKET_NUM, "-1").toInt
-    TableInfo(table_name = tc.tableInfo.table_name,
+    TableInfo(table_path_s = tc.tableInfo.table_path_s,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
       range_column = table.partitionColumnNames.mkString(","),
@@ -277,7 +283,7 @@ case class CreateTableCommand(table: CatalogTable,
   private def verifyTableInfo(tc: TransactionCommit,
                               tableDesc: CatalogTable): Unit = {
     val existingTableInfo = tc.tableInfo
-    val path = new Path(tableDesc.location)
+    val path = SparkUtil.makeQualifiedTablePath(new Path(tableDesc.location))
 
     // The lakesoul table already exists. If they give any configuration, we'll make sure it all matches.
     // Otherwise we'll just go with the metadata already present in the meta.

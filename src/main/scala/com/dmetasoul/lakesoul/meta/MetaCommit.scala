@@ -36,18 +36,19 @@ object MetaCommit extends Logging {
     val commit_type = meta_info.commit_type
     val table_schema = meta_info.table_info.table_schema
 
-
     val info = new com.dmetasoul.lakesoul.meta.entity.MetaInfo()
     val tableInfo = new com.dmetasoul.lakesoul.meta.entity.TableInfo()
 
     tableInfo.setTableId(table_info.table_id)
-    tableInfo.setTableName(table_info.short_table_name.toString)
-    tableInfo.setTablePath(table_info.table_name.toString)
+    tableInfo.setTablePath(table_info.table_path.toString)
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
     val json = new JSONObject()
     table_info.configuration.foreach(x => json.put(x._1,x._2))
     tableInfo.setProperties(json)
+    if (table_info.short_table_name.isDefined) {
+      tableInfo.setTableName(table_info.short_table_name.get)
+    }
     info.setTableInfo(tableInfo)
 
     val javaPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
@@ -70,7 +71,6 @@ object MetaCommit extends Logging {
     if (result && changeSchema) {
       MetaVersion.dbManager.updateTableSchema(table_info.table_id, table_schema)
     }
-
   }
 
 

@@ -80,6 +80,7 @@ public class DBManager {
     //返回tablePath
     public String getTableNameFromShortTableName(String tableName) {
         TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
+        if (tableNameId.getTableId() == null) return null;
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
         return tableInfo.getTablePath();
@@ -253,6 +254,13 @@ public class DBManager {
     public void updateTableShortName(String tablePath, String tableId, String tableName) {
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        if (tableInfo.getTableName() != null && !Objects.equals(tableInfo.getTableName(), "")) {
+            if (!tableInfo.getTableName().equals(tableName)) {
+                throw new IllegalStateException("Table name already exists " + tableInfo.getTableName() + " for table id "
+                        + tableId);
+            }
+            return;
+        }
         tableInfo.setTableName(tableName);
         tableInfo.setTablePath(tablePath);
         tableInfoDao.updateByTableId(tableId, tableName, tablePath, "");
@@ -261,14 +269,7 @@ public class DBManager {
         tableNameId.setTableName(tableName);
         tableNameId.setTableId(tableId);
         tableNameIdDao.insert(tableNameId);
-
-        TablePathId tablePathId = new TablePathId();
-        tablePathId.setTablePath(tablePath);
-        tablePathId.setTableId(tableId);
-        tablePathIdDao.insert(tablePathId);
     }
-
-
 
     public boolean batchCommitDataCommitInfo(List<DataCommitInfo> listData) {
         return dataCommitInfoDao.batchInsert(listData);
@@ -278,6 +279,10 @@ public class DBManager {
         List<PartitionInfo> listPartitionInfo = metaInfo.getListPartition();
         TableInfo tableInfo = metaInfo.getTableInfo();
         String tableId = tableInfo.getTableId();
+
+        if (tableInfo.getTableName() != null) {
+            updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName());
+        }
 
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> rawMap = new HashMap<>();

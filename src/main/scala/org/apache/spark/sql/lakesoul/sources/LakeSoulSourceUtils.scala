@@ -164,7 +164,7 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
     * @return LakeSoul + tableName of the relation
     */
   override def toString(): String = {
-    "LakeSoul " + tableInfo.table_name
+    "LakeSoul " + tableInfo.table_path_s.get
   }
 
 

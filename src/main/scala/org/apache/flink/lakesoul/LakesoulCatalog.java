@@ -136,7 +136,7 @@ public class LakesoulCatalog implements Catalog {
         checkNotNull(tablePath);
         String tableName = tablePath.getFullName();
         TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
-        if (MetaVersion.isTableExists(tableInfo.table_name().get())) {
+        if (MetaVersion.isTableExists(tableInfo.table_path_s().get())) {
             return true;
         }else{
             return false;

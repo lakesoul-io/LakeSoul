@@ -68,9 +68,7 @@ object SparkUtil {
   }*/
 
   def makeQualifiedTablePath(tablePath: Path): Path = {
-    val normalPath = tablePath.toString.replace("s3://", "s3a://")
-    val path = new Path(normalPath)
-    path.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(path)
+    tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 
   def TablePathExisted(fs:FileSystem ,tableAbsolutePath:Path):Boolean = {
@@ -98,7 +96,7 @@ object SparkUtil {
     } else {
       files
     }
-  val table_name=snapmnt.table_name
+  val table_name=snapmnt.table_path
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapmnt, skipFiles)
     val table = LakeSoulTableV2(
       spark,

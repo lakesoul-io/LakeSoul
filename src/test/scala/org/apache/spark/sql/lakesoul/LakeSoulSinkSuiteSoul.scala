@@ -177,7 +177,7 @@ class LakeSoulSinkSuiteSoul extends StreamTest with LakeSoulTestUtils {
           (1, 1000), (2, 2000), (3, 3000))
 
         val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_name)
+        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.hash_column.equals("id")
           && tableInfo.range_column.isEmpty
           && tableInfo.bucket_num == 2)
@@ -244,7 +244,7 @@ class LakeSoulSinkSuiteSoul extends StreamTest with LakeSoulTestUtils {
           (1, 1000), (2, 2000), (3, 3000))
 
         val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_name)
+        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.range_column.equals("id")
           && tableInfo.hash_column.isEmpty
           && tableInfo.bucket_num == -1)
@@ -292,7 +292,7 @@ class LakeSoulSinkSuiteSoul extends StreamTest with LakeSoulTestUtils {
           (1, 1, 1000), (2, 2, 2000), (3, 3, 3000))
 
         val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_name)
+        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.range_column.equals("range")
           && tableInfo.hash_column.equals("hash")
           && tableInfo.bucket_num == 2)

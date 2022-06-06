@@ -151,13 +151,14 @@ trait ImplicitMetadataOperation extends Logging {
       //todo: setting
       tc.updateTableInfo(
         TableInfo(
-          table_name = table_info.table_name,
+          table_path_s = table_info.table_path_s,
           table_id = table_info.table_id,
           table_schema = dataSchema.json,
           range_column = normalizedRangePartitionCols.mkString(","),
           hash_column = normalizedHashPartitionCols.mkString(","),
           bucket_num = realHashBucketNum,
-          configuration = configuration))
+          configuration = configuration,
+          short_table_name = table_info.short_table_name))
     }
     else if (isOverwriteMode && canOverwriteSchema && isNewSchema) {
       val newTableInfo = tc.tableInfo.copy(

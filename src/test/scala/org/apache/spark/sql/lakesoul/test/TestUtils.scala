@@ -227,7 +227,7 @@ trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
       Utils.deleteRecursively(tempDir)
       try {
         snapshotManagement.updateSnapshot()
-        LakeSoulTable.forPath(snapshotManagement.table_name).dropTable()
+        LakeSoulTable.forPath(snapshotManagement.table_path).dropTable()
       } catch {
         case _: Exception =>
       }
