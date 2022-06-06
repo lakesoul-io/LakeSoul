@@ -1,5 +1,5 @@
 # Community Roles
-## User: 
+## Users: 
 Users are technology users who only use DMetaSoul products but do not contribute, but users can still play a role in the community, including but not limited to: 
 - Participates in an event hosted by DMetaSoul
 - Recommend DMetaSoul's products

@@ -9,6 +9,7 @@ DMetaSoul is a SaaS company focusing on the new infrastructure of a one-stop big
 - high-performance data,
 - model online services, and
 - cloud-native one-stop AI development and production platform.
+
 We embrace open source to create a truly open ecosystem that provides a friendly atmosphere for developers. We focus on providing one-stop cloud-native data intelligent platform services for data scientists and AI practitioners, one-stop supporting services for the digital transformation and intelligent upgrading of governments and SMEs, accelerating the implementation and empowerment of AI technology to the actual business. 
 
 # Usage
@@ -17,7 +18,7 @@ We embrace open source to create a truly open ecosystem that provides a friendly
 - Feedback or Suggestions: Submit via Discussion, which is better in the format of "Scenarios used, several feature points of most interest, and question feedback."
 
 # Feedback Format 
-It's better to publish your content in the following format: 
+It's better to publish your content **in the following format**: 
 - Your organization, company, or school 
 - Your area 
 - Your contact information, including but not limited to email, wechat, social network account, etc 
@@ -25,7 +26,8 @@ It's better to publish your content in the following format:
 - Feature points you are interested in/looking forward to 
 - Your suggestions or feedback 
 
-# Example: 
+**Example**: 
+
     Enterprise: DMetaSoul
 
     Location: Beijing, China 
@@ -40,10 +42,10 @@ It's better to publish your content in the following format:
 
 # Principles
 The DMetaSoul community adheres to the following principles:
-- Open and transparent: DMetaSoul's products are open source, and anyone can openly discuss all kinds of technical issues. 
-- Collaboration, inclusion: Any work or issue is welcome to be discussed in the DMetaSoul community. 
-- Friendly and respectful: anyone is welcome to use DMetaSoul's products, and everyone's contribution is respected. 
-- Industry-leading: DMetaSoul will provide the latest technology so that every technical practitioner can enjoy the frontier dividend of data intelligence.
+- **Open and transparent**: DMetaSoul's products are open source, and anyone can openly discuss all kinds of technical issues. 
+- **Collaboration, inclusion**: Any work or issue is welcome to be discussed in the DMetaSoul community. 
+- **Friendly and respectful**: anyone is welcome to use DMetaSoul's products, and everyone's contribution is respected. 
+- **Industry-leading**: DMetaSoul will provide the latest technology so that every technical practitioner can enjoy the frontier dividend of data intelligence.
 
 Click on [Community Roles](./community-roles.md) to learn more about community organizations.
  
