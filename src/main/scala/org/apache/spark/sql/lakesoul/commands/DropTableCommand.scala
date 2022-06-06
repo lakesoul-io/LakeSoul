@@ -53,9 +53,6 @@ object DropTableCommand {
 }
 
 object DropPartitionCommand extends PredicateHelper {
-  val MAX_ATTEMPTS: Int = MetaUtils.GET_LOCK_MAX_ATTEMPTS
-  val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
-
   def run(snapshot: Snapshot, condition: Expression): Unit = {
     val table_name = snapshot.getTableName
     val table_id = snapshot.getTableInfo.table_id
@@ -72,6 +69,8 @@ object DropPartitionCommand extends PredicateHelper {
     }
     val range_value = candidatePartitions.head.range_value
     dropPartition(table_name, table_id, range_value)
+    SnapshotManagement.invalidateCache(table_name)
+
   }
 
   def dropPartition(table_name: String, table_id: String, range_value: String): Unit = {
