@@ -147,7 +147,7 @@ abstract class InsertIntoTests(
   override def afterEach(): Unit = {
     val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
     catalog.listTables(Array("default")).foreach(t => {
-      sql(s"drop table lakesoul.`${t.name}``")
+      sql(s"drop table lakesoul.`${t.name}`")
     })
   }
 
