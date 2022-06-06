@@ -50,6 +50,9 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [ ] Object storage IO optimization
   - [ ] Multi-layer storage classes support with data tiering
 
+# Community guidelines
+[Community guidelines](community-guideline.md)
+
 # Feedback and Contribution
 Please feel free to open an issue or dicussion if you have any questions.
 
