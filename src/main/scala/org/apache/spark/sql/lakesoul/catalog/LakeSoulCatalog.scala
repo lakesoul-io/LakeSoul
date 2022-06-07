@@ -143,7 +143,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
           new Path(ident.name()))
       case _: NoSuchDatabaseException | _: NoSuchNamespaceException | _: NoSuchTableException
         if isNameIdentifier(ident) =>
-        val tableName = MetaVersion.getTableNameFromShortTableName(ident.name)
+        val tableName = MetaVersion.getTablePathFromShortTableName(ident.name)
         LakeSoulTableV2(
           spark,
           new Path(tableName))

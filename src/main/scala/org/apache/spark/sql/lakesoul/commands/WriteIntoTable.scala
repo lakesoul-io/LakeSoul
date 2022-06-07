@@ -16,12 +16,13 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.MetaUtils
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.ImplicitMetadataOperation
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
-import org.apache.spark.sql.lakesoul.{PartitionFilter, SnapshotManagement, LakeSoulOptions, TransactionCommit}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, SnapshotManagement, TransactionCommit}
 
 /**
   * Used to write a [[DataFrame]] into a lakesoul table.
@@ -125,16 +126,17 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
       case (SaveMode.Overwrite, Some(predicates)) =>
         // Check to make sure the files we wrote out were actually valid.
         val matchingFiles = PartitionFilter.filterFileList(
-          tc.tableInfo.range_partition_schema, newFiles.toDF(), predicates).as[DataFileInfo].collect()
-        val invalidFiles = newFiles.toSet -- matchingFiles
-        if (invalidFiles.nonEmpty) {
-          val badPartitions = invalidFiles
-            .map(_.range_partitions)
-            //todo 逻辑修改
-//            .map {
-//              _.map { case (k, v) => s"$k=$v" }.mkString("/")
-//            }
-            .mkString(", ")
+          tc.tableInfo.range_partition_schema,
+          newFiles.map(f => PartitionFilterInfo(
+            f.range_partitions,
+            MetaUtils.getPartitionMapFromKey(f.range_partitions),
+            0)).toDF(),
+          predicates).as[PartitionFilterInfo].collect()
+        if (matchingFiles.length != newFiles.length) {
+          val badPartitions = newFiles.filter(
+            f => !matchingFiles.exists(
+              p => p.range_value == f.range_partitions)
+          ).map(f => f.range_partitions).mkString(",")
           throw LakeSoulErrors.replaceWhereMismatchException(replaceWhere.get, badPartitions)
         }
         val deleteTime = System.currentTimeMillis()
