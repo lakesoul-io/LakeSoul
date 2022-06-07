@@ -27,7 +27,7 @@ import scala.collection.JavaConverters._
 
 object MetaVersion {
 
-  val dbManager = new DBManager();
+  val dbManager = new DBManager()
 
   def isTableExists(table_name: String): Boolean = {
     dbManager.isTableExists(table_name)
@@ -39,13 +39,13 @@ object MetaVersion {
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String): (Boolean, String) = {
-    val path = dbManager.getTableNameFromShortTableName(short_table_name)
+    val path = dbManager.getTablePathFromShortTableName(short_table_name)
     if (path == null) (false, null) else (true, path)
   }
 
   //get table path, if not exists, return "not found"
-  def getTableNameFromShortTableName(short_table_name: String): String = {
-    dbManager.getTableNameFromShortTableName(short_table_name)
+  def getTablePathFromShortTableName(short_table_name: String): String = {
+    dbManager.getTablePathFromShortTableName(short_table_name)
   }
 
   //todo

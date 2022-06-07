@@ -78,7 +78,7 @@ public class DBManager {
 
     //tableName == tablePath,shortTableName == tableName
     //返回tablePath
-    public String getTableNameFromShortTableName(String tableName) {
+    public String getTablePathFromShortTableName(String tableName) {
         TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
         if (tableNameId.getTableId() == null) return null;
 

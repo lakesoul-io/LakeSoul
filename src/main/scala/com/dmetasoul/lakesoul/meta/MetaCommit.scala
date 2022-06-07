@@ -127,55 +127,7 @@ object MetaCommit extends Logging {
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
   }
 
-  //check and redo timeout commits before read
-  def checkAndRedoCommit(snapshot: Snapshot): Unit = {
-    //    val table_id: String = snapshot.getTableInfo.table_id
-    //    val limit_timestamp = System.currentTimeMillis() - MetaUtils.COMMIT_TIMEOUT
-    //
-    //    //drop table command
-    //    val dropTableInfo = getUndoLogInfo(
-    //      UndoLogType.DropTable.toString,
-    //      table_id,
-    //      UndoLogType.DropTable.toString)
-    //    if (dropTableInfo.nonEmpty) {
-    //      DropTableCommand.dropTable(snapshot)
-    //      throw LakeSoulErrors.tableNotExistsException(snapshot.getTableName)
-    //    }
-    //    //drop partition command
-    //    val dropPartitionInfo = getUndoLogInfo(
-    //      UndoLogType.DropPartition.toString,
-    //      table_id,
-    //      UndoLogType.DropPartition.toString)
-    //    if (dropPartitionInfo.nonEmpty) {
-    //      dropPartitionInfo.foreach(d => {
-    //        DropPartitionCommand.dropPartition(d.table_name, d.table_id, d.range_value, d.range_id)
-    //      })
-    //    }
-    //
-    //
-    //    //commit
-    //    val logInfo = getTimeoutUndoLogInfo(UndoLogType.Commit.toString, table_id, limit_timestamp)
-    //
-    //    var flag = true
-    //    logInfo.foreach(log => {
-    //      if (log.tag == -1) {
-    //        if (!Redo.redoCommit(log.table_name, log.table_id, log.commit_id)) {
-    //          flag = false
-    //        }
-    //      } else {
-    //        RollBack.rollBackCommit(log.table_id, log.commit_id, log.tag, log.timestamp)
-    //      }
-    //    })
-    //
-    //    if (!flag) {
-    //      checkAndRedoCommit(snapshot)
-    //    }
-  }
-
-
   def updatePartitionInfoAndGetNewMetaInfo(meta_info: MetaInfo): MetaInfo = {
     meta_info
   }
-
-
 }

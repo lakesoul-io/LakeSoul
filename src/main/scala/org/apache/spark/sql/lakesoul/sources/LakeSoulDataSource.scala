@@ -61,8 +61,6 @@ class LakeSoulDataSource
 
     val snapshot = SnapshotManagement(path).snapshot
     val tableInfo = snapshot.getTableInfo
-    //before sink, checkAndRedoCommit first
-    MetaCommit.checkAndRedoCommit(snapshot)
 
     //update mode can only be used with hash partition
     if (outputMode == OutputMode.Update()) {
