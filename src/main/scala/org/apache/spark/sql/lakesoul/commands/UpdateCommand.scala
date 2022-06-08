@@ -119,6 +119,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
     }
 
     if (addFiles.nonEmpty || expireFiles.nonEmpty) {
+      // clear previously read files
       tc.commit(addFiles, expireFiles)
     }
 
