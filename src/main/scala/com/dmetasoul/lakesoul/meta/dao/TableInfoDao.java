@@ -1,5 +1,6 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
+import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
@@ -113,6 +114,26 @@ public class TableInfoDao {
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public int updatePropertiesById(String tableId, JSONObject properties) {
+        int result = 0;
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        StringBuilder sb = new StringBuilder();
+        sb.append("update table_info set ");
+        sb.append(String.format("properties = '%s'", properties.toJSONString()));
+        sb.append(String.format(" where table_id = '%s'", tableId));
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sb.toString());
+            result = pstmt.executeUpdate();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+        return result;
     }
 
     public int updateByTableId(String tableId, String tableName, String tablePath, String tableSchema) {
