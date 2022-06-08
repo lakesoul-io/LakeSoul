@@ -252,43 +252,39 @@ trait Transaction extends TransactionalWrite with Logging {
         )
       }
 
-      val depend_files = readFiles.toSeq ++ addFiles ++ expireFiles
+      val expireFilesWithDeleteOp = expireFiles.map(f => f.copy(file_op = "del"))
+
+      val depend_files = readFiles.toSeq ++ addFiles ++ expireFilesWithDeleteOp
 
       //Gets all the partition names that need to be changed
       val depend_partitions = depend_files
         .groupBy(_.range_partitions).keys
-//        .map(getPartitionKeyFromMap)
         .toSet
 
       val add_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
-      val expire_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
 
       val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
-      val expire_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
 
-      for (range_key <- depend_partitions) {
-        val add_file_arr_buf_tmp = new ArrayBuffer[DataFileInfo]()
-        for (file <- addFiles) {
-          if (file.range_partitions.equalsIgnoreCase(range_key)) {
-            add_file_arr_buf_tmp += file
-          }
+      depend_partitions.foreach(range_key => {
+        val changeFiles = addFiles.union(expireFilesWithDeleteOp)
+          .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
+        if (changeFiles.nonEmpty) {
+          val addUUID = UUID.randomUUID()
+          add_file_arr_buf += DataCommitInfo(
+            tableInfo.table_id,
+            range_key,
+            addUUID,
+            commitType.getOrElse(CommitType("append")).name,
+            System.currentTimeMillis(),
+            changeFiles.toArray
+          )
+          add_partition_info_arr_buf += PartitionInfo(
+            table_id = tableInfo.table_id,
+            range_value = range_key,
+            read_files = Array(addUUID)
+          )
         }
-        val addUUID = UUID.randomUUID()
-        add_file_arr_buf += DataCommitInfo(
-          tableInfo.table_id,
-          range_key,
-          addUUID,
-          commitType.getOrElse(CommitType("append")).name,
-          //todo
-          System.currentTimeMillis(),
-          add_file_arr_buf_tmp.toArray
-        )
-        add_partition_info_arr_buf += PartitionInfo(
-          table_id = tableInfo.table_id,
-          range_value = range_key,
-          read_files = Array(addUUID)
-        )
-      }
+      })
 
       val meta_info = MetaInfo(
         table_info = tableInfo.copy(short_table_name = shortTableName),

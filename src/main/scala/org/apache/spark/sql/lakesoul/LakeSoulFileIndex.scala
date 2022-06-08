@@ -35,7 +35,11 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
 
   lazy val tableName: String = snapshotManagement.table_path
 
-  def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = matchingFiles(filters)
+  def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = {
+    val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
+      snapshotManagement.snapshot.getTableInfo.range_partition_columns, spark)
+    matchingFiles(partitionFilters, dataFilters)
+  }
 
 
   override def rootPaths: Seq[Path] = snapshotManagement.snapshot.getTableInfo.table_path :: Nil
@@ -130,13 +134,10 @@ case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
 
   override def matchingFiles(partitionFilters: Seq[Expression],
                              dataFilters: Seq[Expression]): Seq[DataFileInfo] = {
-    import spark.implicits._
     PartitionFilter.filterFileList(
       snapshotManagement.snapshot.getTableInfo.range_partition_schema,
-      files.toDF(),
+      files,
       partitionFilters)
-      .as[DataFileInfo]
-      .collect()
   }
 
 

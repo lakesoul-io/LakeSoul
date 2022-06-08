@@ -127,16 +127,10 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
         // Check to make sure the files we wrote out were actually valid.
         val matchingFiles = PartitionFilter.filterFileList(
           tc.tableInfo.range_partition_schema,
-          newFiles.map(f => PartitionFilterInfo(
-            f.range_partitions,
-            MetaUtils.getPartitionMapFromKey(f.range_partitions),
-            0)).toDF(),
-          predicates).as[PartitionFilterInfo].collect()
+          newFiles,
+          predicates)
         if (matchingFiles.length != newFiles.length) {
-          val badPartitions = newFiles.filter(
-            f => !matchingFiles.exists(
-              p => p.range_value == f.range_partitions)
-          ).map(f => f.range_partitions).mkString(",")
+          val badPartitions = (newFiles.toSet -- matchingFiles).mkString(",")
           throw LakeSoulErrors.replaceWhereMismatchException(replaceWhere.get, badPartitions)
         }
         val deleteTime = System.currentTimeMillis()

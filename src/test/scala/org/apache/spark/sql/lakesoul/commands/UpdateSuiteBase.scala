@@ -690,7 +690,7 @@ abstract class UpdateSuiteBase
                                        targetDF: DataFrame,
                                        set: Seq[String],
                                        where: String = null,
-                                       errMsgs: Seq[String] = Nil) = {
+                                       errMsgs: Seq[String] = Nil): Unit = {
     withTempDir { dir =>
       targetDF.write.format("lakesoul").save(dir.toString)
       val e = intercept[AnalysisException] {

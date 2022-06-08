@@ -112,6 +112,13 @@ object LakeSoulUtils extends PredicateHelper {
       isPredicateMetadataOnly(_, partitionColumns, spark))
   }
 
+  def splitMetadataAndDataPredicates(conditions: Seq[Expression],
+                                     partitionColumns: Seq[String],
+                                     spark: SparkSession): (Seq[Expression], Seq[Expression]) = {
+    conditions.partition(
+      isPredicateMetadataOnly(_, partitionColumns, spark))
+  }
+
   /**
     * Check if condition can be evaluated using only metadata. In LakeSoulTableRel, this means the condition
     * only references partition columns and involves no subquery.
