@@ -16,9 +16,11 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
-import com.dmetasoul.lakesoul.tables.{LakeSoulTable}
+import org.apache.hadoop.fs.Path
+import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfterEach
@@ -29,8 +31,7 @@ class DropTableSuite extends QueryTest
   import testImplicits._
   test("drop table") {
     withTempDir(f => {
-      //val tmpPath = f.getCanonicalPath
-      val tmpPath = "/lakesoultest"
+      val tmpPath = f.getCanonicalPath
       Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
         .write
         .format("lakesoul")
@@ -53,7 +54,7 @@ class DropTableSuite extends QueryTest
         .format("lakesoul")
         .save(tmpPath)
 
-      val tableInfo = MetaVersion.getTableInfo(tmpPath)
+      val tableInfo = MetaVersion.getTableInfo(SparkUtil.makeQualifiedTablePath(new Path(tmpPath)).toString)
       val partitionInfo = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
 
       val e1 = intercept[AnalysisException] {

@@ -251,6 +251,12 @@ public class DBManager {
         tableNameIdDao.insert(tableNameId);
     }
 
+    public void updateTableProperties(String tableId, JSONObject properties) {
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        tableInfo.setProperties(properties);
+        tableInfoDao.updatePropertiesById(tableId, properties);
+    }
+
     public void updateTableShortName(String tablePath, String tableId, String tableName) {
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
@@ -283,6 +289,7 @@ public class DBManager {
         if (tableInfo.getTableName() != null) {
             updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName());
         }
+        updateTableProperties(tableId, tableInfo.getProperties());
 
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> rawMap = new HashMap<>();

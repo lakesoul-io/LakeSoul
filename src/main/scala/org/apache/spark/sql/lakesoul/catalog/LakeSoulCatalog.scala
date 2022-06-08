@@ -372,14 +372,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
       case (t, newColumns) if t == classOf[AddColumn] =>
         AlterTableAddColumnsCommand(
           table,
-          newColumns.asInstanceOf[Seq[AddColumn]].map { col =>
-            QualifiedColType(
-              col.fieldNames(),
-              col.dataType(),
-              col.isNullable,
-              Option(col.comment()),
-              Option(col.position()))
-          }).run(spark)
+          newColumns.map(_.asInstanceOf[AddColumn])).run(spark)
 
       case (t, newProperties) if t == classOf[SetProperty] =>
         AlterTableSetPropertiesCommand(

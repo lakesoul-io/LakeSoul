@@ -17,8 +17,8 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
-import org.apache.spark.sql.catalyst.plans.logical.{IgnoreCachedData, QualifiedColType}
-import org.apache.spark.sql.connector.catalog.TableChange.{After, ColumnPosition, First}
+import org.apache.spark.sql.catalyst.plans.logical.IgnoreCachedData
+import org.apache.spark.sql.connector.catalog.TableChange.{AddColumn, After, ColumnPosition, First}
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
@@ -122,7 +122,7 @@ case class AlterTableUnsetPropertiesCommand(
   */
 case class AlterTableAddColumnsCommand(
                                         table: LakeSoulTableV2,
-                                        colsToAddWithPosition: Seq[QualifiedColType])
+                                        colsToAddWithPosition: Seq[AddColumn])
   extends RunnableCommand with AlterTableCommand with IgnoreCachedData {
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -131,11 +131,10 @@ case class AlterTableAddColumnsCommand(
     if (SchemaUtils.filterRecursively(
       StructType(colsToAddWithPosition.map {
         case QualifiedColTypeWithPosition(_, column, _) => column
-      }), true)(!_.nullable).nonEmpty) {
+      }), checkComplexTypes = true)(!_.nullable).nonEmpty) {
       throw LakeSoulErrors.operationNotSupportedException("NOT NULL in ALTER TABLE ADD COLUMNS")
     }
 
-    // TODO: remove this after auto cache refresh is merged.
     table.tableIdentifier.foreach { identifier =>
       try sparkSession.catalog.uncacheTable(identifier) catch {
         case NonFatal(e) =>
@@ -173,13 +172,15 @@ case class AlterTableAddColumnsCommand(
   }
 
   object QualifiedColTypeWithPosition {
-    def unapply(col: QualifiedColType): Option[(Seq[String], StructField, Option[ColumnPosition])] = {
+    def unapply(col: AddColumn): Option[(Seq[String], StructField, Option[ColumnPosition])] = {
       val builder = new MetadataBuilder
-      col.comment.foreach(builder.putString("comment", _))
+      if (col.comment() != null) {
+        builder.putString("comment", col.comment())
+      }
 
-      val field = StructField(col.name.last, col.dataType, col.nullable, builder.build())
+      val field = StructField(col.fieldNames().last, col.dataType, col.isNullable, builder.build())
 
-      Some((col.name.init, field, col.position))
+      Some((col.fieldNames().init, field, if (col.position() != null) Some(col.position) else None))
     }
   }
 
