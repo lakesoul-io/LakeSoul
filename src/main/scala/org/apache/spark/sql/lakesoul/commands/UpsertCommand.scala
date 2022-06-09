@@ -110,7 +110,7 @@ case class UpsertCommand(source: LogicalPlan,
         val newFiles = tc.writeFiles(Dataset.ofRows(spark, source))
         tc.commit(newFiles, Seq.empty[DataFileInfo])
       } else {
-
+        tc.setCommitType("update")
         val targetOnlyPredicates = splitConjunctivePredicates(condition)
           .filter(f =>
             f.references.nonEmpty
