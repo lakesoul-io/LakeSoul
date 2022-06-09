@@ -75,7 +75,7 @@ object DropPartitionCommand extends PredicateHelper {
 
   def dropPartition(table_name: String, table_id: String, range_value: String): Unit = {
     //just add partition version with non-value snapshot;not delete related datainfo for SCD
-    MetaVersion.deletePartitionInfoByRangeId(table_id, range_value,"")
+    MetaVersion.dropPartitionInfoByRangeId(table_id, range_value)
   }
 
 

@@ -103,7 +103,6 @@ public class DBUtil {
         String tablePathId = "truncate table table_path_id";
         String dataCommitInfo = "truncate table data_commit_info";
         String partitionInfo = "truncate table partition_info";
-//        String aaa = "truncate table aaa";
         Connection conn = null;
         Statement stmt = null;
         try {
@@ -114,7 +113,6 @@ public class DBUtil {
             stmt.addBatch(tablePathId);
             stmt.addBatch(dataCommitInfo);
             stmt.addBatch(partitionInfo);
-//            stmt.addBatch(aaa);
             stmt.executeBatch();
         } catch (SQLException e) {
             e.printStackTrace();
@@ -166,11 +164,6 @@ public class DBUtil {
                 // todo 报错
                 continue;
             }
-//            String[] dataFileOpArray = tmpElem.substring(1, tmpElem.length()-1).split(",");
-//            if (dataFileOpArray.length != 4) {
-//                //todo
-//                break;
-//            }
             tmpElem = tmpElem.substring(1, tmpElem.length()-1);
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
@@ -179,7 +172,7 @@ public class DBUtil {
             if (fileOp.equals("del")) {
                 continue;
             }
-            dataFileOp.setFileOp(tmpElem.substring(0, tmpElem.indexOf(",")));
+            dataFileOp.setFileOp(fileOp);
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
