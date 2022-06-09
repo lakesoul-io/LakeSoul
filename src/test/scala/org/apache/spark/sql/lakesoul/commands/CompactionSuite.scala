@@ -192,56 +192,16 @@ class CompactionSuite extends QueryTest
 
       checkAnswer(LakeSoulTable.forPath(tableName).toDF.select("range", "hash", "value"),
         Seq((1, 1, 11), (1, 2, 222), (1, 3, 333), (1, 4, 444), (1, 5, 555)).toDF("range", "hash", "value"))
-//
-//
-//      LakeSoulTable.forPath(tableName).compaction("range=1")
-//
-//      checkAnswer(LakeSoulTable.forPath(tableName).toDF.select("range", "hash", "value"),
-//        Seq((1, 1, 11), (1, 2, 222), (1, 3, 333), (1, 4, 444), (1, 5, 555)).toDF("range", "hash", "value"))
+
+
+      LakeSoulTable.forPath(tableName).compaction("range=1")
+
+      checkAnswer(LakeSoulTable.forPath(tableName).toDF.select("range", "hash", "value"),
+        Seq((1, 1, 11), (1, 2, 222), (1, 3, 333), (1, 4, 444), (1, 5, 555)).toDF("range", "hash", "value"))
 
     })
   }
 
-
-  test("compaction data is base file") {
-    withTempDir(file => {
-      val tableName = file.getCanonicalPath
-
-
-      val df1 = Seq((2, 1, 1))
-        .toDF("range", "hash", "value")
-
-
-      val df2 = Seq((1, 1, 1), (1, 2, 2), (1, 3, 3), (1, 4, 4))
-        .toDF("range", "hash", "value")
-      val df3 = Seq((1, 1, 11), (1, 2, 22), (1, 3, 33))
-        .toDF("range", "hash", "value")
-
-
-      val df4 = Seq((1, 2, 222), (1, 3, 333), (1, 4, 444), (1, 5, 555))
-        .toDF("range", "hash", "value")
-
-      df1.write
-        .option("rangePartitions", "range")
-        .option("hashPartitions", "hash")
-        .option("hashBucketNum", "2")
-        .format("lakesoul")
-        .save(tableName)
-
-      LakeSoulTable.forPath(tableName).upsert(df2)
-//      val sm = SnapshotManagement(tableName)
-//      assert(sm.snapshot.allDataInfo
-//        .filter(_.range_key.equals("range=1"))
-//        .forall(f => !f.is_base_file))
-//
-//      LakeSoulTable.forPath(tableName).compaction("range=1")
-//
-//      assert(sm.updateSnapshot().allDataInfo
-//        .filter(_.range_key.equals("range=1"))
-//        .forall(f => f.is_base_file))
-
-    })
-  }
 
 
   test("simple compaction with merge operator") {

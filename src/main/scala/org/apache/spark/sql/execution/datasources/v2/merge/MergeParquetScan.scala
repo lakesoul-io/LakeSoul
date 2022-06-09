@@ -259,7 +259,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
           requestFilesSchemaMap,
           readDataSchema,
           readPartitionSchema.fieldNames)
-      }.toArray.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+      }.toSeq
+        //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
 
     if (splitFiles.length == 1) {
