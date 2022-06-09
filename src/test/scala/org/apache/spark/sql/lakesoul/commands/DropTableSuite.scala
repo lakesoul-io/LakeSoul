@@ -16,11 +16,10 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import org.apache.hadoop.fs.Path
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfterEach
@@ -31,30 +30,35 @@ class DropTableSuite extends QueryTest
   import testImplicits._
   test("drop table") {
     withTempDir(f => {
-      val tmpPath = f.getCanonicalPath
+      //val tmpPath = f.getCanonicalPath
+      val tmpPath = "/lakesoultest"
       Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
         .write
         .format("lakesoul")
         .mode("append")
         .save(tmpPath)
-      val data=LakeSoulTable.forPath(tmpPath).toDF
-      data.show()
       LakeSoulTable.forPath(tmpPath).dropTable()
-
+      val e1 = intercept[AnalysisException] {
+        LakeSoulTable.forPath(tmpPath)
+      }
+      assert(e1.getMessage().contains(s"Table $tmpPath doesn't exist."))
+//      val tableId = MetaVersion.getTableInfo(tmpPath)
+//      assert(tableId ==null)
     })
   }
 
 
   test("drop partition") {
     withTempDir(f => {
-      val tmpPath = f.getCanonicalPath
+      //val tmpPath = f.getCanonicalPath
+     val tmpPath="/lakesoultest"
       Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
         .write
         .partitionBy("key")
         .format("lakesoul")
         .save(tmpPath)
 
-      val tableInfo = MetaVersion.getTableInfo(SparkUtil.makeQualifiedTablePath(new Path(tmpPath)).toString)
+      val tableInfo = MetaVersion.getTableInfo(tmpPath)
       val partitionInfo = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
 
       val e1 = intercept[AnalysisException] {
@@ -66,23 +70,10 @@ class DropTableSuite extends QueryTest
       }
       assert(e2.getMessage().contains("Partition not found by condition"))
 
-      LakeSoulTable.forPath(tmpPath).dropPartition("key=1")
+     LakeSoulTable.forPath(tmpPath).dropPartition("key=1")
       checkAnswer(
         spark.read.format("lakesoul").load(tmpPath).select("key", "value"),
         Row(2, 3) :: Row(3, 4) :: Nil)
-
-      Seq((1, 22)).toDF("key", "value")
-        .write
-        .mode("append")
-        .format("lakesoul")
-        .save(tmpPath)
-      checkAnswer(
-        spark.read.format("lakesoul").load(tmpPath).select("key", "value"),
-        Row(1, 22) :: Row(2, 3) :: Row(3, 4) :: Nil)
-
-
-      val rangeId = partitionInfo.find(_.range_value.equals("key=1")).get.range_value
-
     })
   }
 

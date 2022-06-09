@@ -32,7 +32,8 @@ class MergeOperatorSuite extends QueryTest
     LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.lakesoul.MergeOpLong", "longMOp")
 
     withTempDir(dir => {
-      val tableName = dir.getCanonicalPath
+      //val tableName = dir.getCanonicalPath
+      val tableName = "file:/test1"
       Seq(("a", 1L), ("b", 2L), ("c", 3L)).toDF("hash", "value")
         .write
         .mode("overwrite")

@@ -62,7 +62,8 @@ object DataOperation extends Logging {
         )
       }
     }
-    file_arr_buf
+   file_arr_buf
+     //.filter(_.file_op.equals("add"))
   }
 
 

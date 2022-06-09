@@ -37,11 +37,11 @@ public class Test {
     static PartitionInfoDao partitionInfoDao = new PartitionInfoDao();
 
     public static void main(String[] args)  {
-       // DBUtil.init();
-        DBUtil.cleanAllTable();
+        DBUtil.init();
+      //  DBUtil.cleanAllTable();
       // testCommitData();
        //testPartitionInfo();
-       testDataCommitInfo();;
+      // testDataCommitInfo();;
        //testSelect();
         //testSelect();
 

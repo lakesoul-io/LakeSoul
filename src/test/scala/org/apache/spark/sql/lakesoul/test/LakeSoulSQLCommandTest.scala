@@ -53,7 +53,7 @@ trait LakeSoulTestUtils extends Logging {
   }
 
   override def withTempDir(f: File => Unit): Unit = {
-    val dir = Utils.createTempDir()
+    val dir = Utils.createTempDir("/Mode")
     try {
       f(dir)
       waitForTasksToFinish()

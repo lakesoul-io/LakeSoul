@@ -122,6 +122,7 @@ case class DataFileInfo(
   lazy val file_bucket_id: Int = BucketingUtils
     .getBucketId(new Path(path).getName)
     .getOrElse(sys.error(s"Invalid bucket file $path"))
+
   //trans to files which need to delete
   def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
 }

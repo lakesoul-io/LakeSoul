@@ -24,7 +24,6 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.lang
 import java.io.File
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.api.java
 import org.apache.spark.internal.Logging
@@ -203,10 +202,10 @@ object SnapshotManagement {
 
   def apply(path: String): SnapshotManagement = {
     try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-      snapshotManagementCache.get(qualifiedPath, () => {
+      //val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      snapshotManagementCache.get(path, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
+          new SnapshotManagement(path)
         }
       })
     } catch {
@@ -216,10 +215,10 @@ object SnapshotManagement {
   }
   def getSM(path: String): SnapshotManagement = {
     try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-      snapshotManagementCache.get(qualifiedPath, () => {
+      ///val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      snapshotManagementCache.get(path, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
+          new SnapshotManagement(path)
         }
       })
     } catch {
@@ -231,8 +230,8 @@ object SnapshotManagement {
   def invalidateCache(path: String): Unit = {
     //todo path是否还需要转义
 //    val table_path: String = MetaUtils.modifyTableString(path)
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-    snapshotManagementCache.invalidate(qualifiedPath)
+    //val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    snapshotManagementCache.invalidate(path)
   }
 
   def clearCache(): Unit = {
