@@ -193,6 +193,7 @@ public class DBManager {
 
     public void deletePartitionInfoByTableAndPartition(String tableId, String partitionDesc) {
         partitionInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
+        dataCommitInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
     }
 
     public void logicDeletePartitionInfoByTableId(String tableId) {
