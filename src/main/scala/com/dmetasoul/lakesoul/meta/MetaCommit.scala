@@ -45,6 +45,7 @@ object MetaCommit extends Logging {
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
     val json = new JSONObject()
     table_info.configuration.foreach(x => json.put(x._1,x._2))
+    json.put("hashBucketNum", table_info.bucket_num.toString)
     tableInfo.setProperties(json)
     if (table_info.short_table_name.isDefined) {
       tableInfo.setTableName(table_info.short_table_name.get)
