@@ -119,6 +119,8 @@ case class DataFileInfo(
                      modification_time:Long = -1L,
                      file_exist_cols:String = ""
                      ) {
+  lazy val range_version: String = range_partitions + "-" + file_exist_cols
+
   lazy val file_bucket_id: Int = BucketingUtils
     .getBucketId(new Path(path).getName)
     .getOrElse(sys.error(s"Invalid bucket file $path"))
@@ -133,7 +135,7 @@ case class DataCommitInfo(table_id: String,
                         modification_time:Long = -1L,
                         file_ops:Array[DataFileInfo]=Array.empty[DataFileInfo]
                       ) {
-  lazy val range_key: String = range_value
+  lazy val range_key: String = commit_id.toString
   //identify for merge read
   lazy val range_version: String = range_key
 }

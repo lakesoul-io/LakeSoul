@@ -130,7 +130,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val requestedFields = readDataSchema.fieldNames
     val requestFilesSchema =
       fileInfo
-        .groupBy(_.range_partitions)
+        .groupBy(_.range_version)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
           m._1 + "->" + StructType(
@@ -237,7 +237,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       // produce requested schema
       val requestedFields = readDataSchema.fieldNames
       val requestFilesSchemaMap = fileInfo
-        .groupBy(_.range_partitions)
+        .groupBy(_.range_version)
         .map(m => {
           val fileExistCols = m._2.head.file_exist_cols.split(",")
           (m._1, StructType(
@@ -354,9 +354,12 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
     Seq.tabulate(bucketNum) { bucketId =>
       var files = fileWithBucketId.getOrElse(bucketId, Array.empty)
       val isSingleFile = files.size == 1
+
       if(!isSingleFile){
-        val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version)
+        val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version + 1)
         files=versionFiles.toArray
+//        val tmpFile = for(version <- 0 to files.size-1) yield files(version).copy(rangeVersion = (files(version).rangeKey + "-" + files(version).writeVersion))
+//        files=tmpFile.toArray
       }
       MergeFilePartition(bucketId, Array(files), isSingleFile)
     }
@@ -406,9 +409,11 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
     Seq.tabulate(bucketNum) { bucketId =>
       val files = fileWithBucketId.getOrElse(bucketId, Map.empty[String, Seq[MergePartitionedFile]])
         .map(_._2.toArray).toArray
-      val isSingleFile = files.length == 1
-      if (!isSingleFile) {
-        for (index <- 0 to files.size - 1) {
+
+      var isSingleFile = false
+      for (index <- 0 to files.size - 1) {
+        isSingleFile = files(index).size == 1
+        if (!isSingleFile) {
           val versionFiles = for (elem <- 0 to files(index).size - 1) yield files(index)(elem).copy(writeVersion = elem)
           files(index) = versionFiles.toArray
         }
