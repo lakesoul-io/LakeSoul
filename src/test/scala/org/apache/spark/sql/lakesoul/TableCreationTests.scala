@@ -25,15 +25,15 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.util.Utils
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
-
 import java.io.File
 import java.util.Locale
+
 import scala.language.implicitConversions
 
 trait TableCreationTests
@@ -1065,7 +1065,7 @@ trait TableCreationTests
           .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
           .save(path)
 
-        val shortName = SnapshotManagement(path).snapshot.getTableInfo.short_table_name
+        val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot.getTableInfo.short_table_name
         assert(shortName.isDefined && shortName.get.equals("tt"))
 
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1081,21 +1081,21 @@ trait TableCreationTests
     withTable("tt") {
       withTempDir(dir => {
         val path = dir.getCanonicalPath
+
         Seq((1, "a"), (2, "b")).toDF("i", "p")
           .write
           .mode("overwrite")
           .format("lakesoul")
           .save(path)
 
-        val sm = SnapshotManagement(path)
-
+        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
         var shortName = sm.snapshot.getTableInfo.short_table_name
-        assert(shortName.isEmpty)
-
+       assert(shortName.isEmpty)
         sql(s"create table tt using lakesoul location '$path'")
+
         shortName = sm.updateSnapshot().getTableInfo.short_table_name
         assert(shortName.isDefined && shortName.get.equals("tt"))
-
+        sql(s"insert into tt values(1,'a'),(2,'b')")
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
         checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
           Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1175,7 +1175,7 @@ trait TableCreationTests
           .format("lakesoul")
           .save(path)
 
-        val sm = SnapshotManagement(path)
+        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
 
         var shortName = sm.snapshot.getTableInfo.short_table_name
         assert(shortName.isEmpty)

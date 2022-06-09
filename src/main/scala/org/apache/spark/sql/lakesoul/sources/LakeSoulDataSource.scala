@@ -59,7 +59,7 @@ class LakeSoulDataSource
       throw LakeSoulErrors.pathNotSpecifiedException
     })
 
-    val snapshot = SnapshotManagement(path).snapshot
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot
     val tableInfo = snapshot.getTableInfo
 
     //update mode can only be used with hash partition
@@ -91,7 +91,7 @@ class LakeSoulDataSource
     val path = parameters.getOrElse("path", {
       throw LakeSoulErrors.pathNotSpecifiedException
     })
-    val snapshot_manage = SnapshotManagement(path)
+    val snapshot_manage = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
 
     WriteIntoTable(
       snapshot_manage,
@@ -99,7 +99,6 @@ class LakeSoulDataSource
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
-//todo SparkUtil.createRelation（）？
     SparkUtil.createRelation(Nil, snapshot_manage, SparkUtil.spark)
   }
 

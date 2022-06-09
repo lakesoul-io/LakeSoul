@@ -175,6 +175,10 @@ public class DBUtil {
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
+            String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
+            if (fileOp.equals("del")) {
+                continue;
+            }
             dataFileOp.setFileOp(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));

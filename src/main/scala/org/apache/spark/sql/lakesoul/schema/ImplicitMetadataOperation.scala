@@ -18,12 +18,12 @@ package org.apache.spark.sql.lakesoul.schema
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.TransactionCommit
-import org.apache.spark.sql.lakesoul.exception.{MetadataMismatchErrorBuilder, LakeSoulErrors}
-import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, RelationTable, TableInfo}
+import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetadataMismatchErrorBuilder}
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Dataset, SparkSession}
+import org.apache.hadoop.fs.Path
 
-import scala.collection.mutable.ArrayBuffer
 
 /**
   * A trait that writers into LakeSoulTableRel can extend to update the schema of the table.
@@ -151,7 +151,7 @@ trait ImplicitMetadataOperation extends Logging {
       //todo: setting
       tc.updateTableInfo(
         TableInfo(
-          table_path_s = table_info.table_path_s,
+          table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
           table_schema = dataSchema.json,
           range_column = normalizedRangePartitionCols.mkString(","),

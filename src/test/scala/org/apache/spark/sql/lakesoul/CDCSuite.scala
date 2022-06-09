@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
@@ -62,24 +63,104 @@ class CDCSuite
   test("test cdc with TableCreator ") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = dir.getCanonicalPath
+       // val tablePath = dir.getCanonicalPath
+        val tablePath="/lakesoultest"
         Seq(("range1", "hash1", "insert"),("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "insert"))
           .toDF("range", "hash", "op")
           .write
-          .mode("overwrite")
+          .mode("append")
           .format("lakesoul")
           .option("rangePartitions", "range")
           .option("hashPartitions", "hash")
           .option("hashBucketNum", "2")
-          .option("lakesoul_cdc_change_column", "op")
+          //.option("lakesoul_cdc_change_column", "op")
+          .partitionBy("range","op")
           .save(tablePath)
         val lake = LakeSoulTable.forPath(tablePath);
         val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
           .toDF("range", "hash", "op")
         lake.upsert(tableForUpsert)
         val data1 = spark.read.format("lakesoul").load(tablePath)
-        val data2 = data1.select("range","hash","op")
-        checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
+        val data4=LakeSoulTable.forPath(tablePath).toDF
+         val data5= data4.select("range","hash","op");
+        data5.show()
+       // val data2 = data1.select("range","hash","op")
+        //data2.show()
+      //  data2.explain(true)
+        //checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
+      })
+    }
+  }
+
+  test("test onepartition with morebuckets ") {
+    withTable("tt") {
+      withTempDir(dir => {
+        // val tablePath = dir.getCanonicalPath
+          val tablePath="/lakesoulMutilPartitionsAndBuckets"
+          Seq(("range1", "hash1", "insert"),("range1", "hash2", "insert"),("range1", "hash3", "insert"),("range2", "hash3", "insert"),("range2", "hash4", "insert"))
+            .toDF("range", "hash", "op")
+            .write
+            .mode("append")
+            .format("lakesoul")
+            .option("rangePartitions", "range")
+            .option("hashPartitions", "hash")
+            .option("hashBucketNum", "2")
+            //.option("lakesoul_cdc_change_column", "op")
+            .partitionBy("range","op")
+            .save(tablePath)
+          val lake = LakeSoulTable.forPath(tablePath);
+          val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range1", "hash3", "update"),("range2", "hash1", "isnert"), ("range2", "hash3", "update"))
+            .toDF("range", "hash", "op")
+          lake.upsert(tableForUpsert)
+          val data1 = spark.read.format("lakesoul").load(tablePath)
+          val data4=LakeSoulTable.forPath(tablePath).toDF
+          val data5= data4.select("range","hash","op");
+          data5.show()
+        // val data2 = data1.select("range","hash","op")
+        //data2.show()
+        //  data2.explain(true)
+        //checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
+      })
+    }
+  }
+
+
+  test("test mutilpartitions with more buckets ") {
+    withTable("tt") {
+      withTempDir(dir => {
+
+        // val tablePath = dir.getCanonicalPath
+       withSQLConf(
+         LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
+          val tablePath="/lakesoulMutilPartitionsAndBuckets"
+          Seq(("range1", "hash1", "insert"),("range1", "hash2", "insert"),("range1", "hash3", "insert"),("range2", "hash3", "insert"),("range2", "hash4", "insert"))
+            .toDF("range", "hash", "op")
+            .write
+            .mode("append")
+            .format("lakesoul")
+            .option("rangePartitions", "range")
+            .option("hashPartitions", "hash")
+            .option("hashBucketNum", "2")
+            //.option("lakesoul_cdc_change_column", "op")
+            .partitionBy("range","op")
+            .save(tablePath)
+          val lake = LakeSoulTable.forPath(tablePath);
+          val tableForUpsert = Seq(("range1", "hash1", "update"), ("range1", "hash3", "update"),("range2", "hash1", "insert"), ("range2", "hash3", "update"))
+            .toDF("range", "hash", "op")
+          lake.upsert(tableForUpsert)
+         val tableForUpsert1 = Seq(("range1", "hash1", "delete"), ("range1", "hash4", "update"),("range2", "hash4", "insert"), ("range2", "hash3", "delete"))
+           .toDF("range", "hash", "op")
+         lake.upsert(tableForUpsert1)
+          val data1 = spark.read.format("lakesoul").load(tablePath)
+          val data4=LakeSoulTable.forPath(tablePath).toDF
+          val data5= data4.select("range","hash","op");
+          data5.show()
+       }
+
+        // val data2 = data1.select("range","hash","op")
+        //data2.show()
+        //  data2.explain(true)
+        //checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
       })
     }
   }

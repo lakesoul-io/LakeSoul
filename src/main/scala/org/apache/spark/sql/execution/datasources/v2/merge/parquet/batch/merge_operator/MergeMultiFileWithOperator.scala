@@ -71,7 +71,7 @@ class MergeMultiFileWithOperator(filesInfo: Seq[(MergePartitionedFile, Partition
     * Map[writeVersion -> Array(FieldIndex)]
     */
   val versionFileInfoMap: Map[Long, Array[FieldIndex]] = filesInfo.map(t => {
-    t._1.writeVersion ->
+   t._1.writeVersion->
       t._1.fileInfo.map(fieldInfo => FieldIndex(fieldIndexMap(fieldInfo.fieldName), fieldInfo.fieldType)).toArray
   }).toMap
 
