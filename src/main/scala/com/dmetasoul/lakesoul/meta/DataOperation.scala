@@ -19,13 +19,13 @@ package com.dmetasoul.lakesoul.meta
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
-
 import java.util
 import java.util.UUID
-import scala.collection.JavaConverters
+
+import scala.collection.{JavaConverters, mutable}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
-
+import scala.collection.mutable.HashMap
 object DataOperation extends Logging {
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfo]): Array[DataFileInfo] = {
@@ -43,7 +43,9 @@ object DataOperation extends Logging {
   //get fies info in this partition that match the current read version
   def getSinglePartitionDataInfo(partition_info: PartitionInfo): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+    val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
 
+    val dupCheck = new mutable.HashMap[String,String]()
     val metaPartitionInfo = new entity.PartitionInfo()
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
@@ -62,7 +64,21 @@ object DataOperation extends Logging {
         )
       }
     }
-   file_arr_buf
+    if(file_arr_buf.length>1){
+      for(i <- Range(file_arr_buf.size-1,-1,-1)){
+        if(file_arr_buf(i).file_op.equals("del")) {
+          dupCheck.put(file_arr_buf(i).path,"1")
+        }else{
+          if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path) ){
+            file_res_arr_buf +=file_arr_buf(i)
+          }
+        }
+      }
+      file_res_arr_buf.reverse
+    }else{
+      file_arr_buf
+    }
+
      //.filter(_.file_op.equals("add"))
   }
 
