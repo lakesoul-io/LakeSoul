@@ -25,7 +25,6 @@ import java.util.UUID
 import scala.collection.{JavaConverters, mutable}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
-import scala.collection.mutable.HashMap
 object DataOperation extends Logging {
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfo]): Array[DataFileInfo] = {
@@ -45,7 +44,7 @@ object DataOperation extends Logging {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
     val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
 
-    val dupCheck = new mutable.HashMap[String,String]()
+    val dupCheck = new mutable.HashSet[String]()
     val metaPartitionInfo = new entity.PartitionInfo()
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
@@ -67,10 +66,10 @@ object DataOperation extends Logging {
     if(file_arr_buf.length>1){
       for(i <- Range(file_arr_buf.size-1,-1,-1)){
         if(file_arr_buf(i).file_op.equals("del")) {
-          dupCheck.put(file_arr_buf(i).path,"1")
+          dupCheck.add(file_arr_buf(i).path)
         }else{
           if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path) ){
-            file_res_arr_buf +=file_arr_buf(i)
+            file_res_arr_buf += file_arr_buf(i)
           }
         }
       }
@@ -79,12 +78,10 @@ object DataOperation extends Logging {
       file_arr_buf
     }
 
-     //.filter(_.file_op.equals("add"))
   }
 
 
   //add new data info to table data_info
-  //todo 拼装dataCommitInfo
   def addNewDataFile(table_id: String,
                      range_value: String,
                      file_path: String,
