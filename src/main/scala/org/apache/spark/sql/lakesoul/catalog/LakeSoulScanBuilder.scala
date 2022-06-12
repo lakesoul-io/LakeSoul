@@ -100,8 +100,13 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
     val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
-    //todo
-    val hasNoDeltaFile = fileInfo.forall(f => f._2.groupBy(_.file_bucket_id).forall(_._2.size<=1))
+
+    var hasNoDeltaFile = false
+    if(tableInfo.bucket_num>0){
+      hasNoDeltaFile = fileInfo.forall(f => f._2.groupBy(_.file_bucket_id).forall(_._2.size<=1))
+    }else{
+      hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
+    }
 
     if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan()
