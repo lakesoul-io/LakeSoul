@@ -68,6 +68,42 @@ object DataOperation extends Logging {
         if(file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         }else{
+          if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path)){
+            file_res_arr_buf += file_arr_buf(i)
+          }
+        }
+      }
+      file_res_arr_buf.reverse
+    }else{
+      file_arr_buf.filter(_.file_op.equals("add"))
+    }
+  }
+
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, version: Int): ArrayBuffer[DataFileInfo] = {
+    val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+    val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
+
+    val dupCheck = new mutable.HashSet[String]()
+    val dataCommitInfoList =  MetaVersion.dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
+    dataCommitInfoList.foreach( data_commit_info => {
+      val fileOps = data_commit_info.getFileOps.asScala.toArray
+      fileOps.foreach( file => {
+        file_arr_buf += DataFileInfo(
+          data_commit_info.getPartitionDesc,
+          file.getPath(),
+          file.getFileOp(),
+          file.getSize(),
+          data_commit_info.getTimestamp(),
+          file.getFileExistCols()
+        )
+      })
+    })
+
+    if(file_arr_buf.length>1){
+      for(i <- Range(file_arr_buf.size-1,-1,-1)){
+        if(file_arr_buf(i).file_op.equals("del")) {
+          dupCheck.add(file_arr_buf(i).path)
+        }else{
           if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path) ){
             file_res_arr_buf += file_arr_buf(i)
           }
@@ -75,11 +111,9 @@ object DataOperation extends Logging {
       }
       file_res_arr_buf.reverse
     }else{
-      file_arr_buf
+      file_arr_buf.filter(_.file_op.equals("add"))
     }
-
   }
-
 
   //add new data info to table data_info
   def addNewDataFile(table_id: String,

@@ -76,8 +76,6 @@ public class DBManager {
         return tableNameIdDao.findByTableName(tableName);
     }
 
-    //tableName == tablePath,shortTableName == tableName
-    //返回tablePath
     public String getTablePathFromShortTableName(String tableName) {
         TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
         if (tableNameId.getTableId() == null) return null;
@@ -94,7 +92,8 @@ public class DBManager {
         return false;
     }
 
-    public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema, JSONObject properties, String partitions) {
+    public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema,
+                               JSONObject properties, String partitions) {
         // todo 之前这里有table_schema长度检测 table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE
         TableInfo tableInfo = new TableInfo();
         tableInfo.setTableId(tableId);
@@ -133,7 +132,6 @@ public class DBManager {
 
     }
 
-    //原返回table_name即路径，则现返回tablePath
     public List<String> listTables() {
         List<String> rsList = tablePathIdDao.listAllPath();
         return rsList;
@@ -152,20 +150,8 @@ public class DBManager {
         return p;
     }
 
-    // todo 目前表没有partitionId
-    //  之前返回值类型为元组（boolean， String）
-    public void getPartitionId(){
-
-    }
-
     public List<PartitionInfo> getAllPartitionInfo(String tableId) {
         return partitionInfoDao.getPartitionDescByTableId(tableId);
-    }
-
-    // todo 目前不需要update partition
-    // 还有一个同名不同参数方法
-    public void updatePartitionInfo(){
-
     }
 
     public void updateTableSchema(String tableId, String tableSchema) {
@@ -629,6 +615,19 @@ public class DBManager {
         List<UUID> snapshotList = partitionInfo.getSnapshot();
 
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
+    }
+
+    public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
+        PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
+        List<UUID> commitList = partitionInfo.getSnapshot();
+        return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
+    }
+
+    public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
+        PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
+        PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
+        partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
+        return partitionInfoDao.insert(partitionInfo);
     }
 
 }

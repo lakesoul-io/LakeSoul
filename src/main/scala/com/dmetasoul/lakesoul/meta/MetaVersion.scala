@@ -185,26 +185,8 @@ object MetaVersion {
     partitionVersionBuffer.toArray
   }
 
-  def updatePartitionInfo(table_id: String,
-                          range_value: String,
-                          range_id: String,
-                          write_version: Long,
-                          delta_file_num: Int,
-                          be_compacted: Boolean): Unit = {
-    val ori_read_version = write_version - 1
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |update $database.partition_info set
-//           |read_version=$write_version,
-//           |last_update_timestamp=${System.currentTimeMillis()},
-//           |delta_file_num=$delta_file_num,
-//           |be_compacted=$be_compacted
-//           |where table_id='$table_id' and range_value='$range_value'
-//           |if range_id='$range_id' and
-//           |read_version=$ori_read_version
-//        """.stripMargin)
-//    })
+  def rollbackPartitionInfoByVersion(table_id: String, range_value: String, version: Int): Unit = {
+    dbManager.rollbackPartitionByVersion(table_id, range_value, version)
   }
 
   def updateTableSchema(table_name: String,
