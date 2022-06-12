@@ -273,15 +273,16 @@ trait Transaction extends TransactionalWrite with Logging {
 
         val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
         depend_partitions.foreach(range_key => {
-          val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key)).head
-          val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info)
-
           val filter_files = new ArrayBuffer[DataFileInfo]()
-          partition_files.foreach(partition_file => {
-            if(!delete_file_set.contains(partition_file.path)){
-              filter_files += partition_file
-            }
-          })
+          val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key))
+          if (partition_info.length > 0) {
+            val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
+            partition_files.foreach(partition_file => {
+              if(!delete_file_set.contains(partition_file.path)){
+                filter_files += partition_file
+              }
+            })
+          }
 
           val changeFiles = addFiles.union(expireFilesWithDeleteOp)
             .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
