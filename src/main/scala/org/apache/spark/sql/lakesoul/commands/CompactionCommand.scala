@@ -22,6 +22,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
+import org.apache.spark.sql.execution.datasources.v2.parquet.BucketParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
@@ -81,6 +82,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
+    if(scan.isInstanceOf[BucketParquetScan]){
+      throw LakeSoulErrors.CompactionException(table_name = table.name())
+    }
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
 
     val v2Relation = DataSourceV2Relation(

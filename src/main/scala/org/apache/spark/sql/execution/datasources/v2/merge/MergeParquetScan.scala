@@ -67,19 +67,9 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
 
   lazy val fileInfo: Seq[DataFileInfo] = newFileIndex.getFileInfo(partitionFilters)
-        // todo 需要修改
-//    .map(f => if (f.is_base_file) {
-//      f.copy(write_version = 0)
-//    } else f)
-
   /** if there are too many delta files, we will execute compaction first */
   private def compactAndReturnNewFileIndex(oriFileIndex: LakeSoulFileIndexV2): LakeSoulFileIndexV2 = {
     val files = oriFileIndex.getFileInfo(partitionFilters)
-        //todo 需要修改
-//      .map(f => if (f.is_base_file) {
-//        f.copy(write_version = 0)
-//      } else f)
-
     val partitionGroupedFiles = files
       .groupBy(_.range_partitions)
       .values

@@ -113,7 +113,8 @@ class ParquetScanSuite extends QueryTest
         .option("hashBucketNum", "2")
         .format("lakesoul")
         .save(tablePath)
-
+      val df =   Seq((20201101, 1, 11), (20201101, 2, 22), (20201101, 3, 33)).toDF("range", "hash", "value")
+      LakeSoulTable.forPath(tablePath).upsert(df)
       val table = LakeSoulTable.forPath(tablePath)
       table.compaction()
 
@@ -139,9 +140,10 @@ class ParquetScanSuite extends QueryTest
           .format("lakesoul")
           .save(tablePath)
 
+        val df =   Seq((20201101, 1, 11), (20201101, 2, 22), (20201101, 3, 33),(20201102, 1, 11)).toDF("range", "hash", "value")
+        LakeSoulTable.forPath(tablePath).upsert(df)
         val table = LakeSoulTable.forPath(tablePath)
         table.compaction()
-
         val plan = table.toDF.queryExecution.toString()
 
         logInfo(plan)

@@ -197,19 +197,11 @@ trait TransactionalWrite {
         statsTrackers = statsTrackers,
         options = writeOptions.toMap)
     }
-    val is_base_file = if (commitType.nonEmpty && commitType.get.name.equals("CompactionCommit")) {
-      true
-    } else {
-      false
-    }
-
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
     val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
     committer.addedStatuses.map(file => file.copy(
       file_exist_cols = real_write_cols
-//      todo
-//      is_base_file = is_base_file
     ))
   }
 

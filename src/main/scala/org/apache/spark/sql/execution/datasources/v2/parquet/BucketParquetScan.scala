@@ -132,7 +132,8 @@ case class BucketParquetScan(sparkSession: SparkSession,
           maxSplitBytes = 0L,
           partitionValues = partitionValues
         )
-      }.toArray.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+      }.toSeq
+        //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
     getFilePartitions(splitFiles)
   }

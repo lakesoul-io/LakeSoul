@@ -64,6 +64,14 @@ object LakeSoulErrors {
        """.stripMargin)
   }
 
+
+  def CompactionException(table_name: String): Throwable = {
+    new AnalysisException(
+      s"""
+         |Error: No delta file for compaction: $table_name.
+       """.stripMargin)
+  }
+
   def failedInitTableException(table_name: String): MetaException = {
     new MetaException(
       s"""
