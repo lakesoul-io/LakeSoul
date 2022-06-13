@@ -175,14 +175,14 @@ public class LakesoulCatalog implements Catalog {
             String tableName = tablePath.getFullName();
             TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
             //todo
-//            MetaVersion.createNewTable(tableName,
-//                    tableInfo.table_id(),
-//                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
-//                    FlinkUtil.getTableRangeColumns(table),
-//                    FlinkUtil.getTablePrimaryKey(table),
-//                    FlinkUtil.serialOptionsToCasStr(FlinkUtil.UpdateLakesoulCdcTable( tableOptions )),
-//                    tableInfo.bucket_num(),
-//            );
+            MetaVersion.createNewTable(tableInfo.table_path_s().get(),tableName,
+                    tableInfo.table_id(),
+                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
+                    FlinkUtil.getTableRangeColumns(table),
+                    FlinkUtil.getTablePrimaryKey(table),
+                    FlinkUtil.getScalaMap(tableOptions),
+                    tableInfo.bucket_num()
+            );
         }
     }
 

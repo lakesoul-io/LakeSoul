@@ -29,6 +29,7 @@ import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.lakesoul.sink.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.tools.*;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
@@ -145,7 +146,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         LakesoulCdcPartitionComputer computer = partitionCdcComputer();
         Object writer = createWriter(sinkContext,tableOptions);
         boolean isEncoder = writer instanceof Encoder;
-        LakesoulTableBucketAssigner assigner = new LakesoulTableBucketAssigner(computer);
+        FlinkBucketAssigner assigner = new FlinkBucketAssigner(computer);
         LakesoulRollingPolicy lakesoulPolicy=new LakesoulRollingPolicy(!isEncoder);
         String randomPrefix = "part-" + UUID.randomUUID().toString();
         OutputFileConfig.OutputFileConfigBuilder fileNamingBuilder = OutputFileConfig.builder();
@@ -337,31 +338,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     }
 
 
-
-
-    public static class LakesoulTableBucketAssigner implements BucketAssigner<RowData, String> {
-
-        private final PartitionComputer<RowData> computer;
-
-        public LakesoulTableBucketAssigner(PartitionComputer<RowData> computer) {
-            this.computer = computer;
-        }
-
-        @Override
-        public String getBucketId(RowData element, Context context) {
-            try {
-                return FlinkUtil.generatePartitionPath(
-                        computer.generatePartValues(element));
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        @Override
-        public SimpleVersionedSerializer<String> getSerializer() {
-            return SimpleVersionedStringSerializer.INSTANCE;
-        }
-    }
 
     private static class ProjectionEncoder implements Encoder<RowData> {
 
