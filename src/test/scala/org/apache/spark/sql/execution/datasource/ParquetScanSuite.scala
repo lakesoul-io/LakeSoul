@@ -21,8 +21,10 @@ import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.functions.{col, last}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, TestUtils}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.scalatest.BeforeAndAfterEach
+import org.apache.hadoop.fs.Path
 
 class ParquetScanSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
@@ -62,7 +64,6 @@ class ParquetScanSuite extends QueryTest
         .save(tablePath)
 
       val plan = LakeSoulTable.forPath(tablePath).toDF.queryExecution.toString()
-
       logInfo(plan)
       assert(plan.contains("OnePartitionMergeBucketScan") && plan.contains("withPartitionAndOrdering"))
 
@@ -73,7 +74,7 @@ class ParquetScanSuite extends QueryTest
 
   test("It should use MultiPartitionMergeScan when reading multi partition") {
     withTempDir(dir => {
-      val tablePath = dir.getCanonicalPath
+      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 1, 1))
         .toDF("range", "hash", "value")
         .write
@@ -87,8 +88,7 @@ class ParquetScanSuite extends QueryTest
         val plan = LakeSoulTable.forPath(tablePath).toDF.queryExecution.toString()
 
         logInfo(plan)
-        assert(plan.contains("MultiPartitionMergeBucketScan") &&
-          plan.contains("withPartition "))
+        assert(plan.contains("MultiPartitionMergeBucketScan") && plan.contains("withPartition"))
       }
 
       withSQLConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "false") {
@@ -102,7 +102,7 @@ class ParquetScanSuite extends QueryTest
     })
   }
 
-  test("It should use BucketParquetScan when reading one compacted partition") {
+  test("It should use OnePartitionMergeBucketScan when reading one compacted partition") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3))
@@ -113,21 +113,19 @@ class ParquetScanSuite extends QueryTest
         .option("hashBucketNum", "2")
         .format("lakesoul")
         .save(tablePath)
-      val df =   Seq((20201101, 1, 11), (20201101, 2, 22), (20201101, 3, 33)).toDF("range", "hash", "value")
-      LakeSoulTable.forPath(tablePath).upsert(df)
       val table = LakeSoulTable.forPath(tablePath)
       table.compaction()
 
       val plan = table.toDF.queryExecution.toString()
 
       logInfo(plan)
-      assert(plan.contains("BucketParquetScan"))
+      assert(plan.contains("OnePartitionMergeBucketScan"))
 
     })
   }
 
 
-  test("It should use ParquetScan when reading multi compacted partition") {
+  test("It should use MultiPartitionMergeScan when reading multi compacted partition") {
     withSQLConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "false") {
       withTempDir(dir => {
         val tablePath = dir.getCanonicalPath
@@ -140,14 +138,12 @@ class ParquetScanSuite extends QueryTest
           .format("lakesoul")
           .save(tablePath)
 
-        val df =   Seq((20201101, 1, 11), (20201101, 2, 22), (20201101, 3, 33),(20201102, 1, 11)).toDF("range", "hash", "value")
-        LakeSoulTable.forPath(tablePath).upsert(df)
         val table = LakeSoulTable.forPath(tablePath)
         table.compaction()
         val plan = table.toDF.queryExecution.toString()
 
         logInfo(plan)
-        assert(plan.contains("ParquetScan"))
+        assert(plan.contains("MultiPartitionMergeScan"))
 
       })
     }

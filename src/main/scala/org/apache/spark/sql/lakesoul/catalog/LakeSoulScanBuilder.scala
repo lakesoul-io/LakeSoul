@@ -112,22 +112,21 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       parquetScan()
     }
     else if (onlyOnePartition) {
-      if (hasNoDeltaFile) {
-        BucketParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+//        BucketParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+//          readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
+      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else {
-        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      }
     }
     else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else if (hasNoDeltaFile) {
-        parquetScan()
-      } else {
+      } else
+//      if (hasNoDeltaFile) {
+//        parquetScan()
+//      } else
+      {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       }
