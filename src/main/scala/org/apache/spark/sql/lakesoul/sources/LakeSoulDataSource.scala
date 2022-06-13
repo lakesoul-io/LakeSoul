@@ -80,7 +80,7 @@ class LakeSoulDataSource
     }
 
     val options = new LakeSoulOptions(newParam, sqlContext.sparkSession.sessionState.conf)
-    new LakeSoulSink(sqlContext, new Path(path), outputMode, options)
+    new LakeSoulSink(sqlContext, SparkUtil.makeQualifiedTablePath(new Path(path)), outputMode, options)
   }
 
 
