@@ -1092,10 +1092,8 @@ trait TableCreationTests
         var shortName = sm.snapshot.getTableInfo.short_table_name
        assert(shortName.isEmpty)
         sql(s"create table tt using lakesoul location '$path'")
-
         shortName = sm.updateSnapshot().getTableInfo.short_table_name
         assert(shortName.isDefined && shortName.get.equals("tt"))
-        sql(s"insert into tt values(1,'a'),(2,'b')")
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
         checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
           Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1225,7 +1223,7 @@ trait TableCreationTests
           .hashBucketNum(1)
           .create()
 
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals("tt"))
         assert(tableInfo.range_partition_columns.equals(Seq("i")))
         assert(tableInfo.hash_partition_columns.equals(Seq("p")))
@@ -1262,7 +1260,7 @@ trait TableCreationTests
         val path = dir.getCanonicalPath
         val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
         table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals(tableName))
         assert(tableInfo.range_partition_columns.equals(Seq("date")))
         assert(tableInfo.hash_partition_columns.equals(Seq("id")))
@@ -1283,7 +1281,7 @@ trait TableCreationTests
           .tableProperty("lakesoul_cdc_change_column" -> "change_kind")
           .create()
 
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
@@ -1299,7 +1297,7 @@ trait TableCreationTests
           .format("lakesoul")
           .option("lakesoul_cdc_change_column", "change_kind")
           .save(path)
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
       })
     }

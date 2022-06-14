@@ -17,10 +17,12 @@
 package org.apache.spark.sql.lakesoul.test
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.util.Utils
@@ -210,7 +212,7 @@ trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
 
   var snapshotManagement: SnapshotManagement = _
 
-  protected def tempPath: String = tempDir.getCanonicalPath
+  protected def tempPath: String = SparkUtil.makeQualifiedTablePath(new Path(tempDir.getCanonicalPath)).toString
 
   protected def readLakeSoulTable(path: String): DataFrame = {
     spark.read.format("lakesoul").load(path)
