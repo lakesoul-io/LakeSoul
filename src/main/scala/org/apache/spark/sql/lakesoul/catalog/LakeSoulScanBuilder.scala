@@ -108,7 +108,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
     }
 
-    if (tableInfo.hash_partition_columns.isEmpty) {
+    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.size == 0) {
       parquetScan()
     }
     else if (onlyOnePartition) {
