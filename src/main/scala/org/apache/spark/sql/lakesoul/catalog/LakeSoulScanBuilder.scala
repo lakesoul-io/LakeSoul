@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.TableInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
@@ -98,7 +98,13 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     //check and redo commit before read
     //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
-    val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
+    var files:Seq[DataFileInfo] = Seq.empty
+    if(SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)){
+      files=fileIndex.getFileInfoForPartitionVersion()
+    }else{
+      files=fileIndex.getFileInfo(Seq(parseFilter()))
+    }
+    val fileInfo=files.groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
 
     var hasNoDeltaFile = false

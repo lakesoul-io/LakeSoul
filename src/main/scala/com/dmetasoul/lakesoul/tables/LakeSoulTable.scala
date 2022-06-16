@@ -335,6 +335,20 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
     executeDropPartition(snapshotManagement, condition)
   }
+
+  def rollbackPartition(partitionValue:String,toVersionNum:Int):Unit = {
+    MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
+  }
+
+
+  def partitionVersions(partitionDesc:String=""): Unit ={
+    if("".equals(partitionDesc)){
+      println("Please set partition value such as RangeCoulmnName = Value")
+    }else{
+      //println(partitionDesc+"-"+"versions")
+      MetaVersion.getOnePartitionVersions(snapshotManagement.snapshot.getTableInfo.table_id,partitionDesc).foreach(p=> println("-----"+p.version+"------"))
+    }
+  }
 }
 
 object LakeSoulTable {
@@ -354,12 +368,46 @@ object LakeSoulTable {
     forPath(sparkSession, path)
   }
 
+  /**
+    * uncache all or one table from snapshotmanagement
+    *  partiton time travel needs to clear snapshot version info to avoid conflict with other read tasks
+    *   for example
+    *     LakeSoulTable.forPath(tablePath,"range=range1",0).toDF.show()
+    *     LakeSoulTable.uncached(tablePath)
+    *
+    * @param path
+    */
+  def uncached(path: String = ""): Unit = {
+    if(path.equals("")){
+      SnapshotManagement.clearCache()
+    }else{
+      val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      if(!LakeSoulSourceUtils.isLakeSoulTableExists(p)){
+        println("table not in lakesoul. Please check table path")
+        return
+      }
+      SnapshotManagement.invalidateCache(p)
+    }
+  }
 
+
+  /**
+    *  Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
+    *
+    */
+  def forPath(path: String,partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse {
+      throw new IllegalArgumentException("Could not find active SparkSession")
+    }
+
+    forPath(sparkSession, path,partitionDesc,partitionVersion)
+  }
   /**
     * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
     */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    SnapshotManagement.invalidateCache(p)
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
@@ -367,7 +415,15 @@ object LakeSoulTable {
       throw LakeSoulErrors.tableNotExistsException(path)
     }
   }
-
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
+      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
+        SnapshotManagement(p,partitionDesc,partitionVersion))
+    } else {
+      throw LakeSoulErrors.tableNotExistsException(path)
+    }
+  }
   /**
     * Create a LakeSoulTableRel using the given table name using the given SparkSession.
     *

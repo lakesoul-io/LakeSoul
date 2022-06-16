@@ -145,6 +145,40 @@ public class PartitionInfoDao {
         return getPartitionInfo(sql);
     }
 
+    public List<PartitionInfo> getPartitionVersions(String tableId,String partitionDesc) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        List<PartitionInfo> rsList = new ArrayList<>();
+        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s'",
+                tableId, partitionDesc);
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                PartitionInfo partitionInfo = new PartitionInfo();
+                partitionInfo.setTableId(rs.getString("table_id"));
+                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
+                partitionInfo.setVersion(rs.getInt("version"));
+                //partitionInfo.setCommitOp(rs.getString("commit_op"));
+               // Array snapshotArray = rs.getArray("snapshot");
+                //List<UUID> uuidList = new ArrayList<>();
+               // Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
+                //partitionInfo.setSnapshot(uuidList);
+               // partitionInfo.setExpression(rs.getString("expression"));
+                rsList.add(partitionInfo);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return rsList;
+    }
+
+
+
     public List<PartitionInfo> getPartitionDescByTableId(String tableId) {
         Connection conn = null;
         PreparedStatement pstmt = null;

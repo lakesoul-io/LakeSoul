@@ -53,6 +53,15 @@ object SparkUtil {
     spark.sparkContext.parallelize(DataOperation.getTableDataInfo(snapshot.getPartitionInfoArray)).toDS().persist().as[DataFileInfo].collect()
   }
 
+  def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean ={
+    val (partitionDesc,partitionVersion)=snapshotManagement.snapshot.getPartitionDescAndVersion
+    if(partitionVersion != -1 && !partitionDesc.equals("")){
+      true
+    }else{
+      false
+    }
+  }
+
 /*  def modifyTableString(tablePath: String): String = {
     makeQualifiedTablePath(tablePath).toString
   }

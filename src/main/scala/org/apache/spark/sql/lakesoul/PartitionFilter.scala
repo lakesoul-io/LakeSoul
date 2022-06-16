@@ -31,7 +31,6 @@ object PartitionFilter {
     val partitionFilters = filters.flatMap { filter =>
       LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, SparkUtil.spark)._1
     }
-    snapshot.getPartitionInfoArray
     val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
 
     import SparkUtil.spark.implicits._

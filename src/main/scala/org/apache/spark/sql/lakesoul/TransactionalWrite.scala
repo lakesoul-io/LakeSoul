@@ -133,7 +133,10 @@ trait TransactionalWrite {
 
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
-    val outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
+    var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
+    if(isCompaction){
+      outputPath =  SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString+"/compact_"+System.currentTimeMillis()))
+    }
 
     val (queryExecution, output) = normalizeData(data)
     val partitioningColumns =

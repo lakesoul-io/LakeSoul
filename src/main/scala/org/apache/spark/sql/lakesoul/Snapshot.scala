@@ -28,6 +28,15 @@ class Snapshot(table_info: TableInfo,
                partition_info_arr: Array[PartitionInfo],
                is_first_commit: Boolean = false
               ) {
+  private var partitionDesc:String = ""
+  private var partitionVersion:Int = -1
+  def setPartitionDescAndVersion(parDesc:String,parVer:Int): Unit ={
+    this.partitionDesc = parDesc
+    this.partitionVersion = parVer
+  }
+  def getPartitionDescAndVersion:(String,Int)={
+    (this.partitionDesc,this.partitionVersion)
+  }
   def getTableName: String = table_info.table_path_s.get
   def getTableInfo: TableInfo = table_info
   def sizeInBytes(filters: Seq[Expression] = Nil): Long = {

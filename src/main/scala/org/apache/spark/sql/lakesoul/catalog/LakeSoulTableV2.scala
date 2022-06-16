@@ -142,7 +142,6 @@ case class LakeSoulTableV2(spark: SparkSession,
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
-    //todo 参数是否合适
     SparkUtil.createRelation(partitionPredicates, snapshotManagement, spark)
   }
 
@@ -190,7 +189,6 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer
         // to this data source relation. This is the behavior for InsertInto
         session.sharedState.cacheManager.recacheByPlan(
-          //todo 参数看是否有问题
           session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
       }
     }

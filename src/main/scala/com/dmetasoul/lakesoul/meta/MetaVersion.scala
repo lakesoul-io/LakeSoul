@@ -163,7 +163,33 @@ object MetaVersion {
       expression = info.getExpression
     )
   }
+  def getSinglePartitionInfoForVersion(table_id: String, range_value: String, version: Int):  Array[PartitionInfo] = {
+    val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
+    val info = dbManager.getSinglePartitionInfo(table_id, range_value,version)
+    partitionVersionBuffer += PartitionInfo(
+      table_id = info.getTableId,
+      range_value = range_value,
+      version = info.getVersion,
+      read_files = info.getSnapshot.asScala.toArray,
+      expression = info.getExpression
+    )
+    partitionVersionBuffer.toArray
 
+  }
+  def getOnePartitionVersions(table_id: String, range_value: String):  Array[PartitionInfo] = {
+    val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
+    val res_itr = dbManager.getOnePartitionVersions(table_id, range_value).iterator()
+    while (res_itr.hasNext) {
+      val res = res_itr.next()
+      partitionVersionBuffer += PartitionInfo(
+        table_id = res.getTableId,
+        range_value = res.getPartitionDesc,
+        version = res.getVersion,
+      )
+    }
+    partitionVersionBuffer.toArray
+
+  }
   //todo
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {
     (false, "")
@@ -185,8 +211,13 @@ object MetaVersion {
     partitionVersionBuffer.toArray
   }
 
-  def rollbackPartitionInfoByVersion(table_id: String, range_value: String, version: Int): Unit = {
-    dbManager.rollbackPartitionByVersion(table_id, range_value, version)
+  def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {
+    if(dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)){
+      println(range_value+" toVersion "+toVersion+" success")
+    }else{
+      println(range_value+" toVersion "+toVersion+" failed. Please check partition value or versionNum is right")
+    }
+
   }
 
   def updateTableSchema(table_name: String,
@@ -218,7 +249,6 @@ object MetaVersion {
     dbManager.deletePartitionInfoByTableAndPartition(table_id, range_value)
   }
 
-  //todo table_info中short_name置为空？
   def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
     dbManager.deleteShortTableName(short_table_name, table_name)
   }

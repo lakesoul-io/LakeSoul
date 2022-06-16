@@ -33,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, SparkSession}
@@ -66,7 +66,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
 
-  lazy val fileInfo: Seq[DataFileInfo] = newFileIndex.getFileInfo(partitionFilters)
+  lazy val fileInfo: Seq[DataFileInfo] = if(SparkUtil.isPartitionVersionRead(newFileIndex.snapshotManagement)){newFileIndex.getFileInfoForPartitionVersion()}else{newFileIndex.getFileInfo(partitionFilters)}
   /** if there are too many delta files, we will execute compaction first */
   private def compactAndReturnNewFileIndex(oriFileIndex: LakeSoulFileIndexV2): LakeSoulFileIndexV2 = {
     val files = oriFileIndex.getFileInfo(partitionFilters)

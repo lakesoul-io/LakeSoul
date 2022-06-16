@@ -149,9 +149,17 @@ public class DBManager {
         PartitionInfo p = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         return p;
     }
-
+    //for partition snapshot with some version
+    public PartitionInfo getSinglePartitionInfo(String tableId, String partitionDesc,int version) {
+        PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
+        return partitionInfo;
+    }
     public List<PartitionInfo> getAllPartitionInfo(String tableId) {
         return partitionInfoDao.getPartitionDescByTableId(tableId);
+    }
+
+    public List<PartitionInfo> getOnePartitionVersions(String tableId,String partitionDesc) {
+        return partitionInfoDao.getPartitionVersions(tableId,partitionDesc);
     }
 
     public void updateTableSchema(String tableId, String tableSchema) {
@@ -276,7 +284,7 @@ public class DBManager {
         if (tableInfo.getTableName() != null) {
             updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName());
         }
-        updateTableProperties(tableId, tableInfo.getProperties());
+       updateTableProperties(tableId, tableInfo.getProperties());
 
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> rawMap = new HashMap<>();
@@ -625,6 +633,9 @@ public class DBManager {
 
     public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
+        if(partitionInfo.getTableId() == null){
+            return false;
+        }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
         return partitionInfoDao.insert(partitionInfo);
