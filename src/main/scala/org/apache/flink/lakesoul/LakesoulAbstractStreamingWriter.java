@@ -118,7 +118,6 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void snapshotState(StateSnapshotContext context) throws Exception {
-        System.out.println( "spapshotstate" );
         super.snapshotState(context);
         helper.snapshotState(context.getCheckpointId());
     }
@@ -131,7 +130,6 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void processElement(StreamRecord<IN> element) throws Exception {
-        System.out.println( "processElement" );
         helper.onElement(
                 element.getValue(),
                 getProcessingTimeService().getCurrentProcessingTime(),

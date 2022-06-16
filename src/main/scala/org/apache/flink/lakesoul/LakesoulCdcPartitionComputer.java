@@ -44,7 +44,7 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
     private  int[] nonPartitionIndexes;
     private  LogicalType[] nonPartitionTypes;
     protected  RowData.FieldGetter[] nonPartitionFieldGetters;
-    private Boolean isCdc=false;
+    private Boolean isCdc;
     private transient GenericRowData reuseRow;
 
     public LakesoulCdcPartitionComputer(

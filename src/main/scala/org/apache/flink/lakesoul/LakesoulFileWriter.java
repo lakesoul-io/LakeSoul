@@ -152,6 +152,7 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
                                 taskPathPre)
                                 )
         );
+        partitions.clear();
     }
 }
 

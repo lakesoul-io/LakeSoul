@@ -20,6 +20,7 @@ package org.apache.flink.lakesoul;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakesoul.sink.LakeSoulStreamSink;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.CatalogTable;
@@ -41,13 +42,22 @@ public class LakesoulDynamicTableFactory  implements DynamicTableSinkFactory, Dy
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        return  new LakesoulTableSink(
-                context.getObjectIdentifier(),
+//        return  new LakesoulTableSink(
+//                context.getObjectIdentifier(),
+//                context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType(),
+//                context.getCatalogTable().getPartitionKeys(),
+//                helper.getOptions(),
+//                discoverEncodingFormat(context, BulkWriterFormatFactory.class),
+//                discoverEncodingFormat(context, SerializationFormatFactory.class));
+        Map<String, String> options = context.getCatalogTable().getOptions();
+        Configuration configuration = Configuration.fromMap(options);
+        return new LakeSoulStreamSink(configuration,
+                context.getCatalogTable().getResolvedSchema(),
                 context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType(),
-                context.getCatalogTable().getPartitionKeys(),
-                helper.getOptions(),
-                discoverEncodingFormat(context, BulkWriterFormatFactory.class),
-                discoverEncodingFormat(context, SerializationFormatFactory.class));
+                context.getCatalogTable().getPartitionKeys()
+                );
+
+
     }
 
     @Override
