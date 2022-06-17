@@ -96,12 +96,12 @@ trait TransactionalWrite {
     rangePartitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)
+  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)._1
 
   def writeFiles(data: Dataset[_], writeOptions: Option[LakeSoulOptions]): Seq[DataFileInfo] =
-    writeFiles(data, writeOptions, isCompaction = false)
+    writeFiles(data, writeOptions, isCompaction = false)._1
 
-  def writeFiles(data: Dataset[_], isCompaction: Boolean): Seq[DataFileInfo] =
+  def writeFiles(data: Dataset[_], isCompaction: Boolean): (Seq[DataFileInfo], Path) =
     writeFiles(data, None, isCompaction = isCompaction)
 
   /**
@@ -110,7 +110,7 @@ trait TransactionalWrite {
     */
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
-                 isCompaction: Boolean): Seq[DataFileInfo] = {
+                 isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
     val data = if (tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
     } else {
@@ -203,9 +203,9 @@ trait TransactionalWrite {
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
     val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
-    committer.addedStatuses.map(file => file.copy(
+    (committer.addedStatuses.map(file => file.copy(
       file_exist_cols = real_write_cols
-    ))
+    )), outputPath)
   }
 
 

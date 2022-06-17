@@ -136,7 +136,7 @@ object LakeSoulPartFileMerge {
     pmtc.setReadFiles(files)
     pmtc.setCommitType("part_compaction")
 
-    val newFiles = pmtc.writeFiles(compactDF, isCompaction = true)
+    val newFiles = pmtc.writeFiles(compactDF, isCompaction = true)._1
 
     //if part compaction failed before, it will not commit later
     var flag = commitFlag

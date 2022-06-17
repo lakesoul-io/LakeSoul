@@ -35,7 +35,7 @@ import scala.collection.JavaConverters._
 
 
 object SparkUtil {
-  lazy val spark: SparkSession = SparkSession.builder().getOrCreate()
+  lazy val spark: SparkSession = SparkSession.builder().enableHiveSupport().getOrCreate()
   import spark.implicits._
 
   def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
