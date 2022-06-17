@@ -109,7 +109,6 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
     tc.commit(newFiles, newReadFiles)
     if (!hiveTableName.isEmpty) {
-      println(s"${path.toString}/$conditionString")
       SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
       SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$conditionString'")
     }

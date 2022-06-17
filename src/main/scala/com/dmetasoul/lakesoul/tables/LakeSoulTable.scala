@@ -412,7 +412,7 @@ object LakeSoulTable {
     */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-    SnapshotManagement.invalidateCache(p)
+//    SnapshotManagement.invalidateCache(p)
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
