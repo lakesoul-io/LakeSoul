@@ -20,10 +20,11 @@ package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.lakesoul.*;
-import org.apache.flink.lakesoul.LakesoulCatalogFactory;
+import org.apache.flink.lakesoul.table.LakesoulCatalogFactory;
+import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
@@ -98,10 +99,20 @@ public class Lakesoul {
 
     @Test
     public void sqlDefaultSink(){
-        EnvironmentSettings bbSettings = EnvironmentSettings.newInstance().inBatchMode().build();
-        TableEnvironment tableEnv = TableEnvironment.create(bbSettings);
-        tableEnv.executeSql( "CREATE TABLE user_behavior27 ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with('connector' = 'filesystem','format'='parquet','path'='/Users/zhyang/Downloads')" );
-        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
-        tableEnv.executeSql("show tables").print();
+
+        StreamTableEnvironment tableEnv = StreamTableEnvironment.create(StreamExecutionEnvironment.getExecutionEnvironment());
+        tableEnv.executeSql(
+                "CREATE TABLE GeneratedTable "
+                        + "("
+                        + "  name STRING,"
+                        + "  score INT,"
+                        + "  event_time TIMESTAMP_LTZ(3),"
+                        + "  WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND"
+                        + ")"
+                        + "WITH ('connector'='datagen')");
+
+        Table table = tableEnv.from("GeneratedTable");
+        tableEnv.toDataStream(table).print();
+//        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
     }
 }
