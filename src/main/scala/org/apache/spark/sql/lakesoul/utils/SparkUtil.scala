@@ -19,6 +19,8 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
+import org.apache.flink.runtime.util.HadoopUtils
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -31,6 +33,7 @@ import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+
 import scala.collection.JavaConverters._
 
 
@@ -68,6 +71,7 @@ object SparkUtil {
   }*/
 
   def makeQualifiedTablePath(tablePath: Path): Path = {
+//    HadoopUtils.getHadoopConfiguration(new org.apache.flink.configuration.Configuration());
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 

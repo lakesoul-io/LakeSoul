@@ -78,7 +78,7 @@ class SnapshotManagement(path: String) extends Logging {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
-      //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
+//      table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
 //      if (LakeSoulUtils.isLakeSoulTable(table_path)) {
 //        throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
 //      }
@@ -202,7 +202,7 @@ object SnapshotManagement {
 
   def apply(path: String): SnapshotManagement = {
     try {
-      //val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+//      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
       snapshotManagementCache.get(path, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
           new SnapshotManagement(path)

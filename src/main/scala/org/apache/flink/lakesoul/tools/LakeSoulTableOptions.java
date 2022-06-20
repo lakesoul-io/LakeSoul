@@ -6,7 +6,7 @@ import org.apache.flink.configuration.ConfigOptions;
 public class LakeSoulTableOptions {
 
     public static final ConfigOption<String> KEY_FIELD = ConfigOptions
-            .key("keyTest")
+            .key("key")
             .stringType()
             .defaultValue("0")
             .withDescription("Record key ");

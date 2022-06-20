@@ -44,6 +44,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
@@ -56,16 +57,16 @@ import org.apache.flink.table.filesystem.FileSystemFactory;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+
 import org.apache.flink.table.filesystem.RowDataPartitionComputer;
-import java.util.UUID;
+
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.apache.flink.util.Preconditions;
@@ -79,6 +80,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     private DataType physicalRowDataType;
     private Path path;
     private String defaultPartName;
+    private LakeSoulKeyGen keyGen;
     private ResolvedSchema schema;
 
     List<String> partitionKeys;
@@ -143,8 +145,11 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         LakesoulCdcPartitionComputer computer = partitionCdcComputer();
         Object writer = createWriter(sinkContext,tableOptions);
         boolean isEncoder = writer instanceof Encoder;
+
+        keyGen = LakeSoulKeyGen.instance((RowType) schema.toSourceRowDataType().notNull().getLogicalType(), tableOptions);
         FlinkBucketAssigner assigner = new FlinkBucketAssigner(computer);
-        LakesoulRollingPolicy lakesoulPolicy=new LakesoulRollingPolicy(!isEncoder);
+        LakeSoulRollingPolicyImpl lakesoulPolicy=new LakeSoulRollingPolicyImpl(!isEncoder);
+        lakesoulPolicy.setKeygen(keyGen);
         String randomPrefix = "part-" + UUID.randomUUID().toString();
         OutputFileConfig.OutputFileConfigBuilder fileNamingBuilder = OutputFileConfig.builder();
         fileNamingBuilder = fileNamingBuilder.withPartPrefix(randomPrefix);
@@ -187,7 +192,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
                 partitionKeys,
                 fsFactory,
                 tableOptions);
-
     }
     private RowDataPartitionComputer partitionComputer() {
         return new RowDataPartitionComputer(
@@ -302,45 +306,55 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     }
 
 
-    public static class LakesoulRollingPolicy<IN,BucketID> implements LakeSoulRollingPolicy<RowData, String> {
-
-        private  boolean rollOnCheckpoint;
-
-        public LakesoulRollingPolicy(
-                boolean rollOnCheckpoint
-        ) {
-            this.rollOnCheckpoint = rollOnCheckpoint;
-        }
-
-        @Override
-        public boolean shouldRollOnCheckpoint(PartFileInfo<String> partFileState) {
-            boolean rollOnCheckpoint = this.rollOnCheckpoint;
-            return rollOnCheckpoint;
-        }
-
-        @Override
-        public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element)
-                throws IOException {
-            return false;
-        }
-
-        @Override
-        public boolean shouldRollOnProcessingTime(
-                PartFileInfo<String> partFileState, long currentTime) {
-            //TODO set time
-            return currentTime - partFileState.getLastUpdateTime() > 1;
-        }
-
-        public boolean shouldRollOnMaxSize(long size){
-            //TODO set time
-            return size > 2;
-        }
-
-        @Override
-        public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime , long size) throws IOException {
-            return shouldRollOnProcessingTime(partFileState,currentTime)||shouldRollOnMaxSize(size);
-        }
-    }
+//    public static class LakesoulRollingPolicy<IN,BucketID> implements LakeSoulRollingPolicy<RowData, String> {
+//
+//        private  boolean rollOnCheckpoint;
+//
+//        private LakeSoulKeyGen keygen;
+//
+//        public LakeSoulKeyGen getKeygen() {
+//            return keygen;
+//        }
+//
+//        public void setKeygen(LakeSoulKeyGen keygen) {
+//            this.keygen = keygen;
+//        }
+//
+//        public LakesoulRollingPolicy(
+//                boolean rollOnCheckpoint
+//        ) {
+//            this.rollOnCheckpoint = rollOnCheckpoint;
+//        }
+//
+//        @Override
+//        public boolean shouldRollOnCheckpoint(PartFileInfo<String> partFileState) {
+//            boolean rollOnCheckpoint = this.rollOnCheckpoint;
+//            return rollOnCheckpoint;
+//        }
+//
+//        @Override
+//        public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element)
+//                throws IOException {
+//            return false;
+//        }
+//
+//        @Override
+//        public boolean shouldRollOnProcessingTime(
+//                PartFileInfo<String> partFileState, long currentTime) {
+//            //TODO set time
+//            return currentTime - partFileState.getLastUpdateTime() > 1;
+//        }
+//
+//        public boolean shouldRollOnMaxSize(long size){
+//            //TODO set time
+//            return size > 2;
+//        }
+//
+//        @Override
+//        public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime , long size) throws IOException {
+//            return shouldRollOnProcessingTime(partFileState,currentTime)||shouldRollOnMaxSize(size);
+//        }
+//    }
 
 
 

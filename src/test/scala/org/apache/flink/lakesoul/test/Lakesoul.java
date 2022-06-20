@@ -89,15 +89,6 @@ public class Lakesoul {
 
 
     @Test
-    public void sqlLakesoulTableSink() throws InterruptedException {
-        tEnvs.executeSql( "CREATE TABLE user_behaviors1t4433 ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('connector' = 'lakesoul','format'='parquet','path'='/Users/zhyang/Downloads','lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')" );
-        tEnvs.executeSql("insert into user_behaviors1t4433 values (1666,'key1','value1'),(2666,'key1','value2'),(3666,'key3','value3')");
-        tEnvs.executeSql("insert into user_behaviors1t4433 values (11,'key1','value1'),(22,'key1','value2'),(33,'key3','value3')");
-        tEnvs.executeSql("insert into user_behaviors1t4433 values (1119,'key19','value1'),(222,'key91','value2'),(3393,'key973','value3')");
-        Thread.sleep(10000000);
-    }
-
-    @Test
     public void sqlDefaultSink(){
 
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(StreamExecutionEnvironment.getExecutionEnvironment());

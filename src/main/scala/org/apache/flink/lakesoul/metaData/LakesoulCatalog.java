@@ -21,10 +21,12 @@ package org.apache.flink.lakesoul.metaData;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
 import org.apache.flink.lakesoul.table.LakesoulCatalogPartition;
 import org.apache.flink.lakesoul.tools.*;
+import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.util.StringUtils;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.lakesoul.Snapshot;
 import org.apache.spark.sql.lakesoul.SnapshotManagement;
 import org.apache.spark.sql.lakesoul.commands.DropTableCommand;
@@ -135,6 +137,7 @@ public class LakesoulCatalog implements Catalog {
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
         String tableName = tablePath.getFullName();
+
         TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
         if (MetaVersion.isTableExists(tableInfo.table_path_s().get())) {
             return true;

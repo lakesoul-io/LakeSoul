@@ -2,7 +2,9 @@ package org.apache.flink.lakesoul.sink.fileSystem;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.sink.LakesoulTableSink;
+import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.Preconditions;
@@ -27,6 +29,7 @@ public class LakeSoulBucket<IN, BucketID>{
     private PriorityQueue<RowData> sortQueue;
     private AtomicLong bucketCount;
     private String rowKey;
+    private  final LakeSoulKeyGen keygen;
     @Nullable
     private final FileLifeCycleListener<BucketID> fileListener;
     private long partCounter;
@@ -46,10 +49,18 @@ public class LakeSoulBucket<IN, BucketID>{
         this.pendingFileRecoverablesPerCheckpoint = new TreeMap();
         this.inProgressFileRecoverablesPerCheckpoint = new TreeMap();
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
-        sortQueue= new PriorityQueue<>(Comparator.comparingLong(v -> v.getLong(Integer.parseInt(rowKey))));
+        LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
+        this.keygen = lakesoulRollingPolicy.getKeygen();
+        sortQueue= new PriorityQueue<>((v1,v2)->{
+            try {
+               return keygen.getAndCheckRecordKey(v1).compareTo(keygen.getAndCheckRecordKey(v2));
+            } catch (NoSuchFieldException e) {
+                e.printStackTrace();
+                return 1;
+            }
+        });
         bucketCount=new AtomicLong(0L);
         this.rowKey=rowKey;
-        System.out.println(rowKey+"======================");
     }
 
     private LakeSoulBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> partFileFactory, RollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) throws IOException {
@@ -279,11 +290,11 @@ public class LakeSoulBucket<IN, BucketID>{
         return this.pendingFileRecoverablesForCurrentCheckpoint;
     }
 
-    static <IN, BucketID> LakeSoulBucket<IN, BucketID> getNew(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) {
+    static <IN, BucketID> LakeSoulBucket<IN, BucketID> getNew(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) {
         return new LakeSoulBucket(subtaskIndex, bucketId, bucketPath, initialPartCounter, bucketWriter, rollingPolicy, fileListener, outputFileConfig,rowKey);
     }
 
-    static <IN, BucketID> LakeSoulBucket<IN, BucketID> restore(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) throws IOException {
+    static <IN, BucketID> LakeSoulBucket<IN, BucketID> restore(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) throws IOException {
         return new LakeSoulBucket(subtaskIndex, initialPartCounter, bucketWriter, rollingPolicy, bucketState, fileListener, outputFileConfig,rowKey);
     }
 }

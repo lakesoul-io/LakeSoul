@@ -4,6 +4,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
+import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.sink.LakesoulTableSink;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
@@ -23,7 +24,7 @@ public class LakeSoulBuckets<IN, BucketID> {
     private final LakeSoulBucketFactory<IN, BucketID> bucketFactory;
     private final BucketAssigner<IN, BucketID> bucketAssigner;
     private final BucketWriter<IN, BucketID> bucketWriter;
-    private final LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy;
+    private final LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
     private final int subtaskIndex;
     private final BucketerContext bucketerContext;
     private final Map<BucketID, LakeSoulBucket<IN, BucketID>> activeBuckets;
@@ -36,12 +37,12 @@ public class LakeSoulBuckets<IN, BucketID> {
     private FileLifeCycleListener<BucketID> fileLifeCycleListener;
     private final BucketStateSerializer<BucketID> bucketStateSerializer;
 
-    public LakeSoulBuckets(Path basePath, BucketAssigner<IN, BucketID> bucketAssigner, LakeSoulBucketFactory<IN, BucketID> bucketFactory, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
+    public LakeSoulBuckets(Path basePath, BucketAssigner<IN, BucketID> bucketAssigner, LakeSoulBucketFactory<IN, BucketID> bucketFactory, BucketWriter<IN, BucketID> bucketWriter, LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
         this.basePath = (Path) Preconditions.checkNotNull(basePath);
         this.bucketAssigner = (BucketAssigner)Preconditions.checkNotNull(bucketAssigner);
         this.bucketFactory = (LakeSoulBucketFactory<IN, BucketID>) Preconditions.checkNotNull(bucketFactory);
         this.bucketWriter = (BucketWriter)Preconditions.checkNotNull(bucketWriter);
-        this.rollingPolicy = (LakesoulTableSink.LakesoulRollingPolicy)Preconditions.checkNotNull(rollingPolicy);
+        this.rollingPolicy = (LakeSoulRollingPolicyImpl)Preconditions.checkNotNull(rollingPolicy);
         this.subtaskIndex = subtaskIndex;
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
         this.activeBuckets = new HashMap();
