@@ -4,7 +4,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.sink.LakesoulFileSink;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketFactory;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketFactoryImpl;

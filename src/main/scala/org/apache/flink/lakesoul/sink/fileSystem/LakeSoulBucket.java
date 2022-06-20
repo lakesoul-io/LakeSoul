@@ -2,8 +2,6 @@ package org.apache.flink.lakesoul.sink.fileSystem;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
-import org.apache.flink.lakesoul.sink.LakesoulTableSink;
 import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.apache.flink.table.data.RowData;
@@ -37,7 +35,7 @@ public class LakeSoulBucket<IN, BucketID>{
     private InProgressFileWriter<IN, BucketID> inProgressPart;
     private List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverablesForCurrentCheckpoint;
 
-    private LakeSoulBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, RollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig , String rowKey) {
+    private LakeSoulBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, RollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig , String rowKey){
         this.subtaskIndex = subtaskIndex;
         this.bucketId = Preconditions.checkNotNull(bucketId);
         this.bucketPath = (Path)Preconditions.checkNotNull(bucketPath);
@@ -51,14 +49,25 @@ public class LakeSoulBucket<IN, BucketID>{
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
         LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
         this.keygen = lakesoulRollingPolicy.getKeygen();
-        sortQueue= new PriorityQueue<>((v1,v2)->{
-            try {
-               return keygen.getAndCheckRecordKey(v1).compareTo(keygen.getAndCheckRecordKey(v2));
-            } catch (NoSuchFieldException e) {
-                e.printStackTrace();
-                return 1;
-            }
-        });
+        if (keygen.isLongRowKey()){
+            sortQueue= new PriorityQueue<>((v1,v2)->{
+                try {
+                    return (int) (keygen.getLongKey(v1)-keygen.getLongKey(v2));
+                } catch (NoSuchFieldException e) {
+                    e.printStackTrace();
+                    return 0;
+                }
+            });
+        }else{
+            sortQueue = new PriorityQueue<>((v1, v2) -> {
+                try {
+                    return keygen.getAndCheckRecordKey(v1).compareTo(keygen.getAndCheckRecordKey(v2));
+                } catch (NoSuchFieldException e) {
+                    e.printStackTrace();
+                    return 0;
+                }
+            });
+        }
         bucketCount=new AtomicLong(0L);
         this.rowKey=rowKey;
     }
@@ -131,8 +140,9 @@ public class LakeSoulBucket<IN, BucketID>{
     void write(IN element, long currentTime) throws IOException {
         if (this.inProgressPart == null ){
             this.inProgressPart = this.rollPartFile(currentTime);
-        }else if(this.rollingPolicy.shouldRollOnProcessingTime(this.inProgressPart, currentTime)
-                || bucketCount.getAndIncrement()>10L
+        } else if (
+                this.rollingPolicy.shouldRollOnProcessingTime(this.inProgressPart, currentTime) ||
+                        checkRollingPolicy()
         ){
             sortWrite(currentTime);
             this.inProgressPart = this.rollPartFile(currentTime);
@@ -140,6 +150,15 @@ public class LakeSoulBucket<IN, BucketID>{
         }
         sortQueue.add((RowData) element);
 
+    }
+
+    private boolean checkRollingPolicy(){
+        if(rollingPolicy instanceof LakeSoulRollingPolicyImpl){
+            LakeSoulRollingPolicyImpl<?, ?> LakeSoulRollingPolicy = (LakeSoulRollingPolicyImpl<?, ?>) this.rollingPolicy;
+            return LakeSoulRollingPolicy.shouldRollOnMaxSize(this.bucketCount.getAndIncrement());
+        }else {
+            return false;
+        }
     }
 
     void sortWrite(long currentTime)throws IOException {

@@ -1,11 +1,14 @@
-package org.apache.flink.lakesoul.sink;
+package org.apache.flink.lakesoul.sink.fileSystem;
 
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicy;
 import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.util.TimeUtils;
 
 import java.io.IOException;
+import java.util.Date;
 
 
 public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPolicy<RowData, String> {
@@ -14,6 +17,9 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
 
     private LakeSoulKeyGen keygen;
 
+    private long rollingSize =10L;
+
+    private long rollingTime=100000L;
 
     public LakeSoulKeyGen getKeygen() {
         return keygen;
@@ -43,16 +49,23 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
     public boolean shouldRollOnProcessingTime(
             PartFileInfo<String> partFileState, long currentTime) {
         //TODO set time
-        return currentTime - partFileState.getLastUpdateTime() > 100000;
+        return currentTime - partFileState.getLastUpdateTime() > rollingTime;
     }
 
     public boolean shouldRollOnMaxSize(long size){
-        //TODO set time
-        return size > 2;
+        return size > rollingSize;
     }
 
     @Override
-    public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime , long size) throws IOException {
-        return shouldRollOnProcessingTime(partFileState,currentTime)||shouldRollOnMaxSize(size);
+    public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime ) throws IOException {
+        return false;
+    }
+
+    public long getRollingSize() {
+        return rollingSize;
+    }
+
+    public void setRollingSize(long rollingSize) {
+        this.rollingSize = rollingSize;
     }
 }

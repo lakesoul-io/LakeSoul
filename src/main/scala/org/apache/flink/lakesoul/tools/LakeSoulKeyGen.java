@@ -2,10 +2,12 @@ package org.apache.flink.lakesoul.tools;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import javax.annotation.Nullable;
 import java.io.Serializable;
 
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.BIGINT;
 
 
 public class LakeSoulKeyGen implements Serializable {
@@ -40,6 +42,13 @@ public class LakeSoulKeyGen implements Serializable {
         //TODO: more key not support
         return recordKey(fieldGetter.getFieldOrNull(row), split[0]);
     }
+    public  Long getLongKey(RowData row) throws NoSuchFieldException {
+        String key = conf.getString(LakeSoulTableOptions.KEY_FIELD);
+        String[] split = key.split(",");
+        RowData.FieldGetter fieldGetter = RowData.createFieldGetter(rowType.getChildren().get(rowKeyIndex), rowKeyIndex);
+        //TODO: more key not support
+        return Long.parseLong(recordKey(fieldGetter.getFieldOrNull(row), split[0]));
+    }
 
     public  String recordKey(Object recordKeyValue, String recordKeyField) throws NoSuchFieldException {
         String recordKey = objToString(recordKeyValue);
@@ -47,6 +56,11 @@ public class LakeSoulKeyGen implements Serializable {
             throw new NoSuchFieldException("recordKey value: \"" + recordKey + "\" for field: \"" + recordKeyField + "\" cannot be null or empty.");
         }
         return recordKey;
+    }
+
+    public boolean isLongRowKey(){
+        LogicalType logicalType = rowType.getChildren().get(rowKeyIndex);
+        return logicalType.getTypeRoot()==BIGINT;
     }
 
     public  String objToString(@Nullable Object obj) {
@@ -63,6 +77,7 @@ public class LakeSoulKeyGen implements Serializable {
         return 0;
 
     }
+
 
 
 }
