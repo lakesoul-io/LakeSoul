@@ -29,6 +29,7 @@ public class LakeSoulBuckets<IN, BucketID> {
     private final Map<BucketID, LakeSoulBucket<IN, BucketID>> activeBuckets;
     private long maxPartCounter;
     private final OutputFileConfig outputFileConfig;
+    private String rowKey;
     @Nullable
     private LakeSoulBucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
     @Nullable
@@ -92,7 +93,7 @@ public class LakeSoulBuckets<IN, BucketID> {
             LOG.debug("Subtask {} restoring: {}", this.subtaskIndex, recoveredState);
         }
 
-        LakeSoulBucket<IN, BucketID> restoredLakeSoulBucket = this.bucketFactory.restoreBucket(this.subtaskIndex, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, recoveredState, this.fileLifeCycleListener, this.outputFileConfig);
+        LakeSoulBucket<IN, BucketID> restoredLakeSoulBucket = this.bucketFactory.restoreBucket(this.subtaskIndex, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, recoveredState, this.fileLifeCycleListener, this.outputFileConfig,this.rowKey);
 
         this.updateActiveBucketId(bucketId, restoredLakeSoulBucket);
     }
@@ -168,7 +169,7 @@ public class LakeSoulBuckets<IN, BucketID> {
         LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket)this.activeBuckets.get(bucketId);
         if (lakeSoulBucket == null) {
             Path bucketPath = this.assembleBucketPath(bucketId);
-            lakeSoulBucket = this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig);
+            lakeSoulBucket = this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig , this.rowKey);
             this.activeBuckets.put(bucketId, lakeSoulBucket);
             this.notifyBucketCreate(lakeSoulBucket);
         }
@@ -263,5 +264,8 @@ public class LakeSoulBuckets<IN, BucketID> {
         public Long timestamp() {
             return this.elementTimestamp;
         }
+    }
+    public void setRowKey(String rowKey){
+        this.rowKey=rowKey;
     }
 }

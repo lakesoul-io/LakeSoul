@@ -21,9 +21,11 @@ package org.apache.flink.lakesoul.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.state.CheckpointListener;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.fileSystem.*;
@@ -158,8 +160,7 @@ public class LakesoulFileSink <IN> extends RichSinkFunction<IN>
             return self();
         }
 
-        public <ID>
-        LakesoulFileSink.RowFormatBuilder<IN, ID, ? extends LakesoulFileSink.RowFormatBuilder<IN, ID, ?>>
+        public <ID> LakesoulFileSink.RowFormatBuilder<IN, ID, ? extends LakesoulFileSink.RowFormatBuilder<IN, ID, ?>>
         withNewBucketAssignerAndPolicy(
                 final BucketAssigner<IN, ID> assigner,
                 final LakesoulTableSink.LakesoulRollingPolicy<IN, ID> policy) {
@@ -173,12 +174,13 @@ public class LakesoulFileSink <IN> extends RichSinkFunction<IN>
                     outputFileConfig);
         }
 
+
         /** Creates the actual sink. */
         public LakesoulFileSink<IN> build() {
             return new LakesoulFileSink<>(this, bucketCheckInterval);
         }
 
-        @VisibleForTesting
+//        @VisibleForTesting
         T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
             this.bucketFactory = Preconditions.checkNotNull(factory);
             return self();
@@ -235,6 +237,8 @@ public class LakesoulFileSink <IN> extends RichSinkFunction<IN>
         private LakeSoulBucketFactory<IN, BucketID> bucketFactory;
 
         private OutputFileConfig outputFileConfig;
+
+
 
         protected BulkFormatBuilder(
                 Path basePath,
@@ -356,9 +360,14 @@ public class LakesoulFileSink <IN> extends RichSinkFunction<IN>
 
     @Override
     public void initializeState(FunctionInitializationContext context) throws Exception {
+        ExecutionConfig.GlobalJobParameters globalParams = getRuntimeContext().getExecutionConfig().getGlobalJobParameters();
+        Configuration globConf = (Configuration) globalParams;
+        String rowKey = globConf.getString("rowKey", "");
+        LakeSoulBuckets<IN, ?> buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
+        buckets.setRowKey(rowKey);
         this.helper =
                 new LakeSoulFileSinkHelper<>(
-                        bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask()),
+                        buckets,
                         context.isRestored(),
                         context.getOperatorStateStore(),
                         ((StreamingRuntimeContext) getRuntimeContext()).getProcessingTimeService(),

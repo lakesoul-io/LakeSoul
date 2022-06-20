@@ -172,7 +172,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
                             .withRollingPolicy(lakesoulPolicy);
         }
         long bucketCheckInterval = Duration.ofMinutes(1).toMillis();
-
         DataStream<DataInfo> writerStream = LakesoulSink.writer(
                 bucketCheckInterval,
                 dataStream,
@@ -329,7 +328,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         public boolean shouldRollOnProcessingTime(
                 PartFileInfo<String> partFileState, long currentTime) {
             //TODO set time
-            return currentTime - partFileState.getLastUpdateTime() > 200000;
+            return currentTime - partFileState.getLastUpdateTime() > 1;
         }
 
         public boolean shouldRollOnMaxSize(long size){

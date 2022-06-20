@@ -18,6 +18,8 @@
 
 package org.apache.flink.lakesoul.sink;
 
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.fileSystem.*;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -28,6 +30,10 @@ import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+
+import java.util.Map;
+
+import static org.apache.flink.lakesoul.tools.LakeSoulTableOptions.KEY_FIELD;
 
 public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends AbstractStreamOperator<OUT>
         implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
@@ -49,13 +55,16 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     protected transient long currentWatermark;
 
+    private String rowKey;
+
     public LakesoulAbstractStreamingWriter(
             long bucketCheckInterval,
             LakeSoulBucketsBuilder<
                     IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
-                    bucketsBuilder) {
+                    bucketsBuilder,String rowKey) {
         this.bucketCheckInterval = bucketCheckInterval;
         this.bucketsBuilder = bucketsBuilder;
+        this.rowKey=rowKey;
         setChainingStrategy( ChainingStrategy.ALWAYS);
     }
 
@@ -102,6 +111,8 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
         buckets.setFileLifeCycleListener(LakesoulAbstractStreamingWriter.this::onPartFileOpened);
 
+
+        buckets.setRowKey(rowKey);
         helper =
                 new LakeSoulFileSinkHelper<>(
                         buckets,

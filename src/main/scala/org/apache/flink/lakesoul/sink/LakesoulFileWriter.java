@@ -30,6 +30,8 @@ import org.apache.flink.table.filesystem.stream.PartitionCommitPredicate;
 import java.io.IOException;
 import java.util.*;
 
+import static org.apache.flink.lakesoul.tools.LakeSoulTableOptions.KEY_FIELD;
+
 public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, DataInfo> {
 
     private static final long serialVersionUID = 2L;
@@ -52,13 +54,13 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
                                       bucketsBuilder,
                               List<String> partitionKeys,
                               Configuration conf) {
-        super(bucketCheckInterval, bucketsBuilder);
+        super(bucketCheckInterval, bucketsBuilder,conf.getString(KEY_FIELD));
         this.partitionKeys = partitionKeys;
         this.conf = conf;
     }
 
     public LakesoulFileWriter(long bucketCheckInterval, LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, List<String> partitionKeys, Configuration conf, OutputFileConfig outputFileConf) {
-        super(bucketCheckInterval, bucketsBuilder);
+        super(bucketCheckInterval, bucketsBuilder, conf.getString(KEY_FIELD));
         this.partitionKeys = partitionKeys;
         this.conf = conf;
         this.outputFileConfig=outputFileConf;
@@ -76,9 +78,8 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
         newPartitions = new TreeMap<>();
         committablePartitions = new HashSet<>();
         inProgressPartitions = new HashMap<>();
-        System.out.println("init`1============================");
         super.initializeState(context);
-        System.out.println("init2============================");
+
     }
 
     @Override

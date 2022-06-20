@@ -18,12 +18,15 @@ public interface LakeSoulBucketFactory <IN, BucketID> extends Serializable {
                                       BucketWriter<IN, BucketID> var6,
                                               LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> var7,
                                       @Nullable FileLifeCycleListener<BucketID> var8,
-                                      OutputFileConfig var9) throws IOException;
+                                      OutputFileConfig var9,
+                                              String var10
+    ) throws IOException;
 
     LakeSoulBucket<IN, BucketID> restoreBucket(int var1, long var2,
                                        BucketWriter<IN, BucketID> var4,
                                                LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> var5,
                                        BucketState<BucketID> var6,
                                        @Nullable FileLifeCycleListener<BucketID> var7,
-                                       OutputFileConfig var8) throws IOException;
+                                       OutputFileConfig var8, String var19
+    ) throws IOException;
 }

@@ -18,10 +18,13 @@
 
 package org.apache.flink.lakesoul.table;
 
+import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakesoulTableSink;
+import org.apache.flink.lakesoul.tools.FlinkUtil;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -38,7 +41,14 @@ public class LakesoulDynamicTableFactory  implements DynamicTableSinkFactory, Dy
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
 
-        Map<String, String> options = context.getCatalogTable().getOptions();
+
+        String rowKey = FlinkUtil.getTablePrimaryKey(context.getCatalogTable());
+        System.out.println(rowKey);
+        Configuration conf = new Configuration();
+        conf.setString("rowKey",rowKey);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.getConfig().setGlobalJobParameters(conf);
+
 
 
         return  new LakesoulTableSink(

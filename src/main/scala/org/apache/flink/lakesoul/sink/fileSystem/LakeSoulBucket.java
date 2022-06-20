@@ -14,7 +14,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class LakeSoulBucket<IN, BucketID> {
+public class LakeSoulBucket<IN, BucketID>{
     private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.streaming.api.functions.sink.filesystem.Bucket.class);
     private final BucketID bucketId;
     private final Path bucketPath;
@@ -26,6 +26,7 @@ public class LakeSoulBucket<IN, BucketID> {
     private final OutputFileConfig outputFileConfig;
     private PriorityQueue<RowData> sortQueue;
     private AtomicLong bucketCount;
+    private String rowKey;
     @Nullable
     private final FileLifeCycleListener<BucketID> fileListener;
     private long partCounter;
@@ -33,7 +34,7 @@ public class LakeSoulBucket<IN, BucketID> {
     private InProgressFileWriter<IN, BucketID> inProgressPart;
     private List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverablesForCurrentCheckpoint;
 
-    private LakeSoulBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, RollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) {
+    private LakeSoulBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, RollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig , String rowKey) {
         this.subtaskIndex = subtaskIndex;
         this.bucketId = Preconditions.checkNotNull(bucketId);
         this.bucketPath = (Path)Preconditions.checkNotNull(bucketPath);
@@ -45,12 +46,14 @@ public class LakeSoulBucket<IN, BucketID> {
         this.pendingFileRecoverablesPerCheckpoint = new TreeMap();
         this.inProgressFileRecoverablesPerCheckpoint = new TreeMap();
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
-        sortQueue= new PriorityQueue<>(Comparator.comparingLong(v -> v.getLong(0)));
+        sortQueue= new PriorityQueue<>(Comparator.comparingLong(v -> v.getLong(Integer.parseInt(rowKey))));
         bucketCount=new AtomicLong(0L);
+        this.rowKey=rowKey;
+        System.out.println(rowKey+"======================");
     }
 
-    private LakeSoulBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> partFileFactory, RollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) throws IOException {
-        this(subtaskIndex, bucketState.getBucketId(), bucketState.getBucketPath(), initialPartCounter, partFileFactory, rollingPolicy, fileListener, outputFileConfig);
+    private LakeSoulBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> partFileFactory, RollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) throws IOException {
+        this(subtaskIndex, bucketState.getBucketId(), bucketState.getBucketPath(), initialPartCounter, partFileFactory, rollingPolicy, fileListener, outputFileConfig,rowKey);
         this.restoreInProgressFile(bucketState);
         this.commitRecoveredPendingFiles(bucketState);
     }
@@ -115,19 +118,10 @@ public class LakeSoulBucket<IN, BucketID> {
     }
 
     void write(IN element, long currentTime) throws IOException {
-        if ((this.inProgressPart == null && this.sortQueue.isEmpty())|| this.rollingPolicy.shouldRollOnEvent(this.inProgressPart, element)) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("Subtask {} closing in-progress part file for bucket id={} due to element {}.", new Object[]{this.subtaskIndex, this.bucketId, element});
-            }
-
-            this.inProgressPart = this.rollPartFile(currentTime);
-        }
-
-
         if (this.inProgressPart == null ){
             this.inProgressPart = this.rollPartFile(currentTime);
         }else if(this.rollingPolicy.shouldRollOnProcessingTime(this.inProgressPart, currentTime)
-                || bucketCount.getAndIncrement()>16L
+                || bucketCount.getAndIncrement()>10L
         ){
             sortWrite(currentTime);
             this.inProgressPart = this.rollPartFile(currentTime);
@@ -138,17 +132,18 @@ public class LakeSoulBucket<IN, BucketID> {
     }
 
     void sortWrite(long currentTime)throws IOException {
-
+        //TODO remove sout
         System.out.println("startsort_-----------------------------");
         while(!sortQueue.isEmpty()){
-            System.out.println(sortQueue.peek());
-            this.inProgressPart.write((IN) sortQueue.poll(),currentTime);
+            RowData poll = sortQueue.poll();
+            System.out.println(poll);
+            this.inProgressPart.write((IN) poll,currentTime);
         };
         System.out.println("endsort_-----------------------------");
     }
 
     private InProgressFileWriter<IN, BucketID> rollPartFile(long currentTime) throws IOException {
-        this.closePartFile();
+        this.closePartFile(currentTime);
         Path partFilePath = this.assembleNewPartPath();
         if (this.fileListener != null) {
             this.fileListener.onPartFileOpened(this.bucketId, partFilePath);
@@ -166,8 +161,21 @@ public class LakeSoulBucket<IN, BucketID> {
         return new Path(this.bucketPath, this.outputFileConfig.getPartPrefix() + '-' + this.subtaskIndex + '-' + currentPartCounter + this.outputFileConfig.getPartSuffix());
     }
 
-    InProgressFileWriter.PendingFileRecoverable closePartFile() throws IOException {
+    InProgressFileWriter.PendingFileRecoverable closePartFile(long currentTime) throws IOException {
+        if(!sortQueue.isEmpty()){
+            sortWrite(currentTime);
+        }
+        InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable = null;
+        if (this.inProgressPart != null) {
+            pendingFileRecoverable = this.inProgressPart.closeForCommit();
+            this.pendingFileRecoverablesForCurrentCheckpoint.add(pendingFileRecoverable);
+            this.inProgressPart = null;
+        }
 
+        return pendingFileRecoverable;
+    }
+
+    InProgressFileWriter.PendingFileRecoverable closePartFile() throws IOException {
         InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable = null;
         if (this.inProgressPart != null) {
             pendingFileRecoverable = this.inProgressPart.closeForCommit();
@@ -271,12 +279,12 @@ public class LakeSoulBucket<IN, BucketID> {
         return this.pendingFileRecoverablesForCurrentCheckpoint;
     }
 
-    static <IN, BucketID> LakeSoulBucket<IN, BucketID> getNew(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) {
-        return new LakeSoulBucket(subtaskIndex, bucketId, bucketPath, initialPartCounter, bucketWriter, rollingPolicy, fileListener, outputFileConfig);
+    static <IN, BucketID> LakeSoulBucket<IN, BucketID> getNew(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) {
+        return new LakeSoulBucket(subtaskIndex, bucketId, bucketPath, initialPartCounter, bucketWriter, rollingPolicy, fileListener, outputFileConfig,rowKey);
     }
 
-    static <IN, BucketID> LakeSoulBucket<IN, BucketID> restore(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) throws IOException {
-        return new LakeSoulBucket(subtaskIndex, initialPartCounter, bucketWriter, rollingPolicy, bucketState, fileListener, outputFileConfig);
+    static <IN, BucketID> LakeSoulBucket<IN, BucketID> restore(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakesoulTableSink.LakesoulRollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig,String rowKey) throws IOException {
+        return new LakeSoulBucket(subtaskIndex, initialPartCounter, bucketWriter, rollingPolicy, bucketState, fileListener, outputFileConfig,rowKey);
     }
 }
 
