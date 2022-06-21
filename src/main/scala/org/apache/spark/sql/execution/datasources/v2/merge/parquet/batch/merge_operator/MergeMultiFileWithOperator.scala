@@ -33,7 +33,8 @@ import scala.collection.mutable.ArrayBuffer
   * @param filesInfo (file, columnar reader of file)
   */
 class MergeMultiFileWithOperator(filesInfo: Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])],
-                                 mergeOperatorInfo: Map[String, MergeOperator[Any]]) extends MergeLogic {
+                                 mergeOperatorInfo: Map[String, MergeOperator[Any]],
+                                 defaultMergeOp: MergeOperator[Any]) extends MergeLogic {
 
   //all result columns name and type
   val resultSchema: Seq[FieldInfo] = filesInfo.head._1.resultSchema
@@ -79,7 +80,7 @@ class MergeMultiFileWithOperator(filesInfo: Seq[(MergePartitionedFile, Partition
   private val resultIndex = new Array[ArrayBuffer[MergeColumnIndex]](resultSchema.length)
   MergeUtils.intBatchIndexMerge(resultIndex)
 
-  private val defaultMergeOp = new DefaultMergeOp[Any]
+//  private val defaultMergeOp = if(defaultMergeOpInfo == null) new DefaultMergeOp[Any] else defaultMergeOpInfo
   private val mergeOp: Seq[MergeOperator[Any]] = resultSchema.map(fieldInfo => {
     if (mergeOperatorInfo.contains(fieldInfo.fieldName)) {
       mergeOperatorInfo(fieldInfo.fieldName)
