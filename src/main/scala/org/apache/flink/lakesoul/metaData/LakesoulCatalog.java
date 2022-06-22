@@ -196,13 +196,14 @@ public class LakesoulCatalog implements Catalog {
             } catch (IOException e) {
                 e.printStackTrace();
             }
+            StringBuilder stringBuilder = new StringBuilder();
+
 
 
             String tableId = "table_" + UUID.randomUUID().toString();
             dbManager.createNewTable(tableId,tableName,qualifiedPath,
                     FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
-                    properties,partitionKeys.get(0)
-
+                    properties,partitionKeys.get(0)+";"+tableOptions.get("key")
                     );
 //            TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
 //            //todo
