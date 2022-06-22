@@ -147,6 +147,12 @@ public class DBManager {
         return tableInfo;
     }
 
+    public TableInfo getTableInfoByName(String tableName) {
+        TableInfo tableInfo = tableInfoDao.selectByTableName(tableName);
+        return tableInfo;
+    }
+
+
     public PartitionInfo getSinglePartitionInfo(String tableId, String partitionDesc) {
         PartitionInfo p = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         return p;

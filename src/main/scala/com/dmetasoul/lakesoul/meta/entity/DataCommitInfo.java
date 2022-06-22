@@ -18,6 +18,7 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -64,6 +65,14 @@ public class DataCommitInfo {
 
     public void setFileOps(List<DataFileOp> fileOps) {
         this.fileOps = fileOps;
+    }
+    public void setFileOps(DataFileOp fileOp) {
+        if (this.fileOps!=null){
+            fileOps.add(fileOp);
+        }else {
+            this.fileOps= new ArrayList<>();
+            fileOps.add(fileOp);
+        }
     }
 
     public String getCommitOp() {

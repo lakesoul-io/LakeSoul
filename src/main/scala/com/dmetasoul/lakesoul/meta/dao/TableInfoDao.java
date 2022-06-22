@@ -26,6 +26,7 @@ public class TableInfoDao {
         return getTableInfo(sql);
     }
 
+
     public TableInfo selectByIdAndTablePath(String tableId, String tablePath) {
         String sql = String.format("select * from table_info where table_id = '%s' and table_path = '%s' ", tableId, tablePath);
         return getTableInfo(sql);

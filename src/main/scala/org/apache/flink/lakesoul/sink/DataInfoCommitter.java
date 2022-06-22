@@ -96,7 +96,6 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
     @Override
     public void processElement(StreamRecord<DataInfo> element) throws Exception {
         DataInfo message = element.getValue();
-        System.out.println(message.getPartitions().size()+":::::datainfoPPPPPPPPP-======--((((((((((((((");
         for (String partition : message.getPartitions()) {
             trigger.addPartition(partition);
         }
@@ -121,7 +120,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
         String filenamePrefix = element.getTaskDataPath();
 
-        TableInfo tableInfo = dbManager.getTableInfo(element.getTableName());
+        TableInfo tableInfo = dbManager.getTableInfoByName(element.getTableName());
         MetaInfo metaInfo = new MetaInfo();
         metaInfo.setTableInfo(tableInfo);
         ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
@@ -131,54 +130,36 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
         for (String partition : partitions) {
             Path path = new Path(locationPath, partition);
             org.apache.flink.core.fs.FileStatus[] files =  path.getFileSystem().listStatus(path);
+            PartitionInfo partitionInfo = new PartitionInfo();
+            partitionInfo.setCommitOp("AppendCommit");
+            partitionInfo.setTableId(tableInfo.getTableId());
+            UUID uuid = UUID.randomUUID();
+            partitionInfo.setSnapshot(uuid);
+            partitionInfo.setPartitionDesc(partition);
+            partitionLists.add(partitionInfo);
+            DataCommitInfo dataCommitInfo = new DataCommitInfo();
+            dataCommitInfo.setCommitId(uuid);
+            dataCommitInfo.setPartitionDesc(partition);
+            dataCommitInfo.setCommitOp("AppendCommit");
+            dataCommitInfo.setTableId(tableInfo.getTableId());
+            dataCommitInfo.setTimestamp(System.currentTimeMillis());
             for(FileStatus fs:files){
                 if(!fs.isDir()){
                     long len=fs.getLen();
                     String onepath  = fs.getPath().toString();
                     if(onepath.contains( filenamePrefix )){
-                        PartitionInfo partitionInfo = new PartitionInfo();
-                        partitionInfo.setCommitOp("AppendCommit");
-                        partitionInfo.setTableId(tableInfo.getTableId());
-                        UUID uuid = UUID.randomUUID();
-                        partitionInfo.setSnapshot(uuid);
-                        partitionInfo.setPartitionDesc(partition);
-                        partitionLists.add(partitionInfo);
-
-
                         DataFileOp dataFileOp = new DataFileOp();
                         dataFileOp.setPath(fs.getPath().toString());
                         dataFileOp.setSize(len);
                         dataFileOp.setFileOp("add");
-                        //TODO
-                        dataFileOp.setFileExistCols("user_id,dt,name");
-                        DataCommitInfo dataCommitInfo = new DataCommitInfo();
-                        dataCommitInfo.setCommitId(uuid);
-                        dataCommitInfo.setPartitionDesc(partition);
-                        dataCommitInfo.setCommitOp("AppendCommit");
-                        dataCommitInfo.setFileOps(Collections.singletonList(dataFileOp));
-                        dataCommitInfo.setTableId(tableInfo.getTableId());
-                        dataCommitInfo.setTimestamp(System.currentTimeMillis());
-                        commitInfos.add(dataCommitInfo);
+                        dataFileOp.setFileExistCols("user_id,name");
+                        dataCommitInfo.setFileOps(dataFileOp);
                     }
                 }
             }
+            commitInfos.add(dataCommitInfo);
         }
-        HashMap<String, PartitionInfo> map = new HashMap<>();
-        partitionLists.forEach(v->{
-            String key = v.getTableId() + v.getPartitionDesc();
-            if (map.containsKey(key)){
-                PartitionInfo partitionInfo = map.get(key);
-                List<UUID> snapshot = partitionInfo.getSnapshot();
-                snapshot.addAll(v.getSnapshot());
-                partitionInfo.setSnapshot(snapshot);
-                map.put(key,partitionInfo);
-            }else {
-                map.put(key,v);
-            }
-        });
-        ArrayList<PartitionInfo> distPartitionLists = new ArrayList<>();
-        map.forEach((k,v)-> distPartitionLists.add(v));
-        metaInfo.setListPartition(distPartitionLists);
+        metaInfo.setListPartition(partitionLists);
         boolean appendCommit = dbManager.commitData(metaInfo, true, "AppendCommit");
 
         if(appendCommit){

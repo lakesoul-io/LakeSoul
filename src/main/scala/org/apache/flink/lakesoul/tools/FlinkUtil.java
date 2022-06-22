@@ -18,7 +18,10 @@
 
 package org.apache.flink.lakesoul.tools;
 
+import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -27,14 +30,13 @@ import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.DataType;
-import org.apache.spark.sql.lakesoul.utils.TableInfo;
 import org.apache.spark.sql.types.StructType;
-import scala.Option;
 import scala.collection.JavaConverters;
 import org.apache.spark.sql.types.*;
 import scala.collection.Map$;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class FlinkUtil {
     private FlinkUtil(){
@@ -111,6 +113,7 @@ public class FlinkUtil {
     public static StructType toSparkSchema(TableSchema tsc,Boolean isCdc){
         StructType st = new StructType(  );
         StructType stNew=st;
+
         for(int i=0;i<tsc.getFieldCount();i++){
             String name = tsc.getFieldName( i ).get();
             DataType dt = tsc.getFieldDataType( i ).get();
@@ -139,12 +142,17 @@ public class FlinkUtil {
         return null;
     }
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo)  {
-        StructType st = tableInfo.schema();
+        String tableSchema = tableInfo.getTableSchema();
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
         Builder bd = Schema.newBuilder();
-        boolean contains = tableInfo.configuration().contains("Lakesoul_cdc_columnName");
+
+        JSONObject properties = tableInfo.getProperties();
+        String lakesoulCdcColumnName = properties.getString("lakesoul_cdc_change_columnName");
+        boolean contains = (lakesoulCdcColumnName==null || "".equals(lakesoulCdcColumnName));
+        String hashColumn = properties.getString("key");
         //todo
-        for(StructField sf : st.fields()) {
-            if(contains && sf.name().equals(tableInfo.configuration().get("Lakesoul_cdc_columnName") )){
+        for(StructField sf : struct.fields()) {
+            if(contains && sf.name().equals(lakesoulCdcColumnName )){
                 continue;
             }
             String tyname = DataTypeUtil.convertToFlinkDatatype( sf.dataType().typeName() );
@@ -153,9 +161,14 @@ public class FlinkUtil {
             }
             bd=bd.column( sf.name() , tyname);
         }
-        bd.primaryKey(  Arrays.asList( tableInfo.hash_column().split( "," ) ) );
-        CatalogTable catalogtable = CatalogTable.of( bd.build(),"", JavaConverters.seqAsJavaList(tableInfo.range_partition_columns()), JavaConverters.mapAsJavaMap( tableInfo.configuration() ));
-        return catalogtable;
+        bd.primaryKey(  Arrays.asList( hashColumn.split( "," ) ) );
+        String partitionKeys = tableInfo.getPartitions();
+        List<String> partitionKey = Arrays.stream(partitionKeys.split(";")).collect(Collectors.toList());
+        HashMap<String, String> conf = new HashMap<>();
+        properties.forEach((key, value) -> conf.put(key, (String) value));
+
+        return CatalogTable.of( bd.build(),"",partitionKey, conf );
+
     }
     //todo
 //    public static String serialTableSchemaToCassendraStr(Schema table)  {

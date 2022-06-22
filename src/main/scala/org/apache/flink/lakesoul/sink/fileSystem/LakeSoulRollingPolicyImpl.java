@@ -14,7 +14,7 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
 
     private LakeSoulKeyGen keygen;
 
-    private long rollingSize =1000L;
+    private long rollingSize =2000L;
 
     private long rollingTime=1000000000000000L;
 

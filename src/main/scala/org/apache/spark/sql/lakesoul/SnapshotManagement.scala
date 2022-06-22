@@ -79,9 +79,9 @@ class SnapshotManagement(path: String) extends Logging {
       createSnapshot
     } else {
 //      table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
-//      if (LakeSoulUtils.isLakeSoulTable(table_path)) {
-//        throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
-//      }
+      if (LakeSoulUtils.isLakeSoulTable(table_path)) {
+        throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
+      }
       initSnapshot
     }
   }
@@ -135,7 +135,7 @@ class SnapshotManagement(path: String) extends Logging {
     */
   def withNewPartMergeTransaction[T](thunk: PartMergeTransactionCommit => T): T = {
     try {
-      //      updateSnapshot()
+            updateSnapshot()
       val tc = new PartMergeTransactionCommit(this)
       PartMergeTransactionCommit.setActive(tc)
       thunk(tc)
@@ -202,10 +202,10 @@ object SnapshotManagement {
 
   def apply(path: String): SnapshotManagement = {
     try {
-//      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-      snapshotManagementCache.get(path, () => {
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(path)
+          new SnapshotManagement(qualifiedPath)
         }
       })
     } catch {
@@ -230,7 +230,7 @@ object SnapshotManagement {
   def invalidateCache(path: String): Unit = {
     //todo path是否还需要转义
 //    val table_path: String = MetaUtils.modifyTableString(path)
-    //val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+//    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     snapshotManagementCache.invalidate(path)
   }
 
