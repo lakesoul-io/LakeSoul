@@ -17,8 +17,7 @@ public interface LakeSoulBucketFactory <IN, BucketID> extends Serializable {
                                       BucketWriter<IN, BucketID> var6,
                                               LakeSoulRollingPolicyImpl<IN, BucketID> var7,
                                       @Nullable FileLifeCycleListener<BucketID> var8,
-                                      OutputFileConfig var9,
-                                              String var10
+                                      OutputFileConfig var9
     ) throws IOException;
 
     LakeSoulBucket<IN, BucketID> restoreBucket(int var1, long var2,
@@ -26,6 +25,6 @@ public interface LakeSoulBucketFactory <IN, BucketID> extends Serializable {
                                                LakeSoulRollingPolicyImpl<IN, BucketID> var5,
                                        BucketState<BucketID> var6,
                                        @Nullable FileLifeCycleListener<BucketID> var7,
-                                       OutputFileConfig var8, String var19
+                                       OutputFileConfig var8
     ) throws IOException;
 }

@@ -25,6 +25,7 @@ import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.sql.lakesoul.Snapshot;
@@ -323,6 +324,10 @@ public class LakesoulCatalog implements Catalog {
     @Override
     public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) throws TableNotExistException, CatalogException {
         throw new CatalogException("not supported now");
+//        Preconditions.checkNotNull(tablePath);
+
+//            return null;
+
     }
 
     @Override

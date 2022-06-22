@@ -18,8 +18,6 @@
 
 package org.apache.flink.lakesoul.sink;
 
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.fileSystem.*;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -31,23 +29,17 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-import java.util.Map;
 
-import static org.apache.flink.lakesoul.tools.LakeSoulTableOptions.KEY_FIELD;
 
 public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends AbstractStreamOperator<OUT>
         implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
 
     private static final long serialVersionUID = 1L;
 
-    // ------------------------ configuration fields --------------------------
-
     private  long bucketCheckInterval;
 
     private LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
             bucketsBuilder;
-
-    // --------------------------- runtime fields -----------------------------
 
     protected transient LakeSoulBuckets<IN, String> buckets;
 
@@ -55,16 +47,13 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     protected transient long currentWatermark;
 
-    private String rowKey;
-
     public LakesoulAbstractStreamingWriter(
             long bucketCheckInterval,
             LakeSoulBucketsBuilder<
                     IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
-                    bucketsBuilder,String rowKey) {
+                    bucketsBuilder) {
         this.bucketCheckInterval = bucketCheckInterval;
         this.bucketsBuilder = bucketsBuilder;
-        this.rowKey=rowKey;
         setChainingStrategy( ChainingStrategy.ALWAYS);
     }
 
@@ -109,10 +98,8 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
                     }
                 });
 
-        buckets.setFileLifeCycleListener(LakesoulAbstractStreamingWriter.this::onPartFileOpened);
+//        buckets.setFileLifeCycleListener(LakesoulAbstractStreamingWriter.this::onPartFileOpened);
 
-
-        buckets.setRowKey(rowKey);
         helper =
                 new LakeSoulFileSinkHelper<>(
                         buckets,
@@ -147,18 +134,16 @@ public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends Abstract
 
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
-        System.out.println( "notifycheckpoint" );
         super.notifyCheckpointComplete(checkpointId);
         commitUpToCheckpoint(checkpointId);
     }
 
     @Override
     public void endInput() throws Exception {
-        System.out.println( "endInput123112::::"+buckets.getMaxPartCounter());
-//        buckets.onProcessingTime(Long.MAX_VALUE);
-//        helper.snapshotState(Long.MAX_VALUE);
-//        output.emitWatermark(new Watermark(Long.MAX_VALUE));
-//        commitUpToCheckpoint(Long.MAX_VALUE);
+        buckets.onProcessingTime(Long.MAX_VALUE);
+        helper.snapshotState(Long.MAX_VALUE);
+        output.emitWatermark(new Watermark(Long.MAX_VALUE));
+        commitUpToCheckpoint(Long.MAX_VALUE);
     }
 
     @Override

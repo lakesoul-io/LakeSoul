@@ -18,6 +18,7 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -72,6 +73,11 @@ public class PartitionInfo {
 
     public void setSnapshot(List<UUID> snapshot) {
         this.snapshot = snapshot;
+    }
+    public void setSnapshot(UUID uuid) {
+        ArrayList<UUID> uuids = new ArrayList<>();
+        uuids.add(uuid);
+        this.snapshot = uuids;
     }
 
     public String getExpression() {

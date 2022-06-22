@@ -18,9 +18,16 @@
 
 package org.apache.flink.lakesoul.sink;
 
+import com.alibaba.fastjson.JSON;
+import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DataTypeUtil;
+import com.dmetasoul.lakesoul.meta.MetaCommit;
+import com.dmetasoul.lakesoul.meta.MetaVersion;
+import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.metaData.LakeSoulTableData;
 import org.apache.flink.lakesoul.sink.partition.PartitionTrigger;
 import org.apache.flink.lakesoul.metaData.DataInfo;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -31,8 +38,11 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
+
 import org.apache.flink.table.filesystem.FileSystemFactory;
+import org.apache.spark.sql.types.StructField;
 
 public class DataInfoCommitter extends AbstractStreamOperator<Void>
         implements OneInputStreamOperator<DataInfo, Void> {
@@ -55,6 +65,8 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
     private transient long currentWatermark;
 
+    private DBManager dbManager;
+
     public DataInfoCommitter(
             Path locationPath,
             ObjectIdentifier tableIdentifier,
@@ -72,6 +84,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
     public void initializeState(StateInitializationContext context) throws Exception {
         super.initializeState(context);
         this.currentWatermark = Long.MIN_VALUE;
+        this.dbManager=new DBManager();
         this.trigger =
                 PartitionTrigger.create(
                         context.isRestored(),
@@ -83,6 +96,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
     @Override
     public void processElement(StreamRecord<DataInfo> element) throws Exception {
         DataInfo message = element.getValue();
+        System.out.println(message.getPartitions().size()+":::::datainfoPPPPPPPPP-======--((((((((((((((");
         for (String partition : message.getPartitions()) {
             trigger.addPartition(partition);
         }
@@ -96,41 +110,80 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
     }
 
     private void commitPartitions(DataInfo element) throws Exception {
+
         long checkpointId = element.getCheckpointId ();
-        List<String> partitions =
-                checkpointId == Long.MAX_VALUE
+        List<String> partitions = checkpointId == Long.MAX_VALUE
                         ? trigger.endInput()
                         : trigger.committablePartitions(checkpointId);
         if (partitions.isEmpty()) {
             return;
         }
+
         String filenamePrefix = element.getTaskDataPath();
 
-        //todo
-//        LakesoulTableMetaStore ltms = new LakesoulTableMetaStore(tableIdentifier);
-        int fileNumInPartitions=0;
+        TableInfo tableInfo = dbManager.getTableInfo(element.getTableName());
+        MetaInfo metaInfo = new MetaInfo();
+        metaInfo.setTableInfo(tableInfo);
+        ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
+        ArrayList<DataCommitInfo> commitInfos = new ArrayList<>();
+
+
         for (String partition : partitions) {
             Path path = new Path(locationPath, partition);
             org.apache.flink.core.fs.FileStatus[] files =  path.getFileSystem().listStatus(path);
             for(FileStatus fs:files){
                 if(!fs.isDir()){
+                    long len=fs.getLen();
                     String onepath  = fs.getPath().toString();
                     if(onepath.contains( filenamePrefix )){
-                        long len=fs.getLen();
-                        long modify_time=fs.getModificationTime();
-                        //todo
-//                        ltms.withData( partition ,new LakesoulTableData( fs.getPath().toString(),modify_time,len,partition ));
+                        PartitionInfo partitionInfo = new PartitionInfo();
+                        partitionInfo.setCommitOp("AppendCommit");
+                        partitionInfo.setTableId(tableInfo.getTableId());
+                        UUID uuid = UUID.randomUUID();
+                        partitionInfo.setSnapshot(uuid);
+                        partitionInfo.setPartitionDesc(partition);
+                        partitionLists.add(partitionInfo);
+
+
+                        DataFileOp dataFileOp = new DataFileOp();
+                        dataFileOp.setPath(fs.getPath().toString());
+                        dataFileOp.setSize(len);
+                        dataFileOp.setFileOp("add");
+                        //TODO
+                        dataFileOp.setFileExistCols("user_id,dt,name");
+                        DataCommitInfo dataCommitInfo = new DataCommitInfo();
+                        dataCommitInfo.setCommitId(uuid);
+                        dataCommitInfo.setPartitionDesc(partition);
+                        dataCommitInfo.setCommitOp("AppendCommit");
+                        dataCommitInfo.setFileOps(Collections.singletonList(dataFileOp));
+                        dataCommitInfo.setTableId(tableInfo.getTableId());
+                        dataCommitInfo.setTimestamp(System.currentTimeMillis());
+                        commitInfos.add(dataCommitInfo);
                     }
-                    fileNumInPartitions++;
                 }
             }
         }
-        //todo
-//        if(fileNumInPartitions>0){
-//            ltms.commit();
-//        }else{
-//            ltms=null;
-//        }
+        HashMap<String, PartitionInfo> map = new HashMap<>();
+        partitionLists.forEach(v->{
+            String key = v.getTableId() + v.getPartitionDesc();
+            if (map.containsKey(key)){
+                PartitionInfo partitionInfo = map.get(key);
+                List<UUID> snapshot = partitionInfo.getSnapshot();
+                snapshot.addAll(v.getSnapshot());
+                partitionInfo.setSnapshot(snapshot);
+                map.put(key,partitionInfo);
+            }else {
+                map.put(key,v);
+            }
+        });
+        ArrayList<PartitionInfo> distPartitionLists = new ArrayList<>();
+        map.forEach((k,v)-> distPartitionLists.add(v));
+        metaInfo.setListPartition(distPartitionLists);
+        boolean appendCommit = dbManager.commitData(metaInfo, true, "AppendCommit");
+
+        if(appendCommit){
+            dbManager.batchCommitDataCommitInfo(commitInfos);
+        }
     }
 
     @Override

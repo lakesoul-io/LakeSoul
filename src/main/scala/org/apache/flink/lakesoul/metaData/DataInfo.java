@@ -30,15 +30,25 @@ public class DataInfo implements Serializable {
     private int numberOfTasks;
     private List<String> partitions;
     private String path;
+    private String tableName;
     public DataInfo() {}
 
+    public String getTableName() {
+        return tableName;
+    }
+
+    public void setTableName(String tableName) {
+        this.tableName = tableName;
+    }
+
     public DataInfo(
-            long checkpointId, int taskId, int numberOfTasks, List<String> partitions,String path) {
+            long checkpointId, int taskId, int numberOfTasks, List<String> partitions,String path,String tableName) {
         this.checkpointId = checkpointId;
         this.taskId = taskId;
         this.numberOfTasks = numberOfTasks;
         this.partitions = partitions;
         this.path = path;
+        this.tableName=tableName;
     }
 
     public long getCheckpointId() {

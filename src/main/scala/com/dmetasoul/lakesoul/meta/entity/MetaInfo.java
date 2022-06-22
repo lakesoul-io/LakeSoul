@@ -24,6 +24,7 @@ public class MetaInfo {
     List<PartitionInfo> listPartition;
     TableInfo tableInfo;
 
+
     public List<PartitionInfo> getListPartition() {
         return listPartition;
     }

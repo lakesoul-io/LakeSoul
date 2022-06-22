@@ -1,14 +1,11 @@
 package org.apache.flink.lakesoul.sink.fileSystem;
 
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicy;
+
 import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.util.TimeUtils;
-
 import java.io.IOException;
-import java.util.Date;
+
 
 
 public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPolicy<RowData, String> {
@@ -17,9 +14,9 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
 
     private LakeSoulKeyGen keygen;
 
-    private long rollingSize =10L;
+    private long rollingSize =1000L;
 
-    private long rollingTime=100000L;
+    private long rollingTime=1000000000000000L;
 
     public LakeSoulKeyGen getKeygen() {
         return keygen;
@@ -35,8 +32,7 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
 
     @Override
     public boolean shouldRollOnCheckpoint(PartFileInfo<String> partFileState) {
-        boolean rollOnCheckpoint = this.rollOnCheckpoint;
-        return rollOnCheckpoint;
+        return this.rollOnCheckpoint;
     }
 
     @Override

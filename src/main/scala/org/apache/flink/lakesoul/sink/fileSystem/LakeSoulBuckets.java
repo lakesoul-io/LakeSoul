@@ -92,7 +92,7 @@ public class LakeSoulBuckets<IN, BucketID> {
             LOG.debug("Subtask {} restoring: {}", this.subtaskIndex, recoveredState);
         }
 
-        LakeSoulBucket<IN, BucketID> restoredLakeSoulBucket = this.bucketFactory.restoreBucket(this.subtaskIndex, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, recoveredState, this.fileLifeCycleListener, this.outputFileConfig,this.rowKey);
+        LakeSoulBucket<IN, BucketID> restoredLakeSoulBucket = this.bucketFactory.restoreBucket(this.subtaskIndex, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, recoveredState, this.fileLifeCycleListener, this.outputFileConfig);
 
         this.updateActiveBucketId(bucketId, restoredLakeSoulBucket);
     }
@@ -168,7 +168,7 @@ public class LakeSoulBuckets<IN, BucketID> {
         LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket)this.activeBuckets.get(bucketId);
         if (lakeSoulBucket == null) {
             Path bucketPath = this.assembleBucketPath(bucketId);
-            lakeSoulBucket = this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig , this.rowKey);
+            lakeSoulBucket = this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig);
             this.activeBuckets.put(bucketId, lakeSoulBucket);
             this.notifyBucketCreate(lakeSoulBucket);
         }
@@ -207,16 +207,16 @@ public class LakeSoulBuckets<IN, BucketID> {
     }
 
     private void notifyBucketCreate(LakeSoulBucket<IN, BucketID> lakeSoulBucket) {
-//        if (this.bucketLifeCycleListener != null) {
-//            this.bucketLifeCycleListener.bucketCreated(lakeSoulBucket);
-//        }
+        if (this.bucketLifeCycleListener != null) {
+            this.bucketLifeCycleListener.bucketCreated(lakeSoulBucket);
+        }
 
     }
 
     private void notifyBucketInactive(LakeSoulBucket<IN, BucketID> lakeSoulBucket) {
-//        if (this.bucketLifeCycleListener != null) {
-//            this.bucketLifeCycleListener.bucketInactive(lakeSoulBucket);
-//        }
+        if (this.bucketLifeCycleListener != null) {
+            this.bucketLifeCycleListener.bucketInactive(lakeSoulBucket);
+        }
 
     }
 

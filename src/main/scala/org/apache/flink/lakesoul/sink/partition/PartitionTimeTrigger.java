@@ -40,6 +40,7 @@ public class PartitionTimeTrigger implements PartitionTrigger {
                     "checkpoint-id-to-watermark",
                     new MapSerializer<> ( LongSerializer.INSTANCE, LongSerializer.INSTANCE));
 
+
     private final ListState<List<String>> pendingPartitionsState;
     private final Set<String> pendingPartitions;
 
@@ -80,7 +81,6 @@ public class PartitionTimeTrigger implements PartitionTrigger {
                             checkpointId, watermarks));
         }
 
-        long watermark = watermarks.get(checkpointId);
         watermarks.headMap(checkpointId, true).clear();
 
         List<String> needCommit = new ArrayList<>();

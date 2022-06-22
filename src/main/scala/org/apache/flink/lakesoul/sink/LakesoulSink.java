@@ -48,6 +48,7 @@ public class LakesoulSink {
             int parallelism,
             List<String> partitionKeys,
             Configuration conf) {
+
         LakesoulFileWriter<T> fileWriter =
                 new LakesoulFileWriter<T>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf,outputFile);
 
@@ -76,20 +77,15 @@ public class LakesoulSink {
         DataStream<?> stream = null;
         //if (partitionKeys.size() > 0 && options.contains(SINK_PARTITION_COMMIT_POLICY_KIND)) {
         if (partitionKeys.size() > 0) {
-                DataInfoCommitter committer =
-                    new DataInfoCommitter(
+
+                DataInfoCommitter committer = new DataInfoCommitter(
                             locationPath, identifier, partitionKeys, fsFactory, options);
-            stream =
-                    writer.transform(
+
+            stream = writer.transform(
                             DataInfoCommitter.class.getSimpleName(), Types.VOID, committer)
                             .setParallelism(1).name( "DataCommit" )
                             .setMaxParallelism(1);
         }
-
-        stream=stream.map(v-> {
-            System.out.println(v.toString());
-            return v;
-        });
         return stream.addSink(new DiscardingSink<>())
                 .name("end")
                 .setParallelism(1);
