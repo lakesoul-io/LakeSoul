@@ -153,13 +153,15 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         OutputFileConfig.OutputFileConfigBuilder fileNamingBuilder = OutputFileConfig.builder();
         fileNamingBuilder = fileNamingBuilder.withPartPrefix(randomPrefix);
         OutputFileConfig fileNamingConfig = fileNamingBuilder.build();
-        this.path = new Path(tableOptions.getString( CatalogProperties.PATH));
+        String table_name = tableOptions.getString("table_name","");
+        this.path = new Path(tableOptions.getString( CatalogProperties.PATH),table_name);
+
         LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>> bucketsBuilder;
         if (isEncoder) {
             //noinspection unchecked
             bucketsBuilder =
                     LakesoulFileSink.forRowFormat(
-                            path,
+                                    this.path,
                             new ProjectionEncoder((Encoder<RowData>) writer, computer))
                             .withBucketAssigner(assigner)
                             .withOutputFileConfig(fileNamingConfig)
@@ -168,7 +170,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             //noinspection unchecked
             bucketsBuilder =
                     LakesoulFileSink.forBulkFormat(
-                            path,
+                                    this.path,
                             new ProjectionBulkFactory(
                                     (BulkWriter.Factory<RowData>) writer, computer))
                             .withBucketAssigner(assigner)
@@ -187,7 +189,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
 
         return LakesoulSink.sink(
                 writerStream,
-                path,
+                this.path,
                 tableIdentifier,
                 partitionKeys,
                 fsFactory,
@@ -244,7 +246,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             throw new TableException("Can not find format factory.");
         }
     }
-
 
     public static DataType ROW(List<DataTypes.Field> fields) {
         return DataTypes.ROW(fields.toArray(new DataTypes.Field[0]));

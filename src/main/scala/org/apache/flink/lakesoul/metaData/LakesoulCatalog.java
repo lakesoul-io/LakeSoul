@@ -192,7 +192,8 @@ public class LakesoulCatalog implements Catalog {
             String qualifiedPath="";
             try {
                 FileSystem fileSystem = new Path(path).getFileSystem();
-                qualifiedPath= new Path(tablePath.getFullName()).makeQualified(fileSystem).toString();
+                qualifiedPath= new Path(path,tablePath.getFullName()).makeQualified(fileSystem).toString();
+                String kk = qualifiedPath;
             } catch (IOException e) {
                 e.printStackTrace();
             }
