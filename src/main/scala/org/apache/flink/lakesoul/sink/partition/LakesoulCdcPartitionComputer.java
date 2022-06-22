@@ -61,6 +61,8 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
                         .map(DataType::getLogicalType)
                         .collect( Collectors.toList());
 
+//        partitionColumns=partitionColumns[0];
+        partitionColumns= partitionColumns[0].split(";");
         this.partitionIndexes =
                 Arrays.stream(partitionColumns).mapToInt(columnList::indexOf).toArray();
         this.partitionTypes =
@@ -98,14 +100,22 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
     public LinkedHashMap<String, String> generatePartValues(RowData in) {
         LinkedHashMap<String, String> partSpec = new LinkedHashMap<>();
 
-        for (int i = 0; i < partitionIndexes.length; i++) {
-            Object field = partitionFieldGetters[i].getFieldOrNull(in);
+//        for (int i = 0; i < partitionIndexes.length; i++) {
+//            Object field = partitionFieldGetters[i].getFieldOrNull(in);
+//            String partitionValue = field != null ? field.toString() : null;
+//            if (partitionValue == null || "".equals(partitionValue)) {
+//                partitionValue = defaultPartValue;
+//            }
+//            partSpec.put(partitionColumns[i], partitionValue);
+//        }
+        Object field = partitionFieldGetters[0].getFieldOrNull(in);
             String partitionValue = field != null ? field.toString() : null;
             if (partitionValue == null || "".equals(partitionValue)) {
                 partitionValue = defaultPartValue;
             }
-            partSpec.put(partitionColumns[i], partitionValue);
-        }
+            partSpec.put(partitionColumns[0], partitionValue);
+
+
         return partSpec;
     }
 
