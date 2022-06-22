@@ -127,6 +127,7 @@
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table</artifactId>
             <version>${flink.version}</version>
+            <type>pom</type>
             <scope>provided</scope>
         </dependency>
         <dependency>
