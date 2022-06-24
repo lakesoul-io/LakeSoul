@@ -18,11 +18,9 @@
 
 package org.apache.flink.lakesoul.sink;
 
-
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.serialization.SerializationSchema;
-
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.FSDataOutputStream;
@@ -31,6 +29,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metaData.DataInfo;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakesoul.sink.partition.BucketPartitioner;
 import org.apache.flink.lakesoul.sink.partition.LakesoulCdcPartitionComputer;
 import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.table.CatalogProperties;
@@ -38,8 +37,6 @@ import org.apache.flink.lakesoul.table.LakesoulSchemaAdapter;
 import org.apache.flink.lakesoul.tools.*;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
-import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
-import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -59,17 +56,15 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
 import java.util.*;
-
-import org.apache.flink.table.filesystem.RowDataPartitionComputer;
-
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import org.apache.flink.util.Preconditions;
 
+import static org.apache.flink.lakesoul.tools.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
 public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
@@ -78,14 +73,13 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     private Configuration tableOptions;
     private DataType physicalRowDataType;
     private Path path;
-    private String defaultPartName;
     private LakeSoulKeyGen keyGen;
     private ResolvedSchema schema;
 
     List<String> partitionKeys;
 
-    private  EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
-    private  EncodingFormat<SerializationSchema<RowData>> serializationFormat;
+    private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
+    private EncodingFormat<SerializationSchema<RowData>> serializationFormat;
 
 
     @Override
@@ -93,28 +87,29 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         return false;
     }
 
-    public LakesoulTableSink(  ObjectIdentifier tableIdentifier,
-                               DataType physicalRowDataType,
-                               List<String> partitionKeys,
-                               ReadableConfig tableOptions,
-                               EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
-                              EncodingFormat<SerializationSchema<RowData>> serializationFormat,
-                               ResolvedSchema schema
-    ){
+    public LakesoulTableSink(ObjectIdentifier tableIdentifier,
+                             DataType physicalRowDataType,
+                             List<String> partitionKeys,
+                             ReadableConfig tableOptions,
+                             EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
+                             EncodingFormat<SerializationSchema<RowData>> serializationFormat,
+                             ResolvedSchema schema
+    ) {
         this.bulkWriterFormat = bulkWriterFormat;
         this.serializationFormat = serializationFormat;
         this.tableIdentifier = tableIdentifier;
-        this.partitionKeys=partitionKeys;
+        this.partitionKeys = partitionKeys;
         this.tableOptions = (Configuration) tableOptions;
         this.physicalRowDataType = physicalRowDataType;
-        this.schema= schema;
+        this.schema = schema;
     }
-    private LakesoulTableSink(LakesoulTableSink lts){
-        this.overwrite=lts.overwrite;
+
+    private LakesoulTableSink(LakesoulTableSink lts) {
+        this.overwrite = lts.overwrite;
     }
+
     @Override
-    public ChangelogMode getChangelogMode(ChangelogMode changelogMode)
-    {
+    public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
         ChangelogMode.Builder builder = ChangelogMode.newBuilder();
         for (RowKind kind : changelogMode.getContainedKinds()) {
             builder.addContainedKind(kind);
@@ -124,16 +119,13 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context sinkContext) {
-        return (DataStreamSinkProvider)(dataStream) -> consume( dataStream, sinkContext);
+        return (DataStreamSinkProvider) (dataStream) -> consume(dataStream, sinkContext);
     }
+
     private DataStreamSink<?> consume(DataStream<RowData> dataStream, Context sinkContext) {
         final int parallelism = dataStream.getParallelism();
         return createStreamingSink(dataStream, sinkContext, parallelism);
 
-    }
-    private DataStreamSink<?> createBatchSink(
-            DataStream<RowData> inputStream, Context sinkContext, final int parallelism) {
-        return null;
     }
 
     private DataStreamSink<?> createStreamingSink(
@@ -142,19 +134,17 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             final int parallelism) {
         FileSystemFactory fsFactory = FileSystem::get;
         LakesoulCdcPartitionComputer computer = partitionCdcComputer();
-        Object writer = createWriter(sinkContext,tableOptions);
+        Object writer = createWriter(sinkContext, tableOptions);
         boolean isEncoder = writer instanceof Encoder;
 
-        keyGen = LakeSoulKeyGen.instance((RowType) schema.toSourceRowDataType().notNull().getLogicalType(), tableOptions);
+        keyGen = new LakeSoulKeyGen((RowType) schema.toSourceRowDataType().notNull().getLogicalType(), tableOptions);
         FlinkBucketAssigner assigner = new FlinkBucketAssigner(computer);
-        LakeSoulRollingPolicyImpl lakesoulPolicy=new LakeSoulRollingPolicyImpl(!isEncoder);
+        keyGen.partitionKey = partitionKeys;
+        LakeSoulRollingPolicyImpl lakesoulPolicy = new LakeSoulRollingPolicyImpl(!isEncoder);
         lakesoulPolicy.setKeygen(keyGen);
-        String randomPrefix = "part-" + UUID.randomUUID().toString();
         OutputFileConfig.OutputFileConfigBuilder fileNamingBuilder = OutputFileConfig.builder();
-        fileNamingBuilder = fileNamingBuilder.withPartPrefix(randomPrefix);
         OutputFileConfig fileNamingConfig = fileNamingBuilder.build();
-        String table_name = tableOptions.getString("table_name","");
-        this.path = new Path(tableOptions.getString( CatalogProperties.PATH),table_name);
+        this.path = new Path(tableOptions.getString(CatalogProperties.PATH));
 
         LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>> bucketsBuilder;
         if (isEncoder) {
@@ -162,7 +152,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             bucketsBuilder =
                     LakesoulFileSink.forRowFormat(
                                     this.path,
-                            new ProjectionEncoder((Encoder<RowData>) writer, computer))
+                                    new ProjectionEncoder((Encoder<RowData>) writer, computer))
                             .withBucketAssigner(assigner)
                             .withOutputFileConfig(fileNamingConfig)
                             .withRollingPolicy(lakesoulPolicy);
@@ -171,45 +161,33 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             bucketsBuilder =
                     LakesoulFileSink.forBulkFormat(
                                     this.path,
-                            new ProjectionBulkFactory(
-                                    (BulkWriter.Factory<RowData>) writer, computer))
+                                    new ProjectionBulkFactory(
+                                            (BulkWriter.Factory<RowData>) writer, computer))
                             .withBucketAssigner(assigner)
                             .withOutputFileConfig(fileNamingConfig)
                             .withRollingPolicy(lakesoulPolicy);
         }
         long bucketCheckInterval = Duration.ofMinutes(1).toMillis();
+        BucketPartitioner<String> partitioner = new BucketPartitioner<>();
+
+        dataStream = dataStream.partitionCustom(partitioner, keyGen::getBucketPartitionKey);
+
         DataStream<DataInfo> writerStream = LakesoulSink.writer(
-                bucketCheckInterval,
-                dataStream,
-                bucketsBuilder,
-                fileNamingConfig,
-                parallelism,
-                partitionKeys,
-                tableOptions);
+                bucketCheckInterval, dataStream, bucketsBuilder,
+                fileNamingConfig, parallelism, partitionKeys, tableOptions);
 
         return LakesoulSink.sink(
-                writerStream,
-                this.path,
-                tableIdentifier,
-                partitionKeys,
-                fsFactory,
-                tableOptions);
-    }
-    private RowDataPartitionComputer partitionComputer() {
-        return new RowDataPartitionComputer(
-                defaultPartName,
-                getFieldNames(physicalRowDataType).toArray(new String[0]),
-                getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]),
-                partitionKeys.toArray(new String[0]));
+                writerStream, this.path, tableIdentifier, partitionKeys, fsFactory, tableOptions);
     }
 
     private LakesoulCdcPartitionComputer partitionCdcComputer() {
         return new LakesoulCdcPartitionComputer(
-                defaultPartName,
+                DEFAULT_PARTITION_PATH,
                 getFieldNames(physicalRowDataType).toArray(new String[0]),
                 getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]),
-                partitionKeys.toArray(new String[0]),FlinkUtil.isLakesoulCdcTable( tableOptions ));
+                partitionKeys.toArray(new String[0]), FlinkUtil.isLakesoulCdcTable(tableOptions));
     }
+
     @Override
     public DynamicTableSink copy() {
         return new LakesoulTableSink(this);
@@ -230,11 +208,10 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     }
 
-
     private Object createWriter(Context sinkContext, Configuration tableOptions) {
-        DataType physicalDataTypeWithoutPartitionColumns = getFields(physicalRowDataType,FlinkUtil.isLakesoulCdcTable( tableOptions )).stream()
-                        .filter(field -> !partitionKeys.contains(field.getName()))
-                        .collect(Collectors.collectingAndThen(Collectors.toList(), LakesoulTableSink::ROW));
+        DataType physicalDataTypeWithoutPartitionColumns = getFields(physicalRowDataType, FlinkUtil.isLakesoulCdcTable(tableOptions)).stream()
+                .filter(field -> !partitionKeys.contains(field.getName()))
+                .collect(Collectors.collectingAndThen(Collectors.toList(), LakesoulTableSink::ROW));
         if (bulkWriterFormat != null) {
             return bulkWriterFormat.createRuntimeEncoder(
                     sinkContext, physicalDataTypeWithoutPartitionColumns);
@@ -253,7 +230,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     public static List<String> getFieldNames(DataType dataType) {
         final LogicalType type = dataType.getLogicalType();
-        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE  ) {
+        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
             return getFieldNames(dataType.getChildren().get(0));
         } else if (isCompositeType(type)) {
             return LogicalTypeChecks.getFieldNames(type);
@@ -261,15 +238,9 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         return Collections.emptyList();
     }
 
-    /**
-     * Returns the first-level field data types for the provided {@link DataType}.
-     *
-     * <p>Note: This method returns an empty list for every {@link DataType} that is not a composite
-     * type.
-     */
     public static List<DataType> getFieldDataTypes(DataType dataType) {
         final LogicalType type = dataType.getLogicalType();
-        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE  ) {
+        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
             return getFieldDataTypes(dataType.getChildren().get(0));
         } else if (isCompositeType(type)) {
             return dataType.getChildren();
@@ -277,37 +248,18 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         return Collections.emptyList();
     }
 
-    /**
-     * Returns the count of the first-level fields for the provided {@link DataType}.
-     *
-     * <p>Note: This method returns {@code 0} for every {@link DataType} that is not a composite
-     * type.
-     */
-    public static int getFieldCount(DataType dataType) {
-        return getFieldDataTypes(dataType).size();
-    }
-
-    /**
-     * Returns an ordered list of fields starting from the provided {@link DataType}.
-     *
-     * <p>Note: This method returns an empty list for every {@link DataType} that is not a composite
-     * type.
-     */
-    public static List<DataTypes.Field> getFields(DataType dataType,Boolean isCdc) {
+    public static List<DataTypes.Field> getFields(DataType dataType, Boolean isCdc) {
         final List<String> names = getFieldNames(dataType);
         final List<DataType> dataTypes = getFieldDataTypes(dataType);
-        if(isCdc){
+        if (isCdc) {
             //todo MetaCommon.LakesoulCdcColumnName()
-            names.add( "MetaCommon.LakesoulCdcColumnName()" );
-            dataTypes.add(DataTypes.VARCHAR( 30 ));
+            names.add("MetaCommon.LakesoulCdcColumnName()");
+            dataTypes.add(DataTypes.VARCHAR(30));
         }
         return IntStream.range(0, names.size())
                 .mapToObj(i -> DataTypes.FIELD(names.get(i), dataTypes.get(i)))
                 .collect(Collectors.toList());
     }
-
-
-
 
     private static class ProjectionEncoder implements Encoder<RowData> {
 
@@ -324,7 +276,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             encoder.encode(computer.projectColumnsToWrite(element), stream);
         }
     }
-
 
     public static class ProjectionBulkFactory implements BulkWriter.Factory<RowData> {
 
@@ -359,41 +310,6 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
             };
         }
     }
-
-    public static class TableRollingPolicy extends CheckpointRollingPolicy<RowData, String> {
-
-        private final boolean rollOnCheckpoint;
-        private final long rollingFileSize;
-
-        public TableRollingPolicy(
-                boolean rollOnCheckpoint,
-                long rollingFileSize) {
-            this.rollOnCheckpoint = rollOnCheckpoint;
-            Preconditions.checkArgument(rollingFileSize > 0L);
-            this.rollingFileSize = rollingFileSize;
-        }
-        @Override
-        public boolean shouldRollOnCheckpoint(PartFileInfo<String> partFileState) {
-            try {
-                return rollOnCheckpoint || partFileState.getSize() > rollingFileSize;
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        }
-        @Override
-        public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element)
-                throws IOException {
-            return partFileState.getSize() > rollingFileSize;
-        }
-
-        @Override
-        public boolean shouldRollOnProcessingTime(
-                PartFileInfo<String> partFileState, long currentTime) {
-            return false;
-        }
-    }
-
-
 }
 
 

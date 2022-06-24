@@ -4,80 +4,174 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
-import javax.annotation.Nullable;
-import java.io.Serializable;
 
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.BIGINT;
+import javax.annotation.Nullable;
+import java.io.FileNotFoundException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 
 public class LakeSoulKeyGen implements Serializable {
 
-    private  RowType rowType;
-    private  Configuration conf;
-    private  int rowKeyIndex;
+    private static final String NULL_RECORD_KEY_PLACEHOLDER = "__null__";
+    private static final String EMPTY_RECORD_KEY_PLACEHOLDER = "__empty__";
+    public static final String DEFAULT_PARTITION_PATH = "default";
+    private static final String DEFAULT_PARTITION_PATH_SEPARATOR = ";";
+    private final Configuration conf;
+    private final String[] recordKeyFields;
+    private final String[] partitionPathFields;
+    private final RowDataProjection recordKeyProjection;
+    private final RowDataProjection partitionPathProjection;
+    private RowData.FieldGetter recordKeyFieldGetter;
+    private RowData.FieldGetter partitionPathFieldGetter;
+    private boolean nonPartitioned;
+    private boolean simpleRecordKey = false;
+    private boolean simplePartitionPath = false;
+    private final List<String> fieldNames;
+    public List<String> partitionKey;
 
 
-    private LakeSoulKeyGen(RowType rowType , Configuration conf) {
-        this.rowType =rowType;
-        this.conf =conf;
-        rowKeyIndex = getRowKeyIndex();
+    public LakeSoulKeyGen(RowType rowType, Configuration conf) {
+        this.conf = conf;
+        this.recordKeyFields = getRecordKeyFields();
+
+        this.partitionKey = new ArrayList<>();
+        this.partitionPathFields = getPartitionFiled();
+        this.fieldNames = rowType.getFieldNames();
+        List<LogicalType> fieldTypes = rowType.getChildren();
+        if (this.recordKeyFields.length == 1) {
+            this.simpleRecordKey = true;
+            int recordKeyIdx = fieldNames.indexOf(this.recordKeyFields[0]);
+            this.recordKeyFieldGetter = RowData.createFieldGetter(fieldTypes.get(recordKeyIdx), recordKeyIdx);
+            this.recordKeyProjection = null;
+        } else {
+            this.recordKeyProjection = getProjection(this.recordKeyFields, fieldNames, fieldTypes);
+        }
+        if (this.partitionPathFields.length == 1) {
+            this.simplePartitionPath = true;
+            if (this.partitionPathFields[0].equals("")) {
+                this.nonPartitioned = true;
+            } else {
+                int partitionPathIdx = fieldNames.indexOf(this.partitionPathFields[0]);
+                this.partitionPathFieldGetter = RowData.createFieldGetter(fieldTypes.get(partitionPathIdx), partitionPathIdx);
+            }
+            this.partitionPathProjection = null;
+        } else {
+            this.partitionPathProjection = getProjection(this.partitionPathFields, fieldNames, fieldTypes);
+        }
     }
 
-    public static LakeSoulKeyGen instance(RowType rowType,Configuration conf){
-        return new LakeSoulKeyGen(rowType,conf);
+
+    public static String objToString(@Nullable Object obj) {
+        return obj == null ? null : obj.toString();
     }
 
-    public  String getAndCheckRecordKey(Configuration conf, RowType rowType, RowData row) throws NoSuchFieldException {
-        String key = conf.getString(LakeSoulTableOptions.KEY_FIELD);
-        String[] split = key.split(",");
-        RowData.FieldGetter fieldGetter = RowData.createFieldGetter(rowType.getChildren().get(rowKeyIndex), rowKeyIndex);
-        //TODO: more key not support
-        return recordKey(fieldGetter.getFieldOrNull(row), split[0]);
 
-    }
-    public  String getAndCheckRecordKey(RowData row) throws NoSuchFieldException {
-        String key = conf.getString(LakeSoulTableOptions.KEY_FIELD);
-        String[] split = key.split(",");
-        RowData.FieldGetter fieldGetter = RowData.createFieldGetter(rowType.getChildren().get(rowKeyIndex), rowKeyIndex);
-        //TODO: more key not support
-        return recordKey(fieldGetter.getFieldOrNull(row), split[0]);
-    }
-    public  Long getLongKey(RowData row) throws NoSuchFieldException {
-        String key = conf.getString(LakeSoulTableOptions.KEY_FIELD);
-        String[] split = key.split(",");
-        RowData.FieldGetter fieldGetter = RowData.createFieldGetter(rowType.getChildren().get(rowKeyIndex), rowKeyIndex);
-        //TODO: more key not support
-        return Long.parseLong(recordKey(fieldGetter.getFieldOrNull(row), split[0]));
+    public String[] getRecordKeyFields() {
+        String keyField = conf.getString(LakeSoulSinkOptions.KEY_FIELD);
+        return keyField.split(",");
     }
 
-    public  String recordKey(Object recordKeyValue, String recordKeyField) throws NoSuchFieldException {
+    private String[] getPartitionFiled() {
+        String partitionField = conf.getString(LakeSoulSinkOptions.PARTITION_FIELD);
+        return partitionField.split(",");
+    }
+
+
+    public String getRecordKey(RowData rowData) throws Exception {
+        if (this.simpleRecordKey) {
+            return getRecordKey(recordKeyFieldGetter.getFieldOrNull(rowData), this.recordKeyFields[0]);
+        } else {
+            Object[] keyValues = this.recordKeyProjection.projectAsValues(rowData);
+            return getRecordKey(keyValues, this.recordKeyFields);
+        }
+    }
+
+    private static RowDataProjection getProjection(String[] fields, List<String> schemaFields, List<LogicalType> schemaTypes) {
+        int[] positions = getFieldPositions(fields, schemaFields);
+        LogicalType[] types = Arrays.stream(positions).mapToObj(schemaTypes::get).toArray(LogicalType[]::new);
+        return RowDataProjection.instance(types, positions);
+    }
+
+    private static int[] getFieldPositions(String[] fields, List<String> allFields) {
+        return Arrays.stream(fields).mapToInt(allFields::indexOf).toArray();
+    }
+
+    public static String getRecordKey(Object recordKeyValue, String recordKeyField) throws FileNotFoundException {
         String recordKey = objToString(recordKeyValue);
         if (recordKey == null || recordKey.isEmpty()) {
-            throw new NoSuchFieldException("recordKey value: \"" + recordKey + "\" for field: \"" + recordKeyField + "\" cannot be null or empty.");
+            throw new FileNotFoundException("recordKey value: \"" + recordKey + "\" for field: \"" + recordKeyField + "\" cannot be null or empty.");
         }
         return recordKey;
     }
 
-    public boolean isLongRowKey(){
-        LogicalType logicalType = rowType.getChildren().get(rowKeyIndex);
-        return logicalType.getTypeRoot()==BIGINT;
-    }
-
-    public  String objToString(@Nullable Object obj) {
-        return obj == null ? null : obj.toString();
-    }
-
-    public  int getRowKeyIndex(){
-        String key = conf.getString(LakeSoulTableOptions.KEY_FIELD);
-        String[] split = key.split(",");
-        if (split.length==1) {
-            return rowType.getFieldNames().indexOf(split[0]);
+    private static String getRecordKey(Object[] keyValues, String[] keyFields) throws FileNotFoundException {
+        boolean keyIsNullEmpty = true;
+        StringBuilder recordKey = new StringBuilder();
+        for (int i = 0; i < keyValues.length; i++) {
+            String recordKeyField = keyFields[i];
+            String recordKeyValue = objToString(keyValues[i]);
+            if (recordKeyValue == null) {
+                recordKey.append(recordKeyField).append(":").append(NULL_RECORD_KEY_PLACEHOLDER).append(",");
+            } else if (recordKeyValue.isEmpty()) {
+                recordKey.append(recordKeyField).append(":").append(EMPTY_RECORD_KEY_PLACEHOLDER).append(",");
+            } else {
+                recordKey.append(recordKeyField).append(":").append(recordKeyValue).append(",");
+                keyIsNullEmpty = false;
+            }
         }
-        //TODO: more key
-        return 0;
-
+        recordKey.deleteCharAt(recordKey.length() - 1);
+        if (keyIsNullEmpty) {
+            throw new FileNotFoundException("recordKey values: \"" + recordKey + "\" for fields: "
+                    + Arrays.toString(keyFields) + " cannot be entirely null or empty.");
+        }
+        return recordKey.toString();
     }
 
+    public static String getPartitionPath(
+            Object partValue, String partField) {
+        String partitionPath = objToString(partValue);
+        if (partitionPath == null || partitionPath.isEmpty()) {
+            partitionPath = DEFAULT_PARTITION_PATH;
+        }
+        return partitionPath;
+    }
+
+    public String getPartitionPath(RowData rowData) {
+        if (this.simplePartitionPath) {
+            return getPartitionPath(partitionPathFieldGetter.getFieldOrNull(rowData),
+                    this.partitionPathFields[0]);
+        } else if (this.nonPartitioned) {
+            return DEFAULT_PARTITION_PATH;
+        } else {
+            Object[] partValues = this.partitionPathProjection.projectAsValues(rowData);
+            return getRecordPartitionPath(partValues, this.partitionPathFields);
+        }
+    }
+
+    private static String getRecordPartitionPath(
+            Object[] partValues,
+            String[] partFields) {
+        StringBuilder partitionPath = new StringBuilder();
+        for (int i = 0; i < partFields.length; i++) {
+            String partValue = objToString(partValues[i]);
+            if (partValue == null || partValue.isEmpty()) {
+                partitionPath.append(DEFAULT_PARTITION_PATH);
+            } else {
+                partitionPath.append(partValue);
+            }
+            partitionPath.append(DEFAULT_PARTITION_PATH_SEPARATOR);
+        }
+        partitionPath.deleteCharAt(partitionPath.length() - 1);
+        return partitionPath.toString();
+    }
+
+
+    public String getBucketPartitionKey(RowData row) throws Exception {
+        return getPartitionPath(row) + getRecordKey(row);
+    }
 
 
 }

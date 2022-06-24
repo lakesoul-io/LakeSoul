@@ -17,9 +17,11 @@
  */
 
 package org.apache.flink.lakesoul.sink;
+
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metaData.DataInfo;
@@ -30,19 +32,23 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.filesystem.FileSystemFactory;
 
 import java.util.List;
 
-/** Helper for creating streaming file sink. */
+/**
+ * Helper for creating streaming file sink.
+ */
 @Internal
 public class LakesoulSink {
-    private LakesoulSink() {}
+    private LakesoulSink() {
+    }
 
     public static <T> DataStream<DataInfo> writer(
             long bucketCheckInterval,
             DataStream<T> inputStream,
-            LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T,?,?>>
+            LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T, ?, ?>>
                     bucketsBuilder,
             OutputFileConfig outputFile,
             int parallelism,
@@ -50,18 +56,14 @@ public class LakesoulSink {
             Configuration conf) {
 
         LakesoulFileWriter<T> fileWriter =
-                new LakesoulFileWriter<T>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf,outputFile);
-
-
+                new LakesoulFileWriter<T>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf, outputFile);
 
         return inputStream
                 .transform(LakesoulFileWriter.class.getSimpleName(),
                         TypeInformation.of(DataInfo.class),
-                        fileWriter).name( "DataInfo" )
+                        fileWriter).name("DataInfo")
                 .setParallelism(parallelism);
     }
-
-
 
     /**
      * Create a sink from file writer. Decide whether to add the node to commit partitions according
@@ -75,23 +77,18 @@ public class LakesoulSink {
             FileSystemFactory fsFactory,
             Configuration options) {
         DataStream<?> stream = null;
-        //if (partitionKeys.size() > 0 && options.contains(SINK_PARTITION_COMMIT_POLICY_KIND)) {
         if (partitionKeys.size() > 0) {
-
-                DataInfoCommitter committer = new DataInfoCommitter(
-                            locationPath, identifier, partitionKeys, fsFactory, options);
-
+            DataInfoCommitter committer = new DataInfoCommitter(locationPath,options);
             stream = writer.transform(
                             DataInfoCommitter.class.getSimpleName(), Types.VOID, committer)
-                            .setParallelism(1).name( "DataCommit" )
-                            .setMaxParallelism(1);
+                    .setParallelism(1).name("DataCommit")
+                    .setMaxParallelism(1);
         }
+        assert stream != null;
         return stream.addSink(new DiscardingSink<>())
                 .name("end")
                 .setParallelism(1);
     }
-
-
 
 
 }

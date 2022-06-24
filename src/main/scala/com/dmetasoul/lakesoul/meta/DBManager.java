@@ -148,8 +148,7 @@ public class DBManager {
     }
 
     public TableInfo getTableInfoByName(String tableName) {
-        TableInfo tableInfo = tableInfoDao.selectByTableName(tableName);
-        return tableInfo;
+        return tableInfoDao.selectByTableName(tableName);
     }
 
 

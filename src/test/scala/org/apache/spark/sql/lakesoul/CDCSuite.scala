@@ -64,7 +64,7 @@ class CDCSuite
     withTable("tt") {
       withTempDir(dir => {
        // val tablePath = dir.getCanonicalPath
-        val tablePath="/lakesoultest"
+        val tablePath="file:/Users/zhyang/Downloads/LakeSoul3"
         Seq(("range1", "hash1", "insert"),("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "insert"))
           .toDF("range", "hash", "op")
           .write
@@ -97,28 +97,12 @@ class CDCSuite
       withTempDir(dir => {
         // val tablePath = dir.getCanonicalPath
 //          val tablePath="/lakesoulMutilPartitionsAndBuckets"
-           val tablePath = "file:/Users/zhyang/Downloads/LakeSoul/MetaCommon.DATA_BASE().tableTest13"
-        //        tEnvs.executeSql( "CREATE TABLE tt122343 ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('connector' = 'lakesoul','format'='parquet','path'='"+PATH+"','lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043','lakesoul_cdc'='true','key'='user_id')" );
-//          Seq(("range1", "hash1", "insert"),("range1", "hash2", "insert"),("range1", "hash3", "insert"),("range2", "hash3", "insert"),("range2", "hash4", "insert"))
-//            .toDF("range", "hash", "op")
-//            .write
-//            .mode("append")
-//            .format("lakesoul")
-//            .option("rangePartitions", "range")
-//            .option("hashPartitions", "hash")
-//            .option("hashBucketNum", "2")
-//            //.option("lakesoul_cdc_change_column", "op")
-//            .partitionBy("range","op")
-//            .save(tablePath)
-//          val lake = LakeSoulTable.forPath(tablePath);
-//          val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range1", "hash3", "update"),("range2", "hash1", "isnert"), ("range2", "hash3", "update"))
-//            .toDF("range", "hash", "op")
-//          lake.upsert(tableForUpsert)
-//          val data1 = spark.read.format("lakesoul").load(tablePath)
+          val tablePath = "file:/Users/zhyang/Downloads/tmp/flinkTableTeste105"
           val data4=LakeSoulTable.forPath(tablePath).toDF
 //          val data4= data4.select("range","hash","op");
-          data4.show(3000)
-        // val data2 = data1.select("range","hash","op")
+        data4.show(10)
+          val data5=data4.where("dt = '0'")
+        data5.show(10);
         //data2.show()
         //  data2.explain(true)
         //checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))

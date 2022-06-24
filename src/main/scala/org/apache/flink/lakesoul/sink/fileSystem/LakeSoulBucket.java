@@ -48,25 +48,14 @@ public class LakeSoulBucket<IN, BucketID>{
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
         LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
         this.keygen = lakesoulRollingPolicy.getKeygen();
-        if (keygen.isLongRowKey()){
-            sortQueue= new PriorityQueue<>((v1,v2)->{
-                try {
-                    return (int) (keygen.getLongKey(v1)-keygen.getLongKey(v2));
-                } catch (NoSuchFieldException e) {
-                    e.printStackTrace();
-                    return 0;
-                }
-            });
-        }else{
             sortQueue = new PriorityQueue<>((v1, v2) -> {
                 try {
-                    return keygen.getAndCheckRecordKey(v1).compareTo(keygen.getAndCheckRecordKey(v2));
-                } catch (NoSuchFieldException e) {
+                    return keygen.getRecordKey(v1).compareTo(keygen.getRecordKey(v2));
+                } catch (Exception e) {
                     e.printStackTrace();
                     return 0;
                 }
             });
-        }
         bucketCount=new AtomicLong(0L);
     }
 
@@ -181,7 +170,11 @@ public class LakeSoulBucket<IN, BucketID>{
 
     private Path assembleNewPartPath() {
         long currentPartCounter = (long)(this.partCounter++);
-        return new Path(this.bucketPath, this.outputFileConfig.getPartPrefix() + '-' + this.subtaskIndex + '-' + currentPartCounter + this.outputFileConfig.getPartSuffix());
+        String uuid =  UUID.randomUUID().toString();
+        String subTask = String.format("%05d", this.subtaskIndex);
+        String count = String.format("%03d", currentPartCounter);
+
+        return new Path(this.bucketPath, this.outputFileConfig.getPartPrefix() + '-' + subTask + '-' + uuid+ '_' + this.subtaskIndex +'.'+'c'+count + this.outputFileConfig.getPartSuffix());
     }
 
     InProgressFileWriter.PendingFileRecoverable closePartFile(long currentTime) throws IOException {

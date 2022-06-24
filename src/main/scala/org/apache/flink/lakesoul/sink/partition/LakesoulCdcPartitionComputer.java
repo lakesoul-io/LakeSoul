@@ -31,19 +31,19 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData> {
+public class LakesoulCdcPartitionComputer implements PartitionComputer<RowData> {
 
     private static final long serialVersionUID = 1L;
 
-    protected  String defaultPartValue;
-    protected  String[] partitionColumns;
-    protected  int[] partitionIndexes;
-    protected  LogicalType[] partitionTypes;
-    protected  RowData.FieldGetter[] partitionFieldGetters;
+    protected String defaultPartValue;
+    protected String[] partitionColumns;
+    protected int[] partitionIndexes;
+    protected LogicalType[] partitionTypes;
+    protected RowData.FieldGetter[] partitionFieldGetters;
 
-    private  int[] nonPartitionIndexes;
-    private  LogicalType[] nonPartitionTypes;
-    protected  RowData.FieldGetter[] nonPartitionFieldGetters;
+    private int[] nonPartitionIndexes;
+    private LogicalType[] nonPartitionTypes;
+    protected RowData.FieldGetter[] nonPartitionFieldGetters;
     private Boolean isCdc;
     private transient GenericRowData reuseRow;
 
@@ -51,7 +51,7 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
             String defaultPartValue,
             String[] columnNames,
             DataType[] columnTypes,
-            String[] partitionColumns,Boolean isCdc) {
+            String[] partitionColumns, Boolean isCdc) {
         this.defaultPartValue = defaultPartValue;
         this.partitionColumns = partitionColumns;
         this.isCdc = isCdc;
@@ -59,10 +59,10 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
         List<LogicalType> columnTypeList =
                 Arrays.stream(columnTypes)
                         .map(DataType::getLogicalType)
-                        .collect( Collectors.toList());
+                        .collect(Collectors.toList());
 
 //        partitionColumns=partitionColumns[0];
-        partitionColumns= partitionColumns[0].split(";");
+        partitionColumns = partitionColumns[0].split(";");
         this.partitionIndexes =
                 Arrays.stream(partitionColumns).mapToInt(columnList::indexOf).toArray();
         this.partitionTypes =
@@ -100,22 +100,14 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
     public LinkedHashMap<String, String> generatePartValues(RowData in) {
         LinkedHashMap<String, String> partSpec = new LinkedHashMap<>();
 
-//        for (int i = 0; i < partitionIndexes.length; i++) {
-//            Object field = partitionFieldGetters[i].getFieldOrNull(in);
-//            String partitionValue = field != null ? field.toString() : null;
-//            if (partitionValue == null || "".equals(partitionValue)) {
-//                partitionValue = defaultPartValue;
-//            }
-//            partSpec.put(partitionColumns[i], partitionValue);
-//        }
-        Object field = partitionFieldGetters[0].getFieldOrNull(in);
+        for (int i = 0; i < partitionIndexes.length; i++) {
+            Object field = partitionFieldGetters[i].getFieldOrNull(in);
             String partitionValue = field != null ? field.toString() : null;
             if (partitionValue == null || "".equals(partitionValue)) {
                 partitionValue = defaultPartValue;
             }
-            partSpec.put(partitionColumns[0], partitionValue);
-
-
+            partSpec.put(partitionColumns[i], partitionValue);
+        }
         return partSpec;
     }
 
@@ -125,18 +117,18 @@ public class LakesoulCdcPartitionComputer  implements PartitionComputer<RowData>
             return in;
         }
         int len = nonPartitionIndexes.length;
-        if(isCdc){
-            len+=1;
+        if (isCdc) {
+            len += 1;
         }
-        if (reuseRow == null ) {
+        if (reuseRow == null) {
             this.reuseRow = new GenericRowData(len);
         }
 
         for (int i = 0; i < nonPartitionIndexes.length; i++) {
             reuseRow.setField(i, nonPartitionFieldGetters[i].getFieldOrNull(in));
         }
-        if(isCdc){
-            reuseRow.setField( len-1, FlinkUtil.RowkindToOperation( in.getRowKind().shortString() ) );
+        if (isCdc) {
+            reuseRow.setField(len - 1, FlinkUtil.RowkindToOperation(in.getRowKind().shortString()));
         }
         reuseRow.setRowKind(in.getRowKind());
         return reuseRow;

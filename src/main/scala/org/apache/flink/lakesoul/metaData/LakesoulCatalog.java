@@ -27,28 +27,23 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakesoulCatalogPartition;
 import org.apache.flink.lakesoul.tools.*;
-import org.apache.flink.runtime.util.HadoopConfigLoader;
-import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
-import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.spark.sql.lakesoul.Snapshot;
-import org.apache.spark.sql.lakesoul.SnapshotManagement;
-import org.apache.spark.sql.lakesoul.commands.DropTableCommand;
 import org.apache.spark.sql.lakesoul.utils.PartitionInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
+
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.Expression;
 import scala.Tuple2;
 
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -56,6 +51,8 @@ public class LakesoulCatalog implements Catalog {
     private final String LakesoulDatabaseName = "MetaCommon.DATA_BASE()";
     private static final Logger LOG = LoggerFactory.getLogger(LakesoulCatalog.class);
     private String defaultDatabase = "MetaCommon.DATA_BASE()";
+    private String TABLE_PATH = "path";
+    private String TABLE_ID_PREFIX = "table_";
     private DBManager dbManager;
 
     public LakesoulCatalog() {
@@ -67,7 +64,7 @@ public class LakesoulCatalog implements Catalog {
 
     @Override
     public void open() throws CatalogException {
-       dbManager = new DBManager();
+        dbManager = new DBManager();
     }
 
     @Override
@@ -137,15 +134,15 @@ public class LakesoulCatalog implements Catalog {
         if (!tableExists(tablePath)) {
             throw new TableNotExistException(LakesoulDatabaseName, tablePath);
         }
-        String tableName = tablePath.getFullName();
+        String tableName = tablePath.getObjectName();
         TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
-        return FlinkUtil.toFlinkCatalog( tableInfo );
+        return FlinkUtil.toFlinkCatalog(tableInfo);
     }
 
     @Override
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
-        String tableName = tablePath.getFullName();
+        String tableName = tablePath.getObjectName();
         TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
 
 
@@ -170,8 +167,9 @@ public class LakesoulCatalog implements Catalog {
     public void createTable(ObjectPath tablePath, CatalogBaseTable table, boolean ignoreIfExists) throws TableAlreadyExistException, DatabaseNotExistException, CatalogException {
         checkNotNull(tablePath);
         checkNotNull(table);
-        TableSchema tsc=table.getSchema();
-        ResolvedCatalogTable resolTable = (ResolvedCatalogTable) table;
+        TableSchema tsc = table.getSchema();
+        List<String> columns = tsc.getPrimaryKey().get().getColumns();
+        String PrimaryKeys = FlinkUtil.StringListToString(columns);
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(LakesoulDatabaseName, tablePath.getDatabaseName());
         }
@@ -181,41 +179,23 @@ public class LakesoulCatalog implements Catalog {
             }
         } else {
             Map<String, String> tableOptions = table.getOptions();
+            tableOptions.put(RECORD_KEY_NAME, PrimaryKeys);
             String json = JSON.toJSONString(tableOptions);
             JSONObject properties = JSON.parseObject(json);
             List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
-
-            //todo
-//            FlinkUtil.UpdateCassendraInfo(tableOptions);
-            String tableName = tablePath.getFullName();
-            String path = tableOptions.get("path");
-            String qualifiedPath="";
+            String tableName = tablePath.getObjectName();
+            String path = tableOptions.get(TABLE_PATH);
+            String qualifiedPath = "";
             try {
                 FileSystem fileSystem = new Path(path).getFileSystem();
-                qualifiedPath= new Path(path,tablePath.getFullName()).makeQualified(fileSystem).toString();
-                String kk = qualifiedPath;
+                qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            StringBuilder stringBuilder = new StringBuilder();
-
-
-
-            String tableId = "table_" + UUID.randomUUID().toString();
-            dbManager.createNewTable(tableId,tableName,qualifiedPath,
-                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
-                    properties,partitionKeys.get(0)+";"+tableOptions.get("key")
-                    );
-//            TableInfo tableInfo = SnapshotManagement.apply(tableName).getTableInfoOnly();
-//            //todo
-//            MetaVersion.createNewTable(tableInfo.getTablePath(),tableName,
-//                    tableInfo.getTableId(),
-//                    FlinkUtil.toSparkSchema( tsc ,FlinkUtil.isLakesoulCdcTable( tableOptions )).json(),
-//                    FlinkUtil.getTableRangeColumns(table),
-//                    FlinkUtil.getTablePrimaryKey(table),
-//                    FlinkUtil.getScalaMap(tableOptions),
-//                    (Integer) tableInfo.getProperties().getOrDefault("bucket_number",-1)
-
+            String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
+            dbManager.createNewTable(tableId, tableName, qualifiedPath,
+                    FlinkUtil.toSparkSchema(tsc, FlinkUtil.isLakesoulCdcTable(tableOptions)).json(),
+                    properties, FlinkUtil.StringListToString(partitionKeys));
         }
     }
 
@@ -253,14 +233,14 @@ public class LakesoulCatalog implements Catalog {
 
     @Override
     public CatalogPartition getPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec) throws PartitionNotExistException, CatalogException {
-        if(!partitionExists(tablePath,catalogPartitionSpec)){
-            throw new PartitionNotExistException(LakesoulDatabaseName,tablePath,catalogPartitionSpec);
+        if (!partitionExists(tablePath, catalogPartitionSpec)) {
+            throw new PartitionNotExistException(LakesoulDatabaseName, tablePath, catalogPartitionSpec);
         }
-        String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
+        String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
         String tableName = tablePath.getFullName();
         TableInfo tableInfo = dbManager.getTableInfo(tableName);
         Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
-        PartitionInfo pif=MetaVersion.getSinglePartitionInfo(tableInfo.getTableId(),rangeValue,partitionId._2);
+        PartitionInfo pif = MetaVersion.getSinglePartitionInfo(tableInfo.getTableId(), rangeValue, partitionId._2);
         //todo
         LakesoulCatalogPartition lcp = null;//new LakesoulCatalogPartition(FlinkUtil.getRangeValue(pif.range_value()),"");
         return lcp;
@@ -272,16 +252,16 @@ public class LakesoulCatalog implements Catalog {
         if (tableExists(tablePath)) {
             throw new CatalogException("table path not exist");
         }
-        String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
+        String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
         String tableName = tablePath.getFullName();
         //todo
         TableInfo tableInfo = dbManager.getTableInfo(tableName);
         //todo rangeValue
         Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
-        boolean partitionExisted=(boolean)partitionId._1();
-        if(partitionExisted){
+        boolean partitionExisted = (boolean) partitionId._1();
+        if (partitionExisted) {
             return true;
-        }else{
+        } else {
             return false;
 
         }
@@ -289,8 +269,8 @@ public class LakesoulCatalog implements Catalog {
 
     @Override
     public void createPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, CatalogPartition catalogPartition, boolean ignoreIfExists) throws TableNotExistException, TableNotPartitionedException, PartitionSpecInvalidException, PartitionAlreadyExistsException, CatalogException {
-        if(partitionExists(tablePath,catalogPartitionSpec)){
-            throw new PartitionAlreadyExistsException(LakesoulDatabaseName,tablePath,catalogPartitionSpec);
+        if (partitionExists(tablePath, catalogPartitionSpec)) {
+            throw new PartitionAlreadyExistsException(LakesoulDatabaseName, tablePath, catalogPartitionSpec);
         }
         String tableName = tablePath.getFullName();
         TableInfo tableInfo = dbManager.getTableInfo(tableName);
@@ -301,14 +281,14 @@ public class LakesoulCatalog implements Catalog {
 
     @Override
     public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfExists) throws PartitionNotExistException, CatalogException {
-        if(!partitionExists(tablePath,catalogPartitionSpec)){
-            throw new PartitionNotExistException(LakesoulDatabaseName,tablePath,catalogPartitionSpec);
+        if (!partitionExists(tablePath, catalogPartitionSpec)) {
+            throw new PartitionNotExistException(LakesoulDatabaseName, tablePath, catalogPartitionSpec);
         }
         String tableName = tablePath.getFullName();
-        String rangeValue=FlinkUtil.getRangeValue(catalogPartitionSpec);
+        String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
         TableInfo tableInfo = dbManager.getTableInfo(tableName);
         Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
-        MetaVersion.deletePartitionInfoByRangeId(tableInfo.getTableId(),rangeValue,partitionId._2);
+        MetaVersion.deletePartitionInfoByRangeId(tableInfo.getTableId(), rangeValue, partitionId._2);
     }
 
     @Override

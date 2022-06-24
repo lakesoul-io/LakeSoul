@@ -22,7 +22,11 @@ package org.apache.flink.lakesoul.table;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakesoulTableSink;
+import org.apache.flink.lakesoul.tools.FlinkUtil;
+import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -32,17 +36,32 @@ import org.apache.flink.table.factories.FactoryUtil;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class LakesoulDynamicTableFactory  implements DynamicTableSinkFactory, DynamicTableSourceFactory {
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.*;
+
+public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
     static final String FACTORY_IDENTIFIER = "lakesoul";
+    private static final String TABLE_NAME = "table_name";
+
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        return  new LakesoulTableSink(
-                context.getObjectIdentifier(),
-                context.getCatalogTable().getResolvedSchema().toPhysicalRowDataType(),
-                context.getCatalogTable().getPartitionKeys(),
-                helper.getOptions(),
+        Configuration options = (Configuration) helper.getOptions();
+        ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
+        ResolvedCatalogTable catalogTable = context.getCatalogTable();
+        TableSchema schema = catalogTable.getSchema();
+        List<String> columns = schema.getPrimaryKey().get().getColumns();
+        String PrimaryKeys = FlinkUtil.StringListToString(columns);
+        String filedNames = Arrays.toString(schema.getFieldNames());
+        options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
+        options.setString(TABLE_NAME,objectIdentifier.getObjectName());
+        options.setString(RECORD_KEY_NAME, PrimaryKeys);
+
+        return new LakesoulTableSink(
+                objectIdentifier,
+                catalogTable.getResolvedSchema().toPhysicalRowDataType(),
+                catalogTable.getPartitionKeys(),
+                options,
                 discoverEncodingFormat(context, BulkWriterFormatFactory.class),
                 discoverEncodingFormat(context, SerializationFormatFactory.class),
                 context.getCatalogTable().getResolvedSchema()
@@ -82,6 +101,7 @@ public class LakesoulDynamicTableFactory  implements DynamicTableSinkFactory, Dy
             return null;
         }
     }
+
     private boolean formatFactoryExists(Context context, Class<?> factoryClass) {
         Configuration options = Configuration.fromMap(context.getCatalogTable().getOptions());
         String identifier = options.get(FactoryUtil.FORMAT);

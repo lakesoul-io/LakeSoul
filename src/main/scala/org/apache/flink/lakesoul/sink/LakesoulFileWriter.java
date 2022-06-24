@@ -17,6 +17,7 @@
  */
 
 package org.apache.flink.lakesoul.sink;
+
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metaData.DataInfo;
@@ -26,15 +27,17 @@ import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.filesystem.stream.PartitionCommitPredicate;
+
 import java.util.*;
-import static org.apache.flink.lakesoul.tools.LakeSoulTableOptions.KEY_FIELD;
+
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.TABLE_NAME;
 
 public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, DataInfo> {
 
     private static final long serialVersionUID = 2L;
 
-    private  List<String> partitionKeys;
-    private  Configuration conf;
+    private List<String> partitionKeys;
+    private Configuration conf;
     private OutputFileConfig outputFileConfig;
 
     private transient Set<String> currentNewPartitions;
@@ -45,12 +48,12 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
     private transient PartitionCommitPredicate partitionCommitPredicate;
 
     public LakesoulFileWriter(
-                              long bucketCheckInterval,
-                              LakeSoulBucketsBuilder<
-                                      IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
-                                      bucketsBuilder,
-                              List<String> partitionKeys,
-                              Configuration conf) {
+            long bucketCheckInterval,
+            LakeSoulBucketsBuilder<
+                    IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
+                    bucketsBuilder,
+            List<String> partitionKeys,
+            Configuration conf) {
         super(bucketCheckInterval, bucketsBuilder);
         this.partitionKeys = partitionKeys;
         this.conf = conf;
@@ -60,7 +63,7 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
         super(bucketCheckInterval, bucketsBuilder);
         this.partitionKeys = partitionKeys;
         this.conf = conf;
-        this.outputFileConfig=outputFileConf;
+        this.outputFileConfig = outputFileConf;
     }
 
 
@@ -70,13 +73,11 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
             partitionCommitPredicate =
                     PartitionCommitPredicate.create(conf, getUserCodeClassloader(), partitionKeys);
         }
-
         currentNewPartitions = new HashSet<>();
         newPartitions = new TreeMap<>();
         committablePartitions = new HashSet<>();
         inProgressPartitions = new HashMap<>();
         super.initializeState(context);
-
     }
 
     @Override
@@ -93,7 +94,8 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
     }
 
     @Override
-    protected void onPartFileOpened(String s, Path newPath) {}
+    protected void onPartFileOpened(String s, Path newPath) {
+    }
 
     @Override
     public void snapshotState(StateSnapshotContext context) throws Exception {
@@ -109,7 +111,9 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
         return true;
     }
 
-    /** Close in-progress part file when partition is committable. */
+    /**
+     * Close in-progress part file when partition is committable.
+     */
     private void closePartFileForPartitions() throws Exception {
         if (partitionCommitPredicate != null) {
             final Iterator<Map.Entry<String, Long>> iterator =
@@ -143,9 +147,8 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
         committablePartitions.clear();
         headPartitions.values().forEach(partitions::addAll);
         headPartitions.clear();
-        String taskPathPre=outputFileConfig.getPartPrefix ()+"-";
-        System.out.println( "path----" + taskPathPre );
-        String tableName = conf.getString("table_name", "null");
+        String taskPathPre = outputFileConfig.getPartPrefix() + "-";
+        String tableName = conf.getString(TABLE_NAME);
         output.collect(
                 new StreamRecord<>(
                         new DataInfo(
@@ -155,7 +158,7 @@ public class LakesoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, 
                                 new ArrayList<>(partitions),
                                 taskPathPre,
                                 tableName)
-                                )
+                )
         );
     }
 }

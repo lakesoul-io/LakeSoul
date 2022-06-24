@@ -18,16 +18,11 @@
 
 package org.apache.flink.lakesoul.sink;
 
-import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.DataTypeUtil;
-import com.dmetasoul.lakesoul.meta.MetaCommit;
-import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.metaData.LakeSoulTableData;
 import org.apache.flink.lakesoul.sink.partition.PartitionTrigger;
 import org.apache.flink.lakesoul.metaData.DataInfo;
 import org.apache.flink.runtime.state.StateInitializationContext;
@@ -36,13 +31,10 @@ import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.table.catalog.ObjectIdentifier;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
-import org.apache.flink.table.filesystem.FileSystemFactory;
-import org.apache.spark.sql.types.StructField;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.*;
 
 public class DataInfoCommitter extends AbstractStreamOperator<Void>
         implements OneInputStreamOperator<DataInfo, Void> {
@@ -51,13 +43,9 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
     private final Configuration conf;
 
+    private final String fileExistFiles;
+
     private final Path locationPath;
-
-    private final ObjectIdentifier tableIdentifier;
-
-    private final List<String> partitionKeys;
-
-    private final FileSystemFactory fsFactory;
 
     private transient PartitionTrigger trigger;
 
@@ -67,31 +55,24 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
     private DBManager dbManager;
 
-    public DataInfoCommitter(
-            Path locationPath,
-            ObjectIdentifier tableIdentifier,
-            List<String> partitionKeys,
-            FileSystemFactory fsFactory,
-            Configuration conf) {
-        this.locationPath = locationPath;
-        this.tableIdentifier = tableIdentifier;
-        this.partitionKeys = partitionKeys;
-        this.fsFactory = fsFactory;
+    public DataInfoCommitter(Path locationPath, Configuration conf) {
         this.conf = conf;
+        this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
+        this.locationPath = locationPath;
     }
 
     @Override
     public void initializeState(StateInitializationContext context) throws Exception {
         super.initializeState(context);
         this.currentWatermark = Long.MIN_VALUE;
-        this.dbManager=new DBManager();
+        this.dbManager = new DBManager();
         this.trigger =
                 PartitionTrigger.create(
                         context.isRestored(),
                         context.getOperatorStateStore()
-                     );
-
+                );
     }
+
 
     @Override
     public void processElement(StreamRecord<DataInfo> element) throws Exception {
@@ -110,28 +91,27 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
     private void commitPartitions(DataInfo element) throws Exception {
 
-        long checkpointId = element.getCheckpointId ();
+        long checkpointId = element.getCheckpointId();
         List<String> partitions = checkpointId == Long.MAX_VALUE
-                        ? trigger.endInput()
-                        : trigger.committablePartitions(checkpointId);
+                ? trigger.endInput()
+                : trigger.committablePartitions(checkpointId);
         if (partitions.isEmpty()) {
             return;
         }
 
         String filenamePrefix = element.getTaskDataPath();
-
         TableInfo tableInfo = dbManager.getTableInfoByName(element.getTableName());
         MetaInfo metaInfo = new MetaInfo();
         metaInfo.setTableInfo(tableInfo);
         ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
-        ArrayList<DataCommitInfo> commitInfos = new ArrayList<>();
+        ArrayList<DataCommitInfo> commitInfoList = new ArrayList<>();
 
 
         for (String partition : partitions) {
             Path path = new Path(locationPath, partition);
-            org.apache.flink.core.fs.FileStatus[] files =  path.getFileSystem().listStatus(path);
+            org.apache.flink.core.fs.FileStatus[] files = path.getFileSystem().listStatus(path);
             PartitionInfo partitionInfo = new PartitionInfo();
-            partitionInfo.setCommitOp("AppendCommit");
+            partitionInfo.setCommitOp(APPEND_COMMIT_TYPE);
             partitionInfo.setTableId(tableInfo.getTableId());
             UUID uuid = UUID.randomUUID();
             partitionInfo.setSnapshot(uuid);
@@ -140,30 +120,30 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
             DataCommitInfo dataCommitInfo = new DataCommitInfo();
             dataCommitInfo.setCommitId(uuid);
             dataCommitInfo.setPartitionDesc(partition);
-            dataCommitInfo.setCommitOp("AppendCommit");
+            dataCommitInfo.setCommitOp(APPEND_COMMIT_TYPE);
             dataCommitInfo.setTableId(tableInfo.getTableId());
             dataCommitInfo.setTimestamp(System.currentTimeMillis());
-            for(FileStatus fs:files){
-                if(!fs.isDir()){
-                    long len=fs.getLen();
-                    String onepath  = fs.getPath().toString();
-                    if(onepath.contains( filenamePrefix )){
+            for (FileStatus fs : files) {
+                if (!fs.isDir()) {
+                    long len = fs.getLen();
+                    String onePath = fs.getPath().toString();
+                    if (onePath.contains(filenamePrefix) && !onePath.contains(FILE_IN_PROGRESS_PART_PREFIX)) {
                         DataFileOp dataFileOp = new DataFileOp();
-                        dataFileOp.setPath(fs.getPath().toString());
+                        dataFileOp.setPath(onePath);
                         dataFileOp.setSize(len);
-                        dataFileOp.setFileOp("add");
-                        dataFileOp.setFileExistCols("user_id,name");
+                        dataFileOp.setFileOp(FILE_OPTION_ADD);
+                        dataFileOp.setFileExistCols(this.fileExistFiles);
                         dataCommitInfo.setFileOps(dataFileOp);
                     }
                 }
             }
-            commitInfos.add(dataCommitInfo);
+            commitInfoList.add(dataCommitInfo);
         }
         metaInfo.setListPartition(partitionLists);
-        boolean appendCommit = dbManager.commitData(metaInfo, true, "AppendCommit");
+        boolean appendCommit = dbManager.commitData(metaInfo, true, APPEND_COMMIT_TYPE);
 
-        if(appendCommit){
-            dbManager.batchCommitDataCommitInfo(commitInfos);
+        if (appendCommit) {
+            dbManager.batchCommitDataCommitInfo(commitInfoList);
         }
     }
 
