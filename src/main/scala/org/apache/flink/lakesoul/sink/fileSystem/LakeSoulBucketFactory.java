@@ -20,7 +20,6 @@
 package org.apache.flink.lakesoul.sink.fileSystem;
 
 import org.apache.flink.core.fs.Path;
-
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.FileLifeCycleListener;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
@@ -35,14 +34,14 @@ public interface LakeSoulBucketFactory<IN, BucketID> extends Serializable {
                                             BucketID var2,
                                             Path var3, long var4,
                                             BucketWriter<IN, BucketID> var6,
-                                            LakeSoulRollingPolicyImpl<IN, BucketID> var7,
+                                            LakeSoulRollingPolicyImpl var7,
                                             @Nullable FileLifeCycleListener<BucketID> var8,
                                             OutputFileConfig var9
   ) throws IOException;
 
   LakeSoulBucket<IN, BucketID> restoreBucket(int var1, long var2,
                                              BucketWriter<IN, BucketID> var4,
-                                             LakeSoulRollingPolicyImpl<IN, BucketID> var5,
+                                             LakeSoulRollingPolicyImpl var5,
                                              BucketState<BucketID> var6,
                                              @Nullable FileLifeCycleListener<BucketID> var7,
                                              OutputFileConfig var8

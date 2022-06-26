@@ -37,7 +37,6 @@ import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 
-
 public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, BucketID, T>>
     extends LakeSoulBucketsBuilder<IN, BucketID, T> {
 
@@ -51,7 +50,7 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
 
   private BucketAssigner<IN, BucketID> bucketAssigner;
 
-  private LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
+  private LakeSoulRollingPolicyImpl rollingPolicy;
 
   private LakeSoulBucketFactory<IN, BucketID> bucketFactory;
 
@@ -73,7 +72,7 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
       Path basePath,
       Encoder<IN> encoder,
       BucketAssigner<IN, BucketID> assigner,
-      LakeSoulRollingPolicyImpl<IN, BucketID> policy,
+      LakeSoulRollingPolicyImpl policy,
       long bucketCheckInterval,
       LakeSoulBucketFactory<IN, BucketID> bucketFactory,
       OutputFileConfig outputFileConfig) {
@@ -100,7 +99,7 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
     return self();
   }
 
-  public T withRollingPolicy(final LakeSoulRollingPolicyImpl<IN, BucketID> policy) {
+  public T withRollingPolicy(final LakeSoulRollingPolicyImpl policy) {
     this.rollingPolicy = Preconditions.checkNotNull(policy);
     return self();
   }
@@ -110,10 +109,9 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
     return self();
   }
 
-  public <ID> RowFormatBuilder<IN, ID, ? extends RowFormatBuilder<IN, ID, ?>>
-  withNewBucketAssignerAndPolicy(
+  public <ID> RowFormatBuilder<IN, ID, ? extends RowFormatBuilder<IN, ID, ?>> withNewBucketAssignerAndPolicy(
       final BucketAssigner<IN, ID> assigner,
-      final LakeSoulRollingPolicyImpl<IN, ID> policy) {
+      final LakeSoulRollingPolicyImpl policy) {
     return new RowFormatBuilder(
         basePath,
         encoder,
@@ -124,7 +122,6 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
         outputFileConfig);
   }
 
-
   /**
    * Creates the actual sink.
    */
@@ -132,7 +129,6 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
     return new LakesoulFileSink<>(this, bucketCheckInterval);
   }
 
-  //        @VisibleForTesting
   T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
     this.bucketFactory = Preconditions.checkNotNull(factory);
     return self();

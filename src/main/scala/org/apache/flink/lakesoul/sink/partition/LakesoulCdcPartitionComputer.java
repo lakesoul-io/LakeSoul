@@ -127,7 +127,7 @@ public class LakesoulCdcPartitionComputer implements PartitionComputer<RowData> 
       reuseRow.setField(i, nonPartitionFieldGetters[i].getFieldOrNull(in));
     }
     if (isCdc) {
-      reuseRow.setField(len - 1, FlinkUtil.RowkindToOperation(in.getRowKind().shortString()));
+      reuseRow.setField(len - 1, FlinkUtil.RowKindToOperation(in.getRowKind().shortString()));
     }
     reuseRow.setRowKind(in.getRowKind());
     return reuseRow;

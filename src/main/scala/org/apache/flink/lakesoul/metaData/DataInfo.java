@@ -20,7 +20,6 @@ package org.apache.flink.lakesoul.metaData;
 
 import java.io.Serializable;
 import java.util.List;
-import java.util.Map;
 
 public class DataInfo implements Serializable {
 

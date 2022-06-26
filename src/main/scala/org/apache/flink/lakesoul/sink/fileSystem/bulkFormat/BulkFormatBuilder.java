@@ -38,7 +38,6 @@ import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 
-
 public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN, BucketID, T>>
     extends LakeSoulBucketsBuilder<IN, BucketID, T> {
 
@@ -52,12 +51,11 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
 
   private BucketAssigner<IN, BucketID> bucketAssigner;
 
-  private LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
+  private LakeSoulRollingPolicyImpl rollingPolicy;
 
   private LakeSoulBucketFactory<IN, BucketID> bucketFactory;
 
   private OutputFileConfig outputFileConfig;
-
 
   protected BulkFormatBuilder(
       Path basePath,
@@ -67,7 +65,7 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
         basePath,
         writerFactory,
         assigner,
-        new LakeSoulRollingPolicyImpl<>(false),
+        new LakeSoulRollingPolicyImpl(false),
         DEFAULT_BUCKET_CHECK_INTERVAL,
         new LakeSoulBucketFactoryImpl<>(),
         OutputFileConfig.builder().build());
@@ -77,7 +75,7 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
       Path basePath,
       BulkWriter.Factory<IN> writerFactory,
       BucketAssigner<IN, BucketID> assigner,
-      LakeSoulRollingPolicyImpl<IN, BucketID> policy,
+      LakeSoulRollingPolicyImpl policy,
       long bucketCheckInterval,
       LakeSoulBucketFactory<IN, BucketID> bucketFactory,
       OutputFileConfig outputFileConfig) {
@@ -104,7 +102,7 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
     return self();
   }
 
-  public T withRollingPolicy(LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy) {
+  public T withRollingPolicy(LakeSoulRollingPolicyImpl rollingPolicy) {
     this.rollingPolicy = Preconditions.checkNotNull(rollingPolicy);
     return self();
   }
@@ -119,7 +117,6 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
     this.outputFileConfig = outputFileConfig;
     return self();
   }
-
 
   /**
    * Creates the actual sink.

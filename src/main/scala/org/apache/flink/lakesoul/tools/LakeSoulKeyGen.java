@@ -151,7 +151,7 @@ public class LakeSoulKeyGen implements Serializable {
   }
 
   public static String getPartitionPath(
-      Object partValue, String partField) {
+      Object partValue) {
     String partitionPath = objToString(partValue);
     if (partitionPath == null || partitionPath.isEmpty()) {
       partitionPath = DEFAULT_PARTITION_PATH;
@@ -161,8 +161,8 @@ public class LakeSoulKeyGen implements Serializable {
 
   public String getPartitionPath(RowData rowData) {
     if (this.simplePartitionPath) {
-      return getPartitionPath(partitionPathFieldGetter.getFieldOrNull(rowData),
-          this.partitionPathFields[0]);
+      return getPartitionPath(partitionPathFieldGetter.getFieldOrNull(rowData)
+      );
     } else if (this.nonPartitioned) {
       return DEFAULT_PARTITION_PATH;
     } else {

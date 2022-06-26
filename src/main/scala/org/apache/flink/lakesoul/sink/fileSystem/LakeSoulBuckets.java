@@ -24,7 +24,10 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.sink.filesystem.*;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.FileLifeCycleListener;
+import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,13 +45,12 @@ public class LakeSoulBuckets<IN, BucketID> {
   private final LakeSoulBucketFactory<IN, BucketID> bucketFactory;
   private final BucketAssigner<IN, BucketID> bucketAssigner;
   private final BucketWriter<IN, BucketID> bucketWriter;
-  private final LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
+  private final LakeSoulRollingPolicyImpl rollingPolicy;
   private final int subtaskIndex;
-  private final BucketerContext bucketerContext;
+  private final BucketContext bucketContext;
   private final Map<BucketID, LakeSoulBucket<IN, BucketID>> activeBuckets;
   private long maxPartCounter;
   private final OutputFileConfig outputFileConfig;
-  private String rowKey;
   @Nullable
   private LakeSoulBucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener;
   @Nullable
@@ -56,7 +58,7 @@ public class LakeSoulBuckets<IN, BucketID> {
   private final BucketStateSerializer<BucketID> bucketStateSerializer;
 
   public LakeSoulBuckets(Path basePath, BucketAssigner<IN, BucketID> bucketAssigner, LakeSoulBucketFactory<IN, BucketID> bucketFactory, BucketWriter<IN, BucketID> bucketWriter,
-                         LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
+                         LakeSoulRollingPolicyImpl rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
     this.basePath = (Path) Preconditions.checkNotNull(basePath);
     this.bucketAssigner = (BucketAssigner) Preconditions.checkNotNull(bucketAssigner);
     this.bucketFactory = (LakeSoulBucketFactory<IN, BucketID>) Preconditions.checkNotNull(bucketFactory);
@@ -65,7 +67,7 @@ public class LakeSoulBuckets<IN, BucketID> {
     this.subtaskIndex = subtaskIndex;
     this.outputFileConfig = (OutputFileConfig) Preconditions.checkNotNull(outputFileConfig);
     this.activeBuckets = new HashMap();
-    this.bucketerContext = new BucketerContext();
+    this.bucketContext = new BucketContext();
     this.bucketStateSerializer = new BucketStateSerializer(bucketWriter.getProperties().getInProgressFileRecoverableSerializer(), bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
         bucketAssigner.getSerializer());
     this.maxPartCounter = 0L;
@@ -179,8 +181,8 @@ public class LakeSoulBuckets<IN, BucketID> {
   }
 
   public LakeSoulBucket<IN, BucketID> onElement(IN value, long currentProcessingTime, @Nullable Long elementTimestamp, long currentWatermark) throws Exception {
-    this.bucketerContext.update(elementTimestamp, currentWatermark, currentProcessingTime);
-    BucketID bucketId = this.bucketAssigner.getBucketId(value, this.bucketerContext);
+    this.bucketContext.update(elementTimestamp, currentWatermark, currentProcessingTime);
+    BucketID bucketId = this.bucketAssigner.getBucketId(value, this.bucketContext);
     LakeSoulBucket<IN, BucketID> lakeSoulBucket = this.getOrCreateBucketForBucketId(bucketId);
     lakeSoulBucket.write(value, currentProcessingTime);
     this.maxPartCounter = Math.max(this.maxPartCounter, lakeSoulBucket.getPartCounter());
@@ -211,7 +213,7 @@ public class LakeSoulBuckets<IN, BucketID> {
   }
 
   public void closePartFileForBucket(BucketID bucketID) throws Exception {
-    LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) this.activeBuckets.get(bucketID);
+    LakeSoulBucket<IN, BucketID> lakeSoulBucket = this.activeBuckets.get(bucketID);
     if (lakeSoulBucket != null) {
       lakeSoulBucket.closePartFile();
     }
@@ -254,13 +256,13 @@ public class LakeSoulBuckets<IN, BucketID> {
     return this.activeBuckets;
   }
 
-  private static final class BucketerContext implements org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner.Context {
+  private static final class BucketContext implements org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner.Context {
     @Nullable
     private Long elementTimestamp;
     private long currentWatermark;
     private long currentProcessingTime;
 
-    private BucketerContext() {
+    private BucketContext() {
       this.elementTimestamp = null;
       this.currentWatermark = -9223372036854775808L;
       this.currentProcessingTime = -9223372036854775808L;
@@ -289,7 +291,4 @@ public class LakeSoulBuckets<IN, BucketID> {
     }
   }
 
-  public void setRowKey(String rowKey) {
-    this.rowKey = rowKey;
-  }
 }

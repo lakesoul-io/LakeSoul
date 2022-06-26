@@ -20,8 +20,9 @@
 package org.apache.flink.lakesoul.sink.fileSystem;
 
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.streaming.api.functions.sink.filesystem.*;
-
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.FileLifeCycleListener;
+import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 
 import javax.annotation.Nullable;
 
@@ -35,12 +36,12 @@ public class LakeSoulBucketFactoryImpl<IN, BucketID> implements LakeSoulBucketFa
 
   @Override
   public LakeSoulBucket<IN, BucketID> getNewBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter,
-                                                   LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) {
+                                                   LakeSoulRollingPolicyImpl rollingPolicy, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) {
     return LakeSoulBucket.getNew(subtaskIndex, bucketId, bucketPath, initialPartCounter, bucketWriter, rollingPolicy, fileListener, outputFileConfig);
   }
 
   @Override
-  public LakeSoulBucket<IN, BucketID> restoreBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy,
+  public LakeSoulBucket<IN, BucketID> restoreBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, LakeSoulRollingPolicyImpl rollingPolicy,
                                                     BucketState<BucketID> bucketState, @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) throws IOException {
     return LakeSoulBucket.restore(subtaskIndex, initialPartCounter, bucketWriter, rollingPolicy, bucketState, fileListener, outputFileConfig);
   }

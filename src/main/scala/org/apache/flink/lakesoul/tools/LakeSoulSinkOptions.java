@@ -22,8 +22,6 @@ package org.apache.flink.lakesoul.tools;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 
-import static org.apache.flink.configuration.ConfigOptions.key;
-
 public class LakeSoulSinkOptions {
 
   public static final String RECORD_KEY_NAME = "recordKey";
@@ -67,8 +65,8 @@ public class LakeSoulSinkOptions {
       .defaultValue("null")
       .withDescription("file exist column  ");
 
-  public static final ConfigOption<String> CATALOG_PATH = ConfigOptions.
-      key("path")
+  public static final ConfigOption<String> CATALOG_PATH = ConfigOptions
+      .key("path")
       .stringType()
       .noDefaultValue()
       .withDescription("The path of a directory");

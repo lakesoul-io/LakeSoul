@@ -65,5 +65,4 @@ public class LakesoulCatalogFactory implements TableFactory, CatalogFactory {
     return Collections.emptySet();
   }
 
-
 }

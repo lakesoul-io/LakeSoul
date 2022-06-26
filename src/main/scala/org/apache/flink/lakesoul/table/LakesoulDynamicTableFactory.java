@@ -18,7 +18,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakesoulTableSink;
@@ -30,18 +29,31 @@ import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
-import org.apache.flink.table.factories.*;
+import org.apache.flink.table.factories.BulkWriterFormatFactory;
+import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
+import org.apache.flink.table.factories.EncodingFormatFactory;
+import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.table.factories.SerializationFormatFactory;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN_KEY;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.PARTITION_FIELD;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 
 public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
   static final String FACTORY_IDENTIFIER = "lakesoul";
   private static final String TABLE_NAME = "table_name";
-
 
   @Override
   public DynamicTableSink createDynamicTableSink(Context context) {
@@ -51,12 +63,12 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     ResolvedCatalogTable catalogTable = context.getCatalogTable();
     TableSchema schema = catalogTable.getSchema();
     List<String> columns = schema.getPrimaryKey().get().getColumns();
-    String PrimaryKeys = FlinkUtil.StringListToString(columns);
+    String primaryKeys = FlinkUtil.stringListToString(columns);
     String filedNames = Arrays.toString(schema.getFieldNames());
-    String partitionKeys = FlinkUtil.StringListToString(catalogTable.getPartitionKeys());
+    String partitionKeys = FlinkUtil.stringListToString(catalogTable.getPartitionKeys());
     options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
     options.setString(TABLE_NAME, objectIdentifier.getObjectName());
-    options.setString(RECORD_KEY_NAME, PrimaryKeys);
+    options.setString(RECORD_KEY_NAME, primaryKeys);
     options.setString(PARTITION_FIELD.key(), partitionKeys);
 
     return new LakesoulTableSink(
@@ -78,7 +90,6 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
   public String factoryIdentifier() {
     return FACTORY_IDENTIFIER;
   }
-
 
   @Override
   public Set<ConfigOption<?>> requiredOptions() {
