@@ -39,9 +39,6 @@ public class LakesoulCatalogFactory  implements TableFactory,CatalogFactory {
     }
     @Override
     public Map<String, String> requiredContext() {
-//        Map context = new HashMap<String, String>();
-//        context.put("type", "lakesoul");
-//        return context;
         return null;
     }
 
@@ -65,36 +62,6 @@ public class LakesoulCatalogFactory  implements TableFactory,CatalogFactory {
         return Collections.emptySet();
     }
 
-    /*@Override
-    public Executor create(Configuration configuration) {
-        return null;
-    }
 
-    @Override
-    public Planner create(PlannerFactory.Context context) {
-        final RuntimeExecutionMode runtimeExecutionMode =
-                context.getTableConfig().getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
-        switch (runtimeExecutionMode) {
-            case STREAMING:
-                return new StreamPlanner(
-                        context.getExecutor(),
-                        context.getTableConfig(),
-                        context.getModuleManager(),
-                        context.getFunctionCatalog(),
-                        context.getCatalogManager());
-            case BATCH:
-                return new BatchPlanner(
-                        context.getExecutor(),
-                        context.getTableConfig(),
-                        context.getModuleManager(),
-                        context.getFunctionCatalog(),
-                        context.getCatalogManager());
-            default:
-                throw new TableException(
-                        String.format(
-                                "Unknown runtime mode '%s'. This is a bug. Please consider filing an issue.",
-                                runtimeExecutionMode));
-        }
-    }*/
 
 }

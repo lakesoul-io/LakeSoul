@@ -32,7 +32,6 @@ import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.sink.partition.BucketPartitioner;
 import org.apache.flink.lakesoul.sink.partition.LakesoulCdcPartitionComputer;
 import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
-import org.apache.flink.lakesoul.table.CatalogProperties;
 import org.apache.flink.lakesoul.table.LakesoulSchemaAdapter;
 import org.apache.flink.lakesoul.tools.*;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -65,6 +64,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.apache.flink.lakesoul.tools.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
 public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
@@ -141,10 +141,10 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
         FlinkBucketAssigner assigner = new FlinkBucketAssigner(computer);
         keyGen.partitionKey = partitionKeys;
         LakeSoulRollingPolicyImpl lakesoulPolicy = new LakeSoulRollingPolicyImpl(!isEncoder);
-        lakesoulPolicy.setKeygen(keyGen);
+        lakesoulPolicy.setKeyGen(keyGen);
         OutputFileConfig.OutputFileConfigBuilder fileNamingBuilder = OutputFileConfig.builder();
         OutputFileConfig fileNamingConfig = fileNamingBuilder.build();
-        this.path = new Path(tableOptions.getString(CatalogProperties.PATH));
+        this.path = new Path(tableOptions.getString(CATALOG_PATH));
 
         LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>> bucketsBuilder;
         if (isEncoder) {

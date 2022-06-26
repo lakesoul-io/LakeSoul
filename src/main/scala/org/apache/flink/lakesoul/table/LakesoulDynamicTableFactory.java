@@ -82,7 +82,7 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public Set<ConfigOption<?>> requiredOptions() {
         Set<ConfigOption<?>> options = new HashSet<>();
-        options.add(CatalogProperties.PATH);
+        options.add(CATALOG_PATH);
         options.add(FactoryUtil.FORMAT);
         return options;
     }

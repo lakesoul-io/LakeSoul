@@ -4,29 +4,37 @@ package org.apache.flink.lakesoul.sink.fileSystem;
 import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.table.data.RowData;
-import java.io.IOException;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
 
 
+public class LakeSoulRollingPolicyImpl<IN, BucketID> implements LakeSoulRollingPolicy<RowData, String> {
 
-public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPolicy<RowData, String> {
+    private boolean rollOnCheckpoint;
 
-    private  boolean rollOnCheckpoint;
+    private LakeSoulKeyGen keyGen;
 
-    private LakeSoulKeyGen keygen;
+    private long rollingSize;
 
-    private long rollingSize =2000L;
+    private long rollingTime;
 
-    private long rollingTime=1000000000000000L;
-
-    public LakeSoulKeyGen getKeygen() {
-        return keygen;
+    public LakeSoulKeyGen getKeyGen() {
+        return keyGen;
     }
 
-    public void setKeygen(LakeSoulKeyGen keygen) {
-        this.keygen = keygen;
+    public void setKeyGen(LakeSoulKeyGen keyGen) {
+        this.keyGen = keyGen;
+    }
+
+    public LakeSoulRollingPolicyImpl(boolean rollOnCheckpoint, long rollingSize, long rollingTime) {
+        this.rollOnCheckpoint = rollOnCheckpoint;
+        this.rollingSize = rollingSize;
+        this.rollingTime = rollingTime;
     }
 
     public LakeSoulRollingPolicyImpl(boolean rollOnCheckpoint) {
+        this.rollingSize = DEFAULT_BUCKET_ROLLING_SIZE;
+        this.rollingTime = DEFAULT_BUCKET_ROLLING_TIME;
         this.rollOnCheckpoint = rollOnCheckpoint;
     }
 
@@ -36,8 +44,7 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
     }
 
     @Override
-    public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element)
-            throws IOException {
+    public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element) {
         return false;
     }
 
@@ -48,12 +55,12 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
         return currentTime - partFileState.getLastUpdateTime() > rollingTime;
     }
 
-    public boolean shouldRollOnMaxSize(long size){
+    public boolean shouldRollOnMaxSize(long size) {
         return size > rollingSize;
     }
 
     @Override
-    public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime ) throws IOException {
+    public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime) {
         return false;
     }
 
@@ -63,5 +70,22 @@ public class LakeSoulRollingPolicyImpl<IN,BucketID> implements LakeSoulRollingPo
 
     public void setRollingSize(long rollingSize) {
         this.rollingSize = rollingSize;
+    }
+
+
+    public long getRollingTime() {
+        return rollingTime;
+    }
+
+    public void setRollingTime(long rollingTime) {
+        this.rollingTime = rollingTime;
+    }
+
+    public boolean isRollOnCheckpoint() {
+        return rollOnCheckpoint;
+    }
+
+    public void setRollOnCheckpoint(boolean rollOnCheckpoint) {
+        this.rollOnCheckpoint = rollOnCheckpoint;
     }
 }

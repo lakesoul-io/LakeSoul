@@ -47,7 +47,7 @@ public class LakeSoulBucket<IN, BucketID>{
         this.inProgressFileRecoverablesPerCheckpoint = new TreeMap();
         this.outputFileConfig = (OutputFileConfig)Preconditions.checkNotNull(outputFileConfig);
         LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
-        this.keygen = lakesoulRollingPolicy.getKeygen();
+        this.keygen = lakesoulRollingPolicy.getKeyGen();
             sortQueue = new PriorityQueue<>((v1, v2) -> {
                 try {
                     return keygen.getRecordKey(v1).compareTo(keygen.getRecordKey(v2));
