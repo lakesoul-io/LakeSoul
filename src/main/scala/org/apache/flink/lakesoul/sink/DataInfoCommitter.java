@@ -18,6 +18,9 @@
 
 package org.apache.flink.lakesoul.sink;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
@@ -27,8 +30,8 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.partition.PartitionTrigger;
 import org.apache.flink.lakesoul.metaData.DataInfo;
+import org.apache.flink.lakesoul.sink.partition.PartitionTrigger;
 import org.apache.flink.lakesoul.tools.LakeSoulTaskCheck;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
@@ -37,16 +40,13 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
-
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.APPEND_COMMIT_TYPE;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_IN_PROGRESS_PART_PREFIX;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_OPTION_ADD;
 
-public class DataInfoCommitter extends AbstractStreamOperator<Void> implements OneInputStreamOperator<DataInfo, Void> {
+public class DataInfoCommitter extends AbstractStreamOperator<Void>
+    implements OneInputStreamOperator<DataInfo, Void> {
 
   private static final long serialVersionUID = 1L;
 
@@ -114,34 +114,20 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void> implements O
     ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
     ArrayList<DataCommitInfo> commitInfoList = new ArrayList<>();
 
-
     for (String partition : partitions) {
       Path path = new Path(locationPath, partition);
       org.apache.flink.core.fs.FileStatus[] files = path.getFileSystem().listStatus(path);
-      PartitionInfo partitionInfo = new PartitionInfo();
-      partitionInfo.setCommitOp(APPEND_COMMIT_TYPE);
-      partitionInfo.setTableId(tableInfo.getTableId());
-      UUID uuid = UUID.randomUUID();
-      partitionInfo.setSnapshot(uuid);
-      partitionInfo.setPartitionDesc(partition);
-      partitionLists.add(partitionInfo);
-      DataCommitInfo dataCommitInfo = new DataCommitInfo();
-      dataCommitInfo.setCommitId(uuid);
-      dataCommitInfo.setPartitionDesc(partition);
-      dataCommitInfo.setCommitOp(APPEND_COMMIT_TYPE);
-      dataCommitInfo.setTableId(tableInfo.getTableId());
-      dataCommitInfo.setTimestamp(System.currentTimeMillis());
+      DataCommitInfo dataCommitInfo = partitionMetaSet(tableInfo.getTableId(), partition, partitionLists);
       for (FileStatus fs : files) {
         if (!fs.isDir()) {
-          long len = fs.getLen();
           String onePath = fs.getPath().toString();
           if (onePath.contains(filenamePrefix) && !onePath.contains(FILE_IN_PROGRESS_PART_PREFIX)) {
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(onePath);
-            dataFileOp.setSize(len);
+            dataFileOp.setSize(fs.getLen());
             dataFileOp.setFileOp(FILE_OPTION_ADD);
             dataFileOp.setFileExistCols(this.fileExistFiles);
-            dataCommitInfo.setFileOps(dataFileOp);
+            dataCommitInfo.setOrAddFileOps(dataFileOp);
           }
         }
       }
@@ -165,6 +151,23 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void> implements O
   public void snapshotState(StateSnapshotContext context) throws Exception {
     super.snapshotState(context);
     trigger.snapshotState(context.getCheckpointId(), currentWatermark);
+  }
+
+  private DataCommitInfo partitionMetaSet(String tableId, String partition, ArrayList<PartitionInfo> partitionLists) {
+    PartitionInfo partitionInfo = new PartitionInfo();
+    partitionInfo.setCommitOp(APPEND_COMMIT_TYPE);
+    partitionInfo.setTableId(tableId);
+    UUID uuid = UUID.randomUUID();
+    partitionInfo.setOrAddSnapshot(uuid);
+    partitionInfo.setPartitionDesc(partition);
+    partitionLists.add(partitionInfo);
+    DataCommitInfo dataCommitInfo = new DataCommitInfo();
+    dataCommitInfo.setCommitId(uuid);
+    dataCommitInfo.setPartitionDesc(partition);
+    dataCommitInfo.setCommitOp(APPEND_COMMIT_TYPE);
+    dataCommitInfo.setTableId(tableId);
+    dataCommitInfo.setTimestamp(System.currentTimeMillis());
+    return dataCommitInfo;
   }
 
 }

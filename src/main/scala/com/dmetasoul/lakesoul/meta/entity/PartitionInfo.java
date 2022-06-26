@@ -23,68 +23,73 @@ import java.util.List;
 import java.util.UUID;
 
 public class PartitionInfo {
-    private String tableId;
+  private String tableId;
 
-    private String partitionDesc;
+  private String partitionDesc;
 
-    private int version;
+  private int version;
 
-    private String commitOp;
+  private String commitOp;
 
-    private List<UUID> snapshot;
+  private List<UUID> snapshot;
 
-    private String expression;
+  private String expression;
 
-    public String getTableId() {
-        return tableId;
+  public String getTableId() {
+    return tableId;
+  }
+
+  public void setTableId(String tableId) {
+    this.tableId = tableId;
+  }
+
+  public String getPartitionDesc() {
+    return partitionDesc;
+  }
+
+  public void setPartitionDesc(String partitionDesc) {
+    this.partitionDesc = partitionDesc;
+  }
+
+  public int getVersion() {
+    return version;
+  }
+
+  public void setVersion(int version) {
+    this.version = version;
+  }
+
+  public String getCommitOp() {
+    return commitOp;
+  }
+
+  public void setCommitOp(String commitOp) {
+    this.commitOp = commitOp;
+  }
+
+  public List<UUID> getSnapshot() {
+    return snapshot;
+  }
+
+  public void setSnapshot(List<UUID> snapshot) {
+    this.snapshot = snapshot;
+  }
+
+  public void setOrAddSnapshot(UUID uuid) {
+    if (this.snapshot == null) {
+      ArrayList<UUID> uuids = new ArrayList<>();
+      uuids.add(uuid);
+      this.snapshot = uuids;
+    } else {
+      this.snapshot.add(uuid);
     }
+  }
 
-    public void setTableId(String tableId) {
-        this.tableId = tableId;
-    }
+  public String getExpression() {
+    return expression;
+  }
 
-    public String getPartitionDesc() {
-        return partitionDesc;
-    }
-
-    public void setPartitionDesc(String partitionDesc) {
-        this.partitionDesc = partitionDesc;
-    }
-
-    public int getVersion() {
-        return version;
-    }
-
-    public void setVersion(int version) {
-        this.version = version;
-    }
-
-    public String getCommitOp() {
-        return commitOp;
-    }
-
-    public void setCommitOp(String commitOp) {
-        this.commitOp = commitOp;
-    }
-
-    public List<UUID> getSnapshot() {
-        return snapshot;
-    }
-
-    public void setSnapshot(List<UUID> snapshot) {
-        this.snapshot = snapshot;
-    }
-    public void setSnapshot(UUID uuid) {
-        ArrayList<UUID> uuids = new ArrayList<>();
-        uuids.add(uuid);
-        this.snapshot = uuids;
-    }
-
-    public String getExpression() {
-        return expression;
-    }
-
-    public void setExpression(String expression) {
-        this.expression = expression;
-    }
+  public void setExpression(String expression) {
+    this.expression = expression;
+  }
 }

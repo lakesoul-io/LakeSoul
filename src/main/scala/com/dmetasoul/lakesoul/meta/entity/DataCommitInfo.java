@@ -23,71 +23,72 @@ import java.util.List;
 import java.util.UUID;
 
 public class DataCommitInfo {
-    private String tableId;
+  private String tableId;
 
-    private String partitionDesc;
+  private String partitionDesc;
 
-    private UUID commitId;
+  private UUID commitId;
 
-    private List<DataFileOp> fileOps;
+  private List<DataFileOp> fileOps;
 
-    private String commitOp;
+  private String commitOp;
 
-    private long timestamp;
+  private long timestamp;
 
-    public String getTableId() {
-        return tableId;
+  public String getTableId() {
+    return tableId;
+  }
+
+  public void setTableId(String tableId) {
+    this.tableId = tableId;
+  }
+
+  public String getPartitionDesc() {
+    return partitionDesc;
+  }
+
+  public void setPartitionDesc(String partitionDesc) {
+    this.partitionDesc = partitionDesc;
+  }
+
+  public UUID getCommitId() {
+    return commitId;
+  }
+
+  public void setCommitId(UUID commitId) {
+    this.commitId = commitId;
+  }
+
+  public List<DataFileOp> getFileOps() {
+    return fileOps;
+  }
+
+  public void setFileOps(List<DataFileOp> fileOps) {
+    this.fileOps = fileOps;
+  }
+
+  public void setOrAddFileOps(DataFileOp fileOp) {
+    if (this.fileOps != null) {
+      fileOps.add(fileOp);
+    } else {
+      this.fileOps = new ArrayList<>();
+      fileOps.add(fileOp);
     }
+  }
 
-    public void setTableId(String tableId) {
-        this.tableId = tableId;
-    }
+  public String getCommitOp() {
+    return commitOp;
+  }
 
-    public String getPartitionDesc() {
-        return partitionDesc;
-    }
+  public void setCommitOp(String commitOp) {
+    this.commitOp = commitOp == null ? null : commitOp.trim();
+  }
 
-    public void setPartitionDesc(String partitionDesc) {
-        this.partitionDesc = partitionDesc;
-    }
+  public long getTimestamp() {
+    return timestamp;
+  }
 
-    public UUID getCommitId() {
-        return commitId;
-    }
-
-    public void setCommitId(UUID commitId) {
-        this.commitId = commitId;
-    }
-
-    public List<DataFileOp> getFileOps() {
-        return fileOps;
-    }
-
-    public void setFileOps(List<DataFileOp> fileOps) {
-        this.fileOps = fileOps;
-    }
-    public void setFileOps(DataFileOp fileOp) {
-        if (this.fileOps!=null){
-            fileOps.add(fileOp);
-        }else {
-            this.fileOps= new ArrayList<>();
-            fileOps.add(fileOp);
-        }
-    }
-
-    public String getCommitOp() {
-        return commitOp;
-    }
-
-    public void setCommitOp(String commitOp) {
-        this.commitOp = commitOp == null ? null : commitOp.trim();
-    }
-
-    public long getTimestamp() {
-        return timestamp;
-    }
-
-    public void setTimestamp(long timestamp) {
-        this.timestamp = timestamp;
-    }
+  public void setTimestamp(long timestamp) {
+    this.timestamp = timestamp;
+  }
 }
