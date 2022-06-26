@@ -18,6 +18,7 @@
 
 package com.dmetasoul.lakesoul.meta;
 
+import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -28,10 +29,11 @@ public class DBConnector {
     private static HikariDataSource ds;
 
     static {
-        config.setDriverClassName( DBConfig.driver );
-        config.setJdbcUrl( DBConfig.url);
-        config.setUsername( DBConfig.username);
-        config.setPassword( DBConfig.password );
+        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
+        config.setDriverClassName( dataBaseProperty.getDriver());
+        config.setJdbcUrl( dataBaseProperty.getUrl());
+        config.setUsername( dataBaseProperty.getUsername());
+        config.setPassword( dataBaseProperty.getPassword());
         config.addDataSourceProperty( "cachePrepStmts" , "true" );
         config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
         config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );

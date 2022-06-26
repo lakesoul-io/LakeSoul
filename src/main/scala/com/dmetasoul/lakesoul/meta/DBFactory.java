@@ -22,7 +22,7 @@ import com.dmetasoul.lakesoul.meta.dao.*;
 
 public class DBFactory {
     private static TableInfoDao tableInfoDao;
-    private static com.dmetasoul.lakesoul.meta.dao.TableNameIdDao TableNameIdDao;
+    private static TableNameIdDao TableNameIdDao;
     private static TablePathIdDao tablePathIdDao;
     private static DataCommitInfoDao dataCommitInfoDao;
     private static PartitionInfoDao partitionInfoDao;
