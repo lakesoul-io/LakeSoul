@@ -53,9 +53,11 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         List<String> columns = schema.getPrimaryKey().get().getColumns();
         String PrimaryKeys = FlinkUtil.StringListToString(columns);
         String filedNames = Arrays.toString(schema.getFieldNames());
+        String partitionKeys = FlinkUtil.StringListToString(catalogTable.getPartitionKeys());
         options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
         options.setString(TABLE_NAME,objectIdentifier.getObjectName());
         options.setString(RECORD_KEY_NAME, PrimaryKeys);
+        options.setString(PARTITION_FIELD.key(),partitionKeys);
 
         return new LakesoulTableSink(
                 objectIdentifier,
