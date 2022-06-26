@@ -152,8 +152,6 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
 
   @Override
   public void close() throws Exception {
-    System.out.println("close");
-
     super.close();
     if (helper != null) {
       helper.close();
@@ -161,7 +159,6 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
   }
 
   @Override
-  public void finish() throws Exception {
-    System.out.println("finish");
+  public void finish() {
   }
 }

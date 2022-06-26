@@ -39,13 +39,11 @@ public class LakeSoulSink {
 
   public static <T> DataStream<DataInfo> writer(
       long bucketCheckInterval, DataStream<T> inputStream,
-      LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T, ?, ?>>
-          bucketsBuilder,
+      LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T, ?, ?>> bucketsBuilder,
       OutputFileConfig outputFile,
       int parallelism,
       List<String> partitionKeys,
       Configuration conf) {
-
     LakSoulFileWriter<T> fileWriter =
         new LakSoulFileWriter<>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf, outputFile);
 
@@ -61,7 +59,8 @@ public class LakeSoulSink {
    * to options.
    */
   public static DataStreamSink<?> sink(
-      DataStream<DataInfo> writer, Path locationPath, List<String> partitionKeys, Configuration options) {
+      DataStream<DataInfo> writer, Path locationPath,
+      List<String> partitionKeys, Configuration options) {
     DataStream<?> stream = null;
     if (partitionKeys.size() > 0) {
       DataInfoCommitter committer = new DataInfoCommitter(locationPath, options);

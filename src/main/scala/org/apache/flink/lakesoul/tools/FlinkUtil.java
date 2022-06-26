@@ -77,7 +77,6 @@ public class FlinkUtil {
       String dtName = dt.getLogicalType().getTypeRoot().name();
       stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
     }
-
     return stNew;
   }
 

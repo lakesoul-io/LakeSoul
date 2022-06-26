@@ -39,7 +39,7 @@ public class LakeSoulFileSinkTest {
 
   @Test
   public void createStreamingSinkTest() throws Exception {
-    String tableName = "flinkTableTeste1l1y4";
+    String tableName = "flinkTableTeste1l1y34";
     String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
 

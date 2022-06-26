@@ -18,12 +18,14 @@
 
 package org.apache.flink.lakesoul.sink;
 
+import org.apache.flink.lakesoul.sink.fileSystem.bulkFormat.ProjectionBulkFactory;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.api.common.serialization.BulkWriter;
+import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metaData.DataInfo;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
@@ -50,9 +52,7 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
-import org.apache.flink.types.RowKind;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
-import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -90,12 +90,12 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   public LakesoulTableSink(
-                           DataType physicalRowDataType,
-                           List<String> partitionKeys,
-                           ReadableConfig tableOptions,
-                           EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
-                           EncodingFormat<SerializationSchema<RowData>> serializationFormat,
-                           ResolvedSchema schema
+      DataType physicalRowDataType,
+      List<String> partitionKeys,
+      ReadableConfig tableOptions,
+      EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
+      EncodingFormat<SerializationSchema<RowData>> serializationFormat,
+      ResolvedSchema schema
   ) {
     this.bulkWriterFormat = bulkWriterFormat;
     this.serializationFormat = serializationFormat;
@@ -146,46 +146,15 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     OutputFileConfig fileNamingConfig = fileNamingBuilder.build();
     this.path = new Path(tableOptions.getString(CATALOG_PATH));
 
-    LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>> bucketsBuilder;
-    if (isEncoder) {
-      //noinspection unchecked
-      bucketsBuilder =
-          LakesoulFileSink.forRowFormat(
-                  this.path,
-                  new ProjectionEncoder((Encoder<RowData>) writer, computer))
-              .withBucketAssigner(assigner)
-              .withOutputFileConfig(fileNamingConfig)
-              .withRollingPolicy(lakesoulPolicy);
-    } else {
-      //noinspection unchecked
-      bucketsBuilder =
-          LakesoulFileSink.forBulkFormat(
-                  this.path,
-                  new ProjectionBulkFactory(
-                      (BulkWriter.Factory<RowData>) writer, computer))
-              .withBucketAssigner(assigner)
-              .withOutputFileConfig(fileNamingConfig)
-              .withRollingPolicy(lakesoulPolicy);
-    }
+    LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>>
+        bucketsBuilder = bucketsBuilderFactory(isEncoder, writer, computer, assigner, fileNamingConfig, lakesoulPolicy);
     long bucketCheckInterval = Duration.ofMinutes(1).toMillis();
     BucketPartitioner<String> partitioner = new BucketPartitioner<>();
-
     dataStream = dataStream.partitionCustom(partitioner, keyGen::getBucketPartitionKey);
-
     DataStream<DataInfo> writerStream = LakeSoulSink.writer(
         bucketCheckInterval, dataStream, bucketsBuilder,
         fileNamingConfig, parallelism, partitionKeys, tableOptions);
-
-    return LakeSoulSink.sink(
-        writerStream, this.path, partitionKeys, tableOptions);
-  }
-
-  private LakesoulCdcPartitionComputer partitionCdcComputer() {
-    return new LakesoulCdcPartitionComputer(
-        DEFAULT_PARTITION_PATH,
-        getFieldNames(physicalRowDataType).toArray(new String[0]),
-        getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]),
-        partitionKeys.toArray(new String[0]), FlinkUtil.isLakesoulCdcTable(tableOptions));
+    return LakeSoulSink.sink(writerStream, this.path, partitionKeys, tableOptions);
   }
 
   @Override
@@ -277,39 +246,37 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     }
   }
 
-  public static class ProjectionBulkFactory implements BulkWriter.Factory<RowData> {
-
-    private final BulkWriter.Factory<RowData> factory;
-    private final LakesoulCdcPartitionComputer computer;
-
-    public ProjectionBulkFactory(
-        BulkWriter.Factory<RowData> factory, LakesoulCdcPartitionComputer computer) {
-      this.factory = factory;
-      this.computer = computer;
-    }
-
-    @Override
-    public BulkWriter<RowData> create(FSDataOutputStream out) throws IOException {
-      BulkWriter<RowData> writer = factory.create(out);
-      return new BulkWriter<RowData>() {
-
-        @Override
-        public void addElement(RowData element) throws IOException {
-          writer.addElement(computer.projectColumnsToWrite(element));
-        }
-
-        @Override
-        public void flush() throws IOException {
-          writer.flush();
-        }
-
-        @Override
-        public void finish() throws IOException {
-          writer.finish();
-        }
-      };
+  private LakeSoulBucketsBuilder<RowData, String, ? extends LakeSoulBucketsBuilder<RowData, ?, ?>> bucketsBuilderFactory(
+      boolean isEncoder, Object writer, LakesoulCdcPartitionComputer computer, FlinkBucketAssigner assigner,
+      OutputFileConfig fileNamingConfig, LakeSoulRollingPolicyImpl lakeSoulPolicy
+  ) {
+    if (isEncoder) {
+      //noinspection unchecked
+      return
+          LakesoulFileSink.forRowFormat(
+                  this.path,
+                  new ProjectionEncoder((Encoder<RowData>) writer, computer))
+              .withBucketAssigner(assigner)
+              .withOutputFileConfig(fileNamingConfig)
+              .withRollingPolicy(lakeSoulPolicy);
+    } else {
+      //noinspection unchecked
+      return
+          LakesoulFileSink.forBulkFormat(
+                  this.path,
+                  new ProjectionBulkFactory(
+                      (BulkWriter.Factory<RowData>) writer, computer))
+              .withBucketAssigner(assigner)
+              .withOutputFileConfig(fileNamingConfig)
+              .withRollingPolicy(lakeSoulPolicy);
     }
   }
+
+  private LakesoulCdcPartitionComputer partitionCdcComputer() {
+    return new LakesoulCdcPartitionComputer(
+        DEFAULT_PARTITION_PATH,
+        getFieldNames(physicalRowDataType).toArray(new String[0]),
+        getFieldDataTypes(physicalRowDataType).toArray(new DataType[0]),
+        partitionKeys.toArray(new String[0]), FlinkUtil.isLakesoulCdcTable(tableOptions));
+  }
 }
-
-
