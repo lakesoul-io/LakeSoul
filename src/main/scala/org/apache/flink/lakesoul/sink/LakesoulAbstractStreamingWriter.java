@@ -19,7 +19,11 @@
 package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.fileSystem.*;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucket;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketLifeCycleListener;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBuckets;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
+import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulFileSinkHelper;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -29,134 +33,135 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
+public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractStreamOperator<OUT>
+    implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
 
+  private static final long serialVersionUID = 1L;
 
-public abstract class LakesoulAbstractStreamingWriter <IN, OUT> extends AbstractStreamOperator<OUT>
-        implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
+  private final long bucketCheckInterval;
 
-    private static final long serialVersionUID = 1L;
+  private LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
+      bucketsBuilder;
 
-    private  long bucketCheckInterval;
+  protected transient LakeSoulBuckets<IN, String> buckets;
 
-    private LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
-            bucketsBuilder;
+  private transient LakeSoulFileSinkHelper<IN> helper;
 
-    protected transient LakeSoulBuckets<IN, String> buckets;
+  protected transient long currentWatermark;
 
-    private transient LakeSoulFileSinkHelper<IN> helper;
+  public LakesoulAbstractStreamingWriter(
+      long bucketCheckInterval,
+      LakeSoulBucketsBuilder<
+          IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
+          bucketsBuilder) {
+    this.bucketCheckInterval = bucketCheckInterval;
+    this.bucketsBuilder = bucketsBuilder;
+    setChainingStrategy(ChainingStrategy.ALWAYS);
+  }
 
-    protected transient long currentWatermark;
+  /**
+   * Notifies a partition created.
+   */
+  protected abstract void partitionCreated(String partition);
 
-    public LakesoulAbstractStreamingWriter(
-            long bucketCheckInterval,
-            LakeSoulBucketsBuilder<
-                    IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
-                    bucketsBuilder) {
-        this.bucketCheckInterval = bucketCheckInterval;
-        this.bucketsBuilder = bucketsBuilder;
-        setChainingStrategy( ChainingStrategy.ALWAYS);
+  /**
+   * Notifies a partition become inactive. A partition becomes inactive after all the records
+   * received so far have been committed.
+   */
+  protected abstract void partitionInactive(String partition);
+
+  /**
+   * Notifies a new file has been opened.
+   *
+   * <p>Note that this does not mean that the file has been created in the file system. It is only
+   * created logically and the actual file will be generated after it is committed.
+   */
+  protected abstract void onPartFileOpened(String partition, Path newPath);
+
+  /**
+   * Commit up to this checkpoint id.
+   */
+  protected void commitUpToCheckpoint(long checkpointId) throws Exception {
+    helper.commitUpToCheckpoint(checkpointId);
+  }
+
+  @Override
+  public void initializeState(StateInitializationContext context) throws Exception {
+    super.initializeState(context);
+    buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
+
+    // Set listener before the initialization of LakeSoulBuckets.
+    buckets.setBucketLifeCycleListener(
+        new LakeSoulBucketLifeCycleListener<IN, String>() {
+          @Override
+          public void bucketCreated(LakeSoulBucket<IN, String> bucket) {
+            LakesoulAbstractStreamingWriter.this.partitionCreated(bucket.getBucketId());
+          }
+
+          @Override
+          public void bucketInactive(LakeSoulBucket<IN, String> bucket) {
+            LakesoulAbstractStreamingWriter.this.partitionInactive(bucket.getBucketId());
+          }
+        });
+
+    helper =
+        new LakeSoulFileSinkHelper<>(
+            buckets,
+            context.isRestored(),
+            context.getOperatorStateStore(),
+            getRuntimeContext().getProcessingTimeService(),
+            bucketCheckInterval);
+
+    currentWatermark = Long.MIN_VALUE;
+  }
+
+  @Override
+  public void snapshotState(StateSnapshotContext context) throws Exception {
+    super.snapshotState(context);
+    helper.snapshotState(context.getCheckpointId());
+  }
+
+  @Override
+  public void processWatermark(Watermark mark) throws Exception {
+    super.processWatermark(mark);
+    currentWatermark = mark.getTimestamp();
+  }
+
+  @Override
+  public void processElement(StreamRecord<IN> element) throws Exception {
+    helper.onElement(
+        element.getValue(),
+        getProcessingTimeService().getCurrentProcessingTime(),
+        element.hasTimestamp() ? element.getTimestamp() : null,
+        currentWatermark);
+  }
+
+  @Override
+  public void notifyCheckpointComplete(long checkpointId) throws Exception {
+    super.notifyCheckpointComplete(checkpointId);
+    commitUpToCheckpoint(checkpointId);
+  }
+
+  @Override
+  public void endInput() throws Exception {
+    buckets.onProcessingTime(Long.MAX_VALUE);
+    helper.snapshotState(Long.MAX_VALUE);
+    output.emitWatermark(new Watermark(Long.MAX_VALUE));
+    commitUpToCheckpoint(Long.MAX_VALUE);
+  }
+
+  @Override
+  public void close() throws Exception {
+    System.out.println("close");
+
+    super.close();
+    if (helper != null) {
+      helper.close();
     }
+  }
 
-    /** Notifies a partition created. */
-    protected abstract void partitionCreated(String partition);
-
-    /**
-     * Notifies a partition become inactive. A partition becomes inactive after all the records
-     * received so far have been committed.
-     */
-    protected abstract void partitionInactive(String partition);
-
-    /**
-     * Notifies a new file has been opened.
-     *
-     * <p>Note that this does not mean that the file has been created in the file system. It is only
-     * created logically and the actual file will be generated after it is committed.
-     */
-    protected abstract void onPartFileOpened(String partition, Path newPath);
-
-    /** Commit up to this checkpoint id. */
-    protected void commitUpToCheckpoint(long checkpointId) throws Exception {
-        helper.commitUpToCheckpoint(checkpointId);
-    }
-
-    @Override
-    public void initializeState(StateInitializationContext context) throws Exception {
-        super.initializeState(context);
-        buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
-
-        // Set listener before the initialization of LakeSoulBuckets.
-        buckets.setBucketLifeCycleListener(
-                new LakeSoulBucketLifeCycleListener<IN, String>() {
-                    @Override
-                    public void bucketCreated(LakeSoulBucket<IN, String> bucket) {
-                        LakesoulAbstractStreamingWriter.this.partitionCreated(bucket.getBucketId());
-                    }
-
-                    @Override
-                    public void bucketInactive(LakeSoulBucket<IN, String> bucket) {
-                        LakesoulAbstractStreamingWriter.this.partitionInactive(bucket.getBucketId());
-                    }
-                });
-
-//        buckets.setFileLifeCycleListener(LakesoulAbstractStreamingWriter.this::onPartFileOpened);
-
-        helper =
-                new LakeSoulFileSinkHelper<>(
-                        buckets,
-                        context.isRestored(),
-                        context.getOperatorStateStore(),
-                        getRuntimeContext().getProcessingTimeService(),
-                        bucketCheckInterval);
-
-        currentWatermark = Long.MIN_VALUE;
-    }
-
-    @Override
-    public void snapshotState(StateSnapshotContext context) throws Exception {
-        super.snapshotState(context);
-        helper.snapshotState(context.getCheckpointId());
-    }
-
-    @Override
-    public void processWatermark(Watermark mark) throws Exception {
-        super.processWatermark(mark);
-        currentWatermark = mark.getTimestamp();
-    }
-
-    @Override
-    public void processElement(StreamRecord<IN> element) throws Exception {
-        helper.onElement(
-                element.getValue(),
-                getProcessingTimeService().getCurrentProcessingTime(),
-                element.hasTimestamp() ? element.getTimestamp() : null,
-                currentWatermark);
-    }
-
-    @Override
-    public void notifyCheckpointComplete(long checkpointId) throws Exception {
-        super.notifyCheckpointComplete(checkpointId);
-        commitUpToCheckpoint(checkpointId);
-    }
-
-    @Override
-    public void endInput() throws Exception {
-        buckets.onProcessingTime(Long.MAX_VALUE);
-        helper.snapshotState(Long.MAX_VALUE);
-        output.emitWatermark(new Watermark(Long.MAX_VALUE));
-        commitUpToCheckpoint(Long.MAX_VALUE);
-    }
-
-    @Override
-    public void close() throws Exception {
-        System.out.println( "close" );
-
-        super.close();
-        if (helper != null) {
-            helper.close();
-        }
-    }
-    @Override
-    public void finish() throws Exception{
-        System.out.println( "finish" );
-    }
+  @Override
+  public void finish() throws Exception {
+    System.out.println("finish");
+  }
 }

@@ -17,30 +17,40 @@
  */
 
 package org.apache.flink.lakesoul.sink.partition;
+
 import org.apache.flink.api.common.state.OperatorStateStore;
 
 import java.io.IOException;
 import java.util.List;
+
 public interface PartitionTrigger {
 
-    /** Add a pending partition. */
-    void addPartition(String partition);
+  /**
+   * Add a pending partition.
+   */
+  void addPartition(String partition);
 
-    /** Get committable partitions, and cleanup useless watermarks and partitions. */
-    List<String> committablePartitions(long checkpointId) throws IOException;
+  /**
+   * Get committable partitions, and cleanup useless watermarks and partitions.
+   */
+  List<String> committablePartitions(long checkpointId) throws IOException;
 
-    /** End input, return committable partitions and clear. */
-    List<String> endInput();
+  /**
+   * End input, return committable partitions and clear.
+   */
+  List<String> endInput();
 
-    /** Snapshot state. */
-    void snapshotState(long checkpointId, long watermark) throws Exception;
+  /**
+   * Snapshot state.
+   */
+  void snapshotState(long checkpointId, long watermark) throws Exception;
 
-    static PartitionTrigger create(
-            boolean isRestored,
-            OperatorStateStore stateStore)
-            throws Exception {
-        return new PartitionTimeTrigger(
-                isRestored, stateStore);
+  static PartitionTrigger create(
+      boolean isRestored,
+      OperatorStateStore stateStore)
+      throws Exception {
+    return new PartitionTimeTrigger(
+        isRestored, stateStore);
 
-    }
+  }
 }

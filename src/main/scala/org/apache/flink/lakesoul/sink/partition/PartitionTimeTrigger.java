@@ -27,88 +27,94 @@ import org.apache.flink.api.common.typeutils.base.MapSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.util.StringUtils;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 public class PartitionTimeTrigger implements PartitionTrigger {
 
-    private static final ListStateDescriptor<List<String>> PENDING_PARTITIONS_STATE_DESC =
-            new ListStateDescriptor<>(
-                    "pending-partitions", new ListSerializer<> ( StringSerializer.INSTANCE));
+  private static final ListStateDescriptor<List<String>> PENDING_PARTITIONS_STATE_DESC =
+      new ListStateDescriptor<>(
+          "pending-partitions", new ListSerializer<>(StringSerializer.INSTANCE));
 
-    private static final ListStateDescriptor<Map<Long, Long>> WATERMARKS_STATE_DESC =
-            new ListStateDescriptor<>(
-                    "checkpoint-id-to-watermark",
-                    new MapSerializer<> ( LongSerializer.INSTANCE, LongSerializer.INSTANCE));
-
-
-    private final ListState<List<String>> pendingPartitionsState;
-    private final Set<String> pendingPartitions;
-
-    private final ListState<Map<Long, Long>> watermarksState;
-    private final TreeMap<Long, Long> watermarks;
-
-    public PartitionTimeTrigger(
-            boolean isRestored,
-            OperatorStateStore stateStore)
-            throws Exception {
-        this.pendingPartitionsState = stateStore.getListState(PENDING_PARTITIONS_STATE_DESC);
-        this.pendingPartitions = new HashSet<> ();
-        if (isRestored) {
-            pendingPartitions.addAll(pendingPartitionsState.get().iterator().next());
-        }
+  private static final ListStateDescriptor<Map<Long, Long>> WATERMARKS_STATE_DESC =
+      new ListStateDescriptor<>(
+          "checkpoint-id-to-watermark",
+          new MapSerializer<>(LongSerializer.INSTANCE, LongSerializer.INSTANCE));
 
 
-        this.watermarksState = stateStore.getListState(WATERMARKS_STATE_DESC);
-        this.watermarks = new TreeMap<>();
-        if (isRestored) {
-            watermarks.putAll(watermarksState.get().iterator().next());
-        }
-    }
+  private final ListState<List<String>> pendingPartitionsState;
+  private final Set<String> pendingPartitions;
 
-    @Override
-    public void addPartition(String partition) {
-        if (!StringUtils.isNullOrWhitespaceOnly(partition)) {
-            this.pendingPartitions.add(partition);
-        }
-    }
+  private final ListState<Map<Long, Long>> watermarksState;
+  private final TreeMap<Long, Long> watermarks;
 
-    @Override
-    public List<String> committablePartitions(long checkpointId) {
-        if (!watermarks.containsKey(checkpointId)) {
-            throw new IllegalArgumentException(
-                    String.format(
-                            "Checkpoint(%d) has not been snapshot. The watermark information is: %s.",
-                            checkpointId, watermarks));
-        }
-
-        watermarks.headMap(checkpointId, true).clear();
-
-        List<String> needCommit = new ArrayList<>();
-        Iterator<String> iter = pendingPartitions.iterator();
-        while (iter.hasNext()) {
-            String partition = iter.next();
-            needCommit.add(partition);
-            iter.remove();
-
-        }
-        return needCommit;
+  public PartitionTimeTrigger(
+      boolean isRestored,
+      OperatorStateStore stateStore)
+      throws Exception {
+    this.pendingPartitionsState = stateStore.getListState(PENDING_PARTITIONS_STATE_DESC);
+    this.pendingPartitions = new HashSet<>();
+    if (isRestored) {
+      pendingPartitions.addAll(pendingPartitionsState.get().iterator().next());
     }
 
 
-    @Override
-    public void snapshotState(long checkpointId, long watermark) throws Exception {
-        pendingPartitionsState.clear();
-        pendingPartitionsState.add(new ArrayList<>(pendingPartitions));
+    this.watermarksState = stateStore.getListState(WATERMARKS_STATE_DESC);
+    this.watermarks = new TreeMap<>();
+    if (isRestored) {
+      watermarks.putAll(watermarksState.get().iterator().next());
+    }
+  }
 
-        watermarks.put(checkpointId, watermark);
-        watermarksState.clear();
-        watermarksState.add(new HashMap<>(watermarks));
+  @Override
+  public void addPartition(String partition) {
+    if (!StringUtils.isNullOrWhitespaceOnly(partition)) {
+      this.pendingPartitions.add(partition);
+    }
+  }
+
+  @Override
+  public List<String> committablePartitions(long checkpointId) {
+    if (!watermarks.containsKey(checkpointId)) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Checkpoint(%d) has not been snapshot. The watermark information is: %s.",
+              checkpointId, watermarks));
     }
 
-    @Override
-    public List<String> endInput() {
-        ArrayList<String> partitions = new ArrayList<>(pendingPartitions);
-        pendingPartitions.clear();
-        return partitions;
+    watermarks.headMap(checkpointId, true).clear();
+
+    List<String> needCommit = new ArrayList<>();
+    Iterator<String> iter = pendingPartitions.iterator();
+    while (iter.hasNext()) {
+      String partition = iter.next();
+      needCommit.add(partition);
+      iter.remove();
+
     }
+    return needCommit;
+  }
+
+  @Override
+  public void snapshotState(long checkpointId, long watermark) throws Exception {
+    pendingPartitionsState.clear();
+    pendingPartitionsState.add(new ArrayList<>(pendingPartitions));
+
+    watermarks.put(checkpointId, watermark);
+    watermarksState.clear();
+    watermarksState.add(new HashMap<>(watermarks));
+  }
+
+  @Override
+  public List<String> endInput() {
+    ArrayList<String> partitions = new ArrayList<>(pendingPartitions);
+    pendingPartitions.clear();
+    return partitions;
+  }
 }

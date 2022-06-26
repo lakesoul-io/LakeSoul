@@ -39,96 +39,95 @@ import java.util.stream.Collectors;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.*;
 
 public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
-    static final String FACTORY_IDENTIFIER = "lakesoul";
-    private static final String TABLE_NAME = "table_name";
+  static final String FACTORY_IDENTIFIER = "lakesoul";
+  private static final String TABLE_NAME = "table_name";
 
 
-    @Override
-    public DynamicTableSink createDynamicTableSink(Context context) {
-        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        Configuration options = (Configuration) helper.getOptions();
-        ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
-        ResolvedCatalogTable catalogTable = context.getCatalogTable();
-        TableSchema schema = catalogTable.getSchema();
-        List<String> columns = schema.getPrimaryKey().get().getColumns();
-        String PrimaryKeys = FlinkUtil.StringListToString(columns);
-        String filedNames = Arrays.toString(schema.getFieldNames());
-        String partitionKeys = FlinkUtil.StringListToString(catalogTable.getPartitionKeys());
-        options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
-        options.setString(TABLE_NAME,objectIdentifier.getObjectName());
-        options.setString(RECORD_KEY_NAME, PrimaryKeys);
-        options.setString(PARTITION_FIELD.key(),partitionKeys);
+  @Override
+  public DynamicTableSink createDynamicTableSink(Context context) {
+    FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+    Configuration options = (Configuration) helper.getOptions();
+    ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
+    ResolvedCatalogTable catalogTable = context.getCatalogTable();
+    TableSchema schema = catalogTable.getSchema();
+    List<String> columns = schema.getPrimaryKey().get().getColumns();
+    String PrimaryKeys = FlinkUtil.StringListToString(columns);
+    String filedNames = Arrays.toString(schema.getFieldNames());
+    String partitionKeys = FlinkUtil.StringListToString(catalogTable.getPartitionKeys());
+    options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
+    options.setString(TABLE_NAME, objectIdentifier.getObjectName());
+    options.setString(RECORD_KEY_NAME, PrimaryKeys);
+    options.setString(PARTITION_FIELD.key(), partitionKeys);
 
-        return new LakesoulTableSink(
-                objectIdentifier,
-                catalogTable.getResolvedSchema().toPhysicalRowDataType(),
-                catalogTable.getPartitionKeys(),
-                options,
-                discoverEncodingFormat(context, BulkWriterFormatFactory.class),
-                discoverEncodingFormat(context, SerializationFormatFactory.class),
-                context.getCatalogTable().getResolvedSchema()
-        );
+    return new LakesoulTableSink(
+        catalogTable.getResolvedSchema().toPhysicalRowDataType(),
+        catalogTable.getPartitionKeys(),
+        options,
+        discoverEncodingFormat(context, BulkWriterFormatFactory.class),
+        discoverEncodingFormat(context, SerializationFormatFactory.class),
+        context.getCatalogTable().getResolvedSchema()
+    );
+  }
+
+  @Override
+  public DynamicTableSource createDynamicTableSource(Context context) {
+    return null;
+  }
+
+  @Override
+  public String factoryIdentifier() {
+    return FACTORY_IDENTIFIER;
+  }
+
+
+  @Override
+  public Set<ConfigOption<?>> requiredOptions() {
+    Set<ConfigOption<?>> options = new HashSet<>();
+    options.add(CATALOG_PATH);
+    options.add(FactoryUtil.FORMAT);
+    return options;
+  }
+
+  @Override
+  public Set<ConfigOption<?>> optionalOptions() {
+    return Collections.emptySet();
+  }
+
+  private <I, F extends EncodingFormatFactory<I>> EncodingFormat<I> discoverEncodingFormat(
+      Context context, Class<F> formatFactoryClass) {
+    FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+    if (formatFactoryExists(context, formatFactoryClass)) {
+      return helper.discoverEncodingFormat(formatFactoryClass, FactoryUtil.FORMAT);
+    } else {
+      return null;
+    }
+  }
+
+  private boolean formatFactoryExists(Context context, Class<?> factoryClass) {
+    Configuration options = Configuration.fromMap(context.getCatalogTable().getOptions());
+    String identifier = options.get(FactoryUtil.FORMAT);
+    if (identifier == null) {
+      throw new ValidationException(
+          String.format(
+              "Table options do not contain an option key '%s' for discovering a format.",
+              FactoryUtil.FORMAT.key()));
     }
 
-    @Override
-    public DynamicTableSource createDynamicTableSource(Context context) {
-        return null;
-    }
+    final List<Factory> factories = new LinkedList<>();
+    ServiceLoader.load(Factory.class, context.getClassLoader())
+        .iterator()
+        .forEachRemaining(factories::add);
 
-    @Override
-    public String factoryIdentifier() {
-        return FACTORY_IDENTIFIER;
-    }
+    final List<Factory> foundFactories =
+        factories.stream()
+            .filter(f -> factoryClass.isAssignableFrom(f.getClass()))
+            .collect(Collectors.toList());
 
+    final List<Factory> matchingFactories =
+        foundFactories.stream()
+            .filter(f -> f.factoryIdentifier().equals(identifier))
+            .collect(Collectors.toList());
 
-    @Override
-    public Set<ConfigOption<?>> requiredOptions() {
-        Set<ConfigOption<?>> options = new HashSet<>();
-        options.add(CATALOG_PATH);
-        options.add(FactoryUtil.FORMAT);
-        return options;
-    }
-
-    @Override
-    public Set<ConfigOption<?>> optionalOptions() {
-        return Collections.emptySet();
-    }
-
-    private <I, F extends EncodingFormatFactory<I>> EncodingFormat<I> discoverEncodingFormat(
-            Context context, Class<F> formatFactoryClass) {
-        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        if (formatFactoryExists(context, formatFactoryClass)) {
-            return helper.discoverEncodingFormat(formatFactoryClass, FactoryUtil.FORMAT);
-        } else {
-            return null;
-        }
-    }
-
-    private boolean formatFactoryExists(Context context, Class<?> factoryClass) {
-        Configuration options = Configuration.fromMap(context.getCatalogTable().getOptions());
-        String identifier = options.get(FactoryUtil.FORMAT);
-        if (identifier == null) {
-            throw new ValidationException(
-                    String.format(
-                            "Table options do not contain an option key '%s' for discovering a format.",
-                            FactoryUtil.FORMAT.key()));
-        }
-
-        final List<Factory> factories = new LinkedList<>();
-        ServiceLoader.load(Factory.class, context.getClassLoader())
-                .iterator()
-                .forEachRemaining(factories::add);
-
-        final List<Factory> foundFactories =
-                factories.stream()
-                        .filter(f -> factoryClass.isAssignableFrom(f.getClass()))
-                        .collect(Collectors.toList());
-
-        final List<Factory> matchingFactories =
-                foundFactories.stream()
-                        .filter(f -> f.factoryIdentifier().equals(identifier))
-                        .collect(Collectors.toList());
-
-        return !matchingFactories.isEmpty();
-    }
+    return !matchingFactories.isEmpty();
+  }
 }

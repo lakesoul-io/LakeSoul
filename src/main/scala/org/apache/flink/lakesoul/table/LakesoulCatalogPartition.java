@@ -27,36 +27,36 @@ import java.util.Optional;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakesoulCatalogPartition implements CatalogPartition {
-    private final Map<String, String> properties;
-    private final String comment;
+  private final Map<String, String> properties;
+  private final String comment;
 
-    public LakesoulCatalogPartition(Map<String, String> properties, String comment) {
-        this.properties = checkNotNull(properties, "properties cannot be null");
-        this.comment = comment;
-    }
+  public LakesoulCatalogPartition(Map<String, String> properties, String comment) {
+    this.properties = checkNotNull(properties, "properties cannot be null");
+    this.comment = comment;
+  }
 
-    @Override
-    public Map<String, String> getProperties() {
-        return properties;
-    }
+  @Override
+  public Map<String, String> getProperties() {
+    return properties;
+  }
 
-    @Override
-    public String getComment() {
-        return comment;
-    }
+  @Override
+  public String getComment() {
+    return comment;
+  }
 
-    @Override
-    public CatalogPartition copy() {
-        return new LakesoulCatalogPartition(new HashMap<>(properties), comment);
-    }
+  @Override
+  public CatalogPartition copy() {
+    return new LakesoulCatalogPartition(new HashMap<>(properties), comment);
+  }
 
-    @Override
-    public Optional<String> getDescription() {
-        return Optional.empty();
-    }
+  @Override
+  public Optional<String> getDescription() {
+    return Optional.empty();
+  }
 
-    @Override
-    public Optional<String> getDetailedDescription() {
-        return Optional.empty();
-    }
+  @Override
+  public Optional<String> getDetailedDescription() {
+    return Optional.empty();
+  }
 }

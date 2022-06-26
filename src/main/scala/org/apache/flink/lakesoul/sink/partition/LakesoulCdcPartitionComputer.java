@@ -18,7 +18,7 @@
 
 package org.apache.flink.lakesoul.sink.partition;
 
-import org.apache.flink.lakesoul.tools.*;
+import org.apache.flink.lakesoul.tools.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.filesystem.PartitionComputer;
@@ -33,104 +33,103 @@ import java.util.stream.IntStream;
 
 public class LakesoulCdcPartitionComputer implements PartitionComputer<RowData> {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    protected String defaultPartValue;
-    protected String[] partitionColumns;
-    protected int[] partitionIndexes;
-    protected LogicalType[] partitionTypes;
-    protected RowData.FieldGetter[] partitionFieldGetters;
+  protected String defaultPartValue;
+  protected String[] partitionColumns;
+  protected int[] partitionIndexes;
+  protected LogicalType[] partitionTypes;
+  protected RowData.FieldGetter[] partitionFieldGetters;
 
-    private int[] nonPartitionIndexes;
-    private LogicalType[] nonPartitionTypes;
-    protected RowData.FieldGetter[] nonPartitionFieldGetters;
-    private Boolean isCdc;
-    private transient GenericRowData reuseRow;
+  private int[] nonPartitionIndexes;
+  private LogicalType[] nonPartitionTypes;
+  protected RowData.FieldGetter[] nonPartitionFieldGetters;
+  private Boolean isCdc;
+  private transient GenericRowData reuseRow;
 
-    public LakesoulCdcPartitionComputer(
-            String defaultPartValue,
-            String[] columnNames,
-            DataType[] columnTypes,
-            String[] partitionColumns, Boolean isCdc) {
-        this.defaultPartValue = defaultPartValue;
-        this.partitionColumns = partitionColumns;
-        this.isCdc = isCdc;
-        List<String> columnList = Arrays.asList(columnNames);
-        List<LogicalType> columnTypeList =
-                Arrays.stream(columnTypes)
-                        .map(DataType::getLogicalType)
-                        .collect(Collectors.toList());
+  public LakesoulCdcPartitionComputer(
+      String defaultPartValue,
+      String[] columnNames,
+      DataType[] columnTypes,
+      String[] partitionColumns, Boolean isCdc) {
+    this.defaultPartValue = defaultPartValue;
+    this.partitionColumns = partitionColumns;
+    this.isCdc = isCdc;
+    List<String> columnList = Arrays.asList(columnNames);
+    List<LogicalType> columnTypeList =
+        Arrays.stream(columnTypes)
+            .map(DataType::getLogicalType)
+            .collect(Collectors.toList());
 
-//        partitionColumns=partitionColumns[0];
-        partitionColumns = partitionColumns[0].split(";");
-        this.partitionIndexes =
-                Arrays.stream(partitionColumns).mapToInt(columnList::indexOf).toArray();
-        this.partitionTypes =
-                Arrays.stream(partitionIndexes)
-                        .mapToObj(columnTypeList::get)
-                        .toArray(LogicalType[]::new);
-        this.partitionFieldGetters =
-                IntStream.range(0, partitionTypes.length)
-                        .mapToObj(
-                                i ->
-                                        RowData.createFieldGetter(
-                                                partitionTypes[i], partitionIndexes[i]))
-                        .toArray(RowData.FieldGetter[]::new);
+    partitionColumns = partitionColumns[0].split(";");
+    this.partitionIndexes =
+        Arrays.stream(partitionColumns).mapToInt(columnList::indexOf).toArray();
+    this.partitionTypes =
+        Arrays.stream(partitionIndexes)
+            .mapToObj(columnTypeList::get)
+            .toArray(LogicalType[]::new);
+    this.partitionFieldGetters =
+        IntStream.range(0, partitionTypes.length)
+            .mapToObj(
+                i ->
+                    RowData.createFieldGetter(
+                        partitionTypes[i], partitionIndexes[i]))
+            .toArray(RowData.FieldGetter[]::new);
 
-        List<Integer> partitionIndexList =
-                Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
-        this.nonPartitionIndexes =
-                IntStream.range(0, columnNames.length)
-                        .filter(c -> !partitionIndexList.contains(c))
-                        .toArray();
-        this.nonPartitionTypes =
-                Arrays.stream(nonPartitionIndexes)
-                        .mapToObj(columnTypeList::get)
-                        .toArray(LogicalType[]::new);
-        this.nonPartitionFieldGetters =
-                IntStream.range(0, nonPartitionTypes.length)
-                        .mapToObj(
-                                i ->
-                                        RowData.createFieldGetter(
-                                                nonPartitionTypes[i], nonPartitionIndexes[i]))
-                        .toArray(RowData.FieldGetter[]::new);
+    List<Integer> partitionIndexList =
+        Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
+    this.nonPartitionIndexes =
+        IntStream.range(0, columnNames.length)
+            .filter(c -> !partitionIndexList.contains(c))
+            .toArray();
+    this.nonPartitionTypes =
+        Arrays.stream(nonPartitionIndexes)
+            .mapToObj(columnTypeList::get)
+            .toArray(LogicalType[]::new);
+    this.nonPartitionFieldGetters =
+        IntStream.range(0, nonPartitionTypes.length)
+            .mapToObj(
+                i ->
+                    RowData.createFieldGetter(
+                        nonPartitionTypes[i], nonPartitionIndexes[i]))
+            .toArray(RowData.FieldGetter[]::new);
+  }
+
+  @Override
+  public LinkedHashMap<String, String> generatePartValues(RowData in) {
+    LinkedHashMap<String, String> partSpec = new LinkedHashMap<>();
+
+    for (int i = 0; i < partitionIndexes.length; i++) {
+      Object field = partitionFieldGetters[i].getFieldOrNull(in);
+      String partitionValue = field != null ? field.toString() : null;
+      if (partitionValue == null || "".equals(partitionValue)) {
+        partitionValue = defaultPartValue;
+      }
+      partSpec.put(partitionColumns[i], partitionValue);
+    }
+    return partSpec;
+  }
+
+  @Override
+  public RowData projectColumnsToWrite(RowData in) {
+    if (partitionIndexes.length == 0) {
+      return in;
+    }
+    int len = nonPartitionIndexes.length;
+    if (isCdc) {
+      len += 1;
+    }
+    if (reuseRow == null) {
+      this.reuseRow = new GenericRowData(len);
     }
 
-    @Override
-    public LinkedHashMap<String, String> generatePartValues(RowData in) {
-        LinkedHashMap<String, String> partSpec = new LinkedHashMap<>();
-
-        for (int i = 0; i < partitionIndexes.length; i++) {
-            Object field = partitionFieldGetters[i].getFieldOrNull(in);
-            String partitionValue = field != null ? field.toString() : null;
-            if (partitionValue == null || "".equals(partitionValue)) {
-                partitionValue = defaultPartValue;
-            }
-            partSpec.put(partitionColumns[i], partitionValue);
-        }
-        return partSpec;
+    for (int i = 0; i < nonPartitionIndexes.length; i++) {
+      reuseRow.setField(i, nonPartitionFieldGetters[i].getFieldOrNull(in));
     }
-
-    @Override
-    public RowData projectColumnsToWrite(RowData in) {
-        if (partitionIndexes.length == 0) {
-            return in;
-        }
-        int len = nonPartitionIndexes.length;
-        if (isCdc) {
-            len += 1;
-        }
-        if (reuseRow == null) {
-            this.reuseRow = new GenericRowData(len);
-        }
-
-        for (int i = 0; i < nonPartitionIndexes.length; i++) {
-            reuseRow.setField(i, nonPartitionFieldGetters[i].getFieldOrNull(in));
-        }
-        if (isCdc) {
-            reuseRow.setField(len - 1, FlinkUtil.RowkindToOperation(in.getRowKind().shortString()));
-        }
-        reuseRow.setRowKind(in.getRowKind());
-        return reuseRow;
+    if (isCdc) {
+      reuseRow.setField(len - 1, FlinkUtil.RowkindToOperation(in.getRowKind().shortString()));
     }
+    reuseRow.setRowKind(in.getRowKind());
+    return reuseRow;
+  }
 }

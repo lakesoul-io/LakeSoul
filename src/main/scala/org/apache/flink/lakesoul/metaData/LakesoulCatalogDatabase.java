@@ -24,36 +24,36 @@ import java.util.Map;
 import java.util.Optional;
 
 public class LakesoulCatalogDatabase implements CatalogDatabase {
-    private final Map<String, String> properties=null;
-    private final String comment ="Only default Database";
+  private final Map<String, String> properties = null;
+  private final String comment = "Only default Database";
 
-    @Override
-    public Map<String, String> getProperties() {
-        return properties;
-    }
+  @Override
+  public Map<String, String> getProperties() {
+    return properties;
+  }
 
-    @Override
-    public String getComment() {
-        return comment;
-    }
+  @Override
+  public String getComment() {
+    return comment;
+  }
 
-    @Override
-    public CatalogDatabase copy() {
-        return new LakesoulCatalogDatabase();
-    }
+  @Override
+  public CatalogDatabase copy() {
+    return new LakesoulCatalogDatabase();
+  }
 
-    @Override
-    public CatalogDatabase copy(Map<String, String> map) {
-        return new LakesoulCatalogDatabase();
-    }
+  @Override
+  public CatalogDatabase copy(Map<String, String> map) {
+    return new LakesoulCatalogDatabase();
+  }
 
-    @Override
-    public Optional<String> getDescription() {
-        return  Optional.ofNullable(comment);
-    }
+  @Override
+  public Optional<String> getDescription() {
+    return Optional.ofNullable(comment);
+  }
 
-    @Override
-    public Optional<String> getDetailedDescription() {
-        return  Optional.ofNullable(comment);
-    }
+  @Override
+  public Optional<String> getDetailedDescription() {
+    return Optional.ofNullable(comment);
+  }
 }

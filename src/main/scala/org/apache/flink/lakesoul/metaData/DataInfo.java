@@ -21,73 +21,77 @@ package org.apache.flink.lakesoul.metaData;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
+
 public class DataInfo implements Serializable {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    private long checkpointId;
-    private int taskId;
-    private int numberOfTasks;
-    private List<String> partitions;
-    private String path;
-    private String tableName;
-    public DataInfo() {}
+  private long checkpointId;
+  private int taskId;
+  private int numberOfTasks;
+  private List<String> partitions;
+  private String path;
+  private String tableName;
 
-    public String getTableName() {
-        return tableName;
-    }
+  public DataInfo() {
+  }
 
-    public void setTableName(String tableName) {
-        this.tableName = tableName;
-    }
+  public String getTableName() {
+    return tableName;
+  }
 
-    public DataInfo(
-            long checkpointId, int taskId, int numberOfTasks, List<String> partitions,String path,String tableName) {
-        this.checkpointId = checkpointId;
-        this.taskId = taskId;
-        this.numberOfTasks = numberOfTasks;
-        this.partitions = partitions;
-        this.path = path;
-        this.tableName=tableName;
-    }
+  public void setTableName(String tableName) {
+    this.tableName = tableName;
+  }
 
-    public long getCheckpointId() {
-        return checkpointId;
-    }
+  public DataInfo(
+      long checkpointId, int taskId, int numberOfTasks, List<String> partitions, String path, String tableName) {
+    this.checkpointId = checkpointId;
+    this.taskId = taskId;
+    this.numberOfTasks = numberOfTasks;
+    this.partitions = partitions;
+    this.path = path;
+    this.tableName = tableName;
+  }
 
-    public void setCheckpointId(long checkpointId) {
-        this.checkpointId = checkpointId;
-    }
+  public long getCheckpointId() {
+    return checkpointId;
+  }
 
-    public int getTaskId() {
-        return taskId;
-    }
+  public void setCheckpointId(long checkpointId) {
+    this.checkpointId = checkpointId;
+  }
 
-    public void setTaskDataPath(String path) {
-        this.path = path;
-    }
-    public String getTaskDataPath() {
-        return this.path;
-    }
+  public int getTaskId() {
+    return taskId;
+  }
 
-    public void setTaskId(int taskId) {
-        this.taskId = taskId;
-    }
+  public void setTaskDataPath(String path) {
+    this.path = path;
+  }
 
-    public int getNumberOfTasks() {
-        return numberOfTasks;
-    }
+  public String getTaskDataPath() {
+    return this.path;
+  }
 
-    public void setNumberOfTasks(int numberOfTasks) {
-        this.numberOfTasks = numberOfTasks;
-    }
+  public void setTaskId(int taskId) {
+    this.taskId = taskId;
+  }
 
-    public List<String> getPartitions() {
-        return partitions;
-    }
+  public int getNumberOfTasks() {
+    return numberOfTasks;
+  }
 
-    public void setPartitions(List<String> partitions) {
-        this.partitions = partitions;
-    }
+  public void setNumberOfTasks(int numberOfTasks) {
+    this.numberOfTasks = numberOfTasks;
+  }
+
+  public List<String> getPartitions() {
+    return partitions;
+  }
+
+  public void setPartitions(List<String> partitions) {
+    this.partitions = partitions;
+  }
 }
 

@@ -30,46 +30,46 @@ import java.nio.charset.StandardCharsets;
 
 public class LakesoulSchemaAdapter implements Encoder<RowData> {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    static final byte LINE_DELIMITER = "\n".getBytes(StandardCharsets.UTF_8)[0];
+  static final byte LINE_DELIMITER = "\n".getBytes(StandardCharsets.UTF_8)[0];
 
-    private  SerializationSchema<RowData> serializationSchema;
+  private SerializationSchema<RowData> serializationSchema;
 
-    private transient boolean open;
+  private transient boolean open;
 
-    public LakesoulSchemaAdapter(SerializationSchema<RowData> serializationSchema) {
-        this.serializationSchema = serializationSchema;
+  public LakesoulSchemaAdapter(SerializationSchema<RowData> serializationSchema) {
+    this.serializationSchema = serializationSchema;
+  }
+
+  @Override
+  public void encode(RowData element, OutputStream stream) throws IOException {
+    checkOpened();
+    stream.write(serializationSchema.serialize(element));
+    stream.write(LINE_DELIMITER);
+  }
+
+  private void checkOpened() throws IOException {
+    if (!open) {
+      try {
+        serializationSchema.open(
+            new SerializationSchema.InitializationContext() {
+              @Override
+              public MetricGroup getMetricGroup() {
+                throw new UnsupportedOperationException(
+                    "MetricGroup is unsupported in BulkFormat.");
+              }
+
+              @Override
+              public UserCodeClassLoader getUserCodeClassLoader() {
+                return (UserCodeClassLoader)
+                    Thread.currentThread().getContextClassLoader();
+              }
+            });
+      } catch (Exception e) {
+        throw new IOException(e);
+      }
+      open = true;
     }
-
-    @Override
-    public void encode(RowData element, OutputStream stream) throws IOException {
-        checkOpened();
-        stream.write(serializationSchema.serialize(element));
-        stream.write(LINE_DELIMITER);
-    }
-
-    private void checkOpened() throws IOException {
-        if (!open) {
-            try {
-                serializationSchema.open(
-                        new SerializationSchema.InitializationContext() {
-                            @Override
-                            public MetricGroup getMetricGroup() {
-                                throw new UnsupportedOperationException(
-                                        "MetricGroup is unsupported in BulkFormat.");
-                            }
-
-                            @Override
-                            public UserCodeClassLoader getUserCodeClassLoader() {
-                                return (UserCodeClassLoader)
-                                        Thread.currentThread().getContextClassLoader();
-                            }
-                        });
-            } catch (Exception e) {
-                throw new IOException(e);
-            }
-            open = true;
-        }
-    }
+  }
 }

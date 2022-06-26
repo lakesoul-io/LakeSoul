@@ -1,3 +1,22 @@
+/*
+ *
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *
+ */
+
 package org.apache.flink.lakesoul.sink.fileSystem.bulkFormat;
 
 import org.apache.flink.annotation.Internal;
@@ -20,120 +39,122 @@ import java.io.IOException;
 
 
 public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, BucketID, T>>
-        extends LakeSoulBucketsBuilder<IN, BucketID, T> {
+    extends LakeSoulBucketsBuilder<IN, BucketID, T> {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    private long bucketCheckInterval;
+  private long bucketCheckInterval;
 
-    private final Path basePath;
+  private final Path basePath;
 
-    private Encoder<IN> encoder;
+  private Encoder<IN> encoder;
 
-    private BucketAssigner<IN, BucketID> bucketAssigner;
+  private BucketAssigner<IN, BucketID> bucketAssigner;
 
-    private LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
+  private LakeSoulRollingPolicyImpl<IN, BucketID> rollingPolicy;
 
-    private LakeSoulBucketFactory<IN, BucketID> bucketFactory;
+  private LakeSoulBucketFactory<IN, BucketID> bucketFactory;
 
-    private OutputFileConfig outputFileConfig;
+  private OutputFileConfig outputFileConfig;
 
-    protected RowFormatBuilder(
-            Path basePath, Encoder<IN> encoder, BucketAssigner<IN, BucketID> bucketAssigner) {
-        this(
-                basePath,
-                encoder,
-                bucketAssigner,
-                new LakeSoulRollingPolicyImpl(false),
-                DEFAULT_BUCKET_CHECK_INTERVAL,
-                new LakeSoulBucketFactoryImpl<>(),
-                OutputFileConfig.builder().build());
-    }
+  protected RowFormatBuilder(
+      Path basePath, Encoder<IN> encoder, BucketAssigner<IN, BucketID> bucketAssigner) {
+    this(
+        basePath,
+        encoder,
+        bucketAssigner,
+        new LakeSoulRollingPolicyImpl(false),
+        DEFAULT_BUCKET_CHECK_INTERVAL,
+        new LakeSoulBucketFactoryImpl<>(),
+        OutputFileConfig.builder().build());
+  }
 
-    protected RowFormatBuilder(
-            Path basePath,
-            Encoder<IN> encoder,
-            BucketAssigner<IN, BucketID> assigner,
-            LakeSoulRollingPolicyImpl<IN, BucketID> policy,
-            long bucketCheckInterval,
-            LakeSoulBucketFactory<IN, BucketID> bucketFactory,
-            OutputFileConfig outputFileConfig) {
-        this.basePath = Preconditions.checkNotNull(basePath);
-        this.encoder = Preconditions.checkNotNull(encoder);
-        this.bucketAssigner = Preconditions.checkNotNull(assigner);
-        this.rollingPolicy = Preconditions.checkNotNull(policy);
-        this.bucketCheckInterval = bucketCheckInterval;
-        this.bucketFactory = Preconditions.checkNotNull(bucketFactory);
-        this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
-    }
+  protected RowFormatBuilder(
+      Path basePath,
+      Encoder<IN> encoder,
+      BucketAssigner<IN, BucketID> assigner,
+      LakeSoulRollingPolicyImpl<IN, BucketID> policy,
+      long bucketCheckInterval,
+      LakeSoulBucketFactory<IN, BucketID> bucketFactory,
+      OutputFileConfig outputFileConfig) {
+    this.basePath = Preconditions.checkNotNull(basePath);
+    this.encoder = Preconditions.checkNotNull(encoder);
+    this.bucketAssigner = Preconditions.checkNotNull(assigner);
+    this.rollingPolicy = Preconditions.checkNotNull(policy);
+    this.bucketCheckInterval = bucketCheckInterval;
+    this.bucketFactory = Preconditions.checkNotNull(bucketFactory);
+    this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
+  }
 
-    public long getBucketCheckInterval() {
-        return bucketCheckInterval;
-    }
+  public long getBucketCheckInterval() {
+    return bucketCheckInterval;
+  }
 
-    public T withBucketCheckInterval(final long interval) {
-        this.bucketCheckInterval = interval;
-        return self();
-    }
+  public T withBucketCheckInterval(final long interval) {
+    this.bucketCheckInterval = interval;
+    return self();
+  }
 
-    public T withBucketAssigner(final BucketAssigner<IN, BucketID> assigner) {
-        this.bucketAssigner = Preconditions.checkNotNull(assigner);
-        return self();
-    }
+  public T withBucketAssigner(final BucketAssigner<IN, BucketID> assigner) {
+    this.bucketAssigner = Preconditions.checkNotNull(assigner);
+    return self();
+  }
 
-    public T withRollingPolicy(final LakeSoulRollingPolicyImpl<IN, BucketID> policy) {
-        this.rollingPolicy = Preconditions.checkNotNull(policy);
-        return self();
-    }
+  public T withRollingPolicy(final LakeSoulRollingPolicyImpl<IN, BucketID> policy) {
+    this.rollingPolicy = Preconditions.checkNotNull(policy);
+    return self();
+  }
 
-    public T withOutputFileConfig(final OutputFileConfig outputFileConfig) {
-        this.outputFileConfig = outputFileConfig;
-        return self();
-    }
+  public T withOutputFileConfig(final OutputFileConfig outputFileConfig) {
+    this.outputFileConfig = outputFileConfig;
+    return self();
+  }
 
-    public <ID> RowFormatBuilder<IN, ID, ? extends RowFormatBuilder<IN, ID, ?>>
-    withNewBucketAssignerAndPolicy(
-            final BucketAssigner<IN, ID> assigner,
-            final LakeSoulRollingPolicyImpl<IN, ID> policy) {
-        return new RowFormatBuilder(
-                basePath,
-                encoder,
-                Preconditions.checkNotNull(assigner),
-                Preconditions.checkNotNull(policy),
-                bucketCheckInterval,
-                new LakeSoulBucketFactoryImpl<>(),
-                outputFileConfig);
-    }
+  public <ID> RowFormatBuilder<IN, ID, ? extends RowFormatBuilder<IN, ID, ?>>
+  withNewBucketAssignerAndPolicy(
+      final BucketAssigner<IN, ID> assigner,
+      final LakeSoulRollingPolicyImpl<IN, ID> policy) {
+    return new RowFormatBuilder(
+        basePath,
+        encoder,
+        Preconditions.checkNotNull(assigner),
+        Preconditions.checkNotNull(policy),
+        bucketCheckInterval,
+        new LakeSoulBucketFactoryImpl<>(),
+        outputFileConfig);
+  }
 
 
-    /** Creates the actual sink. */
-    public LakesoulFileSink<IN> build() {
-        return new LakesoulFileSink<>(this, bucketCheckInterval);
-    }
+  /**
+   * Creates the actual sink.
+   */
+  public LakesoulFileSink<IN> build() {
+    return new LakesoulFileSink<>(this, bucketCheckInterval);
+  }
 
-    //        @VisibleForTesting
-    T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
-        this.bucketFactory = Preconditions.checkNotNull(factory);
-        return self();
-    }
+  //        @VisibleForTesting
+  T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
+    this.bucketFactory = Preconditions.checkNotNull(factory);
+    return self();
+  }
 
-    @Internal
-    @Override
-    public BucketWriter<IN, BucketID> createBucketWriter() throws IOException {
-        return new RowWiseBucketWriter<>(
-                FileSystem.get(basePath.toUri()).createRecoverableWriter(), encoder);
-    }
+  @Internal
+  @Override
+  public BucketWriter<IN, BucketID> createBucketWriter() throws IOException {
+    return new RowWiseBucketWriter<>(
+        FileSystem.get(basePath.toUri()).createRecoverableWriter(), encoder);
+  }
 
-    @Internal
-    @Override
-    public LakeSoulBuckets<IN, BucketID> createBuckets(int subtaskIndex) throws IOException {
-        return new LakeSoulBuckets<>(
-                basePath,
-                bucketAssigner,
-                bucketFactory,
-                createBucketWriter(),
-                rollingPolicy,
-                subtaskIndex,
-                outputFileConfig);
-    }
+  @Internal
+  @Override
+  public LakeSoulBuckets<IN, BucketID> createBuckets(int subtaskIndex) throws IOException {
+    return new LakeSoulBuckets<>(
+        basePath,
+        bucketAssigner,
+        bucketFactory,
+        createBucketWriter(),
+        rollingPolicy,
+        subtaskIndex,
+        outputFileConfig);
+  }
 }

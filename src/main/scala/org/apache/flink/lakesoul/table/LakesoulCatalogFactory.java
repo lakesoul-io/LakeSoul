@@ -17,6 +17,7 @@
  */
 
 package org.apache.flink.lakesoul.table;
+
 import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
 import org.apache.flink.table.factories.TableFactory;
 import org.apache.flink.configuration.ConfigOption;
@@ -28,40 +29,41 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
 
-public class LakesoulCatalogFactory  implements TableFactory,CatalogFactory {
+public class LakesoulCatalogFactory implements TableFactory, CatalogFactory {
 
-    public Catalog createCatalog(String name, Map<String, String> properties) {
-         return new LakesoulCatalog();
-    }
-      @Override
-      public Catalog createCatalog(CatalogFactory.Context context) {
-         return new LakesoulCatalog();
-    }
-    @Override
-    public Map<String, String> requiredContext() {
-        return null;
-    }
+  public Catalog createCatalog(String name, Map<String, String> properties) {
+    return new LakesoulCatalog();
+  }
 
-    @Override
-    public List<String> supportedProperties() {
-        return null;
-    }
+  @Override
+  public Catalog createCatalog(CatalogFactory.Context context) {
+    return new LakesoulCatalog();
+  }
 
-    @Override
-    public String factoryIdentifier(){
-        return "lakesouls";
-    }
+  @Override
+  public Map<String, String> requiredContext() {
+    return null;
+  }
 
-    @Override
-    public Set<ConfigOption<?>> requiredOptions() {
-         return Collections.emptySet();
-    }
+  @Override
+  public List<String> supportedProperties() {
+    return null;
+  }
 
-    @Override
-    public Set<ConfigOption<?>> optionalOptions() {
-        return Collections.emptySet();
-    }
+  @Override
+  public String factoryIdentifier() {
+    return "lakesouls";
+  }
 
+  @Override
+  public Set<ConfigOption<?>> requiredOptions() {
+    return Collections.emptySet();
+  }
+
+  @Override
+  public Set<ConfigOption<?>> optionalOptions() {
+    return Collections.emptySet();
+  }
 
 
 }

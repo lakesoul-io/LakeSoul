@@ -24,14 +24,14 @@ import com.google.errorprone.annotations.FormatMethod;
  * Exception raised when attempting to create a table that already exists.
  */
 public class AlreadyExistsException extends RuntimeException {
-    @FormatMethod
-    public AlreadyExistsException(String message, Object... args) {
-        super(String.format(message, args));
-    }
+  @FormatMethod
+  public AlreadyExistsException(String message, Object... args) {
+    super(String.format(message, args));
+  }
 
-    @FormatMethod
-    public AlreadyExistsException(Throwable cause, String message, Object... args) {
-        super(String.format(message, args), cause);
-    }
+  @FormatMethod
+  public AlreadyExistsException(Throwable cause, String message, Object... args) {
+    super(String.format(message, args), cause);
+  }
 }
 
