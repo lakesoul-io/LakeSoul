@@ -108,12 +108,25 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.setCommitType("compaction")
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
     tc.commit(newFiles, newReadFiles)
+    val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (!hiveTableName.isEmpty) {
       SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
-      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$conditionString'")
+      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
     }
 
     logInfo("=========== Compaction Success!!! ===========")
+  }
+
+  def escapeSingleBackQuotedString(str: String): String = {
+    val builder = StringBuilder.newBuilder
+
+    str.foreach {
+      case '\'' => ""
+      case '`' => ""
+      case ch => builder += ch
+    }
+
+    builder.toString()
   }
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
