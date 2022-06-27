@@ -242,9 +242,7 @@ public class LakesoulCatalog implements Catalog {
     }
     String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
     String tableName = tablePath.getFullName();
-    //todo
     TableInfo tableInfo = dbManager.getTableInfo(tableName);
-    //todo rangeValue
     Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
     return (boolean) partitionId._1();
   }

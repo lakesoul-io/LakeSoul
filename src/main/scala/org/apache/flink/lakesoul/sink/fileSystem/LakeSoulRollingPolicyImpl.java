@@ -69,7 +69,6 @@ public class LakeSoulRollingPolicyImpl implements LakeSoulRollingPolicy<RowData,
   @Override
   public boolean shouldRollOnProcessingTime(
       PartFileInfo<String> partFileState, long currentTime) {
-    //TODO set time
     return currentTime - partFileState.getLastUpdateTime() > rollingTime;
   }
 

@@ -62,11 +62,13 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
     ResolvedCatalogTable catalogTable = context.getCatalogTable();
     TableSchema schema = catalogTable.getSchema();
-    List<String> columns = schema.getPrimaryKey().get().getColumns();
-    String primaryKeys = FlinkUtil.stringListToString(columns);
-    String filedNames = Arrays.toString(schema.getFieldNames());
-    String partitionKeys = FlinkUtil.stringListToString(catalogTable.getPartitionKeys());
-    options.setString(FILE_EXIST_COLUMN_KEY, filedNames);
+    List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+    String primaryKeys = FlinkUtil.stringListToString(pkColumns);
+    List<String> partitionKeysList = catalogTable.getPartitionKeys();
+    String partitionKeys = FlinkUtil.stringListToString(partitionKeysList);
+    List<String> fileExistColumnKey = Arrays.stream(schema.getFieldNames())
+        .filter(o -> !partitionKeysList.contains(o)).collect(Collectors.toList());
+    options.setString(FILE_EXIST_COLUMN_KEY, FlinkUtil.stringListToString(fileExistColumnKey));
     options.setString(TABLE_NAME, objectIdentifier.getObjectName());
     options.setString(RECORD_KEY_NAME, primaryKeys);
     options.setString(PARTITION_FIELD.key(), partitionKeys);

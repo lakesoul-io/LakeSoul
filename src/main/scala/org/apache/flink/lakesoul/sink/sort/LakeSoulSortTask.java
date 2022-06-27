@@ -97,21 +97,6 @@ public class LakeSoulSortTask extends TableStreamOperator<RowData>
 
   @Override
   public void processElement(StreamRecord<RowData> element) throws Exception {
-//        String partitionKey = keyGen.getPartitionKey(element.getValue());
-//        if (buckets.containsKey(partitionKey)){
-//            int nowNumber = buckets.get(partitionKey);
-//            //TODO  File block size rules
-//            if (nowNumber>10){
-//                this.sorter.write(element.getValue());
-//                endInput();
-//                buckets.put(partitionKey,0);
-//                return;
-//            }
-//        }else {
-//            buckets.put(partitionKey,0);
-//        }
-//        this.sorter.write(element.getValue());
-//        buckets.put(partitionKey,buckets.get(partitionKey)+1);
   }
 
 

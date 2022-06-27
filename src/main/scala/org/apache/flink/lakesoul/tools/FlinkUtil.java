@@ -42,7 +42,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
@@ -81,7 +80,7 @@ public class FlinkUtil {
     return stNew;
   }
 
-  public static StringData RowKindToOperation(String rowKind) {
+  public static StringData rowKindToOperation(String rowKind) {
     if ("+I".equals(rowKind)) {
       return StringData.fromString("insert");
     }
@@ -105,7 +104,6 @@ public class FlinkUtil {
     String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
     boolean contains = (lakesoulCdcColumnName == null || "".equals(lakesoulCdcColumnName));
     String hashColumn = properties.getString(RECORD_KEY_NAME);
-    //todo
     for (StructField sf : struct.fields()) {
       if (contains && sf.name().equals(lakesoulCdcColumnName)) {
         continue;
@@ -118,18 +116,13 @@ public class FlinkUtil {
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
     String partitionKeys = tableInfo.getPartitions();
-    //TODO change
     String[] split = partitionKeys.split(";");
     String s = split[0];
     ArrayList<String> parKey = new ArrayList<>();
     parKey.add(s);
-//    List<String> partitionKey = Arrays.stream(partitionKeys.split(";")).collect(Collectors.toList());
-
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
     return CatalogTable.of(bd.build(), "", parKey, conf);
-
-//    return CatalogTable.of(bd.build(), "", partitionKey, conf);
   }
 
   public static String stringListToString(List<String> list) {
