@@ -21,6 +21,7 @@ package org.apache.flink.lakesoul.sink;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
@@ -52,7 +53,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
   private final Configuration conf;
 
-  private final String fileExistFiles = "user_id,name";
+  private final String fileExistFiles;
 
   private final Path locationPath;
 
@@ -66,8 +67,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
   public DataInfoCommitter(Path locationPath, Configuration conf) {
     this.conf = conf;
-//    this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
-//    this.fileExistFiles = "user_id,name";
+    this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
     this.locationPath = locationPath;
   }
 

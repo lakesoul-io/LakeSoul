@@ -24,12 +24,15 @@ import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 
 import java.util.List;
+
 import org.apache.flink.lakesoul.metaData.DataInfo;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
+
+import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.BUCKET_PARALLELISM;
 
 /**
  * Helper for creating streaming file sink.
@@ -46,12 +49,13 @@ public class LakeSoulSink {
       Configuration conf) {
     LakSoulFileWriter<T> fileWriter =
         new LakSoulFileWriter<>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf, outputFile);
+    int bucketParallelism = conf.getInteger(BUCKET_PARALLELISM);
 
     return inputStream
         .transform(LakSoulFileWriter.class.getSimpleName(),
             TypeInformation.of(DataInfo.class),
-            fileWriter).name("DataInfo")
-        .setParallelism(parallelism);
+            fileWriter).name("DataWrite")
+        .setParallelism(bucketParallelism);
   }
 
   /**
