@@ -40,7 +40,6 @@ public class LakeSoulSinkOptions {
 
   public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;
 
-
   public static final ConfigOption<String> KEY_FIELD = ConfigOptions
       .key("recordKey")
       .stringType()
@@ -70,7 +69,6 @@ public class LakeSoulSinkOptions {
       .stringType()
       .noDefaultValue()
       .withDescription("The path of a directory");
-
 
 }
 

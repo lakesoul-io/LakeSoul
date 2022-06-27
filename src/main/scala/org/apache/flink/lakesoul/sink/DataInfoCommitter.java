@@ -52,7 +52,7 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
   private final Configuration conf;
 
-  private final String fileExistFiles;
+  private final String fileExistFiles = "user_id,name";
 
   private final Path locationPath;
 
@@ -66,7 +66,8 @@ public class DataInfoCommitter extends AbstractStreamOperator<Void>
 
   public DataInfoCommitter(Path locationPath, Configuration conf) {
     this.conf = conf;
-    this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
+//    this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
+//    this.fileExistFiles = "user_id,name";
     this.locationPath = locationPath;
   }
 

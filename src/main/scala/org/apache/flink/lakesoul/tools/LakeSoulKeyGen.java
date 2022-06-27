@@ -32,7 +32,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-
 public class LakeSoulKeyGen implements Serializable {
 
   private static final String NULL_RECORD_KEY_PLACEHOLDER = "__null__";
@@ -51,7 +50,6 @@ public class LakeSoulKeyGen implements Serializable {
   private boolean simplePartitionPath = false;
   private final List<String> fieldNames;
   public List<String> partitionKey;
-
 
   public LakeSoulKeyGen(RowType rowType, Configuration conf) {
     this.conf = conf;
@@ -83,11 +81,9 @@ public class LakeSoulKeyGen implements Serializable {
     }
   }
 
-
   public static String objToString(@Nullable Object obj) {
     return obj == null ? null : obj.toString();
   }
-
 
   public String[] getRecordKeyFields() {
     String keyField = conf.getString(LakeSoulSinkOptions.KEY_FIELD);
@@ -98,7 +94,6 @@ public class LakeSoulKeyGen implements Serializable {
     String partitionField = conf.getString(LakeSoulSinkOptions.PARTITION_FIELD);
     return partitionField.split(",");
   }
-
 
   public String getRecordKey(RowData rowData) throws Exception {
     if (this.simpleRecordKey) {
@@ -188,10 +183,8 @@ public class LakeSoulKeyGen implements Serializable {
     return partitionPath.toString();
   }
 
-
   public String getBucketPartitionKey(RowData row) throws Exception {
     return getPartitionPath(row) + getRecordKey(row);
   }
-
 
 }
