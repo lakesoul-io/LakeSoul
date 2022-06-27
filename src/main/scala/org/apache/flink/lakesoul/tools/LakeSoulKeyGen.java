@@ -184,7 +184,9 @@ public class LakeSoulKeyGen implements Serializable {
   }
 
   public String getBucketPartitionKey(RowData row) throws Exception {
-    return getPartitionPath(row) + getRecordKey(row);
+    //TODO:return
+//    return getPartitionPath(row) + getRecordKey(row);
+    return getPartitionPath(row);
   }
 
 }

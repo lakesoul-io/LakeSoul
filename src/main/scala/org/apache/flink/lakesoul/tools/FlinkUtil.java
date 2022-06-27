@@ -36,6 +36,7 @@ import org.apache.spark.sql.types.StructType;
 import scala.collection.JavaConverters;
 import scala.collection.Map$;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -117,10 +118,18 @@ public class FlinkUtil {
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
     String partitionKeys = tableInfo.getPartitions();
-    List<String> partitionKey = Arrays.stream(partitionKeys.split(";")).collect(Collectors.toList());
+    //TODO change
+    String[] split = partitionKeys.split(";");
+    String s = split[0];
+    ArrayList<String> parKey = new ArrayList<>();
+    parKey.add(s);
+//    List<String> partitionKey = Arrays.stream(partitionKeys.split(";")).collect(Collectors.toList());
+
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
-    return CatalogTable.of(bd.build(), "", partitionKey, conf);
+    return CatalogTable.of(bd.build(), "", parKey, conf);
+
+//    return CatalogTable.of(bd.build(), "", partitionKey, conf);
   }
 
   public static String stringListToString(List<String> list) {
