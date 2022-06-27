@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/root/.m2/repository mvn package -f /opt/LakeSoul/
 RUN mvn -f /opt/LakeSoul/pom.xml dependency:copy-dependencies -DoutputDirectory=/opt/LakeSoul/jars -DincludeScope=runtime -DexcludeGroupIds=org.apache.parquet,org.apache.flink,org.scalatest,org.scala-lang,org.apache.livy,junit,org.slf4j,org.apache.logging.log4j,io.netty,org.apache.commons,org.xerial.snappy,com.codahale.metrics
 
 FROM env as release
-RUN apt-get install -y python3.8 python3-setuptools ca-certificates openjdk-11-jre && apt-get clean
+RUN apt-get install -y tini python3.8 python3-setuptools ca-certificates openjdk-11-jre && apt-get clean
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 30
 RUN python -m easy_install install pip
 RUN python -m pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
