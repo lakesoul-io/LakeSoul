@@ -131,9 +131,6 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
     */
   override def buildScan(requiredColumns: Array[String], filters: Array[Filter]): RDD[Row] = {
 
-    //check and redo commit before read
-    //MetaCommit.checkAndRedoCommit(snapshotManagement.snapshot)
-
     val predicts = filters.length match {
       case 0 => expressions.Literal(true)
       case _ => LakeSoulSourceUtils.translateFilters(filters)

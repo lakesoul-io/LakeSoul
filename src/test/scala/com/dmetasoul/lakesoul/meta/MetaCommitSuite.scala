@@ -16,26 +16,15 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.util.concurrent.{Executors, TimeUnit}
-import MetaCommit.generateCommitIdToAddUndoLog
-import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, MetaInfo, PartitionInfo}
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
-
-import scala.collection.mutable.ArrayBuffer
-
+import org.apache.spark.sql.{DataFrame, QueryTest}
 
 trait MetaCommitSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    //MetaTableManage.initDatabaseAndTables()
   }
 
 
@@ -55,134 +44,6 @@ trait MetaCommitSuiteBase extends QueryTest
       .format("lakesoul").mode("append")
       .save(tablePath)
   }
-
-//  def addDataFileInfo(key: String, num: Int): Seq[DataFileInfo] = {
-//    Seq(DataFileInfo(
-//      "addFile:" + key + "_" + num,
-//      MetaUtils.getPartitionMapFromKey(key),
-//      233,
-//      456,
-//      -1,
-//      true,
-//      "test_value"
-//    ))
-//  }
-
-//  def getNewPartInfoWithAddFile(partitionInfoArr: Array[PartitionInfo],
-//                                num: Int): Array[PartitionInfo] = {
-//    partitionInfoArr.map(m => {
-//      val files = DataOperation
-//        .getSinglePartitionDataInfo(m.table_id, m.range_id, m.range_value, m.read_version)
-//        .toArray
-//      m.copy(
-//        read_files = files,
-//        add_files = addDataFileInfo(m.range_value, num).toArray,
-//      )
-//    })
-//  }
-
-//  def getNewPartInfoWithAddAndExpireFile(partitionInfoArr: Array[PartitionInfo],
-//                                         num: Int): Array[PartitionInfo] = {
-//    partitionInfoArr.map(m => {
-//      val files = DataOperation
-//        .getSinglePartitionDataInfo(m.table_id, m.range_id, m.range_value, m.read_version)
-//        .toArray
-//      m.copy(
-//        read_files = files,
-//        add_files = addDataFileInfo(m.range_value, num).toArray,
-//        expire_files = files
-//      )
-//    })
-//  }
-
-
-//  def commitTest(commitType: String, changeSchema: Boolean): Unit = {
-//    test(s"$commitType commit, change schema: $changeSchema") {
-//      withTempDir(tmpDir => {
-//        val tableName = MetaUtils.modifyTableString(tmpDir.getCanonicalPath)
-//        initTable(tableName)
-//
-//        val tableInfo = MetaVersion.getTableInfo(tableName)
-//        var partitionInfoArr = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
-//        val newPartitionInfoArr = getNewPartInfoWithAddAndExpireFile(partitionInfoArr, 1)
-//        val metaInfo = MetaInfo(
-//          tableInfo,
-//          newPartitionInfoArr,
-//          CommitType(commitType))
-//
-//        MetaCommit.doMetaCommit(metaInfo, changeSchema, CommitOptions(None, None))
-//        partitionInfoArr = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
-//        assert(partitionInfoArr.map(_.read_version).forall(_ == 2))
-//        assert(partitionInfoArr.forall(m => {
-//          val fileName = "addFile:" + m.range_value + "_" + 1
-//          DataOperation
-//            .getSinglePartitionDataInfo(m.table_id, m.range_id, m.range_value, m.read_version)
-//            .head
-//            .file_path
-//            .equals(fileName)
-//        }))
-//
-//      })
-//    }
-//  }
-
-
-//  def concurrentCommit(commitType: String, partitionNum: String, taskNum: Int, derange: Boolean): Unit = {
-//    test(s"concurrent $commitType commit, change schema: false - $partitionNum partition, derange: $derange") {
-//      withTempDir(tmpDir => {
-//        val tableName = MetaUtils.modifyTableString(tmpDir.getCanonicalPath)
-//        initTable(tableName)
-//
-//        val tableInfo = MetaVersion.getTableInfo(tableName)
-//        var partitionInfoArr = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
-//
-//        val arrMetaInfo = new ArrayBuffer[MetaInfo]()
-//
-//        for (i <- 0 until taskNum) {
-//          val newPartitionInfoArr = partitionNum match {
-//            case "single" => getNewPartInfoWithAddFile(Array(partitionInfoArr.head), i)
-//            case "multiple" =>
-//              if (derange) {
-//                //disturb order
-//                getNewPartInfoWithAddFile(partitionInfoArr, i)
-//                  .map(m => (m, scala.util.Random.nextInt(partitionInfoArr.length * 3)))
-//                  .sortBy(_._2)
-//                  .map(_._1)
-//              } else {
-//                getNewPartInfoWithAddFile(partitionInfoArr, i)
-//              }
-//            case _ => throw new Exception("Illegal partitionNum, it must be 'single' or 'multiple'")
-//          }
-//          //
-//          arrMetaInfo += MetaInfo(
-//            tableInfo,
-//            newPartitionInfoArr,
-//            CommitType(commitType)
-//          )
-//        }
-//
-//        val pool = Executors.newFixedThreadPool(taskNum)
-//
-//        for (i <- 0 until taskNum) {
-//          pool.execute(new Runnable {
-//            override def run(): Unit = {
-//              MetaCommit.doMetaCommit(arrMetaInfo(i), false, CommitOptions(None, None))
-//            }
-//          })
-//
-//        }
-//
-//        pool.shutdown()
-//        pool.awaitTermination(20, TimeUnit.MINUTES)
-//
-//
-//        partitionInfoArr = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
-//        assert(partitionInfoArr.head.read_version == taskNum + 1)
-//
-//      })
-//    }
-//  }
-
 
   def getNewPartitionDFSeq(num: Int): Seq[DataFrame] = {
     (0 until num).map(i => {

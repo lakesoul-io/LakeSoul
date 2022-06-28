@@ -51,20 +51,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
                                  partitionInfo: PartitionInfo): Boolean = {
-    return  partitionInfo.read_files.size >=1
-//      val timestampLimit = System.currentTimeMillis() - spark.conf.get(LakeSoulSQLConf.COMPACTION_TIME)
-//    if (force) {
-//      !partitionInfo.be_compacted
-//    } else {
-//      if (partitionInfo.delta_file_num >= spark.conf.get(LakeSoulSQLConf.MAX_DELTA_FILE_NUM)) {
-//        true
-//      } else if (partitionInfo.last_update_timestamp <= timestampLimit
-//        && !partitionInfo.be_compacted) {
-//        true
-//      } else {
-//        false
-//      }
-//    }
+    partitionInfo.read_files.size >=1
 
   }
 
@@ -154,12 +141,6 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         }
 
         val range_value = partitionSet.head
-        val table_id = tc.tableInfo.table_id
-        val range_id = tc.snapshot.getPartitionInfoArray
-          .filter(part => part.range_value.equals(range_value))
-          .head.range_value
-
-//        val partitionInfo = MetaVersion.getSinglePartitionInfo(table_id, range_value, range_id)
 
         lazy val hasNoDeltaFile = if (force) {
           false

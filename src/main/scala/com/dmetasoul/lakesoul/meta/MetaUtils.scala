@@ -16,15 +16,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import java.net.InetAddress
-import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-
-import scala.util.control.NonFatal
-
 
 object MetaUtils extends Logging {
 
@@ -61,31 +53,6 @@ object MetaUtils extends Logging {
   lazy val STREAMING_INFO_TIMEOUT: Long = 12*60*60*1000L
   lazy val PART_MERGE_FILE_MINIMUM_NUM:Int = 5
 
-  private val FIXED_DECIMAL = """decimal\(\s*(\d+)\s*,\s*(\-?\d+)\s*\)""".r
-  private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
-  private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
-
-
-
-
-  /** trans scala Map to cassandra Map type */
-  def toCassandraSetting(config: Map[String, String]): String = {
-    config.map(map => {
-      "'" + map._1 + "':'" + map._2 + "'"
-    }).mkString("{", ",", "}")
-  }
-
-  /** trans cassandra Map to scala Map type */
-  def fromCassandraSetting(setting: String): Map[String, String] = {
-    setting.stripPrefix("{").stripSuffix("}")
-    var config = scala.collection.mutable.Map.empty[String, String]
-    setting.stripPrefix("{").stripSuffix("}").split(",").map(str => {
-      val arr = str.split(":")
-      config += (arr(0).stripPrefix("'").stripSuffix("'") -> arr(1).stripPrefix("'").stripSuffix("'"))
-    })
-    config.toMap
-  }
-
   /** get partition key string from scala Map */
   def getPartitionKeyFromMap(cols: Map[String, String]): String = {
     if (cols.isEmpty) {
@@ -109,21 +76,6 @@ object MetaUtils extends Logging {
     }
     partition_values
   }
-
-  /** format char ' in sql text so it can write to cassandra */
-  def formatSqlTextToCassandra(sqlText: String): String = {
-    sqlText.replace("'", LAKESOUL_META_QUOTE)
-  }
-
-  /** format char \' in sql text read from cassandra, so it can be used in spark */
-  def formatSqlTextFromCassandra(sqlText: String): String = {
-    if (sqlText == null) {
-      ""
-    } else {
-      sqlText.replace(LAKESOUL_META_QUOTE, "'")
-    }
-  }
-
 
 }
 

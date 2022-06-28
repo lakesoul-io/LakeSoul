@@ -1,3 +1,20 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
@@ -107,7 +124,6 @@ public class PartitionInfoDao {
                 "where table_id = '%s' and partition_desc in (%s) " +
                 "group by table_id,partition_desc) t " +
                 "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", tableId, partitionString);
-//        System.out.println(sql);
         List<PartitionInfo> rsList = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -141,7 +157,6 @@ public class PartitionInfoDao {
                         "where table_id = '%s' and partition_desc = '%s' " +
                         "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", tableId, partitionDesc);
-//        System.out.println(sql);
         return getPartitionInfo(sql);
     }
 
@@ -161,12 +176,6 @@ public class PartitionInfoDao {
                 partitionInfo.setTableId(rs.getString("table_id"));
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
-                //partitionInfo.setCommitOp(rs.getString("commit_op"));
-               // Array snapshotArray = rs.getArray("snapshot");
-                //List<UUID> uuidList = new ArrayList<>();
-               // Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                //partitionInfo.setSnapshot(uuidList);
-               // partitionInfo.setExpression(rs.getString("expression"));
                 rsList.add(partitionInfo);
             }
         } catch (SQLException e) {
@@ -176,8 +185,6 @@ public class PartitionInfoDao {
         }
         return rsList;
     }
-
-
 
     public List<PartitionInfo> getPartitionDescByTableId(String tableId) {
         Connection conn = null;
@@ -237,7 +244,6 @@ public class PartitionInfoDao {
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
-//                partitionInfo.setSnapshot(DBUtil.changeStringToUUIDList(rs.getString("snapshot")));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());

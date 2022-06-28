@@ -48,29 +48,6 @@ object MetaVersion {
     dbManager.getTablePathFromShortTableName(short_table_name)
   }
 
-  //todo
-  def isPartitionExists(table_id: String, range_value: String, range_id: String, commit_id: String): Boolean = {
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |select range_id from $database.partition_info
-//           |where table_id='$table_id' and range_value='$range_value'
-//      """.stripMargin).iterator()
-//      if (res.hasNext) {
-//        val exist_range_id = res.next().getString("range_id")
-//        if (exist_range_id.equals(range_id)) {
-//          true
-//        } else {
-//          throw MetaRerunErrors.partitionChangedException(range_value, commit_id)
-//        }
-//      } else {
-//        false
-//      }
-//    })
-    false
-  }
-
-  //todo 少了configuration参数值
   def createNewTable(table_path: String,
                      short_table_name: String,
                      table_id: String,
@@ -87,34 +64,10 @@ object MetaVersion {
     dbManager.createNewTable(table_id, short_table_name, table_path, table_schema, json, partitions)
   }
 
-
-  //todo
-  def addPartition(table_id: String, table_name: String, range_id: String, range_value: String): Unit = {
-//    assert(
-//      isTableIdExists(table_name, table_id),
-//      s"Can't find table `$table_name` with id=`$table_id`, it may has been dropped.")
-//
-//    cassandraConnector.withSessionDo(session => {
-//      val res = session.execute(
-//        s"""
-//           |insert into $database.partition_info
-//           |(table_id,range_value,range_id,table_name,read_version,pre_write_version,
-//           |last_update_timestamp,delta_file_num,be_compacted)
-//           |values ('$table_id','$range_value','$range_id','$table_name',0,0,
-//           |0,0,true)
-//           |if not exists
-//    """.stripMargin)
-//      if (!res.wasApplied()) {
-//        throw LakeSoulErrors.failedAddPartitionVersionException(table_name, range_value, range_id)
-//      }
-//    })
-  }
-
   def listTables(): util.List[String] = {
     dbManager.listTables()
   }
 
-  //todo
   def getTableInfo(table_path: String): TableInfo = {
     val info = dbManager.getTableInfo(table_path)
     if (info == null) {
@@ -147,12 +100,11 @@ object MetaVersion {
       range_column,
       hash_column,
       bucket_num,
-      configurationMap,//todo
+      configurationMap,
       if (short_table_name.equals("")) None else Some(short_table_name)
     )
   }
 
-  //todo
   def getSinglePartitionInfo(table_id: String, range_value: String, range_id: String): PartitionInfo = {
     val info = dbManager.getSinglePartitionInfo(table_id, range_value)
     PartitionInfo(
@@ -190,7 +142,7 @@ object MetaVersion {
     partitionVersionBuffer.toArray
 
   }
-  //todo
+
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {
     (false, "")
   }

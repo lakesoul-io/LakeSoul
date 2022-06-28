@@ -118,8 +118,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       parquetScan()
     }
     else if (onlyOnePartition) {
-//        BucketParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-//          readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
     }
@@ -129,9 +127,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       } else
-//      if (hasNoDeltaFile) {
-//        parquetScan()
-//      } else
       {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))

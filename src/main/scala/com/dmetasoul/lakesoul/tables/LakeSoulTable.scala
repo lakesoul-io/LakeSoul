@@ -412,7 +412,6 @@ object LakeSoulTable {
     */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-//    SnapshotManagement.invalidateCache(p)
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
@@ -532,11 +531,9 @@ object LakeSoulTable {
       writer.save(tablePath)
     }
 
-
   }
 
   def createTable(data: Dataset[_], tablePath: String): TableCreator =
     new TableCreator().data(data).path(tablePath)
-
 
 }

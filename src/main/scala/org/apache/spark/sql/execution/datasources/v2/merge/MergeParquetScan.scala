@@ -353,8 +353,6 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
       if(!isSingleFile){
         val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version + 1)
         files=versionFiles.toArray
-//        val tmpFile = for(version <- 0 to files.size-1) yield files(version).copy(rangeVersion = (files(version).rangeKey + "-" + files(version).writeVersion))
-//        files=tmpFile.toArray
       }
       MergeFilePartition(bucketId, Array(files), isSingleFile)
     }
@@ -461,7 +459,6 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
     val partitions = new ArrayBuffer[MergeFilePartition]
 
     groupByPartition.foreach(p => {
-//      val isSingleFile = p._2.toSet.size == 1
       p._2.groupBy(_.fileBucketId).foreach(g => {
         var files = g._2.toArray
         val isSingleFile = files.size == 1
