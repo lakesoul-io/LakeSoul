@@ -69,7 +69,7 @@ object MetaCommit extends Logging {
     } else {
       throw LakeSoulErrors.failCommitDataFile()
     }
-    if (result) {
+    if (!result) {
       throw LakeSoulErrors.commitFailedReachLimit(
         meta_info.table_info.table_path.toString,
         "",
