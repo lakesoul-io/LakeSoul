@@ -18,11 +18,6 @@
 
 package org.apache.flink.lakesoul.test;
 
-import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.formats.parquet.avro.ParquetAvroWriters;
 import org.apache.flink.lakesoul.*;
 import org.apache.flink.lakesoul.LakesoulCatalogFactory;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -30,7 +25,6 @@ import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.TableEnvironment;
@@ -40,14 +34,10 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
 import org.apache.flink.types.Row;
 import org.apache.flink.connector.file.sink.FileSink;
-import org.apache.flink.api.common.time.Time;
 import org.junit.Before;
 import org.junit.Test;
-import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
-import org.scalatest.verbs.ResultOfAfterWordApplication;
 
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 

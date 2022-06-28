@@ -27,24 +27,11 @@ class DataOperationSuite extends QueryTest
 //  private lazy val cassandraConnector = MetaUtils.cassandraConnector
 //  private lazy val database = MetaUtils.DATA_BASE
 
-  private def getFileNum(table_id: String, range_id: String): Long = {
-//    cassandraConnector.withSessionDo(session => {
-//      session.execute(
-//        s"""
-//           |select count(*) as num from $database.data_info
-//           |where table_id='$table_id' and range_id='$range_id'
-//        """.stripMargin).one().getLong("num")
-//    })
-    1
-  }
-
   override def beforeAll(): Unit = {
     super.beforeAll()
-//    MetaTableManage.initDataInfo()
   }
 
   override def afterEach(): Unit = {
     super.afterEach()
-//    MetaTableManage.cleanDataInfo()
   }
 }
