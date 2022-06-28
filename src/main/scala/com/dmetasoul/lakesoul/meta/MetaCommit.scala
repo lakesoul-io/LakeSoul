@@ -16,11 +16,11 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.alibaba.fastjson.{JSON, JSONObject}
+import com.alibaba.fastjson.JSONObject
 
 import java.util
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.lakesoul.Snapshot
+import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
 
 import scala.collection.JavaConverters
@@ -63,11 +63,17 @@ object MetaCommit extends Logging {
     }
     info.setListPartition(javaPartitionInfoList)
 
-    var result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)
+    var result = addDataInfo(meta_info)
     if (result) {
-      result = addDataInfo(meta_info)
+      result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)
     } else {
-      //todo throw error
+      throw LakeSoulErrors.failCommitDataFile()
+    }
+    if (result) {
+      throw LakeSoulErrors.commitFailedReachLimit(
+        meta_info.table_info.table_path.toString,
+        "",
+        MetaUtils.MAX_COMMIT_ATTEMPTS)
     }
     if (result && changeSchema) {
       MetaVersion.dbManager.updateTableSchema(table_info.table_id, table_schema)
@@ -95,9 +101,6 @@ object MetaCommit extends Logging {
 
   def takePartitionsWriteLock(meta_info: MetaInfo, commit_id: String, times: Int = 0): MetaInfo = {
     meta_info
-  }
-
-  def takeSchemaLock(meta_info: MetaInfo): Unit = {
   }
 
   def addDataInfo(meta_info: MetaInfo): Boolean = {

@@ -291,6 +291,15 @@ object LakeSoulErrors {
         + s"The partition path: $fragment")
   }
 
+  def failCommitDataFile(): Throwable = {
+    new MetaException(
+      s"""
+         |Error: Failed to add data file,
+         |this batch uuid may already exists, this is unexpected, please have a check.
+         """
+    )
+  }
+
   def partitionPathInvolvesNonPartitionColumnException(badColumns: Seq[String], fragment: String): Throwable = {
 
     new AnalysisException(

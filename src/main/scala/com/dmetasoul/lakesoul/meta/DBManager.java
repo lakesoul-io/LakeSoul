@@ -1,18 +1,17 @@
 /*
+ * Copyright [2022] [DMetaSoul Team]
  *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -40,8 +39,6 @@ public class DBManager {
         partitionInfoDao = DBFactory.getPartitionInfoDao();
     }
 
-    //MetaVersion
-    //tableInfo 存在，则tablePathId 也存在，两者同时存在
     public boolean isTableExists(String tablePath) {
         TablePathId tablePathId = tablePathIdDao.findByTablePath(tablePath);
         if (tablePathId == null) {
@@ -54,19 +51,9 @@ public class DBManager {
         return true;
     }
 
-    // todo tablePath 和之前的tableName等价
     public boolean isTableIdExists(String tablePath, String tableId) {
         TableInfo tableInfo = tableInfoDao.selectByIdAndTablePath(tableId, tablePath);
         if (tableInfo != null) {
-            return true;
-        }
-        return false;
-    }
-
-    //shortName = table_name,原返回一个元组，这里看下返回什么？
-    public boolean isShortTableNameExists(String tableName) {
-        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
-        if (tableNameId != null) {
             return true;
         }
         return false;
@@ -84,52 +71,39 @@ public class DBManager {
         return tableInfo.getTablePath();
     }
 
-    public boolean isPartitionExists(String tableId, String partitionDesc) {
-        PartitionInfo p = getSinglePartitionInfo(tableId, partitionDesc);
-        if (p != null) {
-            return true;
-        }
-        return false;
-    }
-
     public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
-        // todo 之前这里有table_schema长度检测 table_schema.length > MetaUtils.MAX_SIZE_PER_VALUE
         TableInfo tableInfo = new TableInfo();
         tableInfo.setTableId(tableId);
         tableInfo.setTableName(tableName);
         tableInfo.setTablePath(tablePath);
         tableInfo.setTableSchema(tableSchema);
-        // todo list转换
         tableInfo.setPartitions(partitions);
         tableInfo.setProperties(properties);
 
-        // todo 是否考虑事物机制
         boolean insertNameFlag = true;
         if (StringUtils.isNotBlank(tableName)) {
             insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId));
+            if (!insertNameFlag) {
+                throw new IllegalStateException("this table name already exists!");
+            }
         }
         boolean insertPathFlag = true;
         if (StringUtils.isNotBlank(tablePath)) {
             insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId));
+            if (!insertPathFlag) {
+                tableNameIdDao.deleteByTableId(tableId);
+                throw new IllegalStateException("this table path already exists!");
+            }
         }
         if (insertNameFlag && insertPathFlag) {
-            tableInfoDao.insert(tableInfo);
-        } else {
-            tableNameIdDao.delete(tableName);
-            tablePathIdDao.delete(tablePath);
+            boolean insertTableFlag = tableInfoDao.insert(tableInfo);
+            if (!insertTableFlag) {
+                tableNameIdDao.deleteByTableId(tableId);
+                tablePathIdDao.deleteByTableId(tableId);
+                throw new IllegalStateException("this table info already exists!");
+            }
         }
-        // todo 之前无返回值，false直接 throw 报错
-    }
-
-    /**
-     * todo
-     * 新的应该不需要的了
-     * partition信息在写入数据时会有，
-     * table_info新也已经写入
-     */
-    public void addPartition(){
-
     }
 
     public List<String> listTables() {
@@ -137,9 +111,6 @@ public class DBManager {
         return rsList;
     }
 
-    /**
-     * 之前参数table_name 对应现在table_path
-     */
     public TableInfo getTableInfo(String tablePath) {
         TableInfo tableInfo = tableInfoDao.selectByTablePath(tablePath);
         return tableInfo;
@@ -168,9 +139,6 @@ public class DBManager {
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
     }
 
-    /**
-     * 原参：table_name，table_id
-     */
     public void deleteTableInfo(String tablePath, String tableId) {
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
@@ -236,7 +204,6 @@ public class DBManager {
         tableNameIdDao.delete(tableName);
     }
 
-    // todo createNewTable 有了
     public void addShortTableName(String tableName, String tablePath) {
         TableInfo tableInfo = getTableInfo(tablePath);
 
@@ -291,23 +258,13 @@ public class DBManager {
         Map<String, PartitionInfo> newMap = new HashMap<>();
         List<String> partitionDescList = new ArrayList<>();
 
-//       优化之前的部分
-//        for (PartitionInfo partitionInfo : listPartitionInfo) {
-//            PartitionInfo newPartition = getCurPartitionInfo(partitionInfo, commitOp);
-//            newPartitionList.add(newPartition);
-//            String partitionDesc = partitionInfo.getPartitionDesc();
-//            rawMap.put(partitionDesc, partitionInfo);
-//            newMap.put(partitionDesc, newPartition);
-//            partitionDescList.add(partitionDesc);
-//        }
-
         for (PartitionInfo partitionInfo : listPartitionInfo) {
             String partitionDesc = partitionInfo.getPartitionDesc();
-            String dataCommitOp = partitionInfo.getCommitOp();
-            if (!dataCommitOp.equals(commitOp)) {
-                //todo 报错
-                return false;
-            }
+//            String dataCommitOp = partitionInfo.getCommitOp();
+//            if (!dataCommitOp.equals(commitOp)) {
+//                throw new IllegalStateException("partitionInfo's dataCommitOp: " + dataCommitOp + "is not equal commitOp:"
+//                        + commitOp);
+//            }
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
         }
@@ -364,8 +321,7 @@ public class DBManager {
                 newPartitionList.add(curPartitionInfo);
             }
         } else {
-            //todo 报错
-            return false;
+            throw new IllegalStateException("this operation is Illegal of the table:" + tableInfo.getTablePath());
         }
 
         boolean notConflict = partitionInfoDao.transactionInsert(newPartitionList);
@@ -391,56 +347,6 @@ public class DBManager {
         return notConflict;
     }
 
-/* 优化之前的代码
-    public PartitionInfo getCurPartitionInfo(PartitionInfo partitionInfo, String commitOp) {
-
-        String tableId = partitionInfo.getTableId();
-        String partitionDesc = partitionInfo.getPartitionDesc();
-        List<UUID> snapshot = partitionInfo.getSnapshot();
-
-        PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
-        if (curPartitionInfo == null) {
-            curPartitionInfo = new PartitionInfo();
-            curPartitionInfo.setTableId(tableId);
-            curPartitionInfo.setPartitionDesc(partitionDesc);
-            curPartitionInfo.setVersion(-1);
-            curPartitionInfo.setSnapshot(new ArrayList<>());
-        }
-        List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-        int curVersion = curPartitionInfo.getVersion();
-        int newVersion = curVersion + 1;
-
-        switch(commitOp){
-            case "append":
-//                curSnapshot.addAll(snapshot);
-//                curPartitionInfo.setVersion(newVersion);
-//                curPartitionInfo.setSnapshot(curSnapshot);
-//                curPartitionInfo.setCommitOp(commitOp);
-//                curPartitionInfo.setExpression(partitionInfo.getExpression());
-//                break;
-            case "merge":
-                curSnapshot.addAll(snapshot);
-                curPartitionInfo.setVersion(newVersion);
-                curPartitionInfo.setSnapshot(curSnapshot);
-                curPartitionInfo.setCommitOp(commitOp);
-                curPartitionInfo.setExpression(partitionInfo.getExpression());
-                break;
-            case "compaction":
-//                curPartitionInfo.setVersion(newVersion);
-//                curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
-//                curPartitionInfo.setCommitOp(commitOp);
-//                curPartitionInfo.setExpression(partitionInfo.getExpression());
-//                break;
-            case "update":
-                curPartitionInfo.setVersion(newVersion);
-                curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
-                curPartitionInfo.setCommitOp(commitOp);
-                curPartitionInfo.setExpression(partitionInfo.getExpression());
-
-        }
-        return curPartitionInfo;
-    }
-*/
     public boolean appendConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
                                   Map<String, PartitionInfo> newMap, int time) {
         List<PartitionInfo> curPartitionList = partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
@@ -470,8 +376,8 @@ public class DBManager {
                     newPartitionList.add(curPartitionInfo);
                     newMap.put(partitionDesc, curPartitionInfo);
                 } else {
-                    // 其余情况均冲入，本次数据写入失败
-                    return false;
+                    // other operate conflict, so fail
+                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
                 }
             }
         }
@@ -521,9 +427,11 @@ public class DBManager {
                     newPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
                     newPartitionList.add(newPartitionInfo);
                     newMap.put(partitionDesc, newPartitionInfo);
-                } else {
-                    // 其余情况均或略本次操作
+                } else if (curCommitOp.equals("CompactionCommit")){
                     partitionDescList.remove(partitionDesc);
+                } else {
+                    // other operate conflict, so fail
+                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
                 }
             }
         }
@@ -563,8 +471,8 @@ public class DBManager {
                     newPartitionList.add(curPartitionInfo);
                     newMap.put(partitionDesc, curPartitionInfo);
                 } else {
-                    // 其余情况均冲入，本次数据写入失败
-                    return false;
+                    // other operate conflict, so fail
+                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
                 }
             }
         }
@@ -604,8 +512,8 @@ public class DBManager {
                     newPartitionList.add(curPartitionInfo);
                     newMap.put(partitionDesc, curPartitionInfo);
                 } else {
-                    // 其余情况均冲入，本次数据写入失败
-                    return false;
+                    // other operate conflict, so fail
+                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
                 }
             }
         }
