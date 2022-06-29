@@ -21,7 +21,6 @@ package org.apache.flink.lakesoul.metaData;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -56,12 +55,13 @@ import org.apache.flink.table.expressions.Expression;
 
 import scala.Tuple2;
 
+import static com.dmetasoul.lakesoul.meta.Test.testTablePathId;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakesoulCatalog implements Catalog {
-  private static final String LAKE_SOUL_DATA_BASE_NAME = "MetaCommon.DATA_BASE()";
+  private static final String LAKE_SOUL_DATA_BASE_NAME = "test_lakesoul_meta";
   private static final String TABLE_PATH = "path";
   private static final String TABLE_ID_PREFIX = "table_";
   private DBManager dbManager;
@@ -126,7 +126,7 @@ public class LakesoulCatalog implements Catalog {
   public List<String> listTables(String databaseName) throws CatalogException {
     checkArgument(!StringUtils.isNullOrWhitespaceOnly(databaseName),
         "databaseName cannot be null or empty");
-    return MetaVersion.listTables();
+    return dbManager.listTables();
   }
 
   @Override
@@ -236,15 +236,7 @@ public class LakesoulCatalog implements Catalog {
 
   @Override
   public boolean partitionExists(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-    checkNotNull(tablePath);
-    if (tableExists(tablePath)) {
-      throw new CatalogException("table path not exist");
-    }
-    String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
-    String tableName = tablePath.getFullName();
-    TableInfo tableInfo = dbManager.getTableInfo(tableName);
-    Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
-    return (boolean) partitionId._1();
+    return false;
   }
 
   @Override
@@ -263,9 +255,7 @@ public class LakesoulCatalog implements Catalog {
     String tableName = tablePath.getFullName();
     String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
     TableInfo tableInfo = dbManager.getTableInfo(tableName);
-    Tuple2<Object, String> partitionId = MetaVersion.getPartitionId(tableInfo.getTableId(), rangeValue);
-    MetaVersion.deletePartitionInfoByRangeId(tableInfo.getTableId(), rangeValue, partitionId._2);
-  }
+     }
 
   @Override
   public void alterPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, CatalogPartition catalogPartition, boolean ignoreIfExists)

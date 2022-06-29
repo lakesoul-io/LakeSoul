@@ -135,16 +135,14 @@ public class DBManager {
 
     //原返回table_name即路径，则现返回tablePath
     public List<String> listTables() {
-        List<String> rsList = tablePathIdDao.listAllPath();
-        return rsList;
+        return tablePathIdDao.listAllPath();
     }
 
     /**
      * 之前参数table_name 对应现在table_path
      */
     public TableInfo getTableInfo(String tablePath) {
-        TableInfo tableInfo = tableInfoDao.selectByTablePath(tablePath);
-        return tableInfo;
+        return tableInfoDao.selectByTablePath(tablePath);
     }
 
     public TableInfo getTableInfoByName(String tableName) {
