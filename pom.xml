@@ -18,7 +18,7 @@
         <flink.version>1.14.3</flink.version>
         <hive.version>0.13.0</hive.version>
         <parquet.version>1.11.0</parquet.version>
-        <postgresql.version>42.2.14</postgresql.version>
+        <postgresql.version>42.3.3</postgresql.version>
         <fastjson.version>1.2.75</fastjson.version>
         <log4j.version>2.17.2</log4j.version>
         <local.scope>provided</local.scope>
