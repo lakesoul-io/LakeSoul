@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, SchemaUtils}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, MaterialViewInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -42,8 +42,6 @@ trait TransactionalWrite {
   protected var commitType: Option[CommitType]
 
   protected var shortTableName: Option[String]
-
-  protected var materialInfo: Option[MaterialViewInfo]
 
   protected var hasWritten = false
 
@@ -98,12 +96,12 @@ trait TransactionalWrite {
     rangePartitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)
+  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)._1
 
   def writeFiles(data: Dataset[_], writeOptions: Option[LakeSoulOptions]): Seq[DataFileInfo] =
-    writeFiles(data, writeOptions, isCompaction = false)
+    writeFiles(data, writeOptions, isCompaction = false)._1
 
-  def writeFiles(data: Dataset[_], isCompaction: Boolean): Seq[DataFileInfo] =
+  def writeFiles(data: Dataset[_], isCompaction: Boolean): (Seq[DataFileInfo], Path) =
     writeFiles(data, None, isCompaction = isCompaction)
 
   /**
@@ -112,16 +110,7 @@ trait TransactionalWrite {
     */
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
-                 isCompaction: Boolean): Seq[DataFileInfo] = {
-    var updateMaterialView = false
-    if (writeOptions.isDefined) {
-      updateMaterialView = writeOptions.get.updateMaterialView
-    }
-    //can't update material view
-    if (snapshot.getTableInfo.is_material_view && !updateMaterialView) {
-      throw LakeSoulErrors.updateMaterialViewWithCommonOperatorException()
-    }
-
+                 isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
     val data = if (tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
     } else {
@@ -130,22 +119,24 @@ trait TransactionalWrite {
 
     hasWritten = true
     val spark = data.sparkSession
-
     spark.sessionState.conf.setConfString(SQLConf.UNSUPPORTED_OPERATION_CHECK_ENABLED.key, "false")
 
     //If this is the first time to commit, you need to check if there is data in the path where the table is located.
     //If there has data, you cannot create a new table
     if (isFirstCommit) {
-      val table_path = new Path(table_name)
-      val fs = table_path.getFileSystem(spark.sessionState.newHadoopConf())
-      if (fs.exists(table_path) && fs.listStatus(table_path).nonEmpty) {
-        throw LakeSoulErrors.failedCreateTableException(table_name)
+      val path = new Path(table_path)
+      val fs = path.getFileSystem(spark.sessionState.newHadoopConf())
+      if (fs.exists(path) && fs.listStatus(path).nonEmpty) {
+        throw LakeSoulErrors.failedCreateTableException(table_path)
       }
     }
 
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
-    val outputPath = tableInfo.table_path
+    var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
+    if(isCompaction){
+      outputPath =  SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString+"/compact_"+System.currentTimeMillis()))
+    }
 
     val (queryExecution, output) = normalizeData(data)
     val partitioningColumns =
@@ -187,7 +178,6 @@ trait TransactionalWrite {
           tableInfo.hash_partition_columns))
       }
 
-
       val sqlConf = spark.sessionState.conf
       val writeOptions = new mutable.HashMap[String, String]()
       if (sqlConf.getConf(LakeSoulSQLConf.PARQUET_COMPRESSION_ENABLE)) {
@@ -210,18 +200,12 @@ trait TransactionalWrite {
         statsTrackers = statsTrackers,
         options = writeOptions.toMap)
     }
-    val is_base_file = if (commitType.nonEmpty && commitType.get.name.equals("CompactionCommit")) {
-      true
-    } else {
-      false
-    }
-
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
     val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
-    committer.addedStatuses.map(file => file.copy(
-      file_exist_cols = real_write_cols,
-      is_base_file = is_base_file))
+    (committer.addedStatuses.map(file => file.copy(
+      file_exist_cols = real_write_cols
+    )), outputPath)
   }
 
 

@@ -16,12 +16,13 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.MetaUtils
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.ImplicitMetadataOperation
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
-import org.apache.spark.sql.lakesoul.{PartitionFilter, SnapshotManagement, LakeSoulOptions, TransactionCommit}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, SnapshotManagement, TransactionCommit}
 
 /**
   * Used to write a [[DataFrame]] into a lakesoul table.
@@ -65,10 +66,6 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
 
   override protected val shortTableName: Option[String] = options.shortTableName
 
-  override protected val createMaterialView: Boolean = options.createMaterialView
-  override protected val materialSQLText: String = options.materialSQLText
-  override protected val materialAutoUpdate: Boolean = options.materialAutoUpdate
-
   override def run(sparkSession: SparkSession): Seq[Row] = {
     snapshotManagement.withNewTransaction { tc =>
       val (addFiles, expireFiles) = write(tc, sparkSession)
@@ -85,6 +82,11 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
       hashPartitions
     } else {
       tc.tableInfo.hash_column
+    }
+
+    mode match {
+      case SaveMode.ErrorIfExists | SaveMode.Append | SaveMode.Ignore => tc.setCommitType("append")
+      case SaveMode.Overwrite => tc.setCommitType("update")
     }
 
     if (!tc.isFirstCommit) {
@@ -124,15 +126,11 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
       case (SaveMode.Overwrite, Some(predicates)) =>
         // Check to make sure the files we wrote out were actually valid.
         val matchingFiles = PartitionFilter.filterFileList(
-          tc.tableInfo.range_partition_schema, newFiles.toDF(), predicates).as[DataFileInfo].collect()
-        val invalidFiles = newFiles.toSet -- matchingFiles
-        if (invalidFiles.nonEmpty) {
-          val badPartitions = invalidFiles
-            .map(_.range_partitions)
-            .map {
-              _.map { case (k, v) => s"$k=$v" }.mkString("/")
-            }
-            .mkString(", ")
+          tc.tableInfo.range_partition_schema,
+          newFiles,
+          predicates)
+        if (matchingFiles.length != newFiles.length) {
+          val badPartitions = (newFiles.toSet -- matchingFiles).mkString(",")
           throw LakeSoulErrors.replaceWhereMismatchException(replaceWhere.get, badPartitions)
         }
         val deleteTime = System.currentTimeMillis()

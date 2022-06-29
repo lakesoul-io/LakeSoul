@@ -59,7 +59,7 @@ object MergePartitionedFileUtil {
     val filePathStr = filePath
       .getFileSystem(sparkSession.sessionState.newHadoopConf())
       .makeQualified(filePath).toString
-    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(f.file_path))
+    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(f.path))
       .getOrElse(throw LakeSoulErrors.filePathNotFoundException(filePathStr, fileInfo.mkString(",")))
 
     val touchedFileSchema = requestFilesSchemaMap(touchedFileInfo.range_version).fieldNames
@@ -77,11 +77,11 @@ object MergePartitionedFileUtil {
       start = 0,
       length = file.getLen,
       qualifiedName = filePathStr,
-      rangeKey = touchedFileInfo.range_key,
+      rangeKey = touchedFileInfo.range_partitions,
       keyInfo = keyInfo,
       resultSchema = (requestDataInfo ++ partitionSchemaInfo).map(m => FieldInfo(m._1, m._2)),
       fileInfo = (fileSchemaInfo ++ partitionSchemaInfo).map(m => FieldInfo(m._1, m._2)),
-      writeVersion = touchedFileInfo.write_version,
+      writeVersion = 1,
       rangeVersion = touchedFileInfo.range_version,
       fileBucketId = touchedFileInfo.file_bucket_id,
       locations = hosts)

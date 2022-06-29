@@ -50,7 +50,7 @@ class UpsertSuiteBase extends QueryTest
       .option("rangePartitions", rangePartition.mkString(","))
       .option("hashPartitions", hashPartition.mkString(","))
       .option("hashBucketNum", hashBucketNum)
-      .save(snapshotManagement.table_name)
+      .save(snapshotManagement.table_path)
   }
 
   implicit def jsonStringToSeq(json: String): Seq[String] = json.split("\n")

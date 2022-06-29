@@ -27,8 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
-import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulOptions}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.types.StructType
 
 object LakeSoulSourceUtils {
@@ -41,7 +41,8 @@ object LakeSoulSourceUtils {
   }
 
   def isLakeSoulTableExists(path: String): Boolean = {
-    val table_name = MetaUtils.modifyTableString(path)
+    //val table_name = MetaUtils.modifyTableString(path)
+    val table_name = path
     MetaVersion.isTableExists(table_name)
   }
 
@@ -130,16 +131,13 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
     */
   override def buildScan(requiredColumns: Array[String], filters: Array[Filter]): RDD[Row] = {
 
-    //check and redo commit before read
-    MetaCommit.checkAndRedoCommit(snapshotManagement.snapshot)
-
     val predicts = filters.length match {
       case 0 => expressions.Literal(true)
       case _ => LakeSoulSourceUtils.translateFilters(filters)
     }
 
-    snapshotManagement
-      .createDataFrame(files, requiredColumns, Option(predicts))
+    SparkUtil
+      .createDataFrame(files, requiredColumns, snapshotManagement, Option(predicts))
       .filter(Column(predicts))
       .select(requiredColumns.map(col): _*)
       .rdd
@@ -163,7 +161,7 @@ case class LakeSoulBaseRelation(files: Seq[DataFileInfo],
     * @return LakeSoul + tableName of the relation
     */
   override def toString(): String = {
-    "LakeSoul " + tableInfo.table_name
+    "LakeSoul " + tableInfo.table_path_s.get
   }
 
 

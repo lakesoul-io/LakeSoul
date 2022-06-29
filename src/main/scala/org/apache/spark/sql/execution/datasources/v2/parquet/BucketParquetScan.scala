@@ -82,25 +82,8 @@ case class BucketParquetScan(sparkSession: SparkSession,
     val broadcastedConf = sparkSession.sparkContext.broadcast(
       new SerializableConfiguration(hadoopConf))
 
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name, sparkSession.sessionState.conf)
-
-    val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.ParquetPartitionAsyncReaderFactory"
-    val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
-
-    if (enableAsyncIO && hasAsyncClass) {
-      logInfo("================  async bucket scan   ==============================")
-
-      cls.getConstructors()(0)
-        .newInstance(sparkSession.sessionState.conf, broadcastedConf,
-          dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
-        .asInstanceOf[PartitionReaderFactory]
-
-    } else {
-      logInfo("================  bucket scan no async  ==============================")
-
-      ParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-        dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
-    }
+    ParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+      dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
   }
 
   override def equals(obj: Any): Boolean = obj match {
@@ -149,7 +132,8 @@ case class BucketParquetScan(sparkSession: SparkSession,
           maxSplitBytes = 0L,
           partitionValues = partitionValues
         )
-      }.toArray.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+      }.toSeq
+        //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
     }
     getFilePartitions(splitFiles)
   }

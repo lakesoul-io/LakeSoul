@@ -16,10 +16,12 @@
 
 package com.dmetasoul.lakesoul.tables
 
-import java.util.Locale
+import org.apache.hadoop.fs.Path
 
+import java.util.Locale
 import org.apache.spark.sql.lakesoul.LakeSoulUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 
@@ -106,14 +108,14 @@ class LakeSoulTableSuite extends QueryTest
   test("isLakeSoulTable - path") {
     withTempDir { dir =>
       testData.write.format("lakesoul").save(dir.getAbsolutePath)
-      assert(LakeSoulUtils.isLakeSoulTable(dir.getAbsolutePath))
+      assert(LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString))
     }
   }
 
   test("isLakeSoulTable - with non-LakeSoul table path") {
     withTempDir { dir =>
       testData.write.format("parquet").mode("overwrite").save(dir.getAbsolutePath)
-      assert(!LakeSoulUtils.isLakeSoulTable(dir.getAbsolutePath))
+      assert(!LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString))
     }
   }
 

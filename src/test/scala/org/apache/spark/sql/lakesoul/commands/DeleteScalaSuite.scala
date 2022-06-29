@@ -92,4 +92,5 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
       lakeSoulTable.delete()
     }
   }
+
 }

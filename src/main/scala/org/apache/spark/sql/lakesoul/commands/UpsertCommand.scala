@@ -20,7 +20,7 @@ import org.apache.spark.sql.catalyst.expressions.And
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 //import org.apache.spark.sql.lakesoul.actions.AddFile
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Literal, NamedExpression, PredicateHelper}
@@ -105,12 +105,12 @@ case class UpsertCommand(source: LogicalPlan,
       /** If delta file can be used, just write new data and delete nothing.
         * Else a merge data should be built and overwrite all files. */
       if (canUseDeltaFile) {
-        tc.setCommitType("delta")
+        tc.setCommitType("merge")
 
         val newFiles = tc.writeFiles(Dataset.ofRows(spark, source))
         tc.commit(newFiles, Seq.empty[DataFileInfo])
       } else {
-
+        tc.setCommitType("update")
         val targetOnlyPredicates = splitConjunctivePredicates(condition)
           .filter(f =>
             f.references.nonEmpty
@@ -165,8 +165,8 @@ case class UpsertCommand(source: LogicalPlan,
   private def buildTargetPlanWithFiles(tc: TransactionCommit,
                                        files: Seq[DataFileInfo],
                                        selectCols: Seq[String]): LogicalPlan = {
-    val plan = tc.snapshotManagement
-      .createDataFrame(files, selectCols)
+    val plan = SparkUtil
+      .createDataFrame(files, selectCols,tc.snapshotManagement)
       .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and

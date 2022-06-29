@@ -16,7 +16,7 @@
 
 package com.dmetasoul.lakesoul.tables
 
-import com.dmetasoul.lakesoul.meta.MetaUtils
+import com.dmetasoul.lakesoul.meta.{MetaUtils}
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 
@@ -25,34 +25,6 @@ object LakeSoulTableTestUtils {
   def createTable(df: DataFrame, snapshotManagement: SnapshotManagement): LakeSoulTable =
     new LakeSoulTable(df, snapshotManagement)
 
-
-  lazy val cassandraConnectot = MetaUtils.cassandraConnector
   lazy val dataBase = MetaUtils.DATA_BASE
-
-  def getNumByTableId(metaTable: String, tableId: String): Long = {
-    cassandraConnectot.withSessionDo(session => {
-      session.execute(
-        s"""
-           |select count(1) as num from $dataBase.$metaTable
-           |where table_id='$tableId' allow filtering
-        """.stripMargin)
-        .one()
-        .getLong("num")
-    })
-  }
-
-
-  def getNumByTableIdAndRangeId(metaTable: String, tableId: String, rangeId: String): Long = {
-    cassandraConnectot.withSessionDo(session => {
-      session.execute(
-        s"""
-           |select count(1) as num from $dataBase.$metaTable
-           |where table_id='$tableId' and range_id='$rangeId' allow filtering
-        """.stripMargin)
-        .one()
-        .getLong("num")
-    })
-  }
-
 
 }

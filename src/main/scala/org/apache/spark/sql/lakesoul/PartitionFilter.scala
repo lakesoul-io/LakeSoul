@@ -16,10 +16,10 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.DataOperation
+import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo, SparkUtil}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset}
 
@@ -29,13 +29,11 @@ object PartitionFilter {
     val table_info = snapshot.getTableInfo
 
     val partitionFilters = filters.flatMap { filter =>
-      LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, snapshot.spark)._1
+      LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, SparkUtil.spark)._1
     }
+    val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
 
-    val allPartitions = snapshot.allPartitionFilterInfoDF
-
-    import snapshot.spark.implicits._
-
+    import SparkUtil.spark.implicits._
 
     filterFileList(
       table_info.range_partition_schema,
@@ -43,12 +41,26 @@ object PartitionFilter {
       partitionFilters).as[PartitionFilterInfo].collect()
   }
 
+
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
-    val partitionIds = partitionsForScan(snapshot, filters).map(_.range_id)
-    val partitionInfo = snapshot.getPartitionInfoArray.filter(p => partitionIds.contains(p.range_id))
-
+    val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value)
+    val partitionInfo = snapshot.getPartitionInfoArray.filter(p => partitionRangeValues.contains(p.range_value))
     DataOperation.getTableDataInfo(partitionInfo)
+  }
+
+  def filterFileList(partitionSchema: StructType,
+                     files: Seq[DataFileInfo],
+                     partitionFilters: Seq[Expression]): Seq[DataFileInfo] = {
+    import SparkUtil.spark.implicits._
+    val partitionsMatched = filterFileList(partitionSchema,
+      files.map(f => PartitionFilterInfo(
+        f.range_partitions,
+        MetaUtils.getPartitionMapFromKey(f.range_partitions),
+        0
+      )).toDF,
+      partitionFilters).as[PartitionFilterInfo].collect()
+    files.filter(f => partitionsMatched.exists(p => p.range_value == f.range_partitions))
   }
 
   /**

@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
-import com.dmetasoul.lakesoul.meta.{MaterialView, MetaCommit}
+import com.dmetasoul.lakesoul.meta.MetaCommit
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -27,17 +27,14 @@ import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, Spark
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
-import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.material_view.MaterialViewUtils
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{RelationTable, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
+import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.ArrayBuffer
 
 
 case class LakeSoulScanBuilder(sparkSession: SparkSession,
@@ -99,84 +96,48 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
   override def build(): Scan = {
     //check and redo commit before read
-    MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
+    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
-    //if table is a material view, quickly failed if data is stale
-    if (tableInfo.is_material_view
-      && !sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.ALLOW_STALE_MATERIAL_VIEW)) {
+    var files:Seq[DataFileInfo] = Seq.empty
+    if(SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)){
+      files=fileIndex.getFileInfoForPartitionVersion()
+    }else{
+      files=fileIndex.getFileInfo(Seq(parseFilter()))
+    }
+    val fileInfo=files.groupBy(_.range_partitions)
+    val onlyOnePartition = fileInfo.size <= 1
 
-      //forbid using material rewrite this plan
-      LakeSoulUtils.executeWithoutQueryRewrite(sparkSession) {
-        val materialInfo = MaterialView.getMaterialViewInfo(tableInfo.short_table_name.get)
-        assert(materialInfo.isDefined)
-
-        val data = sparkSession.sql(materialInfo.get.sqlText)
-        val currentRelationTableVersion = new ArrayBuffer[RelationTable]()
-        MaterialViewUtils.parseRelationTableInfo(data.queryExecution.executedPlan, currentRelationTableVersion)
-        val currentRelationTableVersionMap = currentRelationTableVersion.map(m => (m.tableName, m)).toMap
-        val isConsistent = materialInfo.get.relationTables.forall(f => {
-          val currentVersion = currentRelationTableVersionMap(f.tableName)
-          f.toString.equals(currentVersion.toString)
-        })
-
-        if (!isConsistent) {
-          throw LakeSoulErrors.materialViewHasStaleDataException(tableInfo.short_table_name.get)
-        }
-      }
+    var hasNoDeltaFile = false
+    if(tableInfo.bucket_num>0){
+      hasNoDeltaFile = fileInfo.forall(f => f._2.groupBy(_.file_bucket_id).forall(_._2.size<=1))
+    }else{
+      hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
     }
 
-    val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
-    val onlyOnePartition = fileInfo.size <= 1
-    val hasNoDeltaFile = fileInfo.forall(f => f._2.forall(_.is_base_file))
-
-    val enableAsyncIO = LakeSoulUtils.enableAsyncIO(tableInfo.table_name, sparkSession.sessionState.conf)
-
-    if (tableInfo.hash_partition_columns.isEmpty) {
-      parquetScan(enableAsyncIO)
+    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.size == 0) {
+      parquetScan()
     }
     else if (onlyOnePartition) {
-      if (hasNoDeltaFile) {
-        BucketParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else {
-        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      }
     }
     else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else if (hasNoDeltaFile) {
-        parquetScan(enableAsyncIO)
-      } else {
+      } else
+      {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       }
-
     }
   }
 
 
-  def parquetScan(enableAsyncIO: Boolean): Scan = {
-    val asyncFactoryName = "org.apache.spark.sql.execution.datasources.v2.parquet.AsyncParquetScan"
-    val (hasAsyncClass, cls) = LakeSoulUtils.getAsyncClass(asyncFactoryName)
-
-    if (enableAsyncIO && hasAsyncClass) {
-      logInfo("======================  async scan   ========================")
-
-      val constructor = cls.getConstructors()(0)
-      constructor.newInstance(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()), Seq.empty)
-        .asInstanceOf[Scan]
-
-    } else {
-      logInfo("======================  scan no async  ========================")
-
-      ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()))
-    }
+  def parquetScan(): Scan = {
+    ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+      readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()))
   }
 
 }

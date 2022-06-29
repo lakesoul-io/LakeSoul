@@ -34,7 +34,7 @@ abstract class DeleteSuiteBase extends QueryTest
     if (partitionBy.nonEmpty) {
       writer.option("rangePartitions", partitionBy.mkString(","))
     }
-    writer.save(snapshotManagement.table_name)
+    writer.save(snapshotManagement.table_path)
   }
 
   protected def appendHashPartition(df: DataFrame, partitionBy: Seq[String] = Nil): Unit = {
@@ -45,11 +45,11 @@ abstract class DeleteSuiteBase extends QueryTest
     writer
       .option("hashPartitions", "hash")
       .option("hashBucketNum", "2")
-      .save(snapshotManagement.table_name)
+      .save(snapshotManagement.table_path)
   }
 
   protected def executeUpsert(df: DataFrame): Unit = {
-    LakeSoulTable.forPath(snapshotManagement.table_name)
+    LakeSoulTable.forPath(snapshotManagement.table_path)
       .upsert(df)
   }
 

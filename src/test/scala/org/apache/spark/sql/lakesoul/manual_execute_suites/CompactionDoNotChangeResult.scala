@@ -17,9 +17,11 @@
 package org.apache.spark.sql.lakesoul.manual_execute_suites
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions.{col, last}
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.test.TestUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.util.Utils
 
 class CompactionDoNotChangeResult {
@@ -29,12 +31,12 @@ class CompactionDoNotChangeResult {
   }
 
   private def execute(onlyOnePartition: Boolean): Unit = {
-    val tableName = Utils.createTempDir().getCanonicalPath
 
     val spark = TestUtils.getSparkSession()
 
     import spark.implicits._
 
+    val tableName = SparkUtil.makeQualifiedTablePath(new Path(Utils.createTempDir().getCanonicalPath)).toString
     try {
       val allData = TestUtils.getData2(5000, onlyOnePartition)
         .toDF("hash", "name", "age", "range")
@@ -49,18 +51,18 @@ class CompactionDoNotChangeResult {
         .save(tableName)
 
       val sm = SnapshotManagement(tableName)
-      var rangeGroup = sm.snapshot.allDataInfo.groupBy(_.range_partitions)
+      var rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
       LakeSoulTable.forPath(tableName).upsert(allData.select("range", "hash", "age"))
 
 
-      rangeGroup = sm.updateSnapshot().allDataInfo.groupBy(_.range_partitions)
+      rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
       assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
       LakeSoulTable.forPath(tableName).compaction(true)
-      rangeGroup = sm.updateSnapshot().allDataInfo.groupBy(_.range_partitions)
+      rangeGroup = SparkUtil.allDataInfo(sm.snapshot).groupBy(_.range_partitions)
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
       val realDF = allData.groupBy("range", "hash")

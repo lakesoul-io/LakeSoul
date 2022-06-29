@@ -25,7 +25,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 
 class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]],
-                                                          mergeOperatorInfo: Map[String, MergeOperator[Any]])
+                                                          mergeOperatorInfo: Map[String, MergeOperator[Any]],
+                                                          defaultMergeOp: MergeOperator[Any])
   extends PartitionReader[InternalRow] with Logging {
 
   val filesItr: Iterator[Seq[(MergePartitionedFile, PartitionReader[ColumnarBatch])]] = filesInfo.iterator
@@ -42,7 +43,7 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
         if (nextFiles.isEmpty) {
           return false
         } else {
-          mergeLogic = new MergeMultiFileWithOperator(nextFiles, mergeOperatorInfo)
+          mergeLogic = new MergeMultiFileWithOperator(nextFiles, mergeOperatorInfo, defaultMergeOp)
         }
       } else {
         return false
@@ -54,7 +55,7 @@ class MergeParquetFileWithOperatorPartitionByBatchFile[T](filesInfo: Seq[Seq[(Me
         //close current file readers
         mergeLogic.closeReadFileReader()
 
-        mergeLogic = new MergeMultiFileWithOperator(filesItr.next(), mergeOperatorInfo)
+        mergeLogic = new MergeMultiFileWithOperator(filesItr.next(), mergeOperatorInfo, defaultMergeOp)
       } else {
         return false
       }

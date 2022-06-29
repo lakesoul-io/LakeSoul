@@ -17,7 +17,7 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul
-import com.dmetasoul.lakesoul.tables.{LakeSoulTable, LakeSoulTableTestUtils}
+import com.dmetasoul.lakesoul.tables.{LakeSoulTable}
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.{Row, functions}
@@ -109,7 +109,7 @@ class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
         val path = tableNameOrPath.stripPrefix("lakesoul.`").stripSuffix("`")
         lakesoul.tables.LakeSoulTable.forPath(spark, path)
       } else {
-        LakeSoulTableTestUtils.createTable(spark.table(tableNameOrPath),
+        new LakeSoulTable(spark.table(tableNameOrPath),
           SnapshotManagement(tableNameOrPath))
       }
       optionalAlias.map(table.as(_)).getOrElse(table)

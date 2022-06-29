@@ -26,7 +26,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.types.{DataType, StructField, StructType}
+import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.util.Utils
 
 import java.io.File

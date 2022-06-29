@@ -25,8 +25,5 @@ object ManualRunSuite {
     new UpsertWithDuplicateDataAndFields().run()
     new UpsertWithDuplicateDataByDifferent().run()
     new UpsertWithDuplicateDataBySame().run()
-
-
   }
-
 }

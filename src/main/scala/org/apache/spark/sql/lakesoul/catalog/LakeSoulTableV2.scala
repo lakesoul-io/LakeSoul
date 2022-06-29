@@ -28,6 +28,7 @@ import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
@@ -36,17 +37,19 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 case class LakeSoulTableV2(spark: SparkSession,
-                           path: Path,
+                           path_orig: Path,
                            catalogTable: Option[CatalogTable] = None,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
   extends Table with SupportsWrite with SupportsRead {
 
+  val path = SparkUtil.makeQualifiedTablePath(path_orig)
+
   private lazy val (rootPath, partitionFilters) =
     if (catalogTable.isDefined) {
       // Fast path for reducing path munging overhead
-      (new Path(catalogTable.get.location), Nil)
+      (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
       LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
     }
@@ -60,7 +63,7 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   override def name(): String = catalogTable.map(_.identifier.unquotedString)
     .orElse(tableIdentifier)
-    .getOrElse(s"lakesoul.`${snapshotManagement.table_name}`")
+    .getOrElse(s"lakesoul.`${snapshotManagement.table_path}`")
 
   private lazy val snapshot: Snapshot = snapshotManagement.snapshot
 
@@ -139,8 +142,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
-
-    snapshotManagement.createRelation(partitionPredicates)
+    SparkUtil.createRelation(partitionPredicates, snapshotManagement, spark)
   }
 
 
@@ -187,7 +189,7 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer
         // to this data source relation. This is the behavior for InsertInto
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(snapshotManagement.createRelation()))
+          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
       }
     }
   }

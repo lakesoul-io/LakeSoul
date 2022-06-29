@@ -17,8 +17,7 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
 import org.apache.spark.sql.functions._
@@ -26,7 +25,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
@@ -1165,7 +1164,7 @@ trait AlterTableByNameTests extends AlterTableTests {
 
         sql("ALTER TABLE lakesoul_test ADD COLUMNS (v3 long, v4 double)")
 
-        val snapshotManagement = SnapshotManagement(path)
+        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
         assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
           .add("v1", "integer").add("v2", "string")
           .add("v3", "long").add("v4", "double"))
@@ -1237,7 +1236,7 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
   }
 
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {
-    SnapshotManagement(identifier.stripPrefix("lakesoul.`").stripSuffix("`"))
+    SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(identifier.stripPrefix("lakesoul.`").stripSuffix("`"))).toString)
   }
 
   override protected def ddlTest(testName: String)(f: => Unit): Unit = {

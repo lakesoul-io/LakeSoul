@@ -20,7 +20,7 @@ import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo, PartitionInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils._
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 
@@ -28,46 +28,20 @@ class Snapshot(table_info: TableInfo,
                partition_info_arr: Array[PartitionInfo],
                is_first_commit: Boolean = false
               ) {
-  lazy val spark: SparkSession = SparkSession.active
-
-  def getTableName: String = table_info.table_name
-
-  def getTableInfo: TableInfo = table_info
-
-  def allDataInfo: Array[DataFileInfo] = {
-    import spark.implicits._
-    allDataInfoDS.as[DataFileInfo].collect()
+  private var partitionDesc:String = ""
+  private var partitionVersion:Int = -1
+  def setPartitionDescAndVersion(parDesc:String,parVer:Int): Unit ={
+    this.partitionDesc = parDesc
+    this.partitionVersion = parVer
   }
-
-  private var dataInfoCached: Boolean = false
-  private var partitionFilterInfoCached: Boolean = false
-
-  lazy val allDataInfoDS: Dataset[DataFileInfo] = {
-    import spark.implicits._
-    dataInfoCached = true
-    spark.sparkContext.parallelize(DataOperation.getTableDataInfo(partition_info_arr)).toDS()
-  }.persist()
-
-  lazy val allPartitionFilterInfoDF: DataFrame = {
-    import spark.implicits._
-    partitionFilterInfoCached = true
-    val allPartitionFilterInfo: Seq[PartitionFilterInfo] = {
-      partition_info_arr
-        .map(part =>
-          PartitionFilterInfo(
-            part.range_id,
-            part.range_value,
-            MetaUtils.getPartitionMapFromKey(part.range_value),
-            part.read_version))
-    }
-    spark.sparkContext.parallelize(allPartitionFilterInfo).toDF()
-  }.persist()
-
+  def getPartitionDescAndVersion:(String,Int)={
+    (this.partitionDesc,this.partitionVersion)
+  }
+  def getTableName: String = table_info.table_path_s.get
+  def getTableInfo: TableInfo = table_info
   def sizeInBytes(filters: Seq[Expression] = Nil): Long = {
     PartitionFilter.filesForScan(this, filters).map(_.size).sum
   }
-
-
   /** Return the underlying Spark `FileFormat` of the LakeSoulTableRel. */
   def fileFormat: FileFormat = new ParquetFileFormat()
 
@@ -76,14 +50,5 @@ class Snapshot(table_info: TableInfo,
   def isFirstCommit: Boolean = is_first_commit
 
   def getPartitionInfoArray: Array[PartitionInfo] = partition_info_arr
-
-  def uncache(): Unit = {
-    if (dataInfoCached) {
-      allDataInfoDS.unpersist()
-    }
-    if (partitionFilterInfoCached) {
-      allPartitionFilterInfoDF.unpersist()
-    }
-  }
 
 }

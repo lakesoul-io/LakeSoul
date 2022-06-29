@@ -61,8 +61,9 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                               readDataSchema: StructType,
                                               partitionSchema: StructType,
                                               filters: Array[Filter],
-                                              mergeOperatorInfo: Map[String, MergeOperator[Any]])
-  extends MergeFilePartitionReaderFactory(mergeOperatorInfo) with Logging {
+                                              mergeOperatorInfo: Map[String, MergeOperator[Any]],
+                                              defaultMergeOp: MergeOperator[Any])
+  extends MergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)

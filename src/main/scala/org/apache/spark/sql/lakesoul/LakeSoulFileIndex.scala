@@ -22,9 +22,10 @@ import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Expression, GenericInternalRow, Literal}
 import org.apache.spark.sql.execution.datasources.{PartitionDirectory, PartitionSpec, PartitioningAwareFileIndex}
 import org.apache.spark.sql.lakesoul.LakeSoulFileIndexUtils._
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, SparkSession}
+import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils, MetaVersion}
 
 import scala.collection.mutable
 
@@ -33,10 +34,18 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
                                    val snapshotManagement: SnapshotManagement)
   extends PartitioningAwareFileIndex(spark, Map.empty[String, String], None) {
 
-  lazy val tableName: String = snapshotManagement.table_name
+  lazy val tableName: String = snapshotManagement.table_path
 
-  def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = matchingFiles(filters)
+  def getFileInfo(filters: Seq[Expression]): Seq[DataFileInfo] = {
+    val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
+      snapshotManagement.snapshot.getTableInfo.range_partition_columns, spark)
+    matchingFiles(partitionFilters, dataFilters)
+  }
 
+  def getFileInfoForPartitionVersion(): Seq[DataFileInfo] = {
+    val (desc,version) = snapshotManagement.snapshot.getPartitionDescAndVersion
+      DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id,desc,version)
+  }
 
   override def rootPaths: Seq[Path] = snapshotManagement.snapshot.getTableInfo.table_path :: Nil
 
@@ -54,9 +63,14 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   override def listFiles(partitionFilters: Seq[Expression],
                          dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
     val timeZone = spark.sessionState.conf.sessionLocalTimeZone
+    var files:Seq[DataFileInfo] = Seq.empty
+    if(SparkUtil.isPartitionVersionRead(snapshotManagement)){
+      files = getFileInfoForPartitionVersion()
+    }else{
+      files =  matchingFiles(partitionFilters, dataFilters)
+    }
 
-    matchingFiles(partitionFilters, dataFilters)
-      .groupBy(_.range_partitions).map {
+      files.groupBy(x=>MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
       case (partitionValues, files) =>
         val rowValues: Array[Any] = partitionSchema.map { p =>
           Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
@@ -70,7 +84,7 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
             /* blockReplication */ 0,
             /* blockSize */ 1,
             /* modificationTime */ f.modification_time,
-            absolutePath(f.file_path, tableName))
+            absolutePath(f.path, tableName))
         }.toArray
 
         PartitionDirectory(new GenericInternalRow(rowValues), fileStats)
@@ -111,7 +125,7 @@ case class DataSoulFileIndexV2(override val spark: SparkSession,
 
   override def inputFiles: Array[String] = {
     PartitionFilter.filesForScan(snapshotManagement.snapshot, partitionFilters)
-      .map(f => absolutePath(f.file_path, tableName).toString)
+      .map(f => absolutePath(f.path, tableName).toString)
   }
 
   override def sizeInBytes: Long = snapshotManagement.snapshot.sizeInBytes(partitionFilters)
@@ -130,18 +144,15 @@ case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
 
   override def matchingFiles(partitionFilters: Seq[Expression],
                              dataFilters: Seq[Expression]): Seq[DataFileInfo] = {
-    import spark.implicits._
     PartitionFilter.filterFileList(
       snapshotManagement.snapshot.getTableInfo.range_partition_schema,
-      files.toDF(),
+      files,
       partitionFilters)
-      .as[DataFileInfo]
-      .collect()
   }
 
 
   override def inputFiles: Array[String] = {
-    files.map(file => absolutePath(file.file_path, tableName).toString).toArray
+    files.map(file => absolutePath(file.path, tableName).toString).toArray
   }
 
 

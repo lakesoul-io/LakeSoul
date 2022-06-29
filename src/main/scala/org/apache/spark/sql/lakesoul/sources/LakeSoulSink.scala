@@ -57,10 +57,10 @@ class LakeSoulSink(sqlContext: SQLContext,
       }
 
       val tableInfo = tc.tableInfo
-      if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
-        logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
-        return
-      }
+//      if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
+//        logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
+//        return
+//      }
 
       // Streaming sinks can't blindly overwrite schema.
       updateMetadata(
@@ -78,7 +78,7 @@ class LakeSoulSink(sqlContext: SQLContext,
       }
 
       if (tc.tableInfo.hash_partition_columns.nonEmpty) {
-        tc.setCommitType("delta")
+        tc.setCommitType("merge")
       }
       val newFiles = tc.writeFiles(data, Some(options))
 
@@ -92,5 +92,5 @@ class LakeSoulSink(sqlContext: SQLContext,
 
     })
 
-  override def toString: String = s"LakeSoulSink[${snapshotManagement.table_name}]"
+  override def toString: String = s"LakeSoulSink[${snapshotManagement.table_path}]"
 }

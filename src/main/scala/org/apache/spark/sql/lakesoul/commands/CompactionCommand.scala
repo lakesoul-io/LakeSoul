@@ -22,12 +22,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
+import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil}
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
@@ -38,7 +38,8 @@ import scala.collection.JavaConversions._
 case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              conditionString: String,
                              force: Boolean,
-                             mergeOperatorInfo: Map[String, String])
+                             mergeOperatorInfo: Map[String, String],
+                             hiveTableName: String = "")
   extends RunnableCommand with PredicateHelper with Logging {
 
 
@@ -50,20 +51,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
                                  partitionInfo: PartitionInfo): Boolean = {
-    val timestampLimit = System.currentTimeMillis() - spark.conf.get(LakeSoulSQLConf.COMPACTION_TIME)
-
-    if (force) {
-      !partitionInfo.be_compacted
-    } else {
-      if (partitionInfo.delta_file_num >= spark.conf.get(LakeSoulSQLConf.MAX_DELTA_FILE_NUM)) {
-        true
-      } else if (partitionInfo.last_update_timestamp <= timestampLimit
-        && !partitionInfo.be_compacted) {
-        true
-      } else {
-        false
-      }
-    }
+    partitionInfo.read_files.size >=1
 
   }
 
@@ -71,16 +59,19 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
     val table = LakeSoulTableV2(
       spark,
-      new Path(snapshotManagement.table_name),
+      new Path(snapshotManagement.table_path),
       None,
       None,
       Option(fileIndex),
       Option(mergeOperatorInfo)
     )
     val option = new CaseInsensitiveStringMap(
-      Map("basePath" -> tc.tableInfo.table_name, "isCompaction" -> "true"))
+      Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
+    if(scan.isInstanceOf[ParquetScan]){
+      throw LakeSoulErrors.CompactionException(table_name = table.name())
+    }
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
 
     val v2Relation = DataSourceV2Relation(
@@ -102,10 +93,27 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
     tc.setReadFiles(newReadFiles)
     tc.setCommitType("compaction")
-    val newFiles = tc.writeFiles(compactDF, isCompaction = true)
+    val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
     tc.commit(newFiles, newReadFiles)
+    val partitionStr = escapeSingleBackQuotedString(conditionString)
+    if (!hiveTableName.isEmpty) {
+      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
+      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+    }
 
     logInfo("=========== Compaction Success!!! ===========")
+  }
+
+  def escapeSingleBackQuotedString(str: String): String = {
+    val builder = StringBuilder.newBuilder
+
+    str.foreach {
+      case '\'' => ""
+      case '`' => ""
+      case ch => builder += ch
+    }
+
+    builder.toString()
   }
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
@@ -123,7 +131,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         val files = tc.filterFiles(targetOnlyPredicates)
 
         //ensure only one partition execute compaction command
-        val partitionSet = files.map(_.range_key).toSet
+        //todo range_partitions
+        val partitionSet = files.map(_.range_partitions).toSet
+//        val partitionSet = files.map(_.range_id).toSet
         if (partitionSet.isEmpty) {
           throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)
         } else if (partitionSet.size > 1) {
@@ -131,12 +141,6 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         }
 
         val range_value = partitionSet.head
-        val table_id = tc.tableInfo.table_id
-        val range_id = tc.snapshot.getPartitionInfoArray
-          .filter(part => part.range_value.equals(range_value))
-          .head.range_id
-
-        val partitionInfo = MetaVersion.getSinglePartitionInfo(table_id, range_value, range_id)
 
         lazy val hasNoDeltaFile = if (force) {
           false
@@ -144,7 +148,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           files.groupBy(_.file_bucket_id).forall(_._2.size == 1)
         }
 
-        if (partitionInfo.be_compacted || hasNoDeltaFile) {
+        if (hasNoDeltaFile) {
           logInfo("== Compaction: This partition has been compacted or has no delta file.")
         } else {
           executeCompaction(sparkSession, tc, files)

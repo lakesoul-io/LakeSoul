@@ -17,9 +17,6 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
-import java.util.Locale
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -28,13 +25,14 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
-import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.util.Utils
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
+import java.io.File
+import java.util.Locale
 
 import scala.language.implicitConversions
 
@@ -598,37 +596,6 @@ trait TableCreationTests
     }
   }
 
-  test("create external table without schema") {
-    withTempDir { dir =>
-      withTable("lakesoul_test", "lakesoul_test1") {
-        Seq(1L -> "a").toDF()
-          .selectExpr("_1 as v1", "_2 as v2")
-          .write
-          .mode("append")
-          .partitionBy("v2")
-          .format("lakesoul")
-          .save(dir.getCanonicalPath)
-
-        sql(
-          s"""
-             |CREATE TABLE lakesoul_test
-             |USING lakesoul
-             |OPTIONS('path'='${dir.getCanonicalPath}')
-            """.stripMargin)
-
-        spark.catalog.createTable("lakesoul_test1", dir.getCanonicalPath, "lakesoul")
-
-        checkDatasetUnorderly(
-          sql("SELECT * FROM lakesoul_test").as[(Long, String)],
-          1L -> "a")
-
-        checkDatasetUnorderly(
-          sql("SELECT * FROM lakesoul_test1").as[(Long, String)],
-          1L -> "a")
-      }
-    }
-  }
-
   test("create managed table without schema") {
     withTable("lakesoul_test") {
       val e = intercept[AnalysisException] {
@@ -653,56 +620,6 @@ trait TableCreationTests
         }.getMessage
         assert(e.contains(
           "Failed to create table"))
-      }
-    }
-  }
-
-  test("create external table without schema and input files") {
-    withTempDir { dir =>
-      withTable("lakesoul_test") {
-        val e = intercept[AnalysisException] {
-          sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '${dir.getCanonicalPath}'")
-        }.getMessage
-        assert(e.contains("but the schema is not specified"))
-      }
-    }
-  }
-
-  test("create and drop lakesoul table - external") {
-    val catalog = spark.sessionState.catalog
-    withTempDir { tempDir =>
-      withTable("lakesoul_test") {
-        sql("CREATE TABLE lakesoul_test(a LONG, b String) USING lakesoul " +
-          s"OPTIONS (path='${tempDir.getCanonicalPath}')")
-        val table = catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-        assert(table.tableType == CatalogTableType.EXTERNAL)
-        assert(table.provider.contains("lakesoul"))
-
-        // Query the data and the metadata directly via the LakeSoul
-        val snapshotManagement = getSnapshotManagement(table)
-
-        assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
-          .add("a", "long").add("b", "string"))
-        assert(snapshotManagement.snapshot.getTableInfo.partition_schema == new StructType())
-
-        assert(snapshotManagement.snapshot.getTableInfo.schema == getSchema("lakesoul_test"))
-        assert(getPartitioningColumns("lakesoul_test").isEmpty)
-
-        // External catalog does not contain the schema and partition column names.
-        val externalTable = catalog.externalCatalog.getTable("default", "lakesoul_test")
-        assert(externalTable.schema == new StructType())
-        assert(externalTable.partitionColumnNames.isEmpty)
-
-        sql("INSERT INTO lakesoul_test SELECT 1, 'a'")
-        checkDatasetUnorderly(
-          sql("SELECT * FROM lakesoul_test").as[(Long, String)],
-          1L -> "a")
-
-        sql("DROP TABLE lakesoul_test")
-        intercept[NoSuchTableException](catalog.getTableMetadata(TableIdentifier("lakesoul_test")))
-        // Verify that the underlying location is not deleted for an external table
-        checkAnswer(spark.read.format("lakesoul")
-          .load(new Path(tempDir.getCanonicalPath).toString), Seq(Row(1L, "a")))
       }
     }
   }
@@ -839,90 +756,6 @@ trait TableCreationTests
       }
     }
   }
-
-
-  test("schema mismatch between DDL and table location should throw an error") {
-    withTempDir { tempDir =>
-      withTable("lakesoul_test") {
-        val snapshotManagement = getSnapshotManagement(new Path(tempDir.getCanonicalPath))
-
-        val txn = snapshotManagement.startTransaction()
-        txn.commit(
-          Seq.empty[DataFileInfo],
-          Seq.empty[DataFileInfo],
-          txn.tableInfo.copy(table_schema = new StructType()
-            .add("a", "long").add("b", "long").json))
-
-        val ex = intercept[AnalysisException] {
-          sql("CREATE TABLE lakesoul_test(a LONG, b String)" +
-            s" USING lakesoul OPTIONS (path '${tempDir.getCanonicalPath}')")
-        }
-        assert(ex.getMessage.contains("The specified schema does not match the existing schema"))
-        assert(ex.getMessage.contains("Specified type for b is different"))
-
-        val ex1 = intercept[AnalysisException] {
-          sql("CREATE TABLE lakesoul_test(a LONG)" +
-            s" USING lakesoul OPTIONS (path '${tempDir.getCanonicalPath}')")
-        }
-        assert(ex1.getMessage.contains("The specified schema does not match the existing schema"))
-        assert(ex1.getMessage.contains("Specified schema is missing field"))
-
-        val ex2 = intercept[AnalysisException] {
-          sql("CREATE TABLE lakesoul_test(a LONG, b String, c INT, d LONG)" +
-            s" USING lakesoul OPTIONS (path '${tempDir.getCanonicalPath}')")
-        }
-        assert(ex2.getMessage.contains("The specified schema does not match the existing schema"))
-        assert(ex2.getMessage.contains("Specified schema has additional field"))
-        assert(ex2.getMessage.contains("Specified type for b is different"))
-      }
-    }
-  }
-
-  test(
-    "schema metadata mismatch between DDL and table location should throw an error") {
-    withTempDir { tempDir =>
-      withTable("lakesoul_test") {
-        val snapshotManagement = getSnapshotManagement(new Path(tempDir.getCanonicalPath))
-
-        val txn = snapshotManagement.startTransaction()
-        txn.commit(
-          Seq.empty[DataFileInfo],
-          Seq.empty[DataFileInfo],
-          txn.tableInfo.copy(table_schema = new StructType().add("a", "long")
-            .add("b", "string", nullable = true,
-              new MetadataBuilder().putBoolean("pii", value = true).build()).json))
-        val ex = intercept[AnalysisException] {
-          sql("CREATE TABLE lakesoul_test(a LONG, b String)" +
-            s" USING lakesoul OPTIONS (path '${tempDir.getCanonicalPath}')")
-        }
-        assert(ex.getMessage.contains("The specified schema does not match the existing schema"))
-        assert(ex.getMessage.contains("metadata for field b is different"))
-      }
-    }
-  }
-
-  test(
-    "partition schema mismatch between DDL and table location should throw an error") {
-    withTempDir { tempDir =>
-      withTable("lakesoul_test") {
-        val snapshotManagement = getSnapshotManagement(new Path(tempDir.getCanonicalPath))
-
-        val txn = snapshotManagement.startTransaction()
-        txn.commit(
-          Seq.empty[DataFileInfo],
-          Seq.empty[DataFileInfo],
-          txn.tableInfo.copy(
-            table_schema = new StructType().add("a", "long", false).add("b", "string").json,
-            range_column = "a"))
-        val ex = intercept[AnalysisException](sql("CREATE TABLE lakesoul_test(a LONG, b String)" +
-          s" USING lakesoul PARTITIONED BY(b) LOCATION '${tempDir.getCanonicalPath}'"))
-        assert(ex.getMessage().contains("The specified schema does not match the existing schema"))
-        //        assert(ex.getMessage.contains(
-        //          "The specified partitioning does not match the existing partitioning"))
-      }
-    }
-  }
-
 
   test("create table on an existing table location") {
     val catalog = spark.sessionState.catalog
@@ -1127,7 +960,6 @@ trait TableCreationTests
     }
   }
 
-
   test("the qualified path of a lakesoul table is stored in the catalog") {
     withTempDir { dir =>
       withTable("t", "t1") {
@@ -1173,7 +1005,6 @@ trait TableCreationTests
             s"LOCATION '${path.getAbsolutePath}'")
           sql("INSERT INTO src SELECT 1, 'a'")
 
-
           checkAnswer(spark.sql("select i,p from src"), Row(1, "a"))
           checkAnswer(spark.sql("select i,p from lakesoul.src"), Row(1, "a"))
 
@@ -1218,9 +1049,7 @@ trait TableCreationTests
         df.write.format("lakesoul").save(path)
         val snapshotManagement = getSnapshotManagement(new Path(path))
 
-        val oldVersion = snapshotManagement.snapshot.getPartitionInfoArray.map(_.read_version).max
         sql(s"CREATE TABLE table USING lakesoul LOCATION '$path'")
-        assert(oldVersion == snapshotManagement.snapshot.getPartitionInfoArray.map(_.read_version).max)
       }
     }
   }
@@ -1236,7 +1065,7 @@ trait TableCreationTests
           .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
           .save(path)
 
-        val shortName = SnapshotManagement(path).snapshot.getTableInfo.short_table_name
+        val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot.getTableInfo.short_table_name
         assert(shortName.isDefined && shortName.get.equals("tt"))
 
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1252,21 +1081,19 @@ trait TableCreationTests
     withTable("tt") {
       withTempDir(dir => {
         val path = dir.getCanonicalPath
+
         Seq((1, "a"), (2, "b")).toDF("i", "p")
           .write
           .mode("overwrite")
           .format("lakesoul")
           .save(path)
 
-        val sm = SnapshotManagement(path)
-
+        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
         var shortName = sm.snapshot.getTableInfo.short_table_name
-        assert(shortName.isEmpty)
-
+       assert(shortName.isEmpty)
         sql(s"create table tt using lakesoul location '$path'")
         shortName = sm.updateSnapshot().getTableInfo.short_table_name
         assert(shortName.isDefined && shortName.get.equals("tt"))
-
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
         checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
           Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1346,7 +1173,7 @@ trait TableCreationTests
           .format("lakesoul")
           .save(path)
 
-        val sm = SnapshotManagement(path)
+        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
 
         var shortName = sm.snapshot.getTableInfo.short_table_name
         assert(shortName.isEmpty)
@@ -1379,7 +1206,6 @@ trait TableCreationTests
       assert(tableInfo.hash_partition_columns.isEmpty)
       assert(tableInfo.bucket_num == -1)
       assert(tableInfo.short_table_name.isEmpty)
-      assert(!tableInfo.is_material_view)
 
     })
   }
@@ -1397,12 +1223,11 @@ trait TableCreationTests
           .hashBucketNum(1)
           .create()
 
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals("tt"))
         assert(tableInfo.range_partition_columns.equals(Seq("i")))
         assert(tableInfo.hash_partition_columns.equals(Seq("p")))
         assert(tableInfo.bucket_num == 1)
-        assert(!tableInfo.is_material_view)
 
       })
     }
@@ -1435,12 +1260,11 @@ trait TableCreationTests
         val path = dir.getCanonicalPath
         val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
         table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals(tableName))
         assert(tableInfo.range_partition_columns.equals(Seq("date")))
         assert(tableInfo.hash_partition_columns.equals(Seq("id")))
         assert(tableInfo.bucket_num == 2)
-        assert(!tableInfo.is_material_view)
       }
     }
   }
@@ -1457,7 +1281,7 @@ trait TableCreationTests
           .tableProperty("lakesoul_cdc_change_column" -> "change_kind")
           .create()
 
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
@@ -1473,7 +1297,7 @@ trait TableCreationTests
           .format("lakesoul")
           .option("lakesoul_cdc_change_column", "change_kind")
           .save(path)
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
       })
     }

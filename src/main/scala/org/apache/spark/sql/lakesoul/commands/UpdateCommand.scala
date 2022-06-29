@@ -61,6 +61,8 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
   private def performUpdate(sparkSession: SparkSession, tc: TransactionCommit): Unit = {
     import sparkSession.implicits._
 
+    tc.setCommitType("update")
+
     val updateCondition = condition.getOrElse(Literal(true, BooleanType))
     val (metadataPredicates, dataPredicates) =
       LakeSoulUtils.splitMetadataAndDataPredicates(
@@ -77,7 +79,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
       // Case 2: Update all the rows from the files that are in the specified partitions
       // when the data filter is empty
 
-      val filesToRewrite = candidateFiles.map(_.file_path)
+      val filesToRewrite = candidateFiles.map(_.path)
       val operationTimestamp = System.currentTimeMillis()
       val deleteFiles = candidateFiles.map(_.expire(operationTimestamp))
 
@@ -99,7 +101,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
           .select(input_file_name())
           .distinct().as[String].collect()
       } else {
-        candidateFiles.map(_.file_path).toArray
+        candidateFiles.map(_.path).toArray
       }
 
       if (filesToRewrite.isEmpty) {
@@ -117,6 +119,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
     }
 
     if (addFiles.nonEmpty || expireFiles.nonEmpty) {
+      // clear previously read files
       tc.commit(addFiles, expireFiles)
     }
 

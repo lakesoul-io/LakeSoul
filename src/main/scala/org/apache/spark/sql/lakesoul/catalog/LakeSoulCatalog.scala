@@ -143,7 +143,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
           new Path(ident.name()))
       case _: NoSuchDatabaseException | _: NoSuchNamespaceException | _: NoSuchTableException
         if isNameIdentifier(ident) =>
-        val tableName = MetaVersion.getTableNameFromShortTableName(ident.name)
+        val tableName = MetaVersion.getTablePathFromShortTableName(ident.name)
         LakeSoulTableV2(
           spark,
           new Path(tableName))
@@ -231,7 +231,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
       case BucketTransform(numBuckets, FieldReference(Seq(col))) =>
         bucketSpec = Some(BucketSpec(numBuckets, col :: Nil, Nil))
 
-      case transform =>
+      case _ =>
         throw LakeSoulErrors.operationNotSupportedException(s"Partitioning by expressions")
     }
 
@@ -343,10 +343,8 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
      */
     private class LakeSoulV1WriteBuilder extends WriteBuilder with V1WriteBuilder {
       override def buildForV1Write(): InsertableRelation = {
-        new InsertableRelation {
-          override def insert(data: DataFrame, overwrite: Boolean): Unit = {
-            asSelectQuery = Option(data)
-          }
+        (data: DataFrame, _: Boolean) => {
+          asSelectQuery = Option(data)
         }
       }
     }
@@ -374,14 +372,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
       case (t, newColumns) if t == classOf[AddColumn] =>
         AlterTableAddColumnsCommand(
           table,
-          newColumns.asInstanceOf[Seq[AddColumn]].map { col =>
-            QualifiedColType(
-              col.fieldNames(),
-              col.dataType(),
-              col.isNullable,
-              Option(col.comment()),
-              Option(col.position()))
-          }).run(spark)
+          newColumns.map(_.asInstanceOf[AddColumn])).run(spark)
 
       case (t, newProperties) if t == classOf[SetProperty] =>
         AlterTableSetPropertiesCommand(
@@ -428,7 +419,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
           case position: UpdateColumnPosition =>
             val field = position.fieldNames()
-            val (oldField, pos) = getColumn(field)
+            val (oldField, _) = getColumn(field)
             columnUpdates(field) = oldField -> Option(position.position())
 
           case nullability: UpdateColumnNullability =>
@@ -446,7 +437,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
               s"${other.getClass}. You may be running an out of date LakeSoul version.")
         }
 
-      case (t, locations) if t == classOf[SetLocation] =>
+      case (t, _) if t == classOf[SetLocation] =>
         throw LakeSoulErrors.operationNotSupportedException("ALTER TABLE xxx SET LOCATION '/xxx'")
     }
 
@@ -499,6 +490,11 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     }
   }
 
+  override def listTables(namespace: Array[String]): Array[Identifier] = {
+    MetaVersion.listTables().asScala.map(table => {
+      Identifier.of(Array("default"), table)
+    }).toArray
+  }
 
 }
 

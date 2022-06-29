@@ -102,20 +102,23 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   snapshotManagement: SnapshotManagement,
                                   condition: String,
                                   force: Boolean = true,
-                                  mergeOperatorInfo: Map[String, String]): Unit = {
+                                  mergeOperatorInfo: Map[String, String],
+                                  hiveTableName: String = ""): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
       force,
-      mergeOperatorInfo))
+      mergeOperatorInfo,
+      hiveTableName))
 
   }
 
   protected def executeDropTable(snapshotManagement: SnapshotManagement): Unit = {
     val snapshot = snapshotManagement.snapshot
     val tableInfo = snapshot.getTableInfo
-    if (!MetaVersion.isTableIdExists(tableInfo.table_name, tableInfo.table_id)) {
-      LakeSoulErrors.tableNotFoundException(tableInfo.table_name, tableInfo.table_id)
+
+    if (!MetaVersion.isTableIdExists(tableInfo.table_path_s.get, tableInfo.table_id)) {
+      LakeSoulErrors.tableNotFoundException(tableInfo.table_path_s.get, tableInfo.table_id)
     }
     DropTableCommand.run(snapshot)
   }
@@ -126,10 +129,4 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       snapshotManagement.snapshot,
       condition)
   }
-
-
-  protected def executeUpdateForMaterialView(snapshotManagement: SnapshotManagement): Unit = {
-    toDataset(sparkSession, UpdateMaterialViewCommand(snapshotManagement))
-  }
-
 }

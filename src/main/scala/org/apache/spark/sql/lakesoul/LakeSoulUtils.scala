@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.MetaUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
@@ -27,12 +26,10 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.lakesoul.LakeSoulTableProperties.lakeSoulCDCChangePropKey
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
@@ -43,18 +40,8 @@ object LakeSoulUtils extends PredicateHelper {
   val MERGE_OP_COL = "_lakesoul_merge_col_name_"
   val MERGE_OP = "_lakesoul_merge_op_"
 
-  lazy val USE_MATERIAL_REWRITE = "_lakesoul_use_material_rewrite_"
-
-
   def executeWithoutQueryRewrite[T](sparkSession: SparkSession)(f: => T): Unit = {
-    sparkSession.conf.set(USE_MATERIAL_REWRITE, "false")
     f
-    sparkSession.conf.set(USE_MATERIAL_REWRITE, "true")
-  }
-
-  def enableAsyncIO(tablePath: String, conf: SQLConf): Boolean = {
-    val validFormat = tablePath.startsWith("s3") || tablePath.startsWith("oss")
-    validFormat && conf.getConf(LakeSoulSQLConf.ASYNC_IO_ENABLE)
   }
 
   def getClass(className: String): Class[_] = {
@@ -96,7 +83,7 @@ object LakeSoulUtils extends PredicateHelper {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
-    isLakeSoulTable(sparkSession, new Path(MetaUtils.modifyTableString(tablePath)))
+    isLakeSoulTable(sparkSession, new Path(tablePath))
   }
 
   def findTableRootPath(spark: SparkSession, path: Path): Option[Path] = {
@@ -119,6 +106,13 @@ object LakeSoulUtils extends PredicateHelper {
                                      partitionColumns: Seq[String],
                                      spark: SparkSession): (Seq[Expression], Seq[Expression]) = {
     splitConjunctivePredicates(condition).partition(
+      isPredicateMetadataOnly(_, partitionColumns, spark))
+  }
+
+  def splitMetadataAndDataPredicates(conditions: Seq[Expression],
+                                     partitionColumns: Seq[String],
+                                     spark: SparkSession): (Seq[Expression], Seq[Expression]) = {
+    conditions.partition(
       isPredicateMetadataOnly(_, partitionColumns, spark))
   }
 
@@ -216,7 +210,7 @@ object LakeSoulFullTable {
       } else {
         throw new AnalysisException(
           s"Expect a full scan of LakeSoul sources, but found a partial scan. " +
-            s"path:${epbr.snapshotManagement.table_name}")
+            s"path:${epbr.snapshotManagement.table_path}")
       }
     // Convert V2 relations to V1 and perform the check
     case LakeSoulRelation(lr) => unapply(lr)

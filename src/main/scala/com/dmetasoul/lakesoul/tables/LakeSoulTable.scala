@@ -23,9 +23,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.lakesoul.commands.CreateMaterialViewCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
 
 import scala.collection.JavaConverters._
@@ -263,36 +263,40 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   //by default, force perform compaction on whole table
   def compaction(): Unit = {
-    compaction("", true, Map.empty[String, Any])
+    compaction("", true, Map.empty[String, Any], "")
   }
 
   def compaction(condition: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any])
+    compaction(condition, true, Map.empty[String, Any], "")
   }
 
   def compaction(mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction("", true, mergeOperatorInfo)
+    compaction("", true, mergeOperatorInfo, "")
   }
 
   def compaction(condition: String,
                  mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction(condition, true, mergeOperatorInfo)
+    compaction(condition, true, mergeOperatorInfo, "")
+  }
+
+  def compaction(condition: String, hiveTableName: String): Unit = {
+    compaction(condition, true, Map.empty[String, Any], hiveTableName)
   }
 
   def compaction(force: Boolean,
                  mergeOperatorInfo: Map[String, Any] = Map.empty[String, Any]): Unit = {
-    compaction("", force, mergeOperatorInfo)
+    compaction("", force, mergeOperatorInfo, "")
   }
 
   def compaction(condition: String,
                  force: Boolean): Unit = {
-    compaction(condition, true, Map.empty[String, Any])
+    compaction(condition, true, Map.empty[String, Any], "")
   }
 
   def compaction(condition: String,
                  force: Boolean,
                  mergeOperatorInfo: java.util.Map[String, Any]): Unit = {
-    compaction(condition, force, mergeOperatorInfo.asScala.toMap)
+    compaction(condition, force, mergeOperatorInfo.asScala.toMap, "")
   }
 
   /**
@@ -302,7 +306,8 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     */
   def compaction(condition: String,
                  force: Boolean,
-                 mergeOperatorInfo: Map[String, Any]): Unit = {
+                 mergeOperatorInfo: Map[String, Any],
+                 hiveTableName: String): Unit = {
     val newMergeOpInfo = mergeOperatorInfo.map(m => {
       val key =
         if (!m._1.startsWith(LakeSoulUtils.MERGE_OP_COL)) {
@@ -318,7 +323,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       (key, value)
     })
 
-    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo)
+    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName)
   }
 
   def dropTable(): Boolean = {
@@ -332,20 +337,23 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   def dropPartition(condition: Expression): Unit = {
     assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns.nonEmpty,
-      s"Table `${snapshotManagement.table_name}` is not a range partitioned table, dropTable command can't use on it.")
+      s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
     executeDropPartition(snapshotManagement, condition)
   }
 
-  def updateMaterialView(): Unit = {
-    val tableInfo = snapshotManagement.snapshot.getTableInfo
-    if (!tableInfo.is_material_view) {
-      throw LakeSoulErrors.notMaterialViewException(tableInfo.table_name, tableInfo.short_table_name.getOrElse("None"))
-    }
-
-    executeUpdateForMaterialView(snapshotManagement)
+  def rollbackPartition(partitionValue:String,toVersionNum:Int):Unit = {
+    MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
   }
 
 
+  def partitionVersions(partitionDesc:String=""): Unit ={
+    if("".equals(partitionDesc)){
+      println("Please set partition value such as RangeCoulmnName = Value")
+    }else{
+      //println(partitionDesc+"-"+"versions")
+      MetaVersion.getOnePartitionVersions(snapshotManagement.snapshot.getTableInfo.table_id,partitionDesc).foreach(p=> println("-----"+p.version+"------"))
+    }
+  }
 }
 
 object LakeSoulTable {
@@ -365,20 +373,61 @@ object LakeSoulTable {
     forPath(sparkSession, path)
   }
 
+  /**
+    * uncache all or one table from snapshotmanagement
+    *  partiton time travel needs to clear snapshot version info to avoid conflict with other read tasks
+    *   for example
+    *     LakeSoulTable.forPath(tablePath,"range=range1",0).toDF.show()
+    *     LakeSoulTable.uncached(tablePath)
+    *
+    * @param path
+    */
+  def uncached(path: String = ""): Unit = {
+    if(path.equals("")){
+      SnapshotManagement.clearCache()
+    }else{
+      val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      if(!LakeSoulSourceUtils.isLakeSoulTableExists(p)){
+        println("table not in lakesoul. Please check table path")
+        return
+      }
+      SnapshotManagement.invalidateCache(p)
+    }
+  }
+
 
   /**
-    * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
+    *  Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
     *
     */
+  def forPath(path: String,partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse {
+      throw new IllegalArgumentException("Could not find active SparkSession")
+    }
+
+    forPath(sparkSession, path,partitionDesc,partitionVersion)
+  }
+  /**
+    * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
+    */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
-    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(path))) {
-      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(path),
-        SnapshotManagement(path))
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
+      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
+        SnapshotManagement(p))
     } else {
       throw LakeSoulErrors.tableNotExistsException(path)
     }
   }
-
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
+      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
+        SnapshotManagement(p,partitionDesc,partitionVersion))
+    } else {
+      throw LakeSoulErrors.tableNotExistsException(path)
+    }
+  }
   /**
     * Create a LakeSoulTableRel using the given table name using the given SparkSession.
     *
@@ -416,24 +465,6 @@ object LakeSoulTable {
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
       .register(spark, funName)
-  }
-
-  def createMaterialView(viewName: String,
-                         viewPath: String,
-                         sqlText: String,
-                         rangePartitions: String = "",
-                         hashPartitions: String = "",
-                         hashBucketNum: Int = -1,
-                         autoUpdate: Boolean = false): Unit = {
-    CreateMaterialViewCommand(
-      viewName,
-      viewPath,
-      sqlText,
-      rangePartitions,
-      hashPartitions,
-      hashBucketNum.toString,
-      autoUpdate)
-      .run(SparkSession.active)
   }
 
   class TableCreator {
@@ -500,11 +531,9 @@ object LakeSoulTable {
       writer.save(tablePath)
     }
 
-
   }
 
   def createTable(data: Dataset[_], tablePath: String): TableCreator =
     new TableCreator().data(data).path(tablePath)
-
 
 }

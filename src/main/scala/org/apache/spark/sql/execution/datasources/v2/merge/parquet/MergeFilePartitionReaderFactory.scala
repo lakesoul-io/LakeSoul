@@ -23,7 +23,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_o
 import org.apache.spark.sql.execution.datasources.v2.merge.{MergeFilePartition, MergeFilePartitionReader, MergePartitionedFile, MergePartitionedFileReader}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-abstract class MergeFilePartitionReaderFactory(mergeOperatorInfo: Map[String, MergeOperator[Any]])
+abstract class MergeFilePartitionReaderFactory(mergeOperatorInfo: Map[String, MergeOperator[Any]], defaultMergeOp: MergeOperator[Any])
   extends PartitionReaderFactory {
 
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
@@ -39,7 +39,7 @@ abstract class MergeFilePartitionReaderFactory(mergeOperatorInfo: Map[String, Me
       if (filePartition.isSingleFile) {
         new MergeParquetSingletonFilePartitionByBatchFile[InternalRow](iter)
       } else {
-        new MergeParquetFileWithOperatorPartitionByBatchFile[InternalRow](iter, mergeOperatorInfo)
+        new MergeParquetFileWithOperatorPartitionByBatchFile[InternalRow](iter, mergeOperatorInfo, defaultMergeOp)
       }
 
     new MergeFilePartitionReader[InternalRow](

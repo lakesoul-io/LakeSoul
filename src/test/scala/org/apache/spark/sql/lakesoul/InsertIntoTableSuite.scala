@@ -18,14 +18,12 @@ package org.apache.spark.sql.lakesoul
 
 // scalastyle:off import.ordering.noEmptyLine
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.io.File
-import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
@@ -147,22 +145,11 @@ abstract class InsertIntoTests(
   import testImplicits._
 
   override def afterEach(): Unit = {
-    spark.catalog.listTables().collect().foreach(t => {
-      val location = try {
-        Option(spark.sessionState.catalog.getTableMetadata(TableIdentifier(t.name, Option(t.database))).location)
-      } catch {
-        case e: Exception => None
-      }
-      sql(s"drop table ${t.name}")
-      if (location.isDefined) {
-        try {
-          LakeSoulTable.forPath(location.get.toString).dropTable()
-        } catch {
-          case e: Exception =>
-        }
-      }
-    }
-    )
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    catalog.listTables(Array("default")).foreach(t => {
+      sql(s"drop table default.`${t.name}`")
+      sql(s"drop table lakesoul.`${t.name}`")
+    })
   }
 
   // START Apache Spark tests
@@ -176,20 +163,24 @@ abstract class InsertIntoTests(
 
   test("insertInto: append") {
     val t1 = "tbl"
-    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
-    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
-    doInsert(t1, df)
-    verifyTable(t1, df, Seq("id", "data"))
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      doInsert(t1, df)
+      verifyTable(t1, df, Seq("id", "data"))
+    }
   }
 
   test("insertInto: append by position") {
     val t1 = "tbl"
-    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
-    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
-    val dfr = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("data", "id")
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      val dfr = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("data", "id")
 
-    doInsert(t1, dfr)
-    verifyTable(t1, df, Seq("id", "data"))
+      doInsert(t1, dfr)
+      verifyTable(t1, df, Seq("id", "data"))
+    }
   }
 
   test("insertInto: append partitioned table") {
@@ -204,24 +195,28 @@ abstract class InsertIntoTests(
 
   test("insertInto: overwrite non-partitioned table") {
     val t1 = "tbl"
-    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
-    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
-    val df2 = Seq((4L, "d"), (5L, "e"), (6L, "f")).toDF("id", "data")
-    doInsert(t1, df)
-    doInsert(t1, df2, SaveMode.Overwrite)
-    verifyTable(t1, df2, Seq("id", "data"))
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      val df2 = Seq((4L, "d"), (5L, "e"), (6L, "f")).toDF("id", "data")
+      doInsert(t1, df)
+      doInsert(t1, df2, SaveMode.Overwrite)
+      verifyTable(t1, df2, Seq("id", "data"))
+    }
   }
 
   test("insertInto: overwrite partitioned table in static mode") {
     withSQLConf(PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.STATIC.toString) {
       val t1 = "tbl"
-      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
-      val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
-      doInsert(t1, init)
+      withTable(t1) {
+        sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY (id)")
+        val init = Seq((2L, "dummy"), (4L, "keep")).toDF("id", "data").select("data", "id")
+        doInsert(t1, init)
 
-      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
-      doInsert(t1, df, SaveMode.Overwrite)
-      verifyTable(t1, df, Seq("data", "id"))
+        val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+        doInsert(t1, df, SaveMode.Overwrite)
+        verifyTable(t1, df, Seq("data", "id"))
+      }
     }
   }
 
@@ -245,14 +240,16 @@ abstract class InsertIntoTests(
 
   test("insertInto: fails when missing a column") {
     val t1 = "tbl"
-    sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
-    val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
-    val exc = intercept[AnalysisException] {
-      doInsert(t1, df)
-    }
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string, missing string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      val exc = intercept[AnalysisException] {
+        doInsert(t1, df)
+      }
 
-    verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"), Seq("id", "data", "missing"))
-    assert(exc.getMessage.contains("not enough data columns"))
+      verifyTable(t1, Seq.empty[(Long, String, String)].toDF("id", "data", "missing"), Seq("id", "data", "missing"))
+      assert(exc.getMessage.contains("not enough data columns"))
+    }
   }
 
   // This behavior is specific to LakeSoul
@@ -278,57 +275,59 @@ abstract class InsertIntoTests(
   // This behavior is specific to LakeSoul
   test("insertInto: schema enforcement") {
     val t1 = "tbl"
-    sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
-    val df = Seq(("a", 1L)).toDF("id", "data") // reverse order
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq(("a", 1L)).toDF("id", "data") // reverse order
 
-    def getDF(rows: Row*): DataFrame = {
-      spark.createDataFrame(spark.sparkContext.parallelize(rows), spark.table(t1).schema)
-    }
+      def getDF(rows: Row*): DataFrame = {
+        spark.createDataFrame(spark.sparkContext.parallelize(rows), spark.table(t1).schema)
+      }
 
-    withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict") {
-      intercept[AnalysisException] {
+      withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict") {
+        intercept[AnalysisException] {
+          doInsert(t1, df, SaveMode.Overwrite)
+        }
+
+        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+
+        intercept[AnalysisException] {
+          doInsert(t1, df)
+        }
+
+        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+      }
+
+      withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "ansi") {
+        intercept[AnalysisException] {
+          doInsert(t1, df, SaveMode.Overwrite)
+        }
+
+        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+
+        intercept[AnalysisException] {
+          doInsert(t1, df)
+        }
+
+        verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+      }
+
+      /*
+      withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "legacy") {
         doInsert(t1, df, SaveMode.Overwrite)
-      }
+        verifyTable(
+          t1,
+          getDF(Row(null, "1")),
+          Seq("id", "data"))
 
-      verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
-
-      intercept[AnalysisException] {
         doInsert(t1, df)
+
+        verifyTable(
+          t1,
+          getDF(Row(null, "1"), Row(null, "1")),
+          Seq("id", "data"))
       }
-
-      verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
+      */
     }
-
-    withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "ansi") {
-      intercept[AnalysisException] {
-        doInsert(t1, df, SaveMode.Overwrite)
-      }
-
-      verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
-
-      intercept[AnalysisException] {
-        doInsert(t1, df)
-      }
-
-      verifyTable(t1, Seq.empty[(Long, String)].toDF("id", "data"), Seq("id", "data"))
-    }
-
-    /*
-    withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "legacy") {
-      doInsert(t1, df, SaveMode.Overwrite)
-      verifyTable(
-        t1,
-        getDF(Row(null, "1")),
-        Seq("id", "data"))
-
-      doInsert(t1, df)
-
-      verifyTable(
-        t1,
-        getDF(Row(null, "1"), Row(null, "1")),
-        Seq("id", "data"))
-    }
-    */
   }
 
   test("insertInto: struct types and schema enforcement") {

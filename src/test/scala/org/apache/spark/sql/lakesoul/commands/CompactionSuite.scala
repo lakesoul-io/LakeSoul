@@ -18,10 +18,12 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.{MergeOpInt, MergeOpString, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestUtils, MergeOpInt, MergeOpString}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.scalatest.BeforeAndAfterEach
+import org.apache.hadoop.fs.Path
 
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
@@ -40,7 +42,7 @@ class CompactionSuite extends QueryTest
         .format("lakesoul")
         .save(tableName)
 
-      assert(SnapshotManagement(tableName).snapshot.getPartitionInfoArray.forall(!_.be_compacted))
+     assert(SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString).snapshot.getPartitionInfoArray.forall(_.read_files.size==1))
 
     })
   }
@@ -58,9 +60,9 @@ class CompactionSuite extends QueryTest
         .format("lakesoul")
         .save(tableName)
 
-      val sm = SnapshotManagement(tableName)
-      var rangeGroup = sm.snapshot.allDataInfo.groupBy(_.range_partitions)
-      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+      val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
+     var rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+     assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
       val df2 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
@@ -70,12 +72,13 @@ class CompactionSuite extends QueryTest
         LakeSoulTable.forPath(tableName).upsert(df2)
       }
 
-      rangeGroup = sm.updateSnapshot().allDataInfo.groupBy(_.range_partitions)
-      assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+     rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+     assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
       LakeSoulTable.forPath(tableName).compaction(true)
-      rangeGroup = sm.updateSnapshot().allDataInfo.groupBy(_.range_partitions)
+      rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
       assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
     })
@@ -101,23 +104,22 @@ class CompactionSuite extends QueryTest
         LakeSoulTable.forPath(tableName).upsert(df2)
       }
 
-      val sm = SnapshotManagement(tableName)
+      val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
 
-      val rangeInfo = sm.snapshot.allDataInfo
-        .filter(_.range_key.equals("range=1"))
+      val rangeInfo =  SparkUtil.allDataInfo(sm.snapshot).filter(_.range_partitions.equals("range=1"))
 
       assert(!rangeInfo.groupBy(_.file_bucket_id).forall(_._2.length == 1))
 
 
       LakeSoulTable.forPath(tableName).compaction("range=1")
 
-      assert(sm.updateSnapshot().allDataInfo
-        .filter(_.range_key.equals("range=1"))
+      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length == 1)
       )
 
-      assert(sm.updateSnapshot().allDataInfo
-        .filter(!_.range_key.equals("range=1"))
+      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(!_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length != 1)
       )
 
@@ -200,46 +202,6 @@ class CompactionSuite extends QueryTest
     })
   }
 
-
-  test("compaction data is base file") {
-    withTempDir(file => {
-      val tableName = file.getCanonicalPath
-
-
-      val df1 = Seq((2, 1, 1))
-        .toDF("range", "hash", "value")
-
-
-      val df2 = Seq((1, 1, 1), (1, 2, 2), (1, 3, 3), (1, 4, 4))
-        .toDF("range", "hash", "value")
-      val df3 = Seq((1, 1, 11), (1, 2, 22), (1, 3, 33))
-        .toDF("range", "hash", "value")
-
-
-      val df4 = Seq((1, 2, 222), (1, 3, 333), (1, 4, 444), (1, 5, 555))
-        .toDF("range", "hash", "value")
-
-      df1.write
-        .option("rangePartitions", "range")
-        .option("hashPartitions", "hash")
-        .option("hashBucketNum", "2")
-        .format("lakesoul")
-        .save(tableName)
-
-      LakeSoulTable.forPath(tableName).upsert(df2)
-      val sm = SnapshotManagement(tableName)
-      assert(sm.snapshot.allDataInfo
-        .filter(_.range_key.equals("range=1"))
-        .forall(f => !f.is_base_file))
-
-      LakeSoulTable.forPath(tableName).compaction("range=1")
-
-      assert(sm.updateSnapshot().allDataInfo
-        .filter(_.range_key.equals("range=1"))
-        .forall(f => f.is_base_file))
-
-    })
-  }
 
 
   test("simple compaction with merge operator") {

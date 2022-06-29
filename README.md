@@ -45,7 +45,6 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [ ] Flink CDC
 * Realtime Data Warehousing
   - [ ] CDC ingestion and time travel
-  - [ ] Event driven materialized view build and compaction
 * Cloud Native
   - [ ] Object storage IO optimization
   - [ ] Multi-layer storage classes support with data tiering

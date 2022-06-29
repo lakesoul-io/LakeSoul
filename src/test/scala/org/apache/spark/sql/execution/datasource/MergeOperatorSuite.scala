@@ -82,7 +82,6 @@ class MergeOperatorSuite extends QueryTest
     })
   }
 
-
   test("read by defined merge operator - string type") {
     new MergeOpString().register(spark, "stringOp")
 
@@ -100,17 +99,12 @@ class MergeOperatorSuite extends QueryTest
       starTable.upsert(
         Seq(("1", "12", "13"), ("2", "22", "23"), ("3", "32", "33")).toDF("hash", "v1", "v2")
       )
-
       checkAnswer(
         starTable.toDF.withColumn("v2", expr("stringOp(v2)"))
           .select("hash", "v1", "v2"),
         Seq(("1", "12", "1,13"), ("2", "22", "2,23"), ("3", "32", "3,33")).toDF("hash", "v1", "v2")
       )
-
-
     })
-
-
   }
 
   test("perform merge operator on non-hash partitioned table should failed") {
@@ -133,7 +127,6 @@ class MergeOperatorSuite extends QueryTest
 
     })
   }
-
 
   test("perform merge operator to field not in lakesoul table should failed") {
     new MergeOpString().register(spark, "stringOp")
@@ -169,7 +162,6 @@ class MergeOperatorSuite extends QueryTest
     val df = spark.range(5).withColumn("a", longUdf(col("id")))
     df.explain()
   }
-
 
   test("perform merge operator for partition column") {
     new MergeOpString().register(spark, "stringOp")

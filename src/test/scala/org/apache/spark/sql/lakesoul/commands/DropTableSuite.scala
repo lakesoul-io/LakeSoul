@@ -17,8 +17,10 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
-import com.dmetasoul.lakesoul.tables.{LakeSoulTable, LakeSoulTableTestUtils}
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfterEach
@@ -26,93 +28,34 @@ import org.scalatest.BeforeAndAfterEach
 class DropTableSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulTestUtils {
-
   import testImplicits._
-
-  lazy val cassandraConnectot = MetaUtils.cassandraConnector
-  lazy val dataBase = MetaUtils.DATA_BASE
-
-  def tableNotExists(tablePath: String, tableId: String): Boolean = {
-    cassandraConnectot.withSessionDo(session => {
-      val res = session.execute(
-        s"""
-           |select table_id from $dataBase.table_info
-           |where table_name='$tablePath'
-        """.stripMargin).one()
-      var flag = true
-      try {
-        if (res.getString("table_id").equals(tableId)) {
-          flag = false
-        }
-      } catch {
-        case e: Exception =>
-      }
-      flag
-    })
-  }
-
-  def metaNotExists(metaTable: String, tableId: String): Boolean = {
-    if (LakeSoulTableTestUtils.getNumByTableId(metaTable, tableId) != 0) {
-      false
-    } else {
-      true
-    }
-  }
-
-  def partitionNotExists(tableId: String, rangeValue: String, rangeId: String): Boolean = {
-    cassandraConnectot.withSessionDo(session => {
-      val res = session.execute(
-        s"""
-           |select range_id from $dataBase.partition_info
-           |where table_id='$tableId' and range_value='$rangeValue' allow filtering
-        """.stripMargin).one()
-      if (res.getString("range_id").equals(rangeId)) {
-        false
-      } else {
-        true
-      }
-    })
-  }
-
-  def dataNotExists(tableId: String, rangeId: String): Boolean = {
-    if (LakeSoulTableTestUtils.getNumByTableIdAndRangeId("data_info", tableId, rangeId) != 0) {
-      false
-    } else {
-      true
-    }
-  }
-
-
   test("drop table") {
     withTempDir(f => {
       val tmpPath = f.getCanonicalPath
       Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
         .write
         .format("lakesoul")
+        .mode("append")
         .save(tmpPath)
-
-      val tableId = MetaVersion.getTableInfo(MetaUtils.modifyTableString(tmpPath)).table_id
       LakeSoulTable.forPath(tmpPath).dropTable()
-
-      assert(tableNotExists(tmpPath, tableId))
-      assert(metaNotExists("partition_info", tableId))
-      assert(metaNotExists("data_info", tableId))
-      assert(metaNotExists("fragment_value", tableId))
+      val e1 = intercept[AnalysisException] {
+        LakeSoulTable.forPath(tmpPath)
+      }
+      assert(e1.getMessage().contains(s"Table $tmpPath doesn't exist."))
     })
   }
 
 
   test("drop partition") {
     withTempDir(f => {
-      val tmpPath = f.getCanonicalPath
+      val tmpPath = SparkUtil.makeQualifiedTablePath(new Path(f.getCanonicalPath)).toString
       Seq((1, 2), (2, 3), (3, 4)).toDF("key", "value")
         .write
         .partitionBy("key")
         .format("lakesoul")
         .save(tmpPath)
 
-      val tableInfo = MetaVersion.getTableInfo(MetaUtils.modifyTableString(tmpPath))
-      val partitionInfo = MetaVersion.getAllPartitionInfo(tableInfo.table_id)
+      val tableInfo = MetaVersion.getTableInfo(tmpPath)
 
       val e1 = intercept[AnalysisException] {
         LakeSoulTable.forPath(tmpPath).dropPartition("key=1 or key=2")
@@ -123,24 +66,10 @@ class DropTableSuite extends QueryTest
       }
       assert(e2.getMessage().contains("Partition not found by condition"))
 
-      LakeSoulTable.forPath(tmpPath).dropPartition("key=1")
+     LakeSoulTable.forPath(tmpPath).dropPartition("key=1")
       checkAnswer(
         spark.read.format("lakesoul").load(tmpPath).select("key", "value"),
         Row(2, 3) :: Row(3, 4) :: Nil)
-
-      Seq((1, 22)).toDF("key", "value")
-        .write
-        .mode("append")
-        .format("lakesoul")
-        .save(tmpPath)
-      checkAnswer(
-        spark.read.format("lakesoul").load(tmpPath).select("key", "value"),
-        Row(1, 22) :: Row(2, 3) :: Row(3, 4) :: Nil)
-
-
-      val rangeId = partitionInfo.find(_.range_value.equals("key=1")).get.range_id
-      assert(partitionNotExists(tableInfo.table_id, "key=1", rangeId))
-      assert(dataNotExists(tableInfo.table_id, rangeId))
     })
   }
 

@@ -18,13 +18,12 @@ package org.apache.spark.sql.lakesoul.schema
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.TransactionCommit
-import org.apache.spark.sql.lakesoul.exception.{MetadataMismatchErrorBuilder, LakeSoulErrors}
-import org.apache.spark.sql.lakesoul.material_view.{ConstructQueryInfo, MaterialViewUtils}
-import org.apache.spark.sql.lakesoul.utils.{MaterialViewInfo, PartitionUtils, RelationTable, TableInfo}
+import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetadataMismatchErrorBuilder}
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Dataset, SparkSession}
+import org.apache.hadoop.fs.Path
 
-import scala.collection.mutable.ArrayBuffer
 
 /**
   * A trait that writers into LakeSoulTableRel can extend to update the schema of the table.
@@ -37,9 +36,6 @@ trait ImplicitMetadataOperation extends Logging {
   protected val hashPartitions: String
   protected val hashBucketNum: Int
   protected val shortTableName: Option[String]
-  protected val createMaterialView: Boolean = false
-  protected val materialSQLText: String = ""
-  protected val materialAutoUpdate: Boolean = false
 
   private def transPartitionColumns(partitionColumns: String): Seq[String] = {
     if (partitionColumns.equalsIgnoreCase("")) {
@@ -108,36 +104,6 @@ trait ImplicitMetadataOperation extends Logging {
 
     if (shortTableName.isDefined) {
       tc.setShortTableName(shortTableName.get)
-
-      //set material info if creating material view
-      if (createMaterialView) {
-        if (!tc.isFirstCommit) {
-          throw LakeSoulErrors.tableExistsException(tc.tableInfo.table_name)
-        }
-        assert(materialSQLText.nonEmpty)
-        assert(data.isDefined)
-
-        //parse material info from logical plan
-        val construct = new ConstructQueryInfo
-        val plan = data.get.logicalPlan
-        MaterialViewUtils.parseOutputInfo(plan, construct)
-        MaterialViewUtils.parseMaterialInfo(plan, construct, false)
-        val viewInfo = construct.buildQueryInfo()
-
-        //todo: merge it into above parse
-        //get relation table info
-        val relationTables = new ArrayBuffer[RelationTable]()
-        MaterialViewUtils.parseRelationTableInfo(data.get.queryExecution.executedPlan, relationTables)
-
-        tc.setMaterialInfo(
-          MaterialViewInfo(
-            shortTableName.get,
-            materialSQLText,
-            relationTables,
-            materialAutoUpdate,
-            true,
-            viewInfo))
-      }
     }
 
     val normalizedRangePartitionCols =
@@ -185,13 +151,14 @@ trait ImplicitMetadataOperation extends Logging {
       //todo: setting
       tc.updateTableInfo(
         TableInfo(
-          table_name = table_info.table_name,
+          table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
           table_schema = dataSchema.json,
           range_column = normalizedRangePartitionCols.mkString(","),
           hash_column = normalizedHashPartitionCols.mkString(","),
           bucket_num = realHashBucketNum,
-          configuration = configuration))
+          configuration = configuration,
+          short_table_name = table_info.short_table_name))
     }
     else if (isOverwriteMode && canOverwriteSchema && isNewSchema) {
       val newTableInfo = tc.tableInfo.copy(

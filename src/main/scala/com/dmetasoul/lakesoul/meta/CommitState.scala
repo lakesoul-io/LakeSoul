@@ -15,7 +15,6 @@
  */
 
 package com.dmetasoul.lakesoul.meta
-
 import java.util.Locale
 
 object CommitState extends Enumeration {
@@ -40,7 +39,6 @@ object UndoLogType extends Enumeration {
   val ExpireFile = Value("expireFile")
   val Schema = Value("schema")
   val ShortTableName = Value("shortTableName")
-  val Material = Value("material")
   val DropTable = Value("dropTable")
   val DropPartition = Value("dropPartition")
 
@@ -52,7 +50,6 @@ object UndoLogType extends Enumeration {
       ExpireFile.toString,
       Schema.toString,
       ShortTableName.toString,
-      Material.toString,
       DropTable.toString,
       DropPartition.toString)
   }
@@ -64,10 +61,10 @@ sealed abstract class CommitType {
 
 object CommitType {
   def apply(typ: String): CommitType = typ.toLowerCase(Locale.ROOT) match {
-    case "simple" | "SimpleCommit" => SimpleCommit
-    case "delta" | "DeltaCommit" => DeltaCommit
+    case "append" | "AppendCommit" => AppendCommit
+    case "merge" | "MergeCommit" => MergeCommit
     case "compaction" | "compact" | "CompactionCommit" => CompactionCommit
-    case "part_compaction" | "part_compact" | "PartCompaction" | "PartCompactionCommit" => PartCompactionCommit
+    case "update" | "UpdateCommit" => UpdateCommit
     case _ =>
       val supported = Seq("simple", "delta", "compaction", "compact", "part_compaction", "part_compact")
       throw new IllegalArgumentException(s"Unsupported commit type '$typ'. " +
@@ -75,18 +72,18 @@ object CommitType {
   }
 }
 
-case object SimpleCommit extends CommitType {
-  override def name: String = "SimpleCommit"
+case object AppendCommit extends CommitType {
+  override def name: String = "AppendCommit"
 }
 
-case object DeltaCommit extends CommitType {
-  override def name: String = "DeltaCommit"
+case object MergeCommit extends CommitType {
+  override def name: String = "MergeCommit"
 }
 
 case object CompactionCommit extends CommitType {
   override def name: String = "CompactionCommit"
 }
 
-case object PartCompactionCommit extends CommitType {
-  override def name: String = "PartCompactionCommit"
+case object UpdateCommit extends CommitType {
+  override def name: String = "UpdateCommit"
 }
