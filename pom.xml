@@ -25,7 +25,17 @@
         <name>DMetaSoul</name>
         <url>https://www.dmetasoul.com</url>
     </organization>
-    <developers></developers>
+    <developers>
+        <developer>
+            <id>dmetasoul</id>
+            <name>dmetasoul</name>
+            <email>opensource@dmetasoul.com</email>
+            <url>https://github.com/meta-soul</url>
+            <organization>DMetaSoul</organization>
+            <organizationUrl>https://www.dmetasoul.com</organizationUrl>
+            <timezone>+8</timezone>
+        </developer>
+    </developers>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
