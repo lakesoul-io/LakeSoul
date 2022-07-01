@@ -5,6 +5,28 @@
     <artifactId>lakesoul</artifactId>
     <version>2.0.0-spark-3.1.2-SNAPSHOT</version>
     <inceptionYear>2022</inceptionYear>
+    <packaging>pom</packaging>
+    <name>LakeSoul POM</name>
+    <description>A Table Structure Storage to Unify Batch and Streaming Data Processing</description>
+    <url>https://github.com/meta-soul/LakeSoul</url>
+    <licenses>
+        <license>
+            <name>Apache 2.0 License</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+    <scm>
+        <connection>scm:git:git@github.com:meta-soul/LakeSoul.git</connection>
+        <url>scm:git:git@github.com:meta-soul/LakeSoul.git</url>
+        <tag>HEAD</tag>
+    </scm>
+    <organization>
+        <name>DMetaSoul</name>
+        <url>https://www.dmetasoul.com</url>
+    </organization>
+    <developers></developers>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
