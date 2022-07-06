@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.sink;
+package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.lakesoul.metaData.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
