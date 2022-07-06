@@ -20,7 +20,6 @@ package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.sink.LakesoulTableSink;
 import org.apache.flink.lakesoul.tools.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
@@ -73,7 +72,7 @@ public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     options.setString(RECORD_KEY_NAME, primaryKeys);
     options.setString(PARTITION_FIELD.key(), partitionKeys);
 
-    return new LakesoulTableSink(
+    return new LakeSoulTableSink(
         catalogTable.getResolvedSchema().toPhysicalRowDataType(),
         catalogTable.getPartitionKeys(),
         options,

@@ -1,41 +1,43 @@
 /*
  *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
  *
  */
 
-package org.apache.flink.lakesoul.sink;
+package org.apache.flink.lakesoul.table;
 
-import org.apache.flink.lakesoul.sink.fileSystem.bulkFormat.ProjectionBulkFactory;
-import org.apache.flink.types.RowKind;
 import org.apache.flink.api.common.serialization.BulkWriter;
-import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metaData.DataInfo;
+import org.apache.flink.lakesoul.sink.LakeSoulSink;
+import org.apache.flink.lakesoul.sink.LakesoulFileSink;
+import org.apache.flink.lakesoul.sink.fileSystem.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakesoul.sink.fileSystem.bulkFormat.ProjectionBulkFactory;
 import org.apache.flink.lakesoul.sink.partition.BucketPartitioner;
 import org.apache.flink.lakesoul.sink.partition.LakesoulCdcPartitionComputer;
-import org.apache.flink.lakesoul.table.LakesoulSchemaAdapter;
 import org.apache.flink.lakesoul.tools.FlinkUtil;
 import org.apache.flink.lakesoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableException;
@@ -52,7 +54,7 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
-import org.apache.flink.streaming.api.datastream.DataStreamSink;
+import org.apache.flink.types.RowKind;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -67,7 +69,7 @@ import static org.apache.flink.lakesoul.tools.LakeSoulKeyGen.DEFAULT_PARTITION_P
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
-public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
+public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
   private boolean overwrite = false;
   private Configuration tableOptions;
   private DataType physicalRowDataType;
@@ -80,8 +82,8 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
   private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private EncodingFormat<SerializationSchema<RowData>> serializationFormat;
 
-  private static LakesoulTableSink createLakesoulTableSink(LakesoulTableSink lts) {
-    return new LakesoulTableSink(lts);
+  private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
+    return new LakeSoulTableSink(lts);
   }
 
   @Override
@@ -89,7 +91,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     return false;
   }
 
-  public LakesoulTableSink(
+  public LakeSoulTableSink(
       DataType physicalRowDataType,
       List<String> partitionKeys,
       ReadableConfig tableOptions,
@@ -105,7 +107,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
     this.schema = schema;
   }
 
-  private LakesoulTableSink(LakesoulTableSink lts) {
+  private LakeSoulTableSink(LakeSoulTableSink lts) {
     this.overwrite = lts.overwrite;
   }
 
@@ -180,7 +182,7 @@ public class LakesoulTableSink implements DynamicTableSink, SupportsPartitioning
   private Object createWriter(Context sinkContext, Configuration tableOptions) {
     DataType physicalDataTypeWithoutPartitionColumns = getFields(physicalRowDataType, FlinkUtil.isLakesoulCdcTable(tableOptions)).stream()
         .filter(field -> !partitionKeys.contains(field.getName()))
-        .collect(Collectors.collectingAndThen(Collectors.toList(), LakesoulTableSink::Row));
+        .collect(Collectors.collectingAndThen(Collectors.toList(), LakeSoulTableSink::Row));
     if (bulkWriterFormat != null) {
       return bulkWriterFormat.createRuntimeEncoder(
           sinkContext, physicalDataTypeWithoutPartitionColumns);
