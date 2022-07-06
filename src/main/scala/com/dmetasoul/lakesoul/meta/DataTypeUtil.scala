@@ -15,6 +15,7 @@ object DataTypeUtil {
       case "string" => StringType
       case "bigint" => LongType
       case "int" => IntegerType
+      case "integer" => IntegerType
       case "double" => DoubleType
       case "date" => TimestampType
       case "boolean" => BooleanType
@@ -33,6 +34,7 @@ object DataTypeUtil {
       case "string" => "STRING"
       case "long" => "BIGINT"
       case "int" => "INT"
+      case "integer" => "INT"
       case "double" => "DOUBLE"
       case "date" => "DATE"
       case "boolean" => "BOOLEAN"

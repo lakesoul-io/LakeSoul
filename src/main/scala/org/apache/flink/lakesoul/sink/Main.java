@@ -21,59 +21,66 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
+
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.api.Table;
-import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 
 public class Main {
 
-  public static void main(String[] args) throws InterruptedException {
-     StreamTableEnvironment tEnvs;
-     StreamExecutionEnvironment env;
+  public static void main(String[] args) throws Exception {
+    StreamTableEnvironment tEnvs;
+    StreamExecutionEnvironment env;
     env = StreamExecutionEnvironment.getExecutionEnvironment();
-    env.setParallelism(4);
-    env.enableCheckpointing(1001);
-    env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(10003);
+    env.setParallelism(1);
+    env.enableCheckpointing(201);
+    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(403);
     env.getCheckpointConfig().setCheckpointStorage("file:///Users/zhyang/Downloads/flink");
     tEnvs = StreamTableEnvironment.create(env);
     tEnvs.getConfig().getConfiguration().set(
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
 
+    //source
+    tEnvs.executeSql("create table mysql_test_1(\n" +
+        "id INTEGER primary key NOT ENFORCED ," +
+        "name string," +
+        " dt string)" +
+        " with (\n" +
+        "'connector'='mysql-cdc'," +
+        "'hostname'='127.0.0.1'," +
+        "'port'='3306'," +
+        "'server-id'='1'," +
+        "'username'='root',\n" +
+        "'password'='root',\n" +
+        "'database-name'='zhyang_test',\n" +
+        "'table-name'='test5'\n" +
+        ")");
+
     Catalog lakesoulCatalog = new LakesoulCatalog();
-    String LAKESOUL = "lakesoul";
-    tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
-    tEnvs.useCatalog(LAKESOUL);
+    tEnvs.registerCatalog("lakesoul", lakesoulCatalog);
+    tEnvs.useCatalog("lakesoul");
+    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
+    String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
-    String tableName = "flinkI121";
-    int i = (int) (Math.random() * 1000) % 23;
-    tableName+=i;
-    String PATH = "/home/zehy/Downloads/tmp2/" + tableName;
-
+    //target
     tEnvs.executeSql(
-        "CREATE TABLE " + tableName + "( user_id STRING, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('connector' = 'lakesoul','format'='parquet','path'='" +
-            PATH + "','lakesoul_cdc_change_column'='name','lakesoul_cdc'='true','bucket_num'='2')");
+        "CREATE TABLE " + tableName + "( id int," +
+            " name string," +
+            " dt string," +
+            "primary key (id) NOT ENFORCED ) " +
+            "PARTITIONED BY (dt)" +
+            " with ('connector' = 'lakesoul'," +
+            "'format'='parquet','path'='" +
+            PATH + "'," +
+            "'lakesoul_cdc_change_column'='name'," +
 
-    tEnvs.createTemporaryTable("SourceTable", TableDescriptor.forConnector("datagen")
-        .schema(Schema.newBuilder()
-            .column("user_id", DataTypes.STRING())
-            .column("dt", DataTypes.STRING())
-            .column("name", DataTypes.STRING())
-            .build()).option("rows-per-second", "300").option("fields.dt.length", "1")
-        .option("fields.user_id.length", "8").option("fields.name.length", "4")
-        .build());
-    Table table2 = tEnvs.from("SourceTable");
+            "'lakesoul_cdc'='true'," +
+            "'bucket_num'='2')");
 
+    tEnvs.useCatalog("default_catalog");
 
+    tEnvs.executeSql("insert into lakesoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
 
-
-    table2.executeInsert(tableName);
-
-    Thread.sleep(100000000);
   }
 }
