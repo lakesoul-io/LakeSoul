@@ -19,7 +19,7 @@
 
 package org.apache.flink.lakesoul.sink;
 
-import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
+import org.apache.flink.lakesoul.metaData.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
@@ -57,7 +57,7 @@ public class Main {
         "'table-name'='test5'\n" +
         ")");
 
-    Catalog lakesoulCatalog = new LakesoulCatalog();
+    Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakesoul", lakesoulCatalog);
     tEnvs.useCatalog("lakesoul");
     String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;

@@ -29,7 +29,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
-public class LakesoulSchemaAdapter implements Encoder<RowData> {
+public class LakeSoulSchemaAdapter implements Encoder<RowData> {
 
   private static final long serialVersionUID = 1L;
 
@@ -39,7 +39,7 @@ public class LakesoulSchemaAdapter implements Encoder<RowData> {
 
   private transient boolean open;
 
-  public LakesoulSchemaAdapter(SerializationSchema<RowData> serializationSchema) {
+  public LakeSoulSchemaAdapter(SerializationSchema<RowData> serializationSchema) {
     this.serializationSchema = serializationSchema;
   }
 

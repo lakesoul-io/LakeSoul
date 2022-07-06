@@ -57,13 +57,13 @@ import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAM
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakesoulCatalog implements Catalog {
+public class LakeSoulCatalog implements Catalog {
   private static final String LAKE_SOUL_DATA_BASE_NAME = "test_lakesoul_meta";
   private static final String TABLE_PATH = "path";
   private static final String TABLE_ID_PREFIX = "table_";
   private DBManager dbManager;
 
-  public LakesoulCatalog() {
+  public LakeSoulCatalog() {
   }
 
   @Override

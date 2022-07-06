@@ -1,6 +1,6 @@
 package org.apache.flink.lakesoul.test;
 
-import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
+import org.apache.flink.lakesoul.metaData.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -33,7 +33,7 @@ public class LakeSoulFileSinkTest {
     tEnvs.getConfig().getConfiguration().set(
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
 
-    Catalog lakesoulCatalog = new LakesoulCatalog();
+    Catalog lakesoulCatalog = new LakeSoulCatalog();
     String LAKESOUL = "lakesoul";
     tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
     tEnvs.useCatalog(LAKESOUL);

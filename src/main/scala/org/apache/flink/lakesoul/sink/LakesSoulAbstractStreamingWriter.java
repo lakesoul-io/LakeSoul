@@ -33,7 +33,7 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
-public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractStreamOperator<OUT>
+public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends AbstractStreamOperator<OUT>
     implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
 
   private static final long serialVersionUID = 1L;
@@ -49,7 +49,7 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
 
   protected transient long currentWatermark;
 
-  public LakesoulAbstractStreamingWriter(
+  public LakesSoulAbstractStreamingWriter(
       long bucketCheckInterval,
       LakeSoulBucketsBuilder<
           IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>>
@@ -59,23 +59,10 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
     setChainingStrategy(ChainingStrategy.ALWAYS);
   }
 
-  /**
-   * Notifies a partition created.
-   */
   protected abstract void partitionCreated(String partition);
 
-  /**
-   * Notifies a partition become inactive. A partition becomes inactive after all the records
-   * received so far have been committed.
-   */
   protected abstract void partitionInactive(String partition);
 
-  /**
-   * Notifies a new file has been opened.
-   *
-   * <p>Note that this does not mean that the file has been created in the file system. It is only
-   * created logically and the actual file will be generated after it is committed.
-   */
   protected abstract void onPartFileOpened(String partition, Path newPath);
 
   /**
@@ -95,12 +82,12 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
         new LakeSoulBucketLifeCycleListener<IN, String>() {
           @Override
           public void bucketCreated(LakeSoulBucket<IN, String> bucket) {
-            LakesoulAbstractStreamingWriter.this.partitionCreated(bucket.getBucketId());
+            LakesSoulAbstractStreamingWriter.this.partitionCreated(bucket.getBucketId());
           }
 
           @Override
           public void bucketInactive(LakeSoulBucket<IN, String> bucket) {
-            LakesoulAbstractStreamingWriter.this.partitionInactive(bucket.getBucketId());
+            LakesSoulAbstractStreamingWriter.this.partitionInactive(bucket.getBucketId());
           }
         });
 
@@ -116,9 +103,12 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
   }
 
   @Override
-  public void snapshotState(StateSnapshotContext context) throws Exception {
-    super.snapshotState(context);
-    helper.snapshotState(context.getCheckpointId());
+  public void processElement(StreamRecord<IN> element) throws Exception {
+    helper.onElement(
+        element.getValue(),
+        getProcessingTimeService().getCurrentProcessingTime(),
+        element.hasTimestamp() ? element.getTimestamp() : null,
+        currentWatermark);
   }
 
   @Override
@@ -128,12 +118,9 @@ public abstract class LakesoulAbstractStreamingWriter<IN, OUT> extends AbstractS
   }
 
   @Override
-  public void processElement(StreamRecord<IN> element) throws Exception {
-    helper.onElement(
-        element.getValue(),
-        getProcessingTimeService().getCurrentProcessingTime(),
-        element.hasTimestamp() ? element.getTimestamp() : null,
-        currentWatermark);
+  public void snapshotState(StateSnapshotContext context) throws Exception {
+    super.snapshotState(context);
+    helper.snapshotState(context.getCheckpointId());
   }
 
   @Override

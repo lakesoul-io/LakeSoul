@@ -22,6 +22,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableException;
@@ -30,6 +31,9 @@ import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 
@@ -38,13 +42,17 @@ import scala.collection.Map$;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
 public class FlinkUtil {
   private FlinkUtil() {
@@ -169,6 +177,38 @@ public class FlinkUtil {
       sb.append(c);
     }
     return sb.toString();
+  }
+
+  public static List<String> getFieldNames(DataType dataType) {
+    final LogicalType type = dataType.getLogicalType();
+    if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
+      return getFieldNames(dataType.getChildren().get(0));
+    } else if (isCompositeType(type)) {
+      return LogicalTypeChecks.getFieldNames(type);
+    }
+    return Collections.emptyList();
+  }
+
+  public static List<DataTypes.Field> getFields(DataType dataType, Boolean isCdc) {
+    final List<String> names = getFieldNames(dataType);
+    final List<DataType> dataTypes = getFieldDataTypes(dataType);
+    if (isCdc) {
+      names.add("MetaCommon.LakesoulCdcColumnName()");
+      dataTypes.add(DataTypes.VARCHAR(30));
+    }
+    return IntStream.range(0, names.size())
+        .mapToObj(i -> DataTypes.FIELD(names.get(i), dataTypes.get(i)))
+        .collect(Collectors.toList());
+  }
+
+  public static List<DataType> getFieldDataTypes(DataType dataType) {
+    final LogicalType type = dataType.getLogicalType();
+    if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
+      return getFieldDataTypes(dataType.getChildren().get(0));
+    } else if (isCompositeType(type)) {
+      return dataType.getChildren();
+    }
+    return Collections.emptyList();
   }
 
 }

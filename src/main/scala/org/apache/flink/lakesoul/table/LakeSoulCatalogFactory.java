@@ -18,7 +18,7 @@
 
 package org.apache.flink.lakesoul.table;
 
-import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
+import org.apache.flink.lakesoul.metaData.LakeSoulCatalog;
 import org.apache.flink.table.factories.TableFactory;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.table.catalog.Catalog;
@@ -29,15 +29,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
 
-public class LakesoulCatalogFactory implements TableFactory, CatalogFactory {
+public class LakeSoulCatalogFactory implements TableFactory, CatalogFactory {
 
   public Catalog createCatalog(String name, Map<String, String> properties) {
-    return new LakesoulCatalog();
+    return new LakeSoulCatalog();
   }
 
   @Override
   public Catalog createCatalog(CatalogFactory.Context context) {
-    return new LakesoulCatalog();
+    return new LakeSoulCatalog();
   }
 
   @Override
@@ -52,7 +52,7 @@ public class LakesoulCatalogFactory implements TableFactory, CatalogFactory {
 
   @Override
   public String factoryIdentifier() {
-    return "lakesouls";
+    return "lakeSoul";
   }
 
   @Override

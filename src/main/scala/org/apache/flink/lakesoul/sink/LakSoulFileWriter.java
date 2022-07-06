@@ -40,7 +40,7 @@ import java.util.TreeMap;
 
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.TABLE_NAME;
 
-public class LakSoulFileWriter<IN> extends LakesoulAbstractStreamingWriter<IN, DataInfo> {
+public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, DataInfo> {
 
   private static final long serialVersionUID = 2L;
 

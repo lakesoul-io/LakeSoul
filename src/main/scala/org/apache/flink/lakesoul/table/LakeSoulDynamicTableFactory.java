@@ -50,7 +50,7 @@ import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_EXIST_COL
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.PARTITION_FIELD;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 
-public class LakesoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
+public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
   static final String FACTORY_IDENTIFIER = "lakesoul";
   private static final String TABLE_NAME = "table_name";
 

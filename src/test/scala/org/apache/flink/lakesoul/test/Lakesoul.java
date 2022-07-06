@@ -20,8 +20,8 @@ package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.lakesoul.table.LakesoulCatalogFactory;
-import org.apache.flink.lakesoul.metaData.LakesoulCatalog;
+import org.apache.flink.lakesoul.table.LakeSoulCatalogFactory;
+import org.apache.flink.lakesoul.metaData.LakeSoulCatalog;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
@@ -48,7 +48,7 @@ public class Lakesoul {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         tEnvs = StreamTableEnvironment.create(env);
-        Catalog lakesoulCatalog = new LakesoulCatalog();
+        Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog(LAKESOUL,lakesoulCatalog);
         tEnvs.useCatalog(LAKESOUL);
         DbManage = new DBManager();
@@ -56,20 +56,20 @@ public class Lakesoul {
 
     @Test
     public void LakesoulCatalog(){
-        LakesoulCatalogFactory catalogFactory =new LakesoulCatalogFactory();
+        LakeSoulCatalogFactory catalogFactory =new LakeSoulCatalogFactory();
         Catalog lakesoulCatalog = catalogFactory.createCatalog(LAKESOUL,props);
-        assertTrue(lakesoulCatalog instanceof LakesoulCatalog);
+        assertTrue(lakesoulCatalog instanceof LakeSoulCatalog);
     }
 
     @Test
     public void registerCatalog(){
         EnvironmentSettings bbSettings = EnvironmentSettings.newInstance().inBatchMode().build();
         TableEnvironment tableEnv = TableEnvironment.create(bbSettings);
-        Catalog lakesoulCatalog = new LakesoulCatalog();
+        Catalog lakesoulCatalog = new LakeSoulCatalog();
         tableEnv.registerCatalog(LAKESOUL,lakesoulCatalog);
         tableEnv.useCatalog(LAKESOUL);
         System.out.println(tableEnv.getCurrentCatalog());
-        assertEquals(true, tableEnv.getCatalog(LAKESOUL).get() instanceof LakesoulCatalog);
+        assertEquals(true, tableEnv.getCatalog(LAKESOUL).get() instanceof LakeSoulCatalog);
     }
 
 

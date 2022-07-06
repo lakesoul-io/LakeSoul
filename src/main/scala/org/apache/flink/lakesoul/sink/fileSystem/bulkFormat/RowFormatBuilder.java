@@ -24,7 +24,7 @@ import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
-import org.apache.flink.lakesoul.sink.LakesoulFileSink;
+import org.apache.flink.lakesoul.sink.LakeSoulFileSink;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketFactory;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketFactoryImpl;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBuckets;
@@ -125,8 +125,8 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
   /**
    * Creates the actual sink.
    */
-  public LakesoulFileSink<IN> build() {
-    return new LakesoulFileSink<>(this, bucketCheckInterval);
+  public LakeSoulFileSink<IN> build() {
+    return new LakeSoulFileSink<>(this, bucketCheckInterval);
   }
 
   T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {

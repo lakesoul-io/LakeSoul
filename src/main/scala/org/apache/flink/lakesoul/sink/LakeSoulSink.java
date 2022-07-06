@@ -44,7 +44,6 @@ public class LakeSoulSink {
       long bucketCheckInterval, DataStream<T> inputStream,
       LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T, ?, ?>> bucketsBuilder,
       OutputFileConfig outputFile,
-      int parallelism,
       List<String> partitionKeys,
       Configuration conf) {
     LakSoulFileWriter<T> fileWriter =
@@ -67,9 +66,9 @@ public class LakeSoulSink {
       List<String> partitionKeys, Configuration options) {
     DataStream<?> stream = null;
     if (partitionKeys.size() > 0) {
-      DataInfoCommitter committer = new DataInfoCommitter(locationPath, options);
+      MetaDataCommit committer = new MetaDataCommit(locationPath, options);
       stream = writer.transform(
-              DataInfoCommitter.class.getSimpleName(), Types.VOID, committer)
+              MetaDataCommit.class.getSimpleName(), Types.VOID, committer)
           .setParallelism(1).name("DataCommit")
           .setMaxParallelism(1);
     }
