@@ -21,7 +21,7 @@ package org.apache.flink.lakesoul.metaData;
 import java.io.Serializable;
 import java.util.List;
 
-public class DataInfo implements Serializable {
+public class DataFileMetaData implements Serializable {
 
   private static final long serialVersionUID = 1L;
 
@@ -32,7 +32,7 @@ public class DataInfo implements Serializable {
   private String path;
   private String tableName;
 
-  public DataInfo() {
+  public DataFileMetaData() {
   }
 
   public String getTableName() {
@@ -43,7 +43,7 @@ public class DataInfo implements Serializable {
     this.tableName = tableName;
   }
 
-  public DataInfo(
+  public DataFileMetaData(
       long checkpointId, int taskId, int numberOfTasks, List<String> partitions, String path, String tableName) {
     this.checkpointId = checkpointId;
     this.taskId = taskId;

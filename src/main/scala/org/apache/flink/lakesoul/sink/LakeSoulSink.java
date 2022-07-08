@@ -25,7 +25,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 
 import java.util.List;
 
-import org.apache.flink.lakesoul.metaData.DataInfo;
+import org.apache.flink.lakesoul.metaData.DataFileMetaData;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -40,33 +40,37 @@ import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.BUCKET_PARALLE
 
 public class LakeSoulSink {
 
-  public static <T> DataStream<DataInfo> writer(
+  public static <T> DataStream<DataFileMetaData> writer(
       long bucketCheckInterval, DataStream<T> inputStream,
       LakeSoulBucketsBuilder<T, String, ? extends LakeSoulBucketsBuilder<T, ?, ?>> bucketsBuilder,
       OutputFileConfig outputFile,
-      List<String> partitionKeys,
-      Configuration conf) {
+      List<String> partitionKeyList,
+      Configuration flinkConf) {
     LakSoulFileWriter<T> fileWriter =
-        new LakSoulFileWriter<>(bucketCheckInterval, bucketsBuilder, partitionKeys, conf, outputFile);
-    int bucketParallelism = conf.getInteger(BUCKET_PARALLELISM);
+        new LakSoulFileWriter<>(bucketCheckInterval, bucketsBuilder, partitionKeyList, flinkConf, outputFile);
+    int bucketParallelism = flinkConf.getInteger(BUCKET_PARALLELISM);
 
     return inputStream
         .transform(LakSoulFileWriter.class.getSimpleName(),
-            TypeInformation.of(DataInfo.class),
+            TypeInformation.of(DataFileMetaData.class),
             fileWriter).name("DataWrite")
         .setParallelism(bucketParallelism);
   }
 
   /**
-   * Create a sink from file writer. Decide whether to add the node to commit partitions according
-   * to options.
+   * Collect snapshot information about each task and commit metadata
+   * @param writer data file commit message stream
+   * @param locationPath location path
+   * @param partitionKeyList partition key list
+   * @param flinkConf flink configuration
+   * @return discardingSink
    */
   public static DataStreamSink<?> sink(
-      DataStream<DataInfo> writer, Path locationPath,
-      List<String> partitionKeys, Configuration options) {
+      DataStream<DataFileMetaData> writer, Path locationPath,
+      List<String> partitionKeyList, Configuration flinkConf) {
     DataStream<?> stream = null;
-    if (partitionKeys.size() > 0) {
-      MetaDataCommit committer = new MetaDataCommit(locationPath, options);
+    if (partitionKeyList.size() > 0) {
+      MetaDataCommit committer = new MetaDataCommit(locationPath, flinkConf);
       stream = writer.transform(
               MetaDataCommit.class.getSimpleName(), Types.VOID, committer)
           .setParallelism(1).name("DataCommit")

@@ -1,18 +1,19 @@
 /*
  *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
  *
  */
 
@@ -20,7 +21,7 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.metaData.DataInfo;
+import org.apache.flink.lakesoul.metaData.DataFileMetaData;
 import org.apache.flink.lakesoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
@@ -31,7 +32,6 @@ import org.apache.flink.table.filesystem.stream.PartitionCommitPredicate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -40,53 +40,47 @@ import java.util.TreeMap;
 
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.TABLE_NAME;
 
-public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, DataInfo> {
+public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, DataFileMetaData> {
 
   private static final long serialVersionUID = 2L;
-
-  private final List<String> partitionKeys;
-  private final Configuration conf;
+  private final List<String> partitionKeyList;
+  private final Configuration flinkConf;
   private final OutputFileConfig outputFileConfig;
-
-  private transient Set<String> currentNewPartitions;
-  private transient TreeMap<Long, Set<String>> newPartitions;
-  private transient Set<String> committablePartitions;
-  private transient Map<String, Long> inProgressPartitions;
-
+  private transient Set<String> currentNewBuckets;
+  private transient TreeMap<Long, Set<String>> newBuckets;
+  private transient Set<String> committableBuckets;
+  private transient Map<String, Long> inProgressBuckets;
   private transient PartitionCommitPredicate partitionCommitPredicate;
 
-  public LakSoulFileWriter(long bucketCheckInterval, LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, List<String> partitionKeys, Configuration conf,
+  public LakSoulFileWriter(long bucketCheckInterval, LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, List<String> partitionKeyList, Configuration conf,
                            OutputFileConfig outputFileConf) {
     super(bucketCheckInterval, bucketsBuilder);
-    this.partitionKeys = partitionKeys;
-    this.conf = conf;
+    this.partitionKeyList = partitionKeyList;
+    this.flinkConf = conf;
     this.outputFileConfig = outputFileConf;
   }
 
   @Override
   public void initializeState(StateInitializationContext context) throws Exception {
-    if (isPartitionCommitTriggerEnabled()) {
-      partitionCommitPredicate =
-          PartitionCommitPredicate.create(conf, getUserCodeClassloader(), partitionKeys);
-    }
-    currentNewPartitions = new HashSet<>();
-    newPartitions = new TreeMap<>();
-    committablePartitions = new HashSet<>();
-    inProgressPartitions = new HashMap<>();
     super.initializeState(context);
+    this.partitionCommitPredicate =
+        PartitionCommitPredicate.create(flinkConf, getUserCodeClassloader(), partitionKeyList);
+    this.currentNewBuckets = new HashSet<>();
+    this.newBuckets = new TreeMap<>();
+    this.committableBuckets = new HashSet<>();
+    this.inProgressBuckets = new HashMap<>();
   }
 
   @Override
   protected void partitionCreated(String partition) {
-    currentNewPartitions.add(partition);
-    inProgressPartitions.putIfAbsent(
-        partition, getProcessingTimeService().getCurrentProcessingTime());
+    this.currentNewBuckets.add(partition);
+    this.inProgressBuckets.putIfAbsent(partition, getProcessingTimeService().getCurrentProcessingTime());
   }
 
   @Override
   protected void partitionInactive(String partition) {
-    committablePartitions.add(partition);
-    inProgressPartitions.remove(partition);
+    this.committableBuckets.add(partition);
+    this.inProgressBuckets.remove(partition);
   }
 
   @Override
@@ -97,63 +91,44 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
   public void snapshotState(StateSnapshotContext context) throws Exception {
     closePartFileForPartitions();
     super.snapshotState(context);
-    newPartitions.put(context.getCheckpointId(), new HashSet<>(currentNewPartitions));
-    currentNewPartitions.clear();
-  }
-
-  private boolean isPartitionCommitTriggerEnabled() {
-    // when partition keys and partition commit policy exist,
-    // the partition commit trigger is enabled
-    return true;
+    this.newBuckets.put(context.getCheckpointId(), new HashSet<>(currentNewBuckets));
+    this.currentNewBuckets.clear();
   }
 
   /**
    * Close in-progress part file when partition is committable.
    */
-  private void closePartFileForPartitions() throws Exception {
+  private void closePartFileForPartitions() {
     if (partitionCommitPredicate != null) {
-      final Iterator<Map.Entry<String, Long>> iterator =
-          inProgressPartitions.entrySet().iterator();
-      while (iterator.hasNext()) {
-        Map.Entry<String, Long> entry = iterator.next();
-        String partition = entry.getKey();
-        Long creationTime = entry.getValue();
-        PartitionCommitPredicate.PredicateContext predicateContext =
-            PartitionCommitPredicate.createPredicateContext(
-                partition,
-                creationTime,
-                processingTimeService.getCurrentProcessingTime(),
-                currentWatermark);
-        if (partitionCommitPredicate.isPartitionCommittable(predicateContext)) {
-          // if partition is committable, close in-progress part file in this partition
-          buckets.closePartFileForBucket(partition);
-          iterator.remove();
+      inProgressBuckets.forEach((BucketID, creationTime) -> {
+        PartitionCommitPredicate.PredicateContext predicateContexts = PartitionCommitPredicate.createPredicateContext(
+            BucketID, creationTime, processingTimeService.getCurrentProcessingTime(), currentWatermark);
+        if (partitionCommitPredicate.isPartitionCommittable(predicateContexts)) {
+          try {
+            buckets.closePartFileForBucket(BucketID);
+          } catch (Exception e) {
+            e.printStackTrace();
+          }
         }
-      }
+      });
     }
   }
 
   @Override
   protected void commitUpToCheckpoint(long checkpointId) throws Exception {
     super.commitUpToCheckpoint(checkpointId);
-
-    NavigableMap<Long, Set<String>> headPartitions =
-        this.newPartitions.headMap(checkpointId, true);
-    Set<String> partitions = new HashSet<>(committablePartitions);
-    committablePartitions.clear();
-    headPartitions.values().forEach(partitions::addAll);
-    headPartitions.clear();
-    String taskPathPre = outputFileConfig.getPartPrefix() + "-";
-    String tableName = conf.getString(TABLE_NAME);
+    NavigableMap<Long, Set<String>> headBuckets = this.newBuckets.headMap(checkpointId, true);
+    Set<String> partitions = new HashSet<>(committableBuckets);
+    committableBuckets.clear();
+    headBuckets.values().forEach(partitions::addAll);
+    headBuckets.clear();
+    String pathPre = outputFileConfig.getPartPrefix() + "-";
+    String tableName = flinkConf.getString(TABLE_NAME);
     output.collect(
         new StreamRecord<>(
-            new DataInfo(
-                checkpointId,
-                getRuntimeContext().getIndexOfThisSubtask(),
-                getRuntimeContext().getNumberOfParallelSubtasks(),
-                new ArrayList<>(partitions),
-                taskPathPre,
-                tableName)
+            new DataFileMetaData(checkpointId,
+                getRuntimeContext().getIndexOfThisSubtask(), getRuntimeContext().getNumberOfParallelSubtasks(),
+                new ArrayList<>(partitions), pathPre, tableName)
         )
     );
   }

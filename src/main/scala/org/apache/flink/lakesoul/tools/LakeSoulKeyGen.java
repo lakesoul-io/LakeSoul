@@ -49,13 +49,15 @@ public class LakeSoulKeyGen implements Serializable {
   private boolean simpleRecordKey = false;
   private boolean simplePartitionPath = false;
   private final List<String> fieldNames;
-  public List<String> partitionKey;
+  private List<String> partitionKey;
 
-  public LakeSoulKeyGen(RowType rowType, Configuration conf) {
+
+
+  public LakeSoulKeyGen(RowType rowType, Configuration conf ,List<String> partitionKey) {
     this.conf = conf;
     this.recordKeyFields = getRecordKeyFields();
 
-    this.partitionKey = new ArrayList<>();
+    this.partitionKey = partitionKey;
     this.partitionPathFields = getPartitionFiled();
     this.fieldNames = rowType.getFieldNames();
     List<LogicalType> fieldTypes = rowType.getChildren();
@@ -187,4 +189,11 @@ public class LakeSoulKeyGen implements Serializable {
     return getPartitionPath(row);
   }
 
+  public List<String> getPartitionKey() {
+    return partitionKey;
+  }
+
+  public void setPartitionKey(List<String> partitionKey) {
+    this.partitionKey = partitionKey;
+  }
 }

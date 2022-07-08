@@ -17,32 +17,28 @@
  *
  */
 
-package org.apache.flink.lakesoul.tools;
+package org.apache.flink.lakesoul.sink.fileSystem;
 
 import java.util.HashSet;
 import java.util.Set;
 import java.util.TreeMap;
 
-public class LakeSoulTaskCheck {
+public class TaskTracker {
+  private final int taskCount;
 
-  private final int numberOfTasks;
+  private final TreeMap<Long , Set<Integer>> notifyTask = new TreeMap<>();
 
-  /**
-   * Checkpoint id to notified tasks.
-   */
-  private final TreeMap<Long, Set<Integer>> notifiedTasks = new TreeMap<>();
-
-  public LakeSoulTaskCheck(int numberOfTasks) {
-    this.numberOfTasks = numberOfTasks;
+  public TaskTracker(int bucketCount) {
+    this.taskCount =bucketCount;
   }
 
-  public boolean add(long checkpointId, int task) {
-    Set<Integer> tasks = notifiedTasks.computeIfAbsent(checkpointId, (k) -> new HashSet<>());
-    tasks.add(task);
-    if (tasks.size() == numberOfTasks) {
-      notifiedTasks.headMap(checkpointId, true).clear();
+  public boolean addCompleteTask(long checkpointId, int bucket){
+    Set<Integer> currentCkpBucket = notifyTask.computeIfAbsent(checkpointId, v -> new HashSet<>());
+    currentCkpBucket.add(bucket);
+    if(taskCount ==currentCkpBucket.size()){
+      notifyTask.headMap(checkpointId,true).clear();
       return true;
     }
-    return false;
+      return false;
   }
 }

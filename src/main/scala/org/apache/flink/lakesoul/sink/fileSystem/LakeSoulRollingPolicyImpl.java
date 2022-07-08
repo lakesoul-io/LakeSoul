@@ -44,8 +44,15 @@ public class LakeSoulRollingPolicyImpl implements LakeSoulRollingPolicy<RowData,
     this.keyGen = keyGen;
   }
 
-  public LakeSoulRollingPolicyImpl(boolean rollOnCheckpoint, long rollingSize, long rollingTime) {
-    this.rollOnCheckpoint = rollOnCheckpoint;
+  public LakeSoulRollingPolicyImpl(long rollingSize, long rollingTime) {
+    this.rollOnCheckpoint = true;
+    this.rollingSize = rollingSize;
+    this.rollingTime = rollingTime;
+  }
+
+  public LakeSoulRollingPolicyImpl(long rollingSize, long rollingTime, LakeSoulKeyGen keyGen) {
+    this.keyGen = keyGen;
+    this.rollOnCheckpoint = true;
     this.rollingSize = rollingSize;
     this.rollingTime = rollingTime;
   }

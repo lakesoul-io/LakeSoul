@@ -58,8 +58,8 @@ public class Main {
         ")");
 
     Catalog lakesoulCatalog = new LakeSoulCatalog();
-    tEnvs.registerCatalog("lakesoul", lakesoulCatalog);
-    tEnvs.useCatalog("lakesoul");
+    tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
+    tEnvs.useCatalog("lakeSoul");
     String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
     String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
@@ -70,7 +70,7 @@ public class Main {
             " dt string," +
             "primary key (id) NOT ENFORCED ) " +
             "PARTITIONED BY (dt)" +
-            " with ('connector' = 'lakesoul'," +
+            " with ('connector' = 'lakeSoul'," +
             "'format'='parquet','path'='" +
             PATH + "'," +
             "'lakesoul_cdc_change_column'='name'," +
@@ -78,9 +78,11 @@ public class Main {
             "'lakesoul_cdc'='true'," +
             "'bucket_num'='2')");
 
+    tEnvs.executeSql("show tables ").print();
+
     tEnvs.useCatalog("default_catalog");
 
-    tEnvs.executeSql("insert into lakesoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
+    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
 
   }
 }

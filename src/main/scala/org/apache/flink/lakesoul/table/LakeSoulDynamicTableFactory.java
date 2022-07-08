@@ -27,10 +27,8 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
-import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.BulkWriterFormatFactory;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
-import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.EncodingFormatFactory;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -50,14 +48,13 @@ import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.FILE_EXIST_COL
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.PARTITION_FIELD;
 import static org.apache.flink.lakesoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 
-public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, DynamicTableSourceFactory {
-  static final String FACTORY_IDENTIFIER = "lakesoul";
+public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
+  static final String FACTORY_IDENTIFIER = "lakeSoul";
   private static final String TABLE_NAME = "table_name";
 
   @Override
   public DynamicTableSink createDynamicTableSink(Context context) {
-    FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-    Configuration options = (Configuration) helper.getOptions();
+    Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
     ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
     ResolvedCatalogTable catalogTable = context.getCatalogTable();
     TableSchema schema = catalogTable.getSchema();
@@ -82,10 +79,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     );
   }
 
-  @Override
-  public DynamicTableSource createDynamicTableSource(Context context) {
-    return null;
-  }
 
   @Override
   public String factoryIdentifier() {
