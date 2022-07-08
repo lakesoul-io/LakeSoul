@@ -406,6 +406,7 @@
             <plugin>
                 <groupId>org.scalatest</groupId>
                 <artifactId>scalatest-maven-plugin</artifactId>
+                <version>2.0.2</version>
                 <configuration>
                     <testFailureIgnore>true</testFailureIgnore>
                     <runpath>target/scala-2.12/classes,target/scala-2.12/test-classes</runpath>
@@ -457,6 +458,24 @@
                         </goals>
                         <configuration>
                             <keyname>${gpg.keyname}</keyname>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- We must generate a -javadoc JAR file to publish on Maven Central -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>empty-javadoc-jar</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>javadoc</classifier>
+                            <classesDirectory>${basedir}/javadoc</classesDirectory>
                         </configuration>
                     </execution>
                 </executions>
