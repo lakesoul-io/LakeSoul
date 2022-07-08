@@ -20,7 +20,7 @@
 package org.apache.flink.lakesoul.tools;
 
 import org.apache.flink.api.common.serialization.Encoder;
-import org.apache.flink.lakesoul.sink.partition.LakesoulCdcPartitionComputer;
+import org.apache.flink.lakesoul.sink.partition.LakeSoulCdcPartitionComputer;
 import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
@@ -29,9 +29,9 @@ import java.io.OutputStream;
 public class ProjectionEncoder implements Encoder<RowData> {
 
   private final Encoder<RowData> encoder;
-  private final LakesoulCdcPartitionComputer computer;
+  private final LakeSoulCdcPartitionComputer computer;
 
-  public ProjectionEncoder(Encoder<RowData> encoder, LakesoulCdcPartitionComputer computer) {
+  public ProjectionEncoder(Encoder<RowData> encoder, LakeSoulCdcPartitionComputer computer) {
     this.encoder = encoder;
     this.computer = computer;
   }

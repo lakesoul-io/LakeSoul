@@ -57,7 +57,7 @@ public class LakeSoulBucket<IN, BucketID> {
   private final NavigableMap<Long, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverablesPerCheckpoint;
   private final OutputFileConfig outputFileConfig;
   private PriorityQueue<RowData> sortQueue;
-  private AtomicLong bucketCount;
+  private AtomicLong bucketRowCount;
   private final LakeSoulKeyGen keyGen;
   @Nullable
   private final FileLifeCycleListener<BucketID> fileListener;
@@ -89,7 +89,7 @@ public class LakeSoulBucket<IN, BucketID> {
         return 0;
       }
     });
-    bucketCount = new AtomicLong(0L);
+    bucketRowCount = new AtomicLong(0L);
   }
 
   private LakeSoulBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> partFileFactory, RollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState,
@@ -167,7 +167,7 @@ public class LakeSoulBucket<IN, BucketID> {
     ) {
       sortWrite(currentTime);
       this.inProgressPart = this.rollPartFile(currentTime);
-      bucketCount = new AtomicLong(0L);
+      bucketRowCount = new AtomicLong(0L);
     }
     sortQueue.add((RowData) element);
 
@@ -176,7 +176,7 @@ public class LakeSoulBucket<IN, BucketID> {
   private boolean checkRollingPolicy() {
     if (rollingPolicy instanceof LakeSoulRollingPolicyImpl) {
       LakeSoulRollingPolicyImpl LakeSoulRollingPolicy = (LakeSoulRollingPolicyImpl) this.rollingPolicy;
-      return LakeSoulRollingPolicy.shouldRollOnMaxSize(this.bucketCount.getAndIncrement());
+      return LakeSoulRollingPolicy.shouldRollOnMaxSize(this.bucketRowCount.getAndIncrement());
     } else {
       return false;
     }

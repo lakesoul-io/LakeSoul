@@ -22,6 +22,8 @@ package org.apache.flink.lakesoul.tools;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 
+import java.time.Duration;
+
 public class LakeSoulSinkOptions {
 
   public static final String RECORD_KEY_NAME = "recordKey";
@@ -75,6 +77,24 @@ public class LakeSoulSinkOptions {
       .intType()
       .defaultValue(1)
       .withDescription("bucket number parallelism");
+
+  public static final ConfigOption<Long> FILE_ROLLING_SIZE = ConfigOptions
+      .key("file_rolling_size")
+      .longType()
+      .defaultValue(20000L)
+      .withDescription("file rolling size ");
+
+  public static final ConfigOption<Long> FILE_ROLLING_TIME = ConfigOptions
+      .key("file_rolling_time")
+      .longType()
+      .defaultValue(Duration.ofMinutes(10).toMillis())
+      .withDescription("file rolling time ");
+
+  public static final ConfigOption<Long> BUCKET_CHECK_INTERVAL = ConfigOptions
+      .key("bucket_check_interval")
+      .longType()
+      .defaultValue(Duration.ofMinutes(1).toMillis())
+      .withDescription("file rolling time ");
 
 }
 
