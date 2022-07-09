@@ -97,10 +97,10 @@ class CDCSuite
       withTempDir(dir => {
         // val tablePath = dir.getCanonicalPath
 //          val tablePath="/lakesoulMutilPartitionsAndBuckets"
-          val tablePath = "file:/Users/zhyang/Downloads/tmp2/flinkTableTs352"
+          val tablePath = "file:/Users/zhyang/Downloads/tmp/flinkI935"
           val data4=LakeSoulTable.forPath(tablePath).toDF
 //          val data4= data4.select("range","hash","op");
-        data4.show(10)
+        data4.show(100)
         //data2.show()
         //  data2.explain(true)
         //checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
