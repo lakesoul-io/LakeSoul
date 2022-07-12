@@ -53,6 +53,7 @@ import java.util.stream.IntStream;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
+import static org.apache.spark.sql.types.DataTypes.StringType;
 
 public class FlinkUtil {
   private FlinkUtil() {
@@ -85,6 +86,9 @@ public class FlinkUtil {
       String dtName = dt.getLogicalType().getTypeRoot().name();
       stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
     }
+    if (isCdc){
+      stNew = stNew.add("rowKinds", StringType, true);
+    }
     return stNew;
   }
 
@@ -110,7 +114,7 @@ public class FlinkUtil {
     Builder bd = Schema.newBuilder();
     JSONObject properties = tableInfo.getProperties();
     String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
-    boolean contains = (lakesoulCdcColumnName == null || "".equals(lakesoulCdcColumnName));
+    boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
     String hashColumn = properties.getString(RECORD_KEY_NAME);
     for (StructField sf : struct.fields()) {
       if (contains && sf.name().equals(lakesoulCdcColumnName)) {

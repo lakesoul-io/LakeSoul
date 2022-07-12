@@ -29,7 +29,7 @@ import org.apache.flink.table.catalog.Catalog;
 
 public class Main {
 
-  public static void main(String[] args) throws Exception {
+  public static void main(String[] args) {
     StreamTableEnvironment tEnvs;
     StreamExecutionEnvironment env;
     env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -73,7 +73,7 @@ public class Main {
             " with ('connector' = 'lakeSoul'," +
             "'format'='parquet','path'='" +
             PATH + "'," +
-            "'lakesoul_cdc'='true'," +
+            "'useCDC'='true'," +
             "'bucket_num'='2')");
 
     tEnvs.executeSql("show tables ").print();

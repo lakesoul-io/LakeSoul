@@ -48,6 +48,7 @@ import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FACTORY_IDENTI
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN_KEY;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.PARTITION_FIELD;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
 
@@ -65,6 +66,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
     String partitionKeys = FlinkUtil.stringListToString(partitionKeysList);
     List<String> fileExistColumnKey = Arrays.stream(schema.getFieldNames())
         .filter(o -> !partitionKeysList.contains(o)).collect(Collectors.toList());
+    if (options.getBoolean(USE_CDC)){
+      fileExistColumnKey.add("rowKinds");
+    }
     options.setString(FILE_EXIST_COLUMN_KEY, FlinkUtil.stringListToString(fileExistColumnKey));
     options.setString(TABLE_NAME, objectIdentifier.getObjectName());
     options.setString(RECORD_KEY_NAME, primaryKeys);

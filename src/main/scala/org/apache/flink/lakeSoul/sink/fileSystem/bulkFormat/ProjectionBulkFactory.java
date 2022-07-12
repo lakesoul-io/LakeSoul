@@ -21,7 +21,7 @@ package org.apache.flink.lakeSoul.sink.fileSystem.bulkFormat;
 
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.core.fs.FSDataOutputStream;
-import org.apache.flink.lakeSoul.sink.partition.LakeSoulCdcPartitionComputer;
+import org.apache.flink.lakeSoul.sink.partition.CdcPartitionComputer;
 import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
@@ -29,10 +29,10 @@ import java.io.IOException;
 public class ProjectionBulkFactory implements BulkWriter.Factory<RowData> {
 
   private final BulkWriter.Factory<RowData> factory;
-  private final LakeSoulCdcPartitionComputer computer;
+  private final CdcPartitionComputer computer;
 
   public ProjectionBulkFactory(
-      BulkWriter.Factory<RowData> factory, LakeSoulCdcPartitionComputer computer) {
+      BulkWriter.Factory<RowData> factory, CdcPartitionComputer computer) {
     this.factory = factory;
     this.computer = computer;
   }

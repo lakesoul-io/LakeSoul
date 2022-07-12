@@ -31,7 +31,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public class LakeSoulCdcPartitionComputer implements PartitionComputer<RowData> {
+public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
   private static final long serialVersionUID = 1L;
 
@@ -47,7 +47,7 @@ public class LakeSoulCdcPartitionComputer implements PartitionComputer<RowData> 
   private Boolean isCdc;
   private transient GenericRowData reuseRow;
 
-  public LakeSoulCdcPartitionComputer(
+  public CdcPartitionComputer(
       String defaultPartValue,
       String[] columnNames,
       DataType[] columnTypes,

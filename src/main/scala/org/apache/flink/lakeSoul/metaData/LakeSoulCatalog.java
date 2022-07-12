@@ -53,7 +53,9 @@ import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.Expression;
 
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -178,9 +180,9 @@ public class LakeSoulCatalog implements Catalog {
       Map<String, String> tableOptions = table.getOptions();
       tableOptions.put(RECORD_KEY_NAME, primaryKeys);
       boolean cdcMark;
-      if ("true".equals(tableOptions.get("isCDC"))) {
+      if ("true".equals(tableOptions.get(USE_CDC.key()))) {
         cdcMark = true;
-        tableOptions.put("lakesoul_cdc_change_column","rowKinds");
+        tableOptions.put(CDC_CHANGE_COLUMN,"rowKinds");
       } else {
         cdcMark = false;
       }
