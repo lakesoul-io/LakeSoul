@@ -193,7 +193,7 @@ public class FlinkUtil {
     final List<String> names = getFieldNames(dataType);
     final List<DataType> dataTypes = getFieldDataTypes(dataType);
     if (isCdc) {
-      names.add("MetaCommon.LakesoulCdcColumnName()");
+      names.add("rowKinds");
       dataTypes.add(DataTypes.VARCHAR(30));
     }
     return IntStream.range(0, names.size())

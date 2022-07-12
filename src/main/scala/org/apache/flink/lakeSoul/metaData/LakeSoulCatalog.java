@@ -147,7 +147,6 @@ public class LakeSoulCatalog implements Catalog {
     String tableName = tablePath.getObjectName();
     TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
 
-
     return null != tableInfo;
   }
 
@@ -165,8 +164,8 @@ public class LakeSoulCatalog implements Catalog {
   public void createTable(ObjectPath tablePath, CatalogBaseTable table, boolean ignoreIfExists) throws TableAlreadyExistException, DatabaseNotExistException, CatalogException {
     checkNotNull(tablePath);
     checkNotNull(table);
-    TableSchema tsc = table.getSchema();
-    List<String> columns = tsc.getPrimaryKey().get().getColumns();
+    TableSchema schema = table.getSchema();
+    List<String> columns = schema.getPrimaryKey().get().getColumns();
     String primaryKeys = FlinkUtil.stringListToString(columns);
     if (!databaseExists(tablePath.getDatabaseName())) {
       throw new DatabaseNotExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath.getDatabaseName());
@@ -178,6 +177,13 @@ public class LakeSoulCatalog implements Catalog {
     } else {
       Map<String, String> tableOptions = table.getOptions();
       tableOptions.put(RECORD_KEY_NAME, primaryKeys);
+      boolean cdcMark;
+      if ("true".equals(tableOptions.get("isCDC"))) {
+        cdcMark = true;
+        tableOptions.put("lakesoul_cdc_change_column","rowKinds");
+      } else {
+        cdcMark = false;
+      }
       String json = JSON.toJSONString(tableOptions);
       JSONObject properties = JSON.parseObject(json);
       List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
@@ -191,8 +197,9 @@ public class LakeSoulCatalog implements Catalog {
         e.printStackTrace();
       }
       String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
+
       dbManager.createNewTable(tableId, tableName, qualifiedPath,
-          FlinkUtil.toSparkSchema(tsc, FlinkUtil.isLakesoulCdcTable(tableOptions)).json(),
+          FlinkUtil.toSparkSchema(schema, cdcMark).json(),
           properties, FlinkUtil.stringListToString(partitionKeys)+";"+primaryKeys);
     }
   }

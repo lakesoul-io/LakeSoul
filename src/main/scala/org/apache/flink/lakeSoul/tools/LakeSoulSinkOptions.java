@@ -98,7 +98,7 @@ public class LakeSoulSinkOptions {
       .defaultValue(Duration.ofMinutes(1).toMillis())
       .withDescription("file rolling time ");
 
-  public static final ConfigOption<Boolean> USE_CDC_COLUMN = ConfigOptions
+  public static final ConfigOption<Boolean> USE_CDC = ConfigOptions
       .key("useCDC")
       .booleanType()
       .defaultValue(true)

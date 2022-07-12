@@ -61,11 +61,10 @@ import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.lakeSoul.tools.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_ROLLING_TIME;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC_COLUMN;
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
   private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
-  private EncodingFormat<SerializationSchema<RowData>> serializationFormat;
   private boolean overwrite;
   private Path path;
   private DataType dataType;
@@ -83,10 +82,8 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
       List<String> partitionKeyList,
       ReadableConfig flinkConf,
       EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
-      EncodingFormat<SerializationSchema<RowData>> serializationFormat,
       ResolvedSchema schema
   ) {
-    this.serializationFormat = serializationFormat;
     this.bulkWriterFormat = bulkWriterFormat;
     this.schema = schema;
     this.partitionKeyList = partitionKeyList;
@@ -118,7 +115,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     this.keyGen = new LakeSoulKeyGen((RowType) schema.toSourceRowDataType().notNull().getLogicalType(), flinkConf, partitionKeyList);
     OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
 
-    LakeSoulCdcPartitionComputer partitionComputer = partitionCdcComputer(flinkConf.getBoolean(USE_CDC_COLUMN));
+    LakeSoulCdcPartitionComputer partitionComputer = partitionCdcComputer(flinkConf.getBoolean(USE_CDC));
     FlinkBucketAssigner assigner = new FlinkBucketAssigner(partitionComputer);
 
     LakeSoulRollingPolicyImpl lakeSoulPolicy = new LakeSoulRollingPolicyImpl(
@@ -152,16 +149,12 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   private Object createWriter(Context sinkContext) {
-    DataType partitionField = FlinkUtil.getFields(dataType, false).stream()
+    DataType partitionField = FlinkUtil.getFields(dataType, flinkConf.getBoolean(USE_CDC)).stream()
         .filter(field -> !partitionKeyList.contains(field.getName()))
         .collect(Collectors.collectingAndThen(Collectors.toList(), LakeSoulTableSink::getDataType));
     if (bulkWriterFormat != null) {
       return bulkWriterFormat.createRuntimeEncoder(
           sinkContext, partitionField);
-    } else if (serializationFormat != null) {
-      return new LakeSoulSchemaAdapter(
-          serializationFormat.createRuntimeEncoder(
-              sinkContext, partitionField));
     } else {
       throw new TableException("Can not find format factory.");
     }

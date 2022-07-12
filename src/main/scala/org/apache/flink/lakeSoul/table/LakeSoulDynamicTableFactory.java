@@ -75,7 +75,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
         catalogTable.getPartitionKeys(),
         options,
         discoverEncodingFormat(context, BulkWriterFormatFactory.class),
-        discoverEncodingFormat(context, SerializationFormatFactory.class),
         context.getCatalogTable().getResolvedSchema()
     );
   }
