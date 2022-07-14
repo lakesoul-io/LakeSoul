@@ -40,8 +40,6 @@ public class LakeSoulArrowReader {
     private final BufferAllocator allocator = new RootAllocator();
     private ArrowSchema arrowSchema = null;
 
-
-
     public boolean next() {
         throw new RuntimeException("next() Not implemented");
     }
@@ -58,7 +56,15 @@ public class LakeSoulArrowReader {
         return arrowSchema;
     }
 
-    public VectorSchemaRoot getVectorSchemaRootByAddr(){
+    /**
+     * Public Java Interface for getting next VectorSchemaRoot
+     * @return next VectorSchemaRoot
+     */
+    public VectorSchemaRoot getVectorSchemaRoot(){
+        return this.getVectorSchemaRootByAddr();
+    }
+
+    private VectorSchemaRoot getVectorSchemaRootByAddr(){
 
         long memoryAddress = this.getArrowArrayAddress();
         ArrowArray importedArrowArray = ArrowArray.wrap(memoryAddress);
