@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakeSoul.tools.FlinkUtil;
@@ -34,6 +34,9 @@ public class FlinkBucketAssigner implements BucketAssigner<RowData, String> {
     this.computer = computer;
   }
 
+  /*
+   * RowData bucket logic
+   */
   @Override
   public String getBucketId(RowData element, Context context) {
     try {

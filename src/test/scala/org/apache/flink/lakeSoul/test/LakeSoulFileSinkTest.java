@@ -16,57 +16,63 @@ import org.junit.Test;
 
 public class LakeSoulFileSinkTest {
 
-  private StreamTableEnvironment tEnvs;
-  private StreamExecutionEnvironment env;
-
-
-  @Before
-  public void before() {
-
+  @Test
+  public void flinkCdcSinkTest() throws InterruptedException {
+    StreamTableEnvironment tEnvs;
+    StreamExecutionEnvironment env;
     env = StreamExecutionEnvironment.getExecutionEnvironment();
-    env.setParallelism(4);
-    env.enableCheckpointing(1001);
-    env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(10003);
+    env.setParallelism(1);
+    env.enableCheckpointing(201);
+    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(403);
     env.getCheckpointConfig().setCheckpointStorage("file:///Users/zhyang/Downloads/flink");
     tEnvs = StreamTableEnvironment.create(env);
     tEnvs.getConfig().getConfiguration().set(
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
 
+    //source
+    tEnvs.executeSql("create table mysql_test_1(\n" +
+        "id INTEGER primary key NOT ENFORCED ," +
+        "name string," +
+        " dt string)" +
+        " with (\n" +
+        "'connector'='mysql-cdc'," +
+        "'hostname'='127.0.0.1'," +
+        "'port'='3306'," +
+        "'server-id'='1'," +
+        "'username'='root',\n" +
+        "'password'='root',\n" +
+        "'database-name'='zhyang_test',\n" +
+        "'table-name'='test5'\n" +
+        ")");
+
     Catalog lakesoulCatalog = new LakeSoulCatalog();
-    String LAKESOUL = "lakesoul";
-    tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
-    tEnvs.useCatalog(LAKESOUL);
-  }
+    tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
+    tEnvs.useCatalog("lakeSoul");
+    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
+    String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
-  @Test
-  public void createStreamingSinkTest() throws Exception {
-    String tableName = "flinkI1";
-    String PATH = "/Users/zhyang/Downloads/tmp2/" + tableName;
-
+    //target
     tEnvs.executeSql(
-        "CREATE TABLE " + tableName + "( user_id STRING, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('connector' = 'lakesoul','format'='parquet','path'='" +
-            PATH + "','lakesoul_cdc_change_column'='name','lakesoul_cdc'='true','bucket_num'='2')");
+        "CREATE TABLE " + tableName + "( id int," +
+            " name string," +
+            " dt string," +
+            "primary key (id) NOT ENFORCED ) " +
+            "PARTITIONED BY (dt)" +
+            " with ('connector' = 'lakeSoul'," +
+            "'format'='parquet','path'='" +
+            PATH + "'," +
+            "'useCDC'='true'," +
+            "'bucket_num'='2')");
 
-    tEnvs.createTemporaryTable("SourceTable", TableDescriptor.forConnector("datagen")
-        .schema(Schema.newBuilder()
-            .column("user_id", DataTypes.STRING())
-            .column("dt", DataTypes.STRING())
-            .column("name", DataTypes.STRING())
-            .build()).option("rows-per-second", "300").option("fields.dt.length", "1")
-        .option("fields.user_id.length", "8").option("fields.name.length", "4")
-        .build());
-    Table table2 = tEnvs.from("SourceTable");
+    tEnvs.executeSql("show tables ").print();
 
+    tEnvs.useCatalog("default_catalog");
 
-
-
-    table2.executeInsert(tableName);
+    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
 
     Thread.sleep(100000000);
-
-
   }
+
 }
 
 

@@ -17,13 +17,22 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket.bulkFormat;
 
-import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
-import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
+import org.apache.flink.api.common.serialization.BulkWriter;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 
-import java.io.IOException;
+public final class DefaultBulkFormatBuilder<IN>
+    extends BulkFormatBuilder<IN, String, DefaultBulkFormatBuilder<IN>> {
 
-public interface LakeSoulRollingPolicy<IN, BucketID> extends RollingPolicy<IN, BucketID> {
-  boolean shouldRoll(PartFileInfo<BucketID> var1, long var2) throws IOException;
+  private static final long serialVersionUID = 7493169281036370228L;
+
+  public DefaultBulkFormatBuilder(
+      Path basePath,
+      BulkWriter.Factory<IN> writerFactory,
+      BucketAssigner<IN, String> assigner) {
+    super(basePath, writerFactory, assigner);
+  }
 }
+

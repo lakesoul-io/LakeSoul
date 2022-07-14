@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import java.util.HashSet;
 import java.util.Set;

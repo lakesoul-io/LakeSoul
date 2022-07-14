@@ -22,7 +22,7 @@ package org.apache.flink.lakeSoul.sink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketsBuilder;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketsBuilder;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;

@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
@@ -50,7 +50,6 @@ public class LakeSoulFileSinkHelper<IN> implements ProcessingTimeCallback {
 
     long currentProcessingTime = procTimeService.getCurrentProcessingTime();
     procTimeService.registerTimer(currentProcessingTime + bucketCheckInterval, this);
-
 
   }
 

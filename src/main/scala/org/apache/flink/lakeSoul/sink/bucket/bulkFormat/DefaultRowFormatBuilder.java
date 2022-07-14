@@ -17,22 +17,18 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem.bulkFormat;
+package org.apache.flink.lakeSoul.sink.bucket.bulkFormat;
 
-import org.apache.flink.api.common.serialization.BulkWriter;
+import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 
-public final class DefaultBulkFormatBuilder<IN>
-    extends BulkFormatBuilder<IN, String, DefaultBulkFormatBuilder<IN>> {
+public final class DefaultRowFormatBuilder<IN>
+    extends RowFormatBuilder<IN, String, DefaultRowFormatBuilder<IN>> {
+  private static final long serialVersionUID = -8503344257202146718L;
 
-  private static final long serialVersionUID = 7493169281036370228L;
-
-  public DefaultBulkFormatBuilder(
-      Path basePath,
-      BulkWriter.Factory<IN> writerFactory,
-      BucketAssigner<IN, String> assigner) {
-    super(basePath, writerFactory, assigner);
+  public DefaultRowFormatBuilder(
+      Path basePath, Encoder<IN> encoder, BucketAssigner<IN, String> bucketAssigner) {
+    super(basePath, encoder, bucketAssigner);
   }
 }
-

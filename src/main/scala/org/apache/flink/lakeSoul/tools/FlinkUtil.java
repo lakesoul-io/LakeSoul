@@ -69,14 +69,6 @@ public class FlinkUtil {
     return "Null";
   }
 
-  public static Boolean isLakesoulCdcTable(Map<String, String> options) {
-    return false;
-  }
-
-  public static Boolean isLakesoulCdcTable(Configuration options) {
-    return false;
-  }
-
   public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
     StructType stNew = new StructType();
 
@@ -161,13 +153,6 @@ public class FlinkUtil {
       i++;
     }
     return suffixBuf.toString();
-  }
-
-  public static scala.collection.immutable.Map<String, String> getScalaMap(Map<String, String> javaMap) {
-    scala.collection.mutable.Map<String, String> scalaMap = JavaConverters.mapAsScalaMap(javaMap);
-    Object objTest = Map$.MODULE$.<String, String>newBuilder().$plus$plus$eq(scalaMap.toSeq());
-    Object resultTest = ((scala.collection.mutable.Builder) objTest).result();
-    return (scala.collection.immutable.Map<String, String>) (scala.collection.immutable.Map) resultTest;
   }
 
   private static String escapePathName(String path) {

@@ -35,7 +35,7 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-public class Lakesoul {
+public class LakeSoulCatalogTest {
     private Map<String, String> props;
     private StreamTableEnvironment tEnvs;
     private final String LAKESOUL = "lakesoul";

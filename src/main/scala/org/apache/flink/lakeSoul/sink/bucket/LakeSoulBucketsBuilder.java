@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;

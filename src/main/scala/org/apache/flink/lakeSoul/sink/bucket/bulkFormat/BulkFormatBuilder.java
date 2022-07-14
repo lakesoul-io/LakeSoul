@@ -17,27 +17,28 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem.bulkFormat;
+package org.apache.flink.lakeSoul.sink.bucket.bulkFormat;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.common.serialization.Encoder;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
-import org.apache.flink.lakeSoul.sink.LakeSoulFileSink;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketFactory;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketFactoryImpl;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBuckets;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketsBuilder;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulRollingPolicyImpl;
+import org.apache.flink.lakeSoul.sink.FileSinkFunction;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketFactory;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketFactoryImpl;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBuckets;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketsBuilder;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
-import org.apache.flink.streaming.api.functions.sink.filesystem.RowWiseBucketWriter;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 
-public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, BucketID, T>>
+public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN, BucketID, T>>
     extends LakeSoulBucketsBuilder<IN, BucketID, T> {
 
   private static final long serialVersionUID = 1L;
@@ -46,7 +47,7 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
 
   private final Path basePath;
 
-  private Encoder<IN> encoder;
+  private BulkWriter.Factory<IN> writerFactory;
 
   private BucketAssigner<IN, BucketID> bucketAssigner;
 
@@ -56,28 +57,30 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
 
   private OutputFileConfig outputFileConfig;
 
-  protected RowFormatBuilder(
-      Path basePath, Encoder<IN> encoder, BucketAssigner<IN, BucketID> bucketAssigner) {
+  protected BulkFormatBuilder(
+      Path basePath,
+      BulkWriter.Factory<IN> writerFactory,
+      BucketAssigner<IN, BucketID> assigner) {
     this(
         basePath,
-        encoder,
-        bucketAssigner,
+        writerFactory,
+        assigner,
         new LakeSoulRollingPolicyImpl(false),
         DEFAULT_BUCKET_CHECK_INTERVAL,
         new LakeSoulBucketFactoryImpl<>(),
         OutputFileConfig.builder().build());
   }
 
-  protected RowFormatBuilder(
+  public BulkFormatBuilder(
       Path basePath,
-      Encoder<IN> encoder,
+      BulkWriter.Factory<IN> writerFactory,
       BucketAssigner<IN, BucketID> assigner,
       LakeSoulRollingPolicyImpl policy,
       long bucketCheckInterval,
       LakeSoulBucketFactory<IN, BucketID> bucketFactory,
       OutputFileConfig outputFileConfig) {
     this.basePath = Preconditions.checkNotNull(basePath);
-    this.encoder = Preconditions.checkNotNull(encoder);
+    this.writerFactory = writerFactory;
     this.bucketAssigner = Preconditions.checkNotNull(assigner);
     this.rollingPolicy = Preconditions.checkNotNull(policy);
     this.bucketCheckInterval = bucketCheckInterval;
@@ -89,18 +92,24 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
     return bucketCheckInterval;
   }
 
-  public T withBucketCheckInterval(final long interval) {
+  public T withBucketCheckInterval(long interval) {
     this.bucketCheckInterval = interval;
     return self();
   }
 
-  public T withBucketAssigner(final BucketAssigner<IN, BucketID> assigner) {
+  public T withBucketAssigner(BucketAssigner<IN, BucketID> assigner) {
     this.bucketAssigner = Preconditions.checkNotNull(assigner);
     return self();
   }
 
-  public T withRollingPolicy(final LakeSoulRollingPolicyImpl policy) {
-    this.rollingPolicy = Preconditions.checkNotNull(policy);
+  public T withRollingPolicy(LakeSoulRollingPolicyImpl rollingPolicy) {
+    this.rollingPolicy = Preconditions.checkNotNull(rollingPolicy);
+    return self();
+  }
+
+  @VisibleForTesting
+  T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
+    this.bucketFactory = Preconditions.checkNotNull(factory);
     return self();
   }
 
@@ -109,36 +118,18 @@ public class RowFormatBuilder<IN, BucketID, T extends RowFormatBuilder<IN, Bucke
     return self();
   }
 
-  public <ID> RowFormatBuilder<IN, ID, ? extends RowFormatBuilder<IN, ID, ?>> withNewBucketAssignerAndPolicy(
-      final BucketAssigner<IN, ID> assigner,
-      final LakeSoulRollingPolicyImpl policy) {
-    return new RowFormatBuilder(
-        basePath,
-        encoder,
-        Preconditions.checkNotNull(assigner),
-        Preconditions.checkNotNull(policy),
-        bucketCheckInterval,
-        new LakeSoulBucketFactoryImpl<>(),
-        outputFileConfig);
-  }
-
   /**
    * Creates the actual sink.
    */
-  public LakeSoulFileSink<IN> build() {
-    return new LakeSoulFileSink<>(this, bucketCheckInterval);
-  }
-
-  T withBucketFactory(final LakeSoulBucketFactory<IN, BucketID> factory) {
-    this.bucketFactory = Preconditions.checkNotNull(factory);
-    return self();
+  public FileSinkFunction<IN> build() {
+    return new FileSinkFunction<>(this, bucketCheckInterval);
   }
 
   @Internal
   @Override
   public BucketWriter<IN, BucketID> createBucketWriter() throws IOException {
-    return new RowWiseBucketWriter<>(
-        FileSystem.get(basePath.toUri()).createRecoverableWriter(), encoder);
+    return new BulkBucketWriter<>(
+        FileSystem.get(basePath.toUri()).createRecoverableWriter(), writerFactory);
   }
 
   @Internal

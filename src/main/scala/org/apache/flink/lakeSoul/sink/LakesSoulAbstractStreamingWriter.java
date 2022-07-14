@@ -16,14 +16,15 @@
  *
  *
  */
+
 package org.apache.flink.lakeSoul.sink;
 
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucket;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketLifeCycleListener;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBuckets;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketsBuilder;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulFileSinkHelper;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucket;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketLifeCycleListener;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBuckets;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketsBuilder;
+import org.apache.flink.lakeSoul.sink.bucket.LakeSoulFileSinkHelper;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -44,7 +45,7 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
   protected transient long currentWatermark;
 
   public LakesSoulAbstractStreamingWriter(long bucketCheckInterval,
-      LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>> bucketsBuilder) {
+                                          LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>> bucketsBuilder) {
     this.bucketCheckInterval = bucketCheckInterval;
     this.bucketsBuilder = bucketsBuilder;
     setChainingStrategy(ChainingStrategy.ALWAYS);

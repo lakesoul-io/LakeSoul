@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.core.fs.Path;

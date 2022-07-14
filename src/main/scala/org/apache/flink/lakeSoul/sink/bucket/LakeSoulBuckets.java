@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.state.ListState;
@@ -59,7 +59,7 @@ public class LakeSoulBuckets<IN, BucketID> {
 
   public LakeSoulBuckets(Path basePath, BucketAssigner<IN, BucketID> bucketAssigner, LakeSoulBucketFactory<IN, BucketID> bucketFactory, BucketWriter<IN, BucketID> bucketWriter,
                          LakeSoulRollingPolicyImpl rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
-    this.basePath = (Path) Preconditions.checkNotNull(basePath);
+    this.basePath = Preconditions.checkNotNull(basePath);
     this.bucketAssigner = (BucketAssigner) Preconditions.checkNotNull(bucketAssigner);
     this.bucketFactory = (LakeSoulBucketFactory<IN, BucketID>) Preconditions.checkNotNull(bucketFactory);
     this.bucketWriter = (BucketWriter) Preconditions.checkNotNull(bucketWriter);

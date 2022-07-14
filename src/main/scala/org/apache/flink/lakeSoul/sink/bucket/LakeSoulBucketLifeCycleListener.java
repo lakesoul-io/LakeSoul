@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.sink.fileSystem;
+package org.apache.flink.lakeSoul.sink.bucket;
 
 public interface LakeSoulBucketLifeCycleListener<IN, BucketID> {
   void bucketCreated(LakeSoulBucket<IN, BucketID> var1);
