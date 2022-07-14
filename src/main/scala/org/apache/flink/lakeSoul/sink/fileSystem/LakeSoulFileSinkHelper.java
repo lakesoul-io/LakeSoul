@@ -51,7 +51,6 @@ public class LakeSoulFileSinkHelper<IN> implements ProcessingTimeCallback {
     long currentProcessingTime = procTimeService.getCurrentProcessingTime();
     procTimeService.registerTimer(currentProcessingTime + bucketCheckInterval, this);
 
-
   }
 
   public void commitUpToCheckpoint(long checkpointId) throws Exception {

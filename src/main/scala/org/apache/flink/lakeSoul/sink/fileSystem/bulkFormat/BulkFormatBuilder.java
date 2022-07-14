@@ -25,7 +25,7 @@ import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
-import org.apache.flink.lakeSoul.sink.LakeSoulFileSink;
+import org.apache.flink.lakeSoul.sink.FileSinkFunction;
 import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketFactory;
 import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketFactoryImpl;
 import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBuckets;
@@ -121,8 +121,8 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
   /**
    * Creates the actual sink.
    */
-  public LakeSoulFileSink<IN> build() {
-    return new LakeSoulFileSink<>(this, bucketCheckInterval);
+  public FileSinkFunction<IN> build() {
+    return new FileSinkFunction<>(this, bucketCheckInterval);
   }
 
   @Internal

@@ -75,7 +75,7 @@ public class LakeSoulSinkOptions {
       .withDescription("The path of a directory");
 
   public static final ConfigOption<Integer> BUCKET_PARALLELISM = ConfigOptions
-      .key("bucket_num")
+      .key("hashBucketNum")
       .intType()
       .defaultValue(1)
       .withDescription("bucket number parallelism");

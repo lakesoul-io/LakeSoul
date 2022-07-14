@@ -16,6 +16,7 @@
  *
  *
  */
+
 package org.apache.flink.lakeSoul.sink;
 
 import org.apache.flink.core.fs.Path;
@@ -44,7 +45,7 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
   protected transient long currentWatermark;
 
   public LakesSoulAbstractStreamingWriter(long bucketCheckInterval,
-      LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>> bucketsBuilder) {
+                                          LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>> bucketsBuilder) {
     this.bucketCheckInterval = bucketCheckInterval;
     this.bucketsBuilder = bucketsBuilder;
     setChainingStrategy(ChainingStrategy.ALWAYS);

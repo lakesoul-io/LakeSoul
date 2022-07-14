@@ -16,6 +16,7 @@
  *
  *
  */
+
 package org.apache.flink.lakeSoul.sink;
 
 import org.apache.flink.api.common.serialization.BulkWriter;
@@ -34,7 +35,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.util.Preconditions;
 
-public class LakeSoulFileSink<IN> extends RichSinkFunction<IN>
+public class FileSinkFunction<IN> extends RichSinkFunction<IN>
     implements CheckpointedFunction, CheckpointListener {
 
   private static final long serialVersionUID = 1L;
@@ -42,7 +43,7 @@ public class LakeSoulFileSink<IN> extends RichSinkFunction<IN>
   private LakeSoulBucketsBuilder<IN, ?, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder;
   private transient LakeSoulFileSinkHelper<IN> FileSinkHelper;
 
-  public LakeSoulFileSink(
+  public FileSinkFunction(
       LakeSoulBucketsBuilder<IN, ?, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, long bucketCheckInterval) {
     Preconditions.checkArgument(bucketCheckInterval > 0L);
     this.bucketsBuilder = Preconditions.checkNotNull(bucketsBuilder);

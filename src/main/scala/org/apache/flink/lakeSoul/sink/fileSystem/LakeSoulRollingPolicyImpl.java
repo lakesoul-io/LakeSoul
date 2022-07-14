@@ -21,12 +21,13 @@ package org.apache.flink.lakeSoul.sink.fileSystem;
 
 import org.apache.flink.lakeSoul.tools.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
+import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
 
-public class LakeSoulRollingPolicyImpl implements LakeSoulRollingPolicy<RowData, String> {
+public class LakeSoulRollingPolicyImpl implements RollingPolicy<RowData, String> {
 
   private boolean rollOnCheckpoint;
 
@@ -81,11 +82,6 @@ public class LakeSoulRollingPolicyImpl implements LakeSoulRollingPolicy<RowData,
 
   public boolean shouldRollOnMaxSize(long size) {
     return size > rollingSize;
-  }
-
-  @Override
-  public boolean shouldRoll(PartFileInfo<String> partFileState, long currentTime) {
-    return false;
   }
 
   public long getRollingSize() {

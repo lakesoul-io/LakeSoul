@@ -27,10 +27,9 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
 import org.apache.flink.lakeSoul.sink.LakSoulFileWriter;
-import org.apache.flink.lakeSoul.sink.LakeSoulFileSink;
+import org.apache.flink.lakeSoul.sink.FileSinkFunction;
 import org.apache.flink.lakeSoul.sink.MetaDataCommit;
 import org.apache.flink.lakeSoul.sink.fileSystem.FlinkBucketAssigner;
-import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulBucketsBuilder;
 import org.apache.flink.lakeSoul.sink.fileSystem.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakeSoul.sink.fileSystem.bulkFormat.ProjectionBulkFactory;
 import org.apache.flink.lakeSoul.sink.partition.BucketPartitioner;
@@ -70,11 +69,9 @@ import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
   private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private boolean overwrite;
-  private Path path;
   private DataType dataType;
   private ResolvedSchema schema;
   private Configuration flinkConf;
-  private LakeSoulKeyGen keyGen;
   private List<String> partitionKeyList;
 
   private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
@@ -118,10 +115,10 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
    */
   private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream,
                                                 Context sinkContext) {
-    this.path = new Path(flinkConf.getString(CATALOG_PATH));
+    Path path = new Path(flinkConf.getString(CATALOG_PATH));
     int bucketParallelism = flinkConf.getInteger(BUCKET_PARALLELISM);
     //rowData key tools
-    this.keyGen = new LakeSoulKeyGen((RowType) schema.toSourceRowDataType().notNull().getLogicalType(),
+    LakeSoulKeyGen keyGen = new LakeSoulKeyGen((RowType) schema.toSourceRowDataType().notNull().getLogicalType(),
         flinkConf, partitionKeyList);
     //bucket file name config
     OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
@@ -135,31 +132,31 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //redistribution by partitionKey
     dataStream = dataStream.partitionCustom(new BucketPartitioner<>(), keyGen::getBucketPartitionKey);
 
-    //rowData sink fileSystem
+    //rowData sink fileSystem Task
     LakSoulFileWriter<RowData> lakSoulFileWriter =
         new LakSoulFileWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),
             //create sink Bulk format
-            LakeSoulFileSink.forBulkFormat(
-                    this.path,
+            FileSinkFunction.forBulkFormat(
+                    path,
                     new ProjectionBulkFactory(
                         (BulkWriter.Factory<RowData>) getParquetFormat(sinkContext),
                         partitionComputer))
                 .withBucketAssigner(assigner)
                 .withOutputFileConfig(fileNameConfig)
                 .withRollingPolicy(rollingPolicy),
-        partitionKeyList, flinkConf, fileNameConfig);
+            partitionKeyList, flinkConf, fileNameConfig);
 
     DataStream<DataFileMetaData> writeResultStream =
         dataStream.transform(LakSoulFileWriter.class.getSimpleName(),
-        TypeInformation.of(DataFileMetaData.class),
-        lakSoulFileWriter).name("DataWrite")
-        .setParallelism(bucketParallelism);
+                TypeInformation.of(DataFileMetaData.class),
+                lakSoulFileWriter).name("DataWrite")
+            .setParallelism(bucketParallelism);
 
-    //metadata upload
+    //metadata upload Task
     DataStream<Void> commitStream = writeResultStream.transform(
             MetaDataCommit.class.getSimpleName(),
             Types.VOID,
-            new MetaDataCommit(this.path, flinkConf))
+            new MetaDataCommit(path, flinkConf))
         .setParallelism(1).name("DataCommit")
         .setMaxParallelism(1);
 

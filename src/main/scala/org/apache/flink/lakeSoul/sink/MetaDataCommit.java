@@ -48,6 +48,9 @@ import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_EXIST_COL
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_IN_PROGRESS_PART_PREFIX;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_OPTION_ADD;
 
+/*
+ * save metadata
+ */
 public class MetaDataCommit extends AbstractStreamOperator<Void>
     implements OneInputStreamOperator<DataFileMetaData, Void> {
   private static final long serialVersionUID = 1L;
@@ -58,25 +61,29 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
   private final String fileExistFiles;
   private DBManager dbManager;
   private HashSet<String> existFile;
-  private final Configuration flinkConf;
 
   public MetaDataCommit(Path locationPath, Configuration conf) {
     this.locationPath = locationPath;
     this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
-    this.flinkConf = conf;
   }
 
+  /*
+   * Handling the Last fileWrite Snapshot and upload metadata
+   */
   @Override
   public void processElement(StreamRecord<DataFileMetaData> element) throws Exception {
     DataFileMetaData metadata = element.getValue();
+    //collection and restore need commit partition name
     for (String partition : metadata.getPartitions()) {
       trigger.addPartition(partition);
     }
+    //Task snapshots collector
     if (taskTracker == null) {
       taskTracker = new TaskTracker(metadata.getNumberOfTasks());
     }
-    boolean readyCommit = taskTracker.addCompleteTask(metadata.getCheckpointId(), metadata.getTaskId());
-    if (readyCommit) {
+    // check all task snapshot collection is complete
+    if (taskTracker.addCompleteTask(metadata.getCheckpointId(), metadata.getTaskId())) {
+      //upload metadata
       commitPartitions(metadata);
     }
   }
@@ -113,6 +120,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
     if (checkpointId == Long.MAX_VALUE) {
       partitionList = trigger.endInput();
     } else {
+      //get current need commit partition and restore partition from state
       partitionList = trigger.committablePartitions(checkpointId);
     }
     if (partitionList.isEmpty()) {
@@ -132,7 +140,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
           if (onePath.contains(fileNamePrefix)
               && !onePath.contains(FILE_IN_PROGRESS_PART_PREFIX)
               && !existFile.contains(onePath)
-              ) {
+          ) {
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(onePath);
             dataFileOp.setSize(fileStatus.getLen());
