@@ -40,6 +40,9 @@ public class LakeSoulSinkOptions {
 
   public static final String FILE_IN_PROGRESS_PART_PREFIX = ".part";
 
+  public static final String INT_KEY_TYPE = "INT NOT NULL";
+  public static final String LONG_KEY_TYPE = "BIGINT NOT NULL";
+
   public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 20000L;
 
   public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;

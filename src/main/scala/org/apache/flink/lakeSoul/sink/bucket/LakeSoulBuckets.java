@@ -180,7 +180,10 @@ public class LakeSoulBuckets<IN, BucketID> {
     return this.onElement(value, context.currentProcessingTime(), context.timestamp(), context.currentWatermark());
   }
 
-  public LakeSoulBucket<IN, BucketID> onElement(IN value, long currentProcessingTime, @Nullable Long elementTimestamp, long currentWatermark) throws Exception {
+  public LakeSoulBucket<IN, BucketID> onElement(IN value,
+                                                long currentProcessingTime,
+                                                @Nullable Long elementTimestamp,
+                                                long currentWatermark) throws Exception {
     this.bucketContext.update(elementTimestamp, currentWatermark, currentProcessingTime);
     BucketID bucketId = this.bucketAssigner.getBucketId(value, this.bucketContext);
     LakeSoulBucket<IN, BucketID> lakeSoulBucket = this.getOrCreateBucketForBucketId(bucketId);

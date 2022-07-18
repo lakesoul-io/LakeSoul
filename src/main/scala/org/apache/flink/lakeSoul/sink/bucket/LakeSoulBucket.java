@@ -46,6 +46,9 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.INT_KEY_TYPE;
+import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.LONG_KEY_TYPE;
+
 public class LakeSoulBucket<IN, BucketID> {
   private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.streaming.api.functions.sink.filesystem.Bucket.class);
   private final BucketID bucketId;
@@ -66,8 +69,14 @@ public class LakeSoulBucket<IN, BucketID> {
   private InProgressFileWriter<IN, BucketID> inProgressPart;
   private List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverablesForCurrentCheckpoint;
 
-  private LakeSoulBucket(int subtaskIndex, BucketID bucketId, Path bucketPath, long initialPartCounter, BucketWriter<IN, BucketID> bucketWriter, RollingPolicy<IN, BucketID> rollingPolicy,
-                         @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) {
+  private LakeSoulBucket(int subtaskIndex,
+                         BucketID bucketId,
+                         Path bucketPath,
+                         long initialPartCounter,
+                         BucketWriter<IN, BucketID> bucketWriter,
+                         RollingPolicy<IN, BucketID> rollingPolicy,
+                         @Nullable FileLifeCycleListener<BucketID> fileListener,
+                         OutputFileConfig outputFileConfig) {
     this.subtaskIndex = subtaskIndex;
     this.bucketId = Preconditions.checkNotNull(bucketId);
     this.bucketPath = Preconditions.checkNotNull(bucketPath);
@@ -81,20 +90,62 @@ public class LakeSoulBucket<IN, BucketID> {
     this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
     LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
     this.keyGen = lakesoulRollingPolicy.getKeyGen();
-    sortQueue = new PriorityQueue<>((v1, v2) -> {
-      try {
-        return keyGen.getRecordKey(v1).compareTo(keyGen.getRecordKey(v2));
-      } catch (Exception e) {
-        e.printStackTrace();
-        return 0;
+    try {
+      String recordKeyType = keyGen.getRecordKeyType();
+      switch (recordKeyType) {
+        case INT_KEY_TYPE:
+          sortQueue = new PriorityQueue<>((v1, v2) -> {
+            try {
+              return keyGen.getSimpleIntKey(v1) - (keyGen.getSimpleIntKey(v2));
+            } catch (Exception e) {
+              e.printStackTrace();
+              return 0;
+            }
+          });
+          break;
+        case LONG_KEY_TYPE:
+          sortQueue = new PriorityQueue<>((v1, v2) -> {
+            try {
+              return (keyGen.getSimpleLongKey(v1).compareTo(keyGen.getSimpleLongKey(v2)));
+            } catch (Exception e) {
+              e.printStackTrace();
+              return 0;
+            }
+          });
+          break;
+        default:
+          sortQueue = new PriorityQueue<>((v1, v2) -> {
+            try {
+              return keyGen.getRecordKey(v1).compareTo(keyGen.getRecordKey(v2));
+            } catch (Exception e) {
+              e.printStackTrace();
+              return 0;
+            }
+          });
+          break;
       }
-    });
+    } catch (NoSuchMethodException e) {
+      e.printStackTrace();
+    }
+
     bucketRowCount = new AtomicLong(0L);
   }
 
-  private LakeSoulBucket(int subtaskIndex, long initialPartCounter, BucketWriter<IN, BucketID> partFileFactory, RollingPolicy<IN, BucketID> rollingPolicy, BucketState<BucketID> bucketState,
-                         @Nullable FileLifeCycleListener<BucketID> fileListener, OutputFileConfig outputFileConfig) throws IOException {
-    this(subtaskIndex, bucketState.getBucketId(), bucketState.getBucketPath(), initialPartCounter, partFileFactory, rollingPolicy, fileListener, outputFileConfig);
+  private LakeSoulBucket(int subtaskIndex,
+                         long initialPartCounter,
+                         BucketWriter<IN, BucketID> partFileFactory,
+                         RollingPolicy<IN, BucketID> rollingPolicy,
+                         BucketState<BucketID> bucketState,
+                         @Nullable FileLifeCycleListener<BucketID> fileListener,
+                         OutputFileConfig outputFileConfig) throws IOException {
+    this(subtaskIndex,
+        bucketState.getBucketId(),
+        bucketState.getBucketPath(),
+        initialPartCounter,
+        partFileFactory,
+        rollingPolicy,
+        fileListener,
+        outputFileConfig);
     this.restoreInProgressFile(bucketState);
     this.commitRecoveredPendingFiles(bucketState);
   }
@@ -139,7 +190,9 @@ public class LakeSoulBucket<IN, BucketID> {
   }
 
   boolean isActive() {
-    return this.inProgressPart != null || !this.pendingFileRecoverablesForCurrentCheckpoint.isEmpty() || !this.pendingFileRecoverablesPerCheckpoint.isEmpty();
+    return this.inProgressPart != null
+        || !this.pendingFileRecoverablesForCurrentCheckpoint.isEmpty()
+        || !this.pendingFileRecoverablesPerCheckpoint.isEmpty();
   }
 
   void merge(LakeSoulBucket<IN, BucketID> lakeSoulBucket) throws IOException {
@@ -207,7 +260,10 @@ public class LakeSoulBucket<IN, BucketID> {
     String uuid = UUID.randomUUID().toString();
     String subTask = String.format("%05d", this.subtaskIndex);
     String count = String.format("%03d", currentPartCounter);
-    return new Path(this.bucketPath, this.outputFileConfig.getPartPrefix() + '-' + subTask + '-' + uuid + '_' + this.subtaskIndex + '.' + 'c' + count + this.outputFileConfig.getPartSuffix());
+    return new Path(this.bucketPath,
+        this.outputFileConfig.getPartPrefix()
+            + '-' + subTask + '-' + uuid + '_' + this.subtaskIndex
+            + '.' + 'c' + count + this.outputFileConfig.getPartSuffix());
   }
 
   InProgressFileWriter.PendingFileRecoverable closePartFile(long currentTime) throws IOException {

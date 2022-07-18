@@ -42,20 +42,20 @@ public class Main {
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
 
     //source
-    tEnvs.executeSql("create table mysql_test_1(\n" +
-        "id INTEGER primary key NOT ENFORCED ," +
-        "name string," +
-        " dt string)" +
-        " with (\n" +
-        "'connector'='mysql-cdc'," +
-        "'hostname'='127.0.0.1'," +
-        "'port'='3306'," +
-        "'server-id'='1'," +
-        "'username'='root',\n" +
-        "'password'='root',\n" +
-        "'database-name'='zhyang_test',\n" +
-        "'table-name'='test5'\n" +
-        ")");
+//    tEnvs.executeSql("create table mysql_test_1(\n" +
+//        "id bigint primary key NOT ENFORCED ," +
+//        "name string," +
+//        " dt string)" +
+//        " with (\n" +
+//        "'connector'='mysql-cdc'," +
+//        "'hostname'='127.0.0.1'," +
+//        "'port'='3306'," +
+//        "'server-id'='1'," +
+//        "'username'='root',\n" +
+//        "'password'='root',\n" +
+//        "'database-name'='zhyang_test',\n" +
+//        "'table-name'='test5'\n" +
+//        ")");
 
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
@@ -65,7 +65,7 @@ public class Main {
 
     //target
     tEnvs.executeSql(
-        "CREATE TABLE " + tableName + "( id int," +
+        "CREATE TABLE " + tableName + "( id bigint," +
             " name string," +
             " dt string," +
             "primary key (id) NOT ENFORCED ) " +
@@ -79,8 +79,8 @@ public class Main {
     tEnvs.executeSql("show tables ").print();
 
     tEnvs.useCatalog("default_catalog");
-
-    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
+    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " values (1,'a','b') ");
+//    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
 
   }
 }

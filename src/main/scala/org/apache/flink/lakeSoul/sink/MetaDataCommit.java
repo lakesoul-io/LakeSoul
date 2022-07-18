@@ -24,6 +24,9 @@ import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.MetaInfo;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
@@ -41,7 +44,9 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.PriorityQueue;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.MERGE_COMMIT_TYPE;
 import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN;
@@ -58,6 +63,8 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
   private transient PartitionTrigger trigger;
   private transient TaskTracker taskTracker;
   private transient long currentWatermark;
+  private MapState<Long, Boolean> completeSaveMetaState;
+  private AtomicInteger metaStateCount;
   private final String fileExistFiles;
   private DBManager dbManager;
   private HashSet<String> existFile;
@@ -67,12 +74,25 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
     this.fileExistFiles = conf.getString(FILE_EXIST_COLUMN);
   }
 
+//  @Override
+//  public void open() throws Exception {
+//    super.open();
+//    MapStateDescriptor<Long, Boolean> mapDescriptor =
+//        new MapStateDescriptor<>("completeSaveMetaStateDescriptor", Long.class, Boolean.class);
+////    this.completeSaveMetaState = getRuntimeContext().getMapState(mapDescriptor);
+//    this.metaStateCount = new AtomicInteger(0);
+//  }
+
   /*
    * Handling the Last fileWrite Snapshot and upload metadata
    */
   @Override
   public void processElement(StreamRecord<DataFileMetaData> element) throws Exception {
     DataFileMetaData metadata = element.getValue();
+//    long checkpointId = metadata.getCheckpointId();
+//    if(completeSaveMetaState.contains(checkpointId)){
+//      return;
+//    }
     //collection and restore need commit partition name
     for (String partition : metadata.getPartitions()) {
       trigger.addPartition(partition);

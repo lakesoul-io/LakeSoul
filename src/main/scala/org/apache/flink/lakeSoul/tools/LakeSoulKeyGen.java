@@ -49,10 +49,10 @@ public class LakeSoulKeyGen implements Serializable {
   private boolean simplePartitionPath = false;
   private final List<String> fieldNames;
   private List<String> partitionKey;
+  private String simpleRecordKeyType;
 
 
-
-  public LakeSoulKeyGen(RowType rowType, Configuration conf ,List<String> partitionKey) {
+  public LakeSoulKeyGen(RowType rowType, Configuration conf, List<String> partitionKey) {
     this.conf = conf;
     this.recordKeyFields = getRecordKeyFields();
 
@@ -63,7 +63,9 @@ public class LakeSoulKeyGen implements Serializable {
     if (this.recordKeyFields.length == 1) {
       this.simpleRecordKey = true;
       int recordKeyIdx = fieldNames.indexOf(this.recordKeyFields[0]);
-      this.recordKeyFieldGetter = RowData.createFieldGetter(fieldTypes.get(recordKeyIdx), recordKeyIdx);
+      LogicalType logicalType = fieldTypes.get(recordKeyIdx);
+      simpleRecordKeyType = logicalType.toString();
+      this.recordKeyFieldGetter = RowData.createFieldGetter(logicalType, recordKeyIdx);
       this.recordKeyProjection = null;
     } else {
       this.recordKeyProjection = getProjection(this.recordKeyFields, fieldNames, fieldTypes);
@@ -86,6 +88,14 @@ public class LakeSoulKeyGen implements Serializable {
     return obj == null ? null : obj.toString();
   }
 
+  public static int objToInt(@Nullable Object obj) {
+    return obj == null ? null : (int) obj;
+  }
+
+  public static Long objToLong(@Nullable Object obj) {
+    return obj == null ? null : (long) obj;
+  }
+
   public String[] getRecordKeyFields() {
     String keyField = conf.getString(LakeSoulSinkOptions.KEY_FIELD);
     return keyField.split(",");
@@ -103,6 +113,14 @@ public class LakeSoulKeyGen implements Serializable {
       Object[] keyValues = this.recordKeyProjection.projectAsValues(rowData);
       return getRecordKey(keyValues, this.recordKeyFields);
     }
+  }
+
+  public int getSimpleIntKey(RowData rowData) throws Exception {
+    return objToInt(recordKeyFieldGetter.getFieldOrNull(rowData));
+  }
+
+  public Long getSimpleLongKey(RowData rowData) throws Exception {
+    return objToLong(recordKeyFieldGetter.getFieldOrNull(rowData));
   }
 
   private static RowDataProjection getProjection(String[] fields, List<String> schemaFields, List<LogicalType> schemaTypes) {
@@ -184,8 +202,15 @@ public class LakeSoulKeyGen implements Serializable {
     return partitionPath.toString();
   }
 
-  public String getBucketPartitionKey(RowData row) throws Exception {
+  public String getRePartitionKey(RowData row) throws Exception {
     return getPartitionPath(row);
+  }
+
+  public String getRecordKeyType() throws NoSuchMethodException {
+    if (!"".equals(simpleRecordKeyType) && simpleRecordKeyType != null) {
+      return simpleRecordKeyType;
+    }
+    throw new NoSuchMethodException("Multiple primary keys are not supported now");
   }
 
   public List<String> getPartitionKey() {

@@ -32,7 +32,7 @@ import org.apache.flink.lakeSoul.sink.MetaDataCommit;
 import org.apache.flink.lakeSoul.sink.bucket.FlinkBucketAssigner;
 import org.apache.flink.lakeSoul.sink.bucket.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakeSoul.sink.bucket.bulkFormat.ProjectionBulkFactory;
-import org.apache.flink.lakeSoul.sink.partition.BucketPartitioner;
+import org.apache.flink.lakeSoul.sink.partition.DataPartitioner;
 import org.apache.flink.lakeSoul.sink.partition.CdcPartitionComputer;
 import org.apache.flink.lakeSoul.tools.FlinkUtil;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
@@ -130,7 +130,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
         flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME), keyGen);
     //redistribution by partitionKey
-    dataStream = dataStream.partitionCustom(new BucketPartitioner<>(), keyGen::getBucketPartitionKey);
+    dataStream = dataStream.partitionCustom(new DataPartitioner<>(), keyGen::getRePartitionKey);
 
     //rowData sink fileSystem Task
     LakSoulFileWriter<RowData> lakSoulFileWriter =
