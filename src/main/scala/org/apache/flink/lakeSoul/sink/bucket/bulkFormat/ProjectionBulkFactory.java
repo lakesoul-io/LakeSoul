@@ -44,11 +44,6 @@ public class ProjectionBulkFactory implements BulkWriter.Factory<RowData> {
 
       @Override
       public void addElement(RowData element) throws IOException {
-        //Remove -u data from CdcStream
-        //TODO: This operation should not be performed at this step
-        if ("-U".equals(element.getRowKind().shortString())) {
-          return;
-        }
         writer.addElement(computer.projectColumnsToWrite(element));
       }
 

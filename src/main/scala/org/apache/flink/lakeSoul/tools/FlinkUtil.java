@@ -89,7 +89,7 @@ public class FlinkUtil {
       return StringData.fromString("insert");
     }
     if ("-U".equals(rowKind)) {
-      return StringData.fromString("update");
+      return StringData.fromString("delete");
     }
     if ("+U".equals(rowKind)) {
       return StringData.fromString("update");
