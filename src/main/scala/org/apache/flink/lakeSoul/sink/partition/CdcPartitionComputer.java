@@ -18,7 +18,7 @@
 
 package org.apache.flink.lakeSoul.sink.partition;
 
-import org.apache.flink.lakeSoul.tools.FlinkUtil;
+import org.apache.flink.lakeSoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.filesystem.PartitionComputer;

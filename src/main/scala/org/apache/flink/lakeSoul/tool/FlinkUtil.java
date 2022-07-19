@@ -16,12 +16,11 @@
  *
  */
 
-package org.apache.flink.lakeSoul.tools;
+package org.apache.flink.lakeSoul.tool;
 
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -37,9 +36,6 @@ import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 
-import scala.collection.JavaConverters;
-import scala.collection.Map$;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -50,8 +46,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 

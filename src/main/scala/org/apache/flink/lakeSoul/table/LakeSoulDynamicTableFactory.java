@@ -20,7 +20,7 @@ package org.apache.flink.lakeSoul.table;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakeSoul.tools.FlinkUtil;
+import org.apache.flink.lakeSoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -32,7 +32,6 @@ import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.EncodingFormatFactory;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.flink.table.factories.SerializationFormatFactory;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -43,12 +42,12 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN_KEY;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.PARTITION_FIELD;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_EXIST_COLUMN_KEY;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.PARTITION_FIELD;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
 

@@ -24,7 +24,7 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakeSoul.tools.FlinkUtil;
+import org.apache.flink.lakeSoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogBaseTable;
@@ -53,9 +53,9 @@ import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.Expression;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.RECORD_KEY_NAME;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.USE_CDC;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 

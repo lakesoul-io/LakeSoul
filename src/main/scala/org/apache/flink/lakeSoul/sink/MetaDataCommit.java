@@ -24,9 +24,6 @@ import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.MetaInfo;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
-import org.apache.flink.api.common.state.MapState;
-import org.apache.flink.api.common.state.MapStateDescriptor;
-import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
@@ -44,14 +41,12 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.MERGE_COMMIT_TYPE;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_EXIST_COLUMN;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_IN_PROGRESS_PART_PREFIX;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_OPTION_ADD;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.MERGE_COMMIT_TYPE;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_EXIST_COLUMN;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_IN_PROGRESS_PART_PREFIX;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_OPTION_ADD;
 
 /*
  * save metadata

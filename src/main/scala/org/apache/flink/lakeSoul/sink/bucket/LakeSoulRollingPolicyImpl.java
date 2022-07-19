@@ -19,13 +19,13 @@
 
 package org.apache.flink.lakeSoul.sink.bucket;
 
-import org.apache.flink.lakeSoul.tools.LakeSoulKeyGen;
+import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
 
 public class LakeSoulRollingPolicyImpl implements RollingPolicy<RowData, String> {
 

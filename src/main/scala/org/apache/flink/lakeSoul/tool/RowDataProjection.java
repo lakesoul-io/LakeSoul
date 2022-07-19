@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakeSoul.tools;
+package org.apache.flink.lakeSoul.tool;
 
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;

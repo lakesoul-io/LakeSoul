@@ -34,7 +34,7 @@ import org.apache.flink.lakeSoul.sink.bucket.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakeSoul.sink.bucket.bulkFormat.ProjectionBulkFactory;
 import org.apache.flink.lakeSoul.sink.partition.DataPartitioner;
 import org.apache.flink.lakeSoul.sink.partition.CdcPartitionComputer;
-import org.apache.flink.lakeSoul.tools.FlinkUtil;
+import org.apache.flink.lakeSoul.tool.FlinkUtil;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -44,7 +44,7 @@ import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.lakeSoul.tools.LakeSoulKeyGen;
+import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
@@ -58,13 +58,13 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.types.RowKind;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.BUCKET_PARALLELISM;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.CATALOG_PATH;
-import static org.apache.flink.lakeSoul.tools.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.FILE_ROLLING_TIME;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
+import static org.apache.flink.lakeSoul.tool.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_ROLLING_TIME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
   private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;

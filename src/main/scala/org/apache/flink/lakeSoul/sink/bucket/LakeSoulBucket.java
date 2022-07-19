@@ -21,7 +21,7 @@ package org.apache.flink.lakeSoul.sink.bucket;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakeSoul.tools.LakeSoulKeyGen;
+import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.FileLifeCycleListener;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -46,8 +46,8 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.INT_KEY_TYPE;
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.LONG_KEY_TYPE;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.INT_KEY_TYPE;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.LONG_KEY_TYPE;
 
 public class LakeSoulBucket<IN, BucketID> {
   private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.streaming.api.functions.sink.filesystem.Bucket.class);

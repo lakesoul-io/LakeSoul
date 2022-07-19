@@ -20,7 +20,7 @@
 package org.apache.flink.lakeSoul.sink.sort;
 
 
-import org.apache.flink.lakeSoul.tools.LakeSoulKeyGen;
+import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.streaming.api.operators.BoundedOneInput;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;

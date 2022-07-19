@@ -38,7 +38,7 @@ import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
 
-import static org.apache.flink.lakeSoul.tools.LakeSoulSinkOptions.TABLE_NAME;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.TABLE_NAME;
 
 public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, DataFileMetaData> {
 
