@@ -60,7 +60,8 @@ public class Main {
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
     tEnvs.useCatalog("lakeSoul");
-    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
+//    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
+    String tableName = "flinkI666";
     String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
     //target

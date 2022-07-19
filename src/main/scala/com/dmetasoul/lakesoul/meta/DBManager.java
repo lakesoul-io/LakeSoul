@@ -71,6 +71,10 @@ public class DBManager {
         return tableInfo.getTablePath();
     }
 
+    public TableInfo getTableInfoByName(String tableName) {
+        return tableInfoDao.selectByTableName(tableName);
+    }
+
     public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
         TableInfo tableInfo = new TableInfo();

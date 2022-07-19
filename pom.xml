@@ -121,11 +121,12 @@
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
+
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-clients_2.12</artifactId>
             <version>${flink.version}</version>
-            <scope>${local.scope}</scope>
+            <!--            <scope>${local.scope}</scope>-->
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -138,12 +139,13 @@
             <artifactId>flink-parquet_2.12</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.parquet</groupId>
-                    <artifactId>parquet-hadoop</artifactId>
-                </exclusion>
-            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-mysql-cdc</artifactId>
+            <version>2.2.0</version>
+            <scope>${local.scope}</scope>
         </dependency>
 
         <dependency>
@@ -176,6 +178,11 @@
             <artifactId>error_prone_annotations</artifactId>
             <version>2.3.3</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.8.1</version>
+        </dependency>
 
         <!-- scala deps -->
         <dependency>
@@ -204,21 +211,35 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
+            <scope>compile</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
+            <scope>compile</scope>
+            <exclusions>
+                <exclusion>
+                    <artifactId>parquet-jackson</artifactId>
+                    <groupId>org.apache.parquet</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>parquet-hadoop</artifactId>
+                    <groupId>org.apache.parquet</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>parquet-column</artifactId>
+                    <groupId>org.apache.parquet</groupId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
+            <scope>compile</scope>
         </dependency>
 
         <dependency>
@@ -325,12 +346,6 @@
             <version>1.2.83</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <version>3.8.1</version>
-        </dependency>
-
     </dependencies>
 
     <build>
@@ -339,6 +354,30 @@
         <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
         <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.0.0</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass></mainClass>
+                        </manifest>
+                    </archive>
+                    <descriptorRefs>
+                        <descriptorRef>jar-with-dependencies</descriptorRef>
+                    </descriptorRefs>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
@@ -483,34 +522,4 @@
         </plugins>
     </build>
 
-    <repositories>
-        <repository>
-            <id>aliyun-public</id>
-            <name>Spring Milestones</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-        </repository>
-        <repository>
-            <id>aliyun-spring</id>
-            <name>Spring Milestones</name>
-            <url>https://maven.aliyun.com/repository/spring</url>
-        </repository>
-        <repository>
-            <id>aliyun-center</id>
-            <name>Spring Milestones</name>
-            <url>https://maven.aliyun.com/repository/central</url>
-        </repository>
-
-        <repository>
-            <id>alimaven</id>
-            <name>aliyun maven</name>
-            <url>http://maven.aliyun.com/nexus/content/groups/public/</url>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-
-    </repositories>
 </project>
