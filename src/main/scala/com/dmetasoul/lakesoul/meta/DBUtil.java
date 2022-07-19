@@ -109,12 +109,9 @@ public class DBUtil {
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
-//        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"));
-//        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "yugabyte"));
-//        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "yugabyte"));
-        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://172.31.252.175:5432/test_lakesoul_meta?stringtype=unspecified"));
-        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "admin"));
-        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "eH9hdJkqYORNsNN6OGjF"));
+        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"));
+        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "yugabyte"));
+        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "yugabyte"));
         return dataBaseProperty;
     }
 
