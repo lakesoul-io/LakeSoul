@@ -11,6 +11,10 @@
         <maven.compiler.source>18</maven.compiler.source>
         <maven.compiler.target>18</maven.compiler.target>
         <arrow.version>8.0.0</arrow.version>
+        <scala.version>2.12.10</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <scalatest.version>3.1.0</scalatest.version>
+        <javacpp.version>1.5.7</javacpp.version>
     </properties>
 
 
@@ -23,6 +27,11 @@
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-memory-netty</artifactId>
+            <version>${arrow.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-memory-core</artifactId>
             <version>${arrow.version}</version>
         </dependency>
         <dependency>
@@ -52,6 +61,42 @@
             <artifactId>flight-core</artifactId>
             <version>${arrow.version}</version>
         </dependency>
+
+        <!-- scala deps -->
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-compiler</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-reflect</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+
+        <!--      test deps        -->
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <version>${scalatest.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>${javacpp.version}</version>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -87,6 +132,59 @@
                         <goals>
                             <goal>compile</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>1.1</version>
+                <!-- this is how the shared library libfoo.so is built -->
+                <executions>
+                    <execution>
+                        <id>build-sharedlib</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>make</executable>
+                            <commandlineArgs>all</commandlineArgs>
+                            <workingDirectory>${basedir}/src/test/resources/arrow_c_test</workingDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>clean-sharedlib</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>make</executable>
+                            <commandlineArgs>clean</commandlineArgs>
+                            <workingDirectory>${basedir}/src/test/resources/arrow_c_test</workingDirectory>
+                        </configuration>
+                    </execution>
+                    <!-- in here we build the Java-based wrapper shared library -->
+                    <execution>
+                        <id>build-jnilib</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>java</executable>
+                            <!--
+                                -jar points to the javacpp.jar
+                                -Xcompiler may be followed by
+                                    -L specifies where the libfoo.so is
+                                    -I points to the foo.h header
+                                eu.atspace.hash.FooLib is the wrapper class
+                             -->
+                            <commandlineArgs>
+                                -jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -Xcompiler -L${basedir}/target/classes/eu/atspace/hash/linux-x86_64 -Xcompiler -I${basedir}/src/main/jni -classpath target/classes eu.atspace.hash.FooLib
+                            </commandlineArgs>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
