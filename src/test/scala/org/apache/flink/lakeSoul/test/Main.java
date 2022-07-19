@@ -60,8 +60,7 @@ public class Main {
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
     tEnvs.useCatalog("lakeSoul");
-//    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
-    String tableName = "flinkI666";
+    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
     String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
     //target
@@ -80,7 +79,6 @@ public class Main {
     tEnvs.executeSql("show tables ").print();
 
     tEnvs.useCatalog("default_catalog");
-//    tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " values (1,'a','b') ");
     tEnvs.executeSql("insert into lakeSoul.test_lakesoul_meta." + tableName + " select * from mysql_test_1 ");
 
   }

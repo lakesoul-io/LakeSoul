@@ -24,8 +24,6 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.factories.CatalogFactory;
 
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
 
