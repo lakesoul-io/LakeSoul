@@ -131,7 +131,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME), keyGen);
     //redistribution by partitionKey
     dataStream = dataStream.partitionCustom(new DataPartitioner<>(), keyGen::getRePartitionKey);
-
     //rowData sink fileSystem Task
     LakSoulFileWriter<RowData> lakSoulFileWriter =
         new LakSoulFileWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),

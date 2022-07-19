@@ -20,6 +20,7 @@ package org.apache.flink.lakeSoul.metaData;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 
 public class DataFileMetaData implements Serializable {
 
@@ -91,6 +92,36 @@ public class DataFileMetaData implements Serializable {
 
   public void setPartitions(List<String> partitions) {
     this.partitions = partitions;
+  }
+
+  @Override
+  public String toString() {
+    return "DataFileMetaData{" +
+        "checkpointId=" + checkpointId +
+        ", taskId=" + taskId +
+        ", numberOfTasks=" + numberOfTasks +
+        ", partitions=" + partitions +
+        ", path='" + path + '\'' +
+        ", tableName='" + tableName + '\'' +
+        '}';
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    DataFileMetaData that = (DataFileMetaData) o;
+    return checkpointId == that.checkpointId && taskId == that.taskId && numberOfTasks == that.numberOfTasks && Objects.equals(partitions, that.partitions) &&
+        Objects.equals(path, that.path) && Objects.equals(tableName, that.tableName);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(checkpointId, taskId, numberOfTasks, partitions, path, tableName);
   }
 }
 

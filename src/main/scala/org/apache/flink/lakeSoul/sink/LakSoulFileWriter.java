@@ -19,8 +19,6 @@
 
 package org.apache.flink.lakeSoul.sink;
 
-import org.apache.flink.api.common.state.MapState;
-import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
@@ -48,7 +46,6 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
   private final List<String> partitionKeyList;
   private final Configuration flinkConf;
   private final OutputFileConfig outputFileConfig;
-  private MapState<Long, DataFileMetaData> completeCkpState;
   private transient Set<String> currentNewBuckets;
   private transient TreeMap<Long, Set<String>> newBuckets;
   private transient Set<String> committableBuckets;
@@ -62,14 +59,6 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
     this.flinkConf = conf;
     this.outputFileConfig = outputFileConf;
   }
-
-//  @Override
-//  public void open() throws Exception {
-//    super.open();
-//    MapStateDescriptor<Long, DataFileMetaData> mapDescriptor =
-//        new MapStateDescriptor<>("completeCkpStateDescriptor", Long.class, DataFileMetaData.class);
-//    this.completeCkpState= getRuntimeContext().getMapState(mapDescriptor);
-//  }
 
   @Override
   public void initializeState(StateInitializationContext context) throws Exception {
@@ -131,6 +120,9 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
     NavigableMap<Long, Set<String>> headBuckets = this.newBuckets.headMap(checkpointId, true);
     Set<String> partitions = new HashSet<>(committableBuckets);
     committableBuckets.clear();
+    if (partitions.isEmpty()) {
+      return;
+    }
     headBuckets.values().forEach(partitions::addAll);
     headBuckets.clear();
     String pathPre = outputFileConfig.getPartPrefix() + "-";
@@ -141,15 +133,6 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
     output.collect(
         new StreamRecord<>(nowFileMeta)
     );
-//
-//    if (!completeCkpState.isEmpty()){
-//      completeCkpState.iterator().forEachRemaining(v->{
-//        output.collect(new StreamRecord<>(v.getValue()));
-//      });
-//      completeCkpState.clear();
-//    }
-//
-//    completeCkpState.put(checkpointId,nowFileMeta);
 
   }
 }
