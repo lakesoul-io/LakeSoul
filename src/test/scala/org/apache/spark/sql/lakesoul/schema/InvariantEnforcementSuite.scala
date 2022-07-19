@@ -17,12 +17,13 @@
 package org.apache.spark.sql.lakesoul.schema
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.schema.Invariants.{ArbitraryExpression, NotNull, PersistedExpression}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
 
@@ -35,7 +36,7 @@ class InvariantEnforcementSuite extends QueryTest
 
   private def tableWithSchema(schema: StructType)(f: String => Unit): Unit = {
     withTempDir { tempDir =>
-      val snapshotManagement = SnapshotManagement(tempDir.getAbsolutePath)
+      val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tempDir.getAbsolutePath)).toString)
       val tc = snapshotManagement.startTransaction()
       tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], tc.tableInfo.copy(table_schema = schema.json))
       spark.read.format("lakesoul")

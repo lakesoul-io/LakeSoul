@@ -8,24 +8,22 @@ LakeSoul implements incremental upserts for both row and column and allows concu
 
 More detailed features please refer to our wiki page: [Wiki Home](../../wiki/Home)
 
-Some features and performance comparisons: [Data Lake Comparison](../../wiki/01.-Data-Lake-Comparison)
-
 # Usage Documentations
 Please find usage documentations in project's wiki:
-[Usage Doc](../../wiki/03.-Usage-Doc)
+[Usage Doc](../../wiki/Usage-Doc)
 
 [使用文档](../../wiki/%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3)
 
-Follow the [Quick Start](../../wiki/02.-QuickStart) to quickly setup a test env.
+Follow the [Quick Start](../../wiki/QuickStart) to quickly set up a test env.
 
 Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debezium) example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
 
 # Feature Roadmap
 * Meta Management
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
-  - [x] Concurrent write with optimistic lock mechanism
+  - [x] Concurrent write with auto conflict resolution
   - [x] MVCC with read isolation
-  - [x] Write atomicity through Cassandra's Light Weight Transaction
+  - [x] Write transaction through Postgres Transaction
 * Table operations 
   - [x] LSM-Tree style upsert for hash partitioned table
   - [x] Merge on read for hash partition with upsert delta file
@@ -38,16 +36,27 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
     - [x] Shuffle/Join elimination for operations on primary key
   - [x] Merge UDF (Merge operator)
   - [ ] Merge Into SQL support
-    - [x] Merge Into SQL with Primary Key
-    - [ ] Merge Into SQL with non-pk
+    - [x] Merge Into SQL with match on Primary Key (Merge on read)
+    - [ ] Merge Into SQL with match on non-pk
+    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK)
 * Flink Integration
   - [ ] Table API
   - [ ] Flink CDC
+* Hive Integration
+  - [x] Export to Hive partition after compaction
 * Realtime Data Warehousing
-  - [ ] CDC ingestion and time travel
+  - [x] CDC ingestion
+  - [x] Time Travel (Snapshot read)
+  - [x] Snapshot rollback
+  - [ ] MPP Engine Integration
+    - [ ] Presto
+    - [ ] Apache Doris
 * Cloud Native
   - [ ] Object storage IO optimization
   - [ ] Multi-layer storage classes support with data tiering
+
+# Community guidelines
+[Community guidelines](community-guideline.md)
 
 # Feedback and Contribution
 Please feel free to open an issue or dicussion if you have any questions.

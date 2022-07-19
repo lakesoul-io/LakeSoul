@@ -265,26 +265,69 @@ trait Transaction extends TransactionalWrite with Logging {
 
       val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
 
-      depend_partitions.foreach(range_key => {
-        val changeFiles = addFiles.union(expireFilesWithDeleteOp)
-          .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
-        if (changeFiles.nonEmpty) {
-          val addUUID = UUID.randomUUID()
-          add_file_arr_buf += DataCommitInfo(
-            tableInfo.table_id,
-            range_key,
-            addUUID,
-            commitType.getOrElse(CommitType("append")).name,
-            System.currentTimeMillis(),
-            changeFiles.toArray
-          )
-          add_partition_info_arr_buf += PartitionInfo(
-            table_id = tableInfo.table_id,
-            range_value = range_key,
-            read_files = Array(addUUID)
-          )
-        }
-      })
+      val commit_type = commitType.getOrElse(CommitType("append")).name
+
+      if (commit_type.equals(CommitType("update").name)) {
+        val delete_file_set = new mutable.HashSet[String]()
+        expireFilesWithDeleteOp.foreach(file => {delete_file_set.add(file.path)})
+
+        val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
+        depend_partitions.foreach(range_key => {
+          val filter_files = new ArrayBuffer[DataFileInfo]()
+          val partition_info = partition_list.filter(_.range_value.equalsIgnoreCase(range_key))
+          if (partition_info.length > 0) {
+            val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
+            partition_files.foreach(partition_file => {
+              if(!delete_file_set.contains(partition_file.path)){
+                filter_files += partition_file
+              }
+            })
+          }
+
+          val changeFiles = addFiles.union(expireFilesWithDeleteOp)
+            .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
+
+          filter_files ++= changeFiles
+
+          if (filter_files.nonEmpty) {
+            val addUUID = UUID.randomUUID()
+            add_file_arr_buf += DataCommitInfo(
+              tableInfo.table_id,
+              range_key,
+              addUUID,
+              commit_type,
+              System.currentTimeMillis(),
+              filter_files.toArray
+            )
+            add_partition_info_arr_buf += PartitionInfo(
+              table_id = tableInfo.table_id,
+              range_value = range_key,
+              read_files = Array(addUUID)
+            )
+          }
+        })
+      } else {
+        depend_partitions.foreach(range_key => {
+          val changeFiles = addFiles.union(expireFilesWithDeleteOp)
+            .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
+          if (changeFiles.nonEmpty) {
+            val addUUID = UUID.randomUUID()
+            add_file_arr_buf += DataCommitInfo(
+              tableInfo.table_id,
+              range_key,
+              addUUID,
+              commit_type,
+              System.currentTimeMillis(),
+              changeFiles.toArray
+            )
+            add_partition_info_arr_buf += PartitionInfo(
+              table_id = tableInfo.table_id,
+              range_value = range_key,
+              read_files = Array(addUUID)
+            )
+          }
+        })
+      }
 
       val meta_info = MetaInfo(
         table_info = tableInfo.copy(short_table_name = shortTableName),

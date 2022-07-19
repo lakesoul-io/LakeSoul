@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.TableInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
@@ -98,31 +98,36 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     //check and redo commit before read
     //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
-    val fileInfo = fileIndex.getFileInfo(Seq(parseFilter())).groupBy(_.range_partitions)
+    var files:Seq[DataFileInfo] = Seq.empty
+    if(SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)){
+      files=fileIndex.getFileInfoForPartitionVersion()
+    }else{
+      files=fileIndex.getFileInfo(Seq(parseFilter()))
+    }
+    val fileInfo=files.groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
-    //todo
-    val hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
 
-    if (tableInfo.hash_partition_columns.isEmpty) {
+    var hasNoDeltaFile = false
+    if(tableInfo.bucket_num>0){
+      hasNoDeltaFile = fileInfo.forall(f => f._2.groupBy(_.file_bucket_id).forall(_._2.size<=1))
+    }else{
+      hasNoDeltaFile = fileInfo.forall(f => f._2.size<=1)
+    }
+
+    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.size == 0) {
       parquetScan()
     }
     else if (onlyOnePartition) {
-      if (hasNoDeltaFile) {
-        BucketParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else {
-        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-          readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      }
     }
     else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
-      } else if (hasNoDeltaFile) {
-        parquetScan()
-      } else {
+      } else
+      {
         MultiPartitionMergeScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, Seq(parseFilter()))
       }

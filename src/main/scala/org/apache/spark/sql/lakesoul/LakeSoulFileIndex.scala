@@ -22,10 +22,11 @@ import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Expression, GenericInternalRow, Literal}
 import org.apache.spark.sql.execution.datasources.{PartitionDirectory, PartitionSpec, PartitioningAwareFileIndex}
 import org.apache.spark.sql.lakesoul.LakeSoulFileIndexUtils._
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, SparkSession}
-import com.dmetasoul.lakesoul.meta.MetaUtils
+import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils, MetaVersion}
+
 import scala.collection.mutable
 
 /** file index for data source v2 */
@@ -41,6 +42,10 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
     matchingFiles(partitionFilters, dataFilters)
   }
 
+  def getFileInfoForPartitionVersion(): Seq[DataFileInfo] = {
+    val (desc,version) = snapshotManagement.snapshot.getPartitionDescAndVersion
+      DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id,desc,version)
+  }
 
   override def rootPaths: Seq[Path] = snapshotManagement.snapshot.getTableInfo.table_path :: Nil
 
@@ -58,9 +63,14 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   override def listFiles(partitionFilters: Seq[Expression],
                          dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
     val timeZone = spark.sessionState.conf.sessionLocalTimeZone
+    var files:Seq[DataFileInfo] = Seq.empty
+    if(SparkUtil.isPartitionVersionRead(snapshotManagement)){
+      files = getFileInfoForPartitionVersion()
+    }else{
+      files =  matchingFiles(partitionFilters, dataFilters)
+    }
 
-    matchingFiles(partitionFilters, dataFilters)
-      .groupBy(x=>MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
+      files.groupBy(x=>MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
       case (partitionValues, files) =>
         val rowValues: Array[Any] = partitionSchema.map { p =>
           Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()

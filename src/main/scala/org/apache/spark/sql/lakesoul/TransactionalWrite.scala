@@ -96,12 +96,12 @@ trait TransactionalWrite {
     rangePartitionColumns
   }
 
-  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)
+  def writeFiles(data: Dataset[_]): Seq[DataFileInfo] = writeFiles(data, None, isCompaction = false)._1
 
   def writeFiles(data: Dataset[_], writeOptions: Option[LakeSoulOptions]): Seq[DataFileInfo] =
-    writeFiles(data, writeOptions, isCompaction = false)
+    writeFiles(data, writeOptions, isCompaction = false)._1
 
-  def writeFiles(data: Dataset[_], isCompaction: Boolean): Seq[DataFileInfo] =
+  def writeFiles(data: Dataset[_], isCompaction: Boolean): (Seq[DataFileInfo], Path) =
     writeFiles(data, None, isCompaction = isCompaction)
 
   /**
@@ -110,7 +110,7 @@ trait TransactionalWrite {
     */
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
-                 isCompaction: Boolean): Seq[DataFileInfo] = {
+                 isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
     val data = if (tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
     } else {
@@ -133,7 +133,10 @@ trait TransactionalWrite {
 
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
-    val outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
+    var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
+    if(isCompaction){
+      outputPath =  SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString+"/compact_"+System.currentTimeMillis()))
+    }
 
     val (queryExecution, output) = normalizeData(data)
     val partitioningColumns =
@@ -197,20 +200,12 @@ trait TransactionalWrite {
         statsTrackers = statsTrackers,
         options = writeOptions.toMap)
     }
-    val is_base_file = if (commitType.nonEmpty && commitType.get.name.equals("CompactionCommit")) {
-      true
-    } else {
-      false
-    }
-
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
     val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
-    committer.addedStatuses.map(file => file.copy(
+    (committer.addedStatuses.map(file => file.copy(
       file_exist_cols = real_write_cols
-//      todo
-//      is_base_file = is_base_file
-    ))
+    )), outputPath)
   }
 
 

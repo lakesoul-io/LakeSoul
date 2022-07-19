@@ -16,15 +16,17 @@
 
 package org.apache.spark.sql.lakesoul.schema
 
-import java.io.File
+import org.apache.hadoop.fs.Path
 
+import java.io.File
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulOptions}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.streaming.StreamingQueryException
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
@@ -648,7 +650,7 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
         }
         assert(e2.getMessage.contains("partition columns"))
 
-        val snapshotManagement = SnapshotManagement(dir.getAbsolutePath)
+        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
         assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil)
         assert(snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array("id"))
       }
@@ -681,7 +683,7 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
           .option(LakeSoulOptions.OVERWRITE_SCHEMA_OPTION, "true")
           .overwrite(dir)
 
-        val snapshotManagement = SnapshotManagement(dir.getAbsolutePath)
+        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
         assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns === Nil)
         assert(snapshotManagement.snapshot.getTableInfo.schema.fieldNames === Array("id"))
       }
@@ -691,7 +693,7 @@ trait OverwriteSaveModeTests extends BatchWriterSoulTest {
   equivalenceTest("can change column data type with overwriteSchema") {
     disableAutoMigration {
       withTempDir { dir =>
-        val snapshotManagement = SnapshotManagement(dir.getAbsolutePath)
+        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
         spark.range(5).toDF("id").write
           .overwrite(dir)
         assert(snapshotManagement.updateSnapshot()

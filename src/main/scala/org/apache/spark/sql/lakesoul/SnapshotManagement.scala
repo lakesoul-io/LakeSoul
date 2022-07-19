@@ -43,7 +43,6 @@ import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession
 import scala.collection.JavaConverters._
 
 
-
 class SnapshotManagement(path: String) extends Logging {
 
   val table_path: String = path
@@ -78,7 +77,7 @@ class SnapshotManagement(path: String) extends Logging {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
-//      table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
+      //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
       if (LakeSoulUtils.isLakeSoulTable(table_path)) {
         throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
       }
@@ -86,12 +85,25 @@ class SnapshotManagement(path: String) extends Logging {
     }
   }
 
+//  private def getSnapshotForVersion(partitionDesc:String,partitionVersion:Int): Snapshot = {
+//    val table_info = MetaVersion.getTableInfo(table_path)
+//    val partition_info_arr = MetaVersion.getSinglePartitionInfoForVersion(table_info.table_id,partitionDesc,partitionVersion)
+//    if (table_info.table_schema.isEmpty) {
+//      throw LakeSoulErrors.schemaNotSetException
+//    }
+//    new Snapshot(table_info, partition_info_arr)
+//  }
+
   def updateSnapshot(): Snapshot = {
     lockInterruptibly {
       val new_snapshot = getCurrentSnapshot
       currentSnapshot = new_snapshot
       currentSnapshot
     }
+  }
+
+  def updateSnapshotForVersion(partitionDesc:String,partitionVersion:Int): Unit = {
+      currentSnapshot.setPartitionDescAndVersion(partitionDesc,partitionVersion)
   }
 
   //get table info only
@@ -135,7 +147,7 @@ class SnapshotManagement(path: String) extends Logging {
     */
   def withNewPartMergeTransaction[T](thunk: PartMergeTransactionCommit => T): T = {
     try {
-            updateSnapshot()
+      //      updateSnapshot()
       val tc = new PartMergeTransactionCommit(this)
       PartMergeTransactionCommit.setActive(tc)
       thunk(tc)
@@ -166,7 +178,6 @@ class SnapshotManagement(path: String) extends Logging {
   }
 
 }
-
 
 object SnapshotManagement {
 
@@ -213,12 +224,25 @@ object SnapshotManagement {
         throw e.getCause
     }
   }
+  //no cache just for snapshot
+  def apply(path: String,partitionDesc: String,partitionVersion:Int): SnapshotManagement = {
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
+        val sm = apply(qualifiedPath)
+        sm.updateSnapshotForVersion(partitionDesc,partitionVersion)
+        apply(qualifiedPath)
+      }else{
+        throw new AnalysisException("table not exitst in the path;")
+      }
+
+
+  }
   def getSM(path: String): SnapshotManagement = {
     try {
-      ///val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
       snapshotManagementCache.get(path, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(path)
+          new SnapshotManagement(qualifiedPath)
         }
       })
     } catch {
@@ -230,8 +254,8 @@ object SnapshotManagement {
   def invalidateCache(path: String): Unit = {
     //todo path是否还需要转义
 //    val table_path: String = MetaUtils.modifyTableString(path)
-//    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-    snapshotManagementCache.invalidate(path)
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    snapshotManagementCache.invalidate(qualifiedPath)
   }
 
   def clearCache(): Unit = {

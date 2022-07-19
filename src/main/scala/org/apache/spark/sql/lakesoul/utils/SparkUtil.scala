@@ -19,8 +19,6 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
-import org.apache.flink.runtime.util.HadoopUtils
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
 import org.apache.spark.sql.catalyst.expressions.Expression
@@ -33,12 +31,11 @@ import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
-
 import scala.collection.JavaConverters._
 
 
 object SparkUtil {
-  lazy val spark: SparkSession = SparkSession.builder().getOrCreate()
+  lazy val spark: SparkSession = SparkSession.builder().enableHiveSupport().getOrCreate()
   import spark.implicits._
 
   def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
@@ -56,6 +53,15 @@ object SparkUtil {
     spark.sparkContext.parallelize(DataOperation.getTableDataInfo(snapshot.getPartitionInfoArray)).toDS().persist().as[DataFileInfo].collect()
   }
 
+  def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean ={
+    val (partitionDesc,partitionVersion)=snapshotManagement.snapshot.getPartitionDescAndVersion
+    if(partitionVersion != -1 && !partitionDesc.equals("")){
+      true
+    }else{
+      false
+    }
+  }
+
 /*  def modifyTableString(tablePath: String): String = {
     makeQualifiedTablePath(tablePath).toString
   }
@@ -71,7 +77,6 @@ object SparkUtil {
   }*/
 
   def makeQualifiedTablePath(tablePath: Path): Path = {
-//    HadoopUtils.getHadoopConfiguration(new org.apache.flink.configuration.Configuration());
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 

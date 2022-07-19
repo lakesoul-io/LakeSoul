@@ -1,18 +1,17 @@
 /*
+ * Copyright [2022] [DMetaSoul Team]
  *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -21,19 +20,20 @@ package com.dmetasoul.lakesoul.meta;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.UUID;
 
 public class DBUtil {
-    private static final Logger logger = LogManager.getLogger( DBUtil.class);
 
     public static void init() {
         String tableInfo = "create table if not exists table_info (" +
@@ -95,6 +95,24 @@ public class DBUtil {
         } finally {
             DBConnector.closeConn();
         }
+    }
+
+    public static DataBaseProperty getDBInfo() {
+        String configFile = System.getenv("lakesoul_home");
+        Properties properties = new Properties();
+        if (configFile != null ) {
+            try {
+                properties.load(new FileInputStream(configFile));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        DataBaseProperty dataBaseProperty = new DataBaseProperty();
+        dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
+        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"));
+        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "yugabyte"));
+        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "yugabyte"));
+        return dataBaseProperty;
     }
 
     public static void cleanAllTable() {
@@ -169,9 +187,9 @@ public class DBUtil {
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
-            if (fileOp.equals("del")) {
-                continue;
-            }
+//            if (fileOp.equals("del")) {
+//                continue;
+//            }
             dataFileOp.setFileOp(fileOp);
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));

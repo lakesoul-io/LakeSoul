@@ -16,7 +16,7 @@ trait AnalysisHelper {
     sparkSession.sessionState.analyzer.execute(newPlan) match {
       case FakeLogicalPlan(resolvedExpr, _) =>
         // Return even if it did not successfully resolve
-        return resolvedExpr
+        resolvedExpr
       case _ =>
         // This is unexpected
         throw LakeSoulErrors.analysisException(

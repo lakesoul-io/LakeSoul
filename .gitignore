@@ -1,5 +1,7 @@
-target/
-build/
-.idea/
-spark-warehouse/
-derby.log
+/target/
+/build/
+/.idea/
+/spark-warehouse/
+/derby.log
+/.metals/
+/.vscode/

@@ -102,12 +102,14 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   snapshotManagement: SnapshotManagement,
                                   condition: String,
                                   force: Boolean = true,
-                                  mergeOperatorInfo: Map[String, String]): Unit = {
+                                  mergeOperatorInfo: Map[String, String],
+                                  hiveTableName: String = ""): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
       force,
-      mergeOperatorInfo))
+      mergeOperatorInfo,
+      hiveTableName))
 
   }
 

@@ -17,7 +17,6 @@
 package org.apache.spark.sql.execution.datasources.v2.merge
 
 import java.util.{Locale, OptionalLong}
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetInputFormat
@@ -27,13 +26,13 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.{DefaultMergeOp, MergeOperator}
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.{MergeFilePartitionReaderFactory, MergeParquetPartitionReaderFactory}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, SparkSession}
@@ -66,20 +65,10 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
 
-  lazy val fileInfo: Seq[DataFileInfo] = newFileIndex.getFileInfo(partitionFilters)
-        // todo 需要修改
-//    .map(f => if (f.is_base_file) {
-//      f.copy(write_version = 0)
-//    } else f)
-
+  lazy val fileInfo: Seq[DataFileInfo] = if(SparkUtil.isPartitionVersionRead(newFileIndex.snapshotManagement)){newFileIndex.getFileInfoForPartitionVersion()}else{newFileIndex.getFileInfo(partitionFilters)}
   /** if there are too many delta files, we will execute compaction first */
   private def compactAndReturnNewFileIndex(oriFileIndex: LakeSoulFileIndexV2): LakeSoulFileIndexV2 = {
     val files = oriFileIndex.getFileInfo(partitionFilters)
-        //todo 需要修改
-//      .map(f => if (f.is_base_file) {
-//        f.copy(write_version = 0)
-//      } else f)
-
     val partitionGroupedFiles = files
       .groupBy(_.range_partitions)
       .values
@@ -192,8 +181,13 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
         case _=>true
       })
     }
+    val defaultMergeOpInfoString = sparkSession.sessionState.conf.getConfString("defaultMergeOpInfo",
+      "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.DefaultMergeOp")
+    val defaultMergeOp = Class.forName(defaultMergeOpInfoString, true, Utils.getContextOrSparkClassLoader).getConstructors()(0)
+      .newInstance()
+      .asInstanceOf[MergeOperator[Any]]
     MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo)
+      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp)
   }
 
   protected def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
@@ -359,8 +353,6 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
       if(!isSingleFile){
         val versionFiles=for(version <- 0 to files.size-1) yield files(version).copy(writeVersion = version + 1)
         files=versionFiles.toArray
-//        val tmpFile = for(version <- 0 to files.size-1) yield files(version).copy(rangeVersion = (files(version).rangeKey + "-" + files(version).writeVersion))
-//        files=tmpFile.toArray
       }
       MergeFilePartition(bucketId, Array(files), isSingleFile)
     }
@@ -467,7 +459,6 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
     val partitions = new ArrayBuffer[MergeFilePartition]
 
     groupByPartition.foreach(p => {
-//      val isSingleFile = p._2.toSet.size == 1
       p._2.groupBy(_.fileBucketId).foreach(g => {
         var files = g._2.toArray
         val isSingleFile = files.size == 1

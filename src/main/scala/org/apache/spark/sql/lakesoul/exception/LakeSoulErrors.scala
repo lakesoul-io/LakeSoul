@@ -64,6 +64,14 @@ object LakeSoulErrors {
        """.stripMargin)
   }
 
+
+  def CompactionException(table_name: String): Throwable = {
+    new AnalysisException(
+      s"""
+         |Error: No delta file for compaction: $table_name.
+       """.stripMargin)
+  }
+
   def failedInitTableException(table_name: String): MetaException = {
     new MetaException(
       s"""
@@ -281,6 +289,15 @@ object LakeSoulErrors {
     new AnalysisException(
       "A range partition path fragment should be the form like `range_part=20200507`. "
         + s"The partition path: $fragment")
+  }
+
+  def failCommitDataFile(): Throwable = {
+    new MetaException(
+      s"""
+         |Error: Failed to add data file,
+         |this batch uuid may already exists, this is unexpected, please have a check.
+         """
+    )
   }
 
   def partitionPathInvolvesNonPartitionColumnException(badColumns: Seq[String], fragment: String): Throwable = {
