@@ -211,14 +211,14 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>compile</scope>
+            <scope>${local.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>compile</scope>
+            <scope>${local.scope}</scope>
             <exclusions>
                 <exclusion>
                     <artifactId>parquet-jackson</artifactId>
@@ -239,7 +239,7 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>compile</scope>
+            <scope>${local.scope}</scope>
         </dependency>
 
         <dependency>
@@ -349,8 +349,8 @@
     </dependencies>
 
     <build>
-        <sourceDirectory>src/main/scala</sourceDirectory>
-        <testSourceDirectory>src/test/scala</testSourceDirectory>
+        <sourceDirectory>src/main/java</sourceDirectory>
+        <testSourceDirectory>src/test/java</testSourceDirectory>
         <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
         <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>
         <plugins>

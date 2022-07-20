@@ -5,3 +5,4 @@
 /derby.log
 /.metals/
 /.vscode/
+*.iml

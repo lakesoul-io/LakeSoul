@@ -25,12 +25,6 @@ object MetaRerunErrors {
                            write_version: Long,
                            commit_id: String): MetaRerunException = {
     new MetaRerunException(
-      //todo  {info.version} ${info.table_id}.
-//      s"""
-//         |Error: Another job added file "$file_path" in partition: "${info.range_value}" during write_version=$write_version, but your read_version is ${info.read_version}.
-//         |Commit id=$commit_id failed to update meta because of data info conflict. Please update and retry.
-//         |Error table: ${info.table_name}.
-//       """.stripMargin,
       s"""
          |Error: Another job added file "$file_path" in partition: "${info.range_value}" during write_version=$write_version, but your read_version is ${info.version}.
          |Commit id=$commit_id failed to update meta because of data info conflict. Please update and retry.
@@ -44,12 +38,6 @@ object MetaRerunErrors {
                            write_version: Long,
                            commit_id: String): MetaRerunException = {
     new MetaRerunException(
-      //todo {info.version} ${info.table_id}.
-//      s"""
-//         |Error: File "$file_path" in partition: "${info.range_value}" deleted by another job during write_version=$write_version, but your read_version is ${info.version}.
-//         |Commit id=$commit_id failed to update meta because of data info conflict. Please retry.
-//         |Error table: ${info.table_id}.
-//       """.stripMargin,
       s"""
          |Error: File "$file_path" in partition: "${info.range_value}" deleted by another job during write_version=$write_version, but your read_version is ${info.version}.
          |Commit id=$commit_id failed to update meta because of data info conflict. Please retry.
@@ -65,6 +53,4 @@ object MetaRerunErrors {
        """.stripMargin,
       commit_id)
   }
-
-
 }
