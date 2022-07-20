@@ -346,6 +346,13 @@
             <version>1.2.83</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-column</artifactId>
+            <version>${parquet.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
