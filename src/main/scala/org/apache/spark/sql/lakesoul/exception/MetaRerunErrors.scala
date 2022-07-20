@@ -53,6 +53,4 @@ object MetaRerunErrors {
        """.stripMargin,
       commit_id)
   }
-
-
 }
