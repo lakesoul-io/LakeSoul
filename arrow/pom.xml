@@ -69,6 +69,8 @@
             <version>${scala.version}</version>
             <scope>${local.scope}</scope>
 
+
+
         </dependency>
         <dependency>
             <groupId>org.scala-lang</groupId>
@@ -97,6 +99,15 @@
             <version>${javacpp.version}</version>
         </dependency>
 
+        <!--    jni local deps    -->
+        <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>arrow-c-data-jni</artifactId>
+            <version>1.0-SNAPSHOT</version>
+            <scope>system</scope>
+            <systemPath>${basedir}/../arrow-c-data-jni/target/arrow-c-data-jni-1.0-SNAPSHOT.jar</systemPath>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -116,78 +127,7 @@
                     <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
-            <plugin>
-                <groupId>org.xolstice.maven.plugins</groupId>
-                <artifactId>protobuf-maven-plugin</artifactId>
-                <version>0.5.0</version>
-                <configuration>
-                    <protocArtifact>
-                        com.google.protobuf:protoc:3.1.0:exe:${os.detected.classifier}
-                    </protocArtifact>
-                    <protoSourceRoot>${project.basedir}/src/main/proto</protoSourceRoot>
-                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
-                </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>compile</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>1.1</version>
-                <!-- this is how the shared library libfoo.so is built -->
-                <executions>
-                    <execution>
-                        <id>build-sharedlib</id>
-                        <phase>process-classes</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>make</executable>
-                            <commandlineArgs>all</commandlineArgs>
-                            <workingDirectory>${basedir}/src/test/resources/arrow_c_test</workingDirectory>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>clean-sharedlib</id>
-                        <phase>clean</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>make</executable>
-                            <commandlineArgs>clean</commandlineArgs>
-                            <workingDirectory>${basedir}/src/test/resources/arrow_c_test</workingDirectory>
-                        </configuration>
-                    </execution>
-                    <!-- in here we build the Java-based wrapper shared library -->
-                    <execution>
-                        <id>build-jnilib</id>
-                        <phase>test-compile</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>java</executable>
-                            <!--
-                                -jar points to the javacpp.jar
-                                -Xcompiler may be followed by
-                                    -L specifies where the libfoo.so is
-                                    -I points to the foo.h header
-                                eu.atspace.hash.FooLib is the wrapper class
-                             -->
-                            <commandlineArgs>
-                                -jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -Xcompiler -L${basedir}/target/classes/eu/atspace/hash/linux-x86_64 -Xcompiler -I${basedir}/src/main/jni -classpath target/classes eu.atspace.hash.FooLib
-                            </commandlineArgs>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
+
         </plugins>
     </build>
 
