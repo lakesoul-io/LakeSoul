@@ -5,3 +5,8 @@
 /derby.log
 /.metals/
 /.vscode/
+/arrow/.idea/
+/arrow/target/
+/arrow-c-data-jni/target/
+.DS_Store
+*.iml
