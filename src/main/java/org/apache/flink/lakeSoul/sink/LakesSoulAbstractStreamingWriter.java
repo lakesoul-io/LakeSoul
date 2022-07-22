@@ -116,8 +116,7 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
   }
 
   @Override
-  public void notifyCheckpointComplete(long checkpointId) throws Exception {
-    super.notifyCheckpointComplete(checkpointId);
+  public void prepareSnapshotPreBarrier(long checkpointId) throws Exception {
     commitUpToCheckpoint(checkpointId);
   }
 
