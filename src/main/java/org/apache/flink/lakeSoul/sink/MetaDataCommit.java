@@ -29,7 +29,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
-import org.apache.flink.lakeSoul.sink.bucket.TaskTracker;
 import org.apache.flink.lakeSoul.sink.partition.PartitionTrigger;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
@@ -37,6 +36,7 @@ import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -56,7 +56,6 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
   private static final long serialVersionUID = 1L;
   private final Path locationPath;
   private transient PartitionTrigger trigger;
-  private transient TaskTracker taskTracker;
   private transient long currentWatermark;
   private final String fileExistFiles;
   private String tableName;
@@ -118,6 +117,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       return;
     }
     TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
+    Preconditions.checkArgument(tableInfo != null, "not find result table from metaDataTable");
     MetaInfo metaInfo = new MetaInfo();
     metaInfo.setTableInfo(tableInfo);
     ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
@@ -139,6 +139,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       org.apache.flink.core.fs.FileStatus[] files = resultPath.getFileSystem().listStatus(resultPath);
       DataCommitInfo dataCommitInfo =
           partitionMetaSet(tableInfo.getTableId(), partition, partitionLists);
+      tableInfo = null;
       for (FileStatus fileStatus : files) {
         if (!fileStatus.isDir()) {
           String onePath = fileStatus.getPath().toString();

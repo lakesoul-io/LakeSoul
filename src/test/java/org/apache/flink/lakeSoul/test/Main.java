@@ -34,13 +34,15 @@ public class Main {
     StreamExecutionEnvironment env;
     env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.setParallelism(1);
-    env.enableCheckpointing(201);
-    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(403);
-    env.getCheckpointConfig().setCheckpointStorage("file:///Users/zhyang/Downloads/flink");
+    env.enableCheckpointing(5021);
+    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+    //set table name
+    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
+    //set table path
+    String PATH = "Downloads/tmp/" + tableName;
     tEnvs = StreamTableEnvironment.create(env);
     tEnvs.getConfig().getConfiguration().set(
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
-
     //source
     tEnvs.executeSql("create table mysql_test_1(\n" +
         "id bigint primary key NOT ENFORCED ," +
@@ -60,8 +62,6 @@ public class Main {
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
     tEnvs.useCatalog("lakeSoul");
-    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
-    String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
 
     //target
     tEnvs.executeSql(
