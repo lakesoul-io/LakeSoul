@@ -117,7 +117,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       return;
     }
     TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
-    Preconditions.checkArgument(tableInfo != null, "not find result table from metaDataTable");
+    Preconditions.checkArgument(tableInfo != null, "No target table found in metadata");
     MetaInfo metaInfo = new MetaInfo();
     metaInfo.setTableInfo(tableInfo);
     ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
