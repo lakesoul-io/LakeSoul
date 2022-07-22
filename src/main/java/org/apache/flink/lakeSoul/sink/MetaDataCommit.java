@@ -130,7 +130,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       partitionList = trigger.committablePartitions(checkpointId);
     }
 
-    if (partitionList == null || partitionList.isEmpty()) {
+    if (partitionList.isEmpty()) {
       return;
     }
 
