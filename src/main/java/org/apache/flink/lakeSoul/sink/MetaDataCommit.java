@@ -129,7 +129,8 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       //get current need commit partition and restore partition from state
       partitionList = trigger.committablePartitions(checkpointId);
     }
-    if (partitionList.isEmpty()) {
+
+    if (partitionList == null || partitionList.isEmpty()) {
       return;
     }
 
