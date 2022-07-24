@@ -24,12 +24,11 @@ import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.MetaInfo;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.Path;
-import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
-import org.apache.flink.lakeSoul.sink.bucket.TaskTracker;
 import org.apache.flink.lakeSoul.sink.partition.PartitionTrigger;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
@@ -37,16 +36,17 @@ import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
 
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.MERGE_COMMIT_TYPE;
 import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_EXIST_COLUMN;
 import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_IN_PROGRESS_PART_PREFIX;
 import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_OPTION_ADD;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.MERGE_COMMIT_TYPE;
 
 /*
  * save metadata
@@ -56,9 +56,10 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
   private static final long serialVersionUID = 1L;
   private final Path locationPath;
   private transient PartitionTrigger trigger;
-  private transient TaskTracker taskTracker;
   private transient long currentWatermark;
   private final String fileExistFiles;
+  private String tableName;
+  private String fileNamePrefix;
   private DBManager dbManager;
   private HashSet<String> existFile;
 
@@ -73,18 +74,15 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
   @Override
   public void processElement(StreamRecord<DataFileMetaData> element) throws Exception {
     DataFileMetaData metadata = element.getValue();
+    if ("".equals(tableName) || tableName == null) {
+      this.tableName = metadata.getTableName();
+    }
+    if ("".equals(fileNamePrefix) || fileNamePrefix == null) {
+      this.fileNamePrefix = metadata.getTaskDataPath();
+    }
     //collection and restore need commit partition name
     for (String partition : metadata.getPartitions()) {
       trigger.addPartition(partition);
-    }
-    //Task snapshots collector
-    if (taskTracker == null) {
-      taskTracker = new TaskTracker(metadata.getNumberOfTasks());
-    }
-    // check all task snapshot collection is complete
-    if (taskTracker.addCompleteTask(metadata.getCheckpointId(), metadata.getTaskId())) {
-      //upload metadata
-      commitPartitions(metadata);
     }
   }
 
@@ -109,13 +107,21 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
     trigger.snapshotState(context.getCheckpointId(), currentWatermark);
   }
 
-  private void commitPartitions(DataFileMetaData element) throws Exception {
-    TableInfo tableInfo = dbManager.getTableInfoByName(element.getTableName());
+  @Override
+  public void notifyCheckpointComplete(long checkpointId) throws Exception {
+    commitPartitions(checkpointId);
+  }
+
+  private void commitPartitions(long checkpointId) throws Exception {
+    if ("".equals(tableName) || tableName == null) {
+      return;
+    }
+    TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
+    Preconditions.checkArgument(tableInfo != null, "No target table found in metadata");
     MetaInfo metaInfo = new MetaInfo();
     metaInfo.setTableInfo(tableInfo);
     ArrayList<PartitionInfo> partitionLists = new ArrayList<>();
     ArrayList<DataCommitInfo> commitInfoList = new ArrayList<>();
-    long checkpointId = element.getCheckpointId();
     List<String> partitionList;
     if (checkpointId == Long.MAX_VALUE) {
       partitionList = trigger.endInput();
@@ -123,17 +129,17 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       //get current need commit partition and restore partition from state
       partitionList = trigger.committablePartitions(checkpointId);
     }
+
     if (partitionList.isEmpty()) {
       return;
     }
-
-    String fileNamePrefix = element.getTaskDataPath();
 
     for (String partition : partitionList) {
       Path resultPath = new Path(locationPath, partition);
       org.apache.flink.core.fs.FileStatus[] files = resultPath.getFileSystem().listStatus(resultPath);
       DataCommitInfo dataCommitInfo =
           partitionMetaSet(tableInfo.getTableId(), partition, partitionLists);
+      tableInfo = null;
       for (FileStatus fileStatus : files) {
         if (!fileStatus.isDir()) {
           String onePath = fileStatus.getPath().toString();
