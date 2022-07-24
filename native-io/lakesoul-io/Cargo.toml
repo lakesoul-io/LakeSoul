@@ -1,0 +1,7 @@
+[package]
+name = "lakesoul-io"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+datafusion = { version = "10.0.0", features = ["simd"] }

@@ -1,0 +1,11 @@
+[package]
+name = "lakesoul-io-c"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lakesoul-io = { path = "../lakesoul-io" }
+
