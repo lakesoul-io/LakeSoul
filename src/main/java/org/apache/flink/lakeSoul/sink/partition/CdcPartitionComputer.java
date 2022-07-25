@@ -52,8 +52,7 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
       String[] columnNames,
       DataType[] columnTypes,
       String[] partitionColumns, Boolean isCdc) {
-    this.defaultPartValue = defaultPartValue;
-    this.partitionColumns = partitionColumns;
+    this.defaultPartValue =   defaultPartValue;
     this.isCdc = isCdc;
     List<String> columnList = Arrays.asList(columnNames);
     List<LogicalType> columnTypeList =
@@ -61,9 +60,9 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
             .map(DataType::getLogicalType)
             .collect(Collectors.toList());
 
-    partitionColumns = partitionColumns[0].split(";");
+    this.partitionColumns = partitionColumns;
     this.partitionIndexes =
-        Arrays.stream(partitionColumns).mapToInt(columnList::indexOf).toArray();
+        Arrays.stream(this.partitionColumns).mapToInt(columnList::indexOf).toArray();
     this.partitionTypes =
         Arrays.stream(partitionIndexes)
             .mapToObj(columnTypeList::get)

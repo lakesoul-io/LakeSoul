@@ -117,9 +117,11 @@ public class FlinkUtil {
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
     String partitionKeys = tableInfo.getPartitions();
     String[] split = partitionKeys.split(";");
-    String s = split[0];
     ArrayList<String> parKey = new ArrayList<>();
-    parKey.add(s);
+    String[] splitPartition = split[0].split(",");
+    for (int i = 0; i < splitPartition.length; i++) {
+      parKey.add(splitPartition[i]);
+    }
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
     return CatalogTable.of(bd.build(), "", parKey, conf);
@@ -141,7 +143,7 @@ public class FlinkUtil {
     int i = 0;
     for (Map.Entry<String, String> e : partitionSpec.entrySet()) {
       if (i > 0) {
-        suffixBuf.append(",");
+        suffixBuf.append("/");
       }
       suffixBuf.append(escapePathName(e.getKey()));
       suffixBuf.append('=');

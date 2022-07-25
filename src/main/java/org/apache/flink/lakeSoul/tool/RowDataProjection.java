@@ -58,13 +58,5 @@ public class RowDataProjection implements Serializable {
     return genericRowData;
   }
 
-  public Object[] projectAsValues(RowData rowData) {
-    Object[] values = new Object[this.fieldGetters.length];
-    for (int i = 0; i < this.fieldGetters.length; i++) {
-      final Object val = this.fieldGetters[i].getFieldOrNull(rowData);
-      values[i] = val;
-    }
-    return values;
-  }
 }
 
