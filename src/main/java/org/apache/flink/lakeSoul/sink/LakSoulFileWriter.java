@@ -23,11 +23,13 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
 import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketsBuilder;
+import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.filesystem.stream.PartitionCommitPredicate;
+import org.apache.flink.table.runtime.generated.RecordComparator;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -46,18 +48,22 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
   private final List<String> partitionKeyList;
   private final Configuration flinkConf;
   private final OutputFileConfig outputFileConfig;
+  private final LakeSoulKeyGen keyGen;
   private transient Set<String> currentNewBuckets;
   private transient TreeMap<Long, Set<String>> newBuckets;
   private transient Set<String> committableBuckets;
   private transient Map<String, Long> inProgressBuckets;
   private transient PartitionCommitPredicate partitionCommitPredicate;
 
-  public LakSoulFileWriter(long bucketCheckInterval, LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, List<String> partitionKeyList, Configuration conf,
+  public LakSoulFileWriter(long bucketCheckInterval,
+                           LakeSoulKeyGen keyGen,
+                           LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, ?, ?>> bucketsBuilder, List<String> partitionKeyList, Configuration conf,
                            OutputFileConfig outputFileConf) {
     super(bucketCheckInterval, bucketsBuilder);
     this.partitionKeyList = partitionKeyList;
     this.flinkConf = conf;
     this.outputFileConfig = outputFileConf;
+    this.keyGen = keyGen;
   }
 
   @Override
@@ -69,6 +75,9 @@ public class LakSoulFileWriter<IN> extends LakesSoulAbstractStreamingWriter<IN, 
     this.newBuckets = new TreeMap<>();
     this.committableBuckets = new HashSet<>();
     this.inProgressBuckets = new HashMap<>();
+    ClassLoader userCodeClassLoader = getContainingTask().getUserCodeClassLoader();
+    RecordComparator recordComparator = this.keyGen.getComparator().newInstance(userCodeClassLoader);
+    this.keyGen.setCompareFunction(recordComparator);
   }
 
   @Override

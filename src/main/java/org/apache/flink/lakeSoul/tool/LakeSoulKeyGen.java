@@ -20,7 +20,12 @@
 package org.apache.flink.lakeSoul.tool;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
+import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
+import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
+import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -30,6 +35,7 @@ import java.io.FileNotFoundException;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 public class LakeSoulKeyGen implements Serializable {
 
@@ -44,13 +50,14 @@ public class LakeSoulKeyGen implements Serializable {
   private final RowDataProjection partitionPathProjection;
   private RowData.FieldGetter recordKeyFieldGetter;
   private RowData.FieldGetter partitionPathFieldGetter;
+  private final GeneratedRecordComparator comparator;
+  private RecordComparator compareFunction;
   private boolean nonPartitioned;
   private boolean simpleRecordKey = false;
   private boolean simplePartitionPath = false;
   private final List<String> fieldNames;
   private List<String> partitionKey;
   private String simpleRecordKeyType;
-
 
   public LakeSoulKeyGen(RowType rowType, Configuration conf, List<String> partitionKey) {
     this.conf = conf;
@@ -70,6 +77,7 @@ public class LakeSoulKeyGen implements Serializable {
     } else {
       this.recordKeyProjection = getProjection(this.recordKeyFields, fieldNames, fieldTypes);
     }
+    this.comparator = createSortComparator(getFieldPositions(this.recordKeyFields, fieldNames), rowType);
     if (this.partitionPathFields.length == 1) {
       this.simplePartitionPath = true;
       if (this.partitionPathFields[0].equals("")) {
@@ -164,6 +172,13 @@ public class LakeSoulKeyGen implements Serializable {
     return recordKey.toString();
   }
 
+  private GeneratedRecordComparator createSortComparator(int[] sortIndices, RowType rowType) {
+    SortSpec.SortSpecBuilder builder = SortSpec.builder();
+    TableConfig tableConfig = new TableConfig();
+    IntStream.range(0, sortIndices.length).forEach(i -> builder.addField(i, true, true));
+    return new SortCodeGenerator(tableConfig, rowType, builder.build()).generateRecordComparator("comparator");
+  }
+
   public static String getPartitionPath(
       Object partValue) {
     String partitionPath = objToString(partValue);
@@ -211,6 +226,18 @@ public class LakeSoulKeyGen implements Serializable {
       return simpleRecordKeyType;
     }
     throw new NoSuchMethodException("Multiple primary keys are not supported now");
+  }
+
+  public GeneratedRecordComparator getComparator() {
+    return comparator;
+  }
+
+  public RecordComparator getCompareFunction() {
+    return compareFunction;
+  }
+
+  public void setCompareFunction(RecordComparator compareFunction) {
+    this.compareFunction = compareFunction;
   }
 
   public List<String> getPartitionKey() {

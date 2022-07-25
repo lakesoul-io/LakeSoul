@@ -134,6 +134,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //rowData sink fileSystem Task
     LakSoulFileWriter<RowData> lakSoulFileWriter =
         new LakSoulFileWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),
+            keyGen,
             //create sink Bulk format
             FileSinkFunction.forBulkFormat(
                     path,

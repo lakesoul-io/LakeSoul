@@ -46,9 +46,6 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.INT_KEY_TYPE;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.LONG_KEY_TYPE;
-
 public class LakeSoulBucket<IN, BucketID> {
   private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.streaming.api.functions.sink.filesystem.Bucket.class);
   private final BucketID bucketId;
@@ -90,44 +87,7 @@ public class LakeSoulBucket<IN, BucketID> {
     this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
     LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
     this.keyGen = lakesoulRollingPolicy.getKeyGen();
-    try {
-      String recordKeyType = keyGen.getRecordKeyType();
-      switch (recordKeyType) {
-        case INT_KEY_TYPE:
-          sortQueue = new PriorityQueue<>((v1, v2) -> {
-            try {
-              return keyGen.getSimpleIntKey(v1) - (keyGen.getSimpleIntKey(v2));
-            } catch (Exception e) {
-              e.printStackTrace();
-              return 0;
-            }
-          });
-          break;
-        case LONG_KEY_TYPE:
-          sortQueue = new PriorityQueue<>((v1, v2) -> {
-            try {
-              return (keyGen.getSimpleLongKey(v1).compareTo(keyGen.getSimpleLongKey(v2)));
-            } catch (Exception e) {
-              e.printStackTrace();
-              return 0;
-            }
-          });
-          break;
-        default:
-          sortQueue = new PriorityQueue<>((v1, v2) -> {
-            try {
-              return keyGen.getRecordKey(v1).compareTo(keyGen.getRecordKey(v2));
-            } catch (Exception e) {
-              e.printStackTrace();
-              return 0;
-            }
-          });
-          break;
-      }
-    } catch (NoSuchMethodException e) {
-      e.printStackTrace();
-    }
-
+    this.sortQueue = new PriorityQueue<>(keyGen.getCompareFunction());
     bucketRowCount = new AtomicLong(0L);
   }
 
