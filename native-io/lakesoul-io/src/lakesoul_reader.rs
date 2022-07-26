@@ -152,16 +152,17 @@ impl LakeSoulReader {
 mod tests {
     use super::*;
     use tokio_stream::StreamExt;
+    use datafusion::arrow::util::pretty::print_batches;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
-            .with_files(vec!["test/test.parquet.snappy".to_string()])
+            .with_files(vec!["test/test.snappy.parquet".to_string()])
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
-        let stream = reader.read()?;
+        let mut stream = reader.read().await?;
         while let Some(record_batch) = stream.next().await {
-            println!(record_batch);
+            print_batches(std::slice::from_ref(&record_batch?))?;
         }
         Ok(())
     }

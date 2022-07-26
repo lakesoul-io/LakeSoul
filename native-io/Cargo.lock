@@ -902,6 +902,8 @@ version = "0.0.0"
 dependencies = [
  "datafusion",
  "object_store",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
