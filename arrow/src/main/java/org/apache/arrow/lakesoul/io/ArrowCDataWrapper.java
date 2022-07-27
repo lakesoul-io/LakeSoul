@@ -28,7 +28,8 @@ public class ArrowCDataWrapper {
     }
 
     private boolean nextArrayFromCDataInterface(long schemaPtr, long arrayPtr){
-        CDataJavaToCppInterface.FillInt64Array(schemaPtr, arrayPtr);
+//        CDataJavaToCppInterface.FillInt64Array(schemaPtr, arrayPtr);
+        CDataJavaToCppInterface.FillInt64ArrayWithCallBack(schemaPtr, arrayPtr, new CDataJavaToCppInterface.Foo(2));
         return true;
     }
 

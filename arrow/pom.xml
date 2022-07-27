@@ -107,6 +107,12 @@
             <scope>system</scope>
             <systemPath>${basedir}/../arrow-c-data-jni/target/arrow-c-data-jni-1.0-SNAPSHOT.jar</systemPath>
         </dependency>
+        <!--        jnr-ffi deps-->
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jnr-ffi</artifactId>
+            <version>2.2.12</version>
+        </dependency>
 
     </dependencies>
 

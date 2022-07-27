@@ -111,19 +111,34 @@
                     </configuration>
                 </execution>
 
-                <execution>
-                    <id>build-arrow-c-data-jni-bridge</id>
-                    <phase>process-classes</phase>
-                    <goals>
-                        <goal>exec</goal>
-                    </goals>
-                    <configuration>
-                        <executable>java</executable>
-                        <commandlineArgs>-jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -cp ${project.build.directory}/classes org.apache.arrow.lakesoul.javacpp.java.CDataJavaConfig</commandlineArgs>
-                        <workingDirectory>${project.build.directory}/classes</workingDirectory>
-                    </configuration>
-                </execution>
+<!--                with javacpp properties -->
+<!--                <execution>-->
+<!--                    <id>build-arrow-c-data-jni-bridge</id>-->
+<!--                    <phase>process-classes</phase>-->
+<!--                    <goals>-->
+<!--                        <goal>exec</goal>-->
+<!--                    </goals>-->
+<!--                    <configuration>-->
+<!--                        <executable>java</executable>-->
+<!--                        <commandlineArgs>-jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -cp ${project.build.directory}/classes org.apache.arrow.lakesoul.javacpp.java.CDataJavaConfig</commandlineArgs>-->
+<!--                        <workingDirectory>${project.build.directory}/classes</workingDirectory>-->
+<!--                    </configuration>-->
+<!--                </execution>-->
 
+<!--                <execution>-->
+<!--                    <id>build-arrow-c-data-jni</id>-->
+<!--                    <phase>process-classes</phase>-->
+<!--                    <goals>-->
+<!--                        <goal>exec</goal>-->
+<!--                    </goals>-->
+<!--                    <configuration>-->
+<!--                        <executable>java</executable>-->
+<!--                        <commandlineArgs>-jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -cp ${project.build.directory}/classes org/apache/arrow/lakesoul/javacpp/java/CDataJavaToCppInterface.java</commandlineArgs>-->
+<!--                        <workingDirectory>${project.build.directory}/classes</workingDirectory>-->
+<!--                    </configuration>-->
+<!--                </execution>-->
+
+<!--                without javacpp properties-->
                 <execution>
                     <id>build-arrow-c-data-jni</id>
                     <phase>process-classes</phase>
@@ -132,7 +147,7 @@
                     </goals>
                     <configuration>
                         <executable>java</executable>
-                        <commandlineArgs>-jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -cp ${project.build.directory}/classes org/apache/arrow/lakesoul/javacpp/java/CDataJavaToCppInterface.java</commandlineArgs>
+                        <commandlineArgs>-jar ${project.build.directory}/lib/javacpp-${javacpp.version}.jar -cp ${project.build.directory}/classes org.apache.arrow.lakesoul.javacpp.java.CDataJavaToCppInterface</commandlineArgs>
                         <workingDirectory>${project.build.directory}/classes</workingDirectory>
                     </configuration>
                 </execution>
