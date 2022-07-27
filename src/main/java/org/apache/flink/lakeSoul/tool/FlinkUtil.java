@@ -116,13 +116,12 @@ public class FlinkUtil {
       bd = bd.column(sf.name(), tyname);
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
-    String partitions = tableInfo.getPartitions();
+    List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
     List<String> parKey;
-    if (partitions == null || "".equals(partitions)) {
-      parKey = new ArrayList<>();
+    if (partitionData.size()>1) {
+      parKey = Splitter.on(',').splitToList(partitionData.get(0));
     } else {
-      String[] partitionKeys = partitions.split(";");
-      parKey = Splitter.on(',').splitToList(partitionKeys[0]);
+      parKey = new ArrayList<>();
     }
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
