@@ -1,0 +1,3 @@
+[submodule "arrow-c-data-jni/arrow"]
+	path = arrow-c-data-jni/arrow
+	url = https://github.com/meta-soul/arrow.git
