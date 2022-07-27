@@ -8,4 +8,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
-

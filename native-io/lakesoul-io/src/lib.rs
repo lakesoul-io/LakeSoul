@@ -1,4 +1,4 @@
-mod lakesoul_reader;
+pub mod lakesoul_reader;
 
 pub fn add(left: i64, right: i64) -> i64 {
     left + right

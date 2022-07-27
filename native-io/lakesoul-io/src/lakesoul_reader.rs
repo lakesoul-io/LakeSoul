@@ -33,6 +33,11 @@ impl LakeSoulReaderConfigBuilder {
         }
     }
 
+    pub fn with_file(mut self, file: String) -> Self {
+        self.config.files.push(file);
+        self
+    }
+
     pub fn with_files(mut self, files: Vec<String>) -> Self {
         self.config.files = files;
         self
