@@ -42,9 +42,13 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
       p.children.find(_.isInstanceOf[DataSourceV2Relation]).get match {
         case dsv2@DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) =>
           val value = getLakeSoulTableCDCColumn(table)
-          val bool = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
-          if (value.nonEmpty && !bool) {
-            p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
+          if (value.nonEmpty) {
+            val bool = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
+            if (!bool) {
+              p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
+            } else {
+              p
+            }
           } else {
             p
           }
