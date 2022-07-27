@@ -21,6 +21,7 @@ package org.apache.flink.lakeSoul.tool;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.flink.shaded.guava18.com.google.common.base.Splitter;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -115,13 +116,8 @@ public class FlinkUtil {
       bd = bd.column(sf.name(), tyname);
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
-    String partitionKeys = tableInfo.getPartitions();
-    String[] split = partitionKeys.split(";");
-    ArrayList<String> parKey = new ArrayList<>();
-    String[] splitPartition = split[0].split(",");
-    for (int i = 0; i < splitPartition.length; i++) {
-      parKey.add(splitPartition[i]);
-    }
+    String[] partitionKeys = tableInfo.getPartitions().split(";");
+    List<String> parKey = Splitter.on(',').splitToList(partitionKeys[0]);
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
     return CatalogTable.of(bd.build(), "", parKey, conf);
