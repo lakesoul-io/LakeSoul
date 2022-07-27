@@ -75,7 +75,7 @@ public class FlinkUtil {
       String dtName = dt.getLogicalType().getTypeRoot().name();
       stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
     }
-    if (isCdc){
+    if (isCdc) {
       stNew = stNew.add("rowKinds", StringType, true);
     }
     return stNew;
@@ -116,8 +116,14 @@ public class FlinkUtil {
       bd = bd.column(sf.name(), tyname);
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
-    String[] partitionKeys = tableInfo.getPartitions().split(";");
-    List<String> parKey = Splitter.on(',').splitToList(partitionKeys[0]);
+    String partitions = tableInfo.getPartitions();
+    List<String> parKey;
+    if (partitions == null || "".equals(partitions)) {
+      parKey = new ArrayList<>();
+    } else {
+      String[] partitionKeys = partitions.split(";");
+      parKey = Splitter.on(',').splitToList(partitionKeys[0]);
+    }
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
     return CatalogTable.of(bd.build(), "", parKey, conf);
