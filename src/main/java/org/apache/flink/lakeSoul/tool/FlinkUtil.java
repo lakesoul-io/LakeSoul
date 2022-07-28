@@ -21,6 +21,7 @@ package org.apache.flink.lakeSoul.tool;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.flink.shaded.guava18.com.google.common.base.Splitter;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -74,7 +75,7 @@ public class FlinkUtil {
       String dtName = dt.getLogicalType().getTypeRoot().name();
       stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
     }
-    if (isCdc){
+    if (isCdc) {
       stNew = stNew.add("rowKinds", StringType, true);
     }
     return stNew;
@@ -115,11 +116,13 @@ public class FlinkUtil {
       bd = bd.column(sf.name(), tyname);
     }
     bd.primaryKey(Arrays.asList(hashColumn.split(",")));
-    String partitionKeys = tableInfo.getPartitions();
-    String[] split = partitionKeys.split(";");
-    String s = split[0];
-    ArrayList<String> parKey = new ArrayList<>();
-    parKey.add(s);
+    List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
+    List<String> parKey;
+    if (partitionData.size()>1) {
+      parKey = Splitter.on(',').splitToList(partitionData.get(0));
+    } else {
+      parKey = new ArrayList<>();
+    }
     HashMap<String, String> conf = new HashMap<>();
     properties.forEach((key, value) -> conf.put(key, (String) value));
     return CatalogTable.of(bd.build(), "", parKey, conf);
@@ -141,7 +144,7 @@ public class FlinkUtil {
     int i = 0;
     for (Map.Entry<String, String> e : partitionSpec.entrySet()) {
       if (i > 0) {
-        suffixBuf.append(",");
+        suffixBuf.append("/");
       }
       suffixBuf.append(escapePathName(e.getKey()));
       suffixBuf.append('=');

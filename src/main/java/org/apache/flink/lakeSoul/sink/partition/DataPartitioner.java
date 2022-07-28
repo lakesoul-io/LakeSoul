@@ -20,16 +20,12 @@
 package org.apache.flink.lakeSoul.sink.partition;
 
 import org.apache.flink.api.common.functions.Partitioner;
-import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
-import org.apache.spark.unsafe.types.UTF8String;
-import static org.apache.spark.sql.types.DataTypes.StringType;
 
 public class DataPartitioner<String> implements Partitioner<String> {
 
   @Override
   public int partition(String key, int numPartitions) {
-    UTF8String utf8String = UTF8String.fromString(java.lang.String.valueOf(key));
-    int hash = (int) Murmur3HashFunction.hash(utf8String, StringType, 42) % numPartitions;
+    int hash = Integer.parseInt((java.lang.String) key) % numPartitions;
     return hash < 0 ? (hash + numPartitions) % numPartitions : hash;
   }
 }

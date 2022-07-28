@@ -139,7 +139,6 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
       org.apache.flink.core.fs.FileStatus[] files = resultPath.getFileSystem().listStatus(resultPath);
       DataCommitInfo dataCommitInfo =
           partitionMetaSet(tableInfo.getTableId(), partition, partitionLists);
-      tableInfo = null;
       for (FileStatus fileStatus : files) {
         if (!fileStatus.isDir()) {
           String onePath = fileStatus.getPath().toString();
@@ -174,6 +173,7 @@ public class MetaDataCommit extends AbstractStreamOperator<Void>
     partitionInfo.setTableId(tableId);
     UUID uuid = UUID.randomUUID();
     partitionInfo.setOrAddSnapshot(uuid);
+    partition = partition.replace("/",",");
     partitionInfo.setPartitionDesc(partition);
     partitionLists.add(partitionInfo);
     DataCommitInfo dataCommitInfo = new DataCommitInfo();

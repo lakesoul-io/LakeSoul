@@ -20,23 +20,37 @@
 package org.apache.flink.lakeSoul.tool;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
+import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
+import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
+import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
+import org.apache.spark.unsafe.hash.Murmur3_x86_32;
+import org.apache.spark.unsafe.types.UTF8String;
 
 import javax.annotation.Nullable;
 
-import java.io.FileNotFoundException;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
+
+import static org.apache.spark.sql.types.DataTypes.BooleanType;
+import static org.apache.spark.sql.types.DataTypes.ByteType;
+import static org.apache.spark.sql.types.DataTypes.DoubleType;
+import static org.apache.spark.sql.types.DataTypes.FloatType;
+import static org.apache.spark.sql.types.DataTypes.IntegerType;
+import static org.apache.spark.sql.types.DataTypes.LongType;
+import static org.apache.spark.sql.types.DataTypes.ShortType;
+import static org.apache.spark.sql.types.DataTypes.StringType;
 
 public class LakeSoulKeyGen implements Serializable {
 
-  private static final String NULL_RECORD_KEY_PLACEHOLDER = "__null__";
-  private static final String EMPTY_RECORD_KEY_PLACEHOLDER = "__empty__";
   public static final String DEFAULT_PARTITION_PATH = "default";
-  private static final String DEFAULT_PARTITION_PATH_SEPARATOR = ";";
   private final Configuration conf;
   private final String[] recordKeyFields;
   private final String[] partitionPathFields;
@@ -44,13 +58,16 @@ public class LakeSoulKeyGen implements Serializable {
   private final RowDataProjection partitionPathProjection;
   private RowData.FieldGetter recordKeyFieldGetter;
   private RowData.FieldGetter partitionPathFieldGetter;
+  private final GeneratedRecordComparator comparator;
+  private RecordComparator compareFunction;
   private boolean nonPartitioned;
   private boolean simpleRecordKey = false;
   private boolean simplePartitionPath = false;
   private final List<String> fieldNames;
   private List<String> partitionKey;
   private String simpleRecordKeyType;
-
+  private int[] partitionKeyIndex;
+  private LogicalType[] partitionKeyType;
 
   public LakeSoulKeyGen(RowType rowType, Configuration conf, List<String> partitionKey) {
     this.conf = conf;
@@ -70,6 +87,7 @@ public class LakeSoulKeyGen implements Serializable {
     } else {
       this.recordKeyProjection = getProjection(this.recordKeyFields, fieldNames, fieldTypes);
     }
+    this.comparator = createSortComparator(getFieldPositions(this.recordKeyFields, fieldNames), rowType);
     if (this.partitionPathFields.length == 1) {
       this.simplePartitionPath = true;
       if (this.partitionPathFields[0].equals("")) {
@@ -82,18 +100,12 @@ public class LakeSoulKeyGen implements Serializable {
     } else {
       this.partitionPathProjection = getProjection(this.partitionPathFields, fieldNames, fieldTypes);
     }
+    this.partitionKeyIndex = getFieldPositions(this.partitionPathFields, fieldNames);
+    this.partitionKeyType = Arrays.stream(partitionKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
   }
 
   public static String objToString(@Nullable Object obj) {
     return obj == null ? null : obj.toString();
-  }
-
-  public static int objToInt(@Nullable Object obj) {
-    return obj == null ? null : (int) obj;
-  }
-
-  public static Long objToLong(@Nullable Object obj) {
-    return obj == null ? null : (long) obj;
   }
 
   public String[] getRecordKeyFields() {
@@ -106,23 +118,6 @@ public class LakeSoulKeyGen implements Serializable {
     return partitionField.split(",");
   }
 
-  public String getRecordKey(RowData rowData) throws Exception {
-    if (this.simpleRecordKey) {
-      return getRecordKey(recordKeyFieldGetter.getFieldOrNull(rowData), this.recordKeyFields[0]);
-    } else {
-      Object[] keyValues = this.recordKeyProjection.projectAsValues(rowData);
-      return getRecordKey(keyValues, this.recordKeyFields);
-    }
-  }
-
-  public int getSimpleIntKey(RowData rowData) throws Exception {
-    return objToInt(recordKeyFieldGetter.getFieldOrNull(rowData));
-  }
-
-  public Long getSimpleLongKey(RowData rowData) throws Exception {
-    return objToLong(recordKeyFieldGetter.getFieldOrNull(rowData));
-  }
-
   private static RowDataProjection getProjection(String[] fields, List<String> schemaFields, List<LogicalType> schemaTypes) {
     int[] positions = getFieldPositions(fields, schemaFields);
     LogicalType[] types = Arrays.stream(positions).mapToObj(schemaTypes::get).toArray(LogicalType[]::new);
@@ -133,91 +128,73 @@ public class LakeSoulKeyGen implements Serializable {
     return Arrays.stream(fields).mapToInt(allFields::indexOf).toArray();
   }
 
-  public static String getRecordKey(Object recordKeyValue, String recordKeyField) throws FileNotFoundException {
-    String recordKey = objToString(recordKeyValue);
-    if (recordKey == null || recordKey.isEmpty()) {
-      throw new FileNotFoundException("recordKey value: \"" + recordKey + "\" for field: \"" + recordKeyField + "\" cannot be null or empty.");
-    }
-    return recordKey;
+  private GeneratedRecordComparator createSortComparator(int[] sortIndices, RowType rowType) {
+    SortSpec.SortSpecBuilder builder = SortSpec.builder();
+    TableConfig tableConfig = new TableConfig();
+    IntStream.range(0, sortIndices.length).forEach(i -> builder.addField(i, true, true));
+    return new SortCodeGenerator(tableConfig, rowType, builder.build()).generateRecordComparator("comparator");
   }
 
-  private static String getRecordKey(Object[] keyValues, String[] keyFields) throws FileNotFoundException {
-    boolean keyIsNullEmpty = true;
-    StringBuilder recordKey = new StringBuilder();
-    for (int i = 0; i < keyValues.length; i++) {
-      String recordKeyField = keyFields[i];
-      String recordKeyValue = objToString(keyValues[i]);
-      if (recordKeyValue == null) {
-        recordKey.append(recordKeyField).append(":").append(NULL_RECORD_KEY_PLACEHOLDER).append(",");
-      } else if (recordKeyValue.isEmpty()) {
-        recordKey.append(recordKeyField).append(":").append(EMPTY_RECORD_KEY_PLACEHOLDER).append(",");
-      } else {
-        recordKey.append(recordKeyField).append(":").append(recordKeyValue).append(",");
-        keyIsNullEmpty = false;
-      }
-    }
-    recordKey.deleteCharAt(recordKey.length() - 1);
-    if (keyIsNullEmpty) {
-      throw new FileNotFoundException("recordKey values: \"" + recordKey + "\" for fields: "
-          + Arrays.toString(keyFields) + " cannot be entirely null or empty.");
-    }
-    return recordKey.toString();
-  }
-
-  public static String getPartitionPath(
-      Object partValue) {
-    String partitionPath = objToString(partValue);
-    if (partitionPath == null || partitionPath.isEmpty()) {
-      partitionPath = DEFAULT_PARTITION_PATH;
-    }
-    return partitionPath;
-  }
-
-  public String getPartitionPath(RowData rowData) {
+  public String getRePartitionHash(RowData rowData) throws Exception {
+    int hash = 42;
     if (this.simplePartitionPath) {
-      return getPartitionPath(partitionPathFieldGetter.getFieldOrNull(rowData)
-      );
+      Object fieldOrNull = RowData.createFieldGetter(partitionKeyType[0], partitionKeyIndex[0]).getFieldOrNull(rowData);
+      return getHash(partitionKeyType[0], fieldOrNull, hash)+"";
+
     } else if (this.nonPartitioned) {
-      return DEFAULT_PARTITION_PATH;
+      return hash+"";
     } else {
-      Object[] partValues = this.partitionPathProjection.projectAsValues(rowData);
-      return getRecordPartitionPath(partValues, this.partitionPathFields);
-    }
-  }
-
-  private static String getRecordPartitionPath(
-      Object[] partValues,
-      String[] partFields) {
-    StringBuilder partitionPath = new StringBuilder();
-    for (int i = 0; i < partFields.length; i++) {
-      String partValue = objToString(partValues[i]);
-      if (partValue == null || partValue.isEmpty()) {
-        partitionPath.append(DEFAULT_PARTITION_PATH);
-      } else {
-        partitionPath.append(partValue);
+      for (int i = 0; i < partitionKeyType.length; i++) {
+        Object fieldOrNull = RowData.createFieldGetter(partitionKeyType[i], partitionKeyIndex[i]).getFieldOrNull(rowData);
+        hash = getHash(partitionKeyType[i], fieldOrNull, hash);
       }
-      partitionPath.append(DEFAULT_PARTITION_PATH_SEPARATOR);
+      return hash+"";
     }
-    partitionPath.deleteCharAt(partitionPath.length() - 1);
-    return partitionPath.toString();
   }
 
-  public String getRePartitionKey(RowData row) throws Exception {
-    return getPartitionPath(row);
-  }
+  public int getHash(LogicalType type, Object filed, int seed) {
 
-  public String getRecordKeyType() throws NoSuchMethodException {
-    if (!"".equals(simpleRecordKeyType) && simpleRecordKeyType != null) {
-      return simpleRecordKeyType;
+    switch (type.getTypeRoot()) {
+      case VARCHAR:
+        UTF8String utf8String = UTF8String.fromString(java.lang.String.valueOf(filed));
+        seed = (int) Murmur3HashFunction.hash(utf8String, StringType, 42);
+        break;
+      case INTEGER:
+        seed =(int) Murmur3HashFunction.hash((int) filed,IntegerType, seed);
+        break;
+      case BIGINT:
+        seed = (int) Murmur3HashFunction.hash((long) filed,LongType, seed);
+        break;
+      case BINARY:
+        seed = (int) Murmur3HashFunction.hash((byte) filed,ByteType, seed);
+        break;
+      case SMALLINT:
+        seed = (int) Murmur3HashFunction.hash((short) filed,ShortType, seed);
+        break;
+      case FLOAT:
+        seed = (int) Murmur3HashFunction.hash((float) filed, FloatType,seed);
+        break;
+      case DOUBLE:
+        seed = (int) Murmur3HashFunction.hash((double) filed, DoubleType,seed);
+        break;
+      case BOOLEAN:
+        seed = (int) Murmur3HashFunction.hash((boolean) filed ,BooleanType, seed);
+        break;
+      default:
+        throw new RuntimeException("not support this partition type now :" + type.getTypeRoot().toString());
     }
-    throw new NoSuchMethodException("Multiple primary keys are not supported now");
+    return seed;
   }
 
-  public List<String> getPartitionKey() {
-    return partitionKey;
+  public GeneratedRecordComparator getComparator() {
+    return comparator;
   }
 
-  public void setPartitionKey(List<String> partitionKey) {
-    this.partitionKey = partitionKey;
+  public RecordComparator getCompareFunction() {
+    return compareFunction;
+  }
+
+  public void setCompareFunction(RecordComparator compareFunction) {
+    this.compareFunction = compareFunction;
   }
 }

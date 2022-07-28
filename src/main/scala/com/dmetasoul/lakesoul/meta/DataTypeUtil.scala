@@ -17,6 +17,7 @@ object DataTypeUtil {
       case "int" => IntegerType
       case "integer" => IntegerType
       case "double" => DoubleType
+      case "float" => FloatType
       case "date" => TimestampType
       case "boolean" => BooleanType
       case "timestamp" => TimestampType
