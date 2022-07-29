@@ -1,12 +1,16 @@
 #![feature(c_size_t)]
 extern crate core;
 
-use core::ffi::c_size_t;
-use std::ffi::{c_char, CStr};
+use core::ffi::{c_ptrdiff_t, c_size_t};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr::NonNull;
 use std::slice;
+use std::sync::Arc;
 
-use lakesoul_io::lakesoul_reader::{LakeSoulReader, LakeSoulReaderConfig, LakeSoulReaderConfigBuilder};
+use lakesoul_io::lakesoul_reader::{
+    export_array_into_raw, ArrowResult, FFI_ArrowArray, FFI_ArrowSchema, LakeSoulReader, LakeSoulReaderConfig,
+    LakeSoulReaderConfigBuilder, RecordBatch, StructArray, SyncSendableMutableLakeSoulReader,
+};
 
 // opaque types to pass as raw pointers
 #[repr(C)]
@@ -24,12 +28,53 @@ pub struct Reader {
     private: [u8; 0],
 }
 
+#[repr(C)]
+pub struct Result<OpaqueT> {
+    ptr: *mut OpaqueT,
+    err: *const c_char,
+}
+
+impl<OpaqueT> Result<OpaqueT> {
+    pub fn new<T>(obj: T) -> Self {
+        Result {
+            ptr: convert_to_opaque_raw::<T, OpaqueT>(obj),
+            err: std::ptr::null(),
+        }
+    }
+
+    pub fn error(err_msg: &str) -> Self {
+        Result {
+            ptr: std::ptr::null_mut(),
+            err: CString::new(err_msg).unwrap().into_raw(),
+        }
+    }
+
+    pub fn free<T>(&mut self) {
+        unsafe {
+            if !self.ptr.is_null() {
+                drop(from_opaque::<OpaqueT, T>(NonNull::new_unchecked(self.ptr)));
+            }
+            if !self.err.is_null() {
+                drop(CString::from_raw(self.err as *mut c_char));
+            }
+        }
+    }
+}
+
+fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
+    Box::into_raw(Box::new(obj)) as *mut T
+}
+
 fn convert_to_opaque<F, T>(obj: F) -> NonNull<T> {
     unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj)) as *mut T) }
 }
 
 fn from_opaque<F, T>(obj: NonNull<F>) -> T {
     unsafe { *Box::from_raw(obj.as_ptr() as *mut T) }
+}
+
+fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
+    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
 }
 
 #[no_mangle]
@@ -63,9 +108,93 @@ pub extern "C" fn create_lakesoul_reader_config_from_builder(
 }
 
 #[no_mangle]
-pub extern "C" fn create_lakesoul_reader_from_config(
-    config: NonNull<ReaderConfig>,
-) -> NonNull<Reader> {
+pub extern "C" fn create_lakesoul_reader_from_config(config: NonNull<ReaderConfig>) -> NonNull<Result<Reader>> {
     let config: LakeSoulReaderConfig = from_opaque(config);
     let reader = LakeSoulReader::new(config);
+    let result = match reader {
+        Ok(reader) => Result::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader)),
+        Err(e) => Result::<Reader>::error(format!("{}", e).as_str()),
+    };
+    convert_to_nonnull(result)
+}
+
+pub type ResultCallback = extern "C" fn(bool, *const c_char) -> c_void;
+
+fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
+    callback(status, err);
+    if !err.is_null() {
+        unsafe {
+            let _ = CString::from_raw(err as *mut c_char);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn start_reader(reader: NonNull<Result<Reader>>, callback: ResultCallback) {
+    unsafe {
+        let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
+        let result = reader.as_ref().start_blocked();
+        match result {
+            Ok(_) => call_result_callback(callback, true, std::ptr::null()),
+            Err(e) => call_result_callback(
+                callback,
+                false,
+                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            ),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn next_record_batch(
+    reader: NonNull<Result<Reader>>,
+    schema_addr: c_ptrdiff_t,
+    array_addr: c_ptrdiff_t,
+    callback: ResultCallback,
+) {
+    unsafe {
+        let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
+        let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+            None => {
+                call_result_callback(callback, false, std::ptr::null());
+            }
+            Some(rb_result) => match rb_result {
+                Err(e) => {
+                    call_result_callback(
+                        callback,
+                        false,
+                        CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                    );
+                }
+                Ok(rb) => {
+                    let batch: Arc<StructArray> = Arc::new(rb.into());
+                    let result = export_array_into_raw(
+                        batch,
+                        array_addr as *mut FFI_ArrowArray,
+                        schema_addr as *mut FFI_ArrowSchema,
+                    );
+                    match result {
+                        Ok(()) => {
+                            call_result_callback(callback, true, std::ptr::null());
+                        }
+                        Err(e) => {
+                            call_result_callback(
+                                callback,
+                                false,
+                                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                            );
+                        }
+                    }
+                }
+            },
+        };
+        reader.as_ref().next_rb_callback(Box::new(f));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn free_lakesoul_reader(mut reader: NonNull<Result<Reader>>) {
+    unsafe {
+        reader.as_mut().free::<SyncSendableMutableLakeSoulReader>();
+    }
 }

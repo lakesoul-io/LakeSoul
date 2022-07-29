@@ -8,3 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
+tokio = { version = "1", features = ["full"] }
