@@ -42,22 +42,22 @@ public class Main {
     String PATH = "Downloads/tmp/" + tableName;
     tEnvs = StreamTableEnvironment.create(env);
     tEnvs.getConfig().getConfiguration().set(
-        ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
+            ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
     //source
     tEnvs.executeSql("create table mysql_test_1(\n" +
-        "id bigint primary key NOT ENFORCED ," +
-        "name string," +
-        " dt string)" +
-        " with (\n" +
-        "'connector'='mysql-cdc'," +
-        "'hostname'='127.0.0.1'," +
-        "'port'='3306'," +
-        "'server-id'='1'," +
-        "'username'='root',\n" +
-        "'password'='root',\n" +
-        "'database-name'='zhyang_test',\n" +
-        "'table-name'='test5'\n" +
-        ")");
+            "id bigint primary key NOT ENFORCED ," +
+            "name string," +
+            " dt string)" +
+            " with (\n" +
+            "'connector'='mysql-cdc'," +
+            "'hostname'='127.0.0.1'," +
+            "'port'='3306'," +
+            "'server-id'='1'," +
+            "'username'='root',\n" +
+            "'password'='root',\n" +
+            "'database-name'='zhyang_test',\n" +
+            "'table-name'='test5'\n" +
+            ")");
 
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
@@ -65,16 +65,16 @@ public class Main {
 
     //target
     tEnvs.executeSql(
-        "CREATE TABLE " + tableName + "( id bigint," +
-            " name string," +
-            " dt string," +
-            "primary key (id) NOT ENFORCED ) " +
-            "PARTITIONED BY (dt)" +
-            " with ('connector' = 'lakeSoul'," +
-            "'format'='parquet','path'='" +
-            PATH + "'," +
-            "'useCDC'='true'," +
-            "'bucket_num'='2')");
+            "CREATE TABLE " + tableName + "( id bigint," +
+                    " name string," +
+                    " dt string," +
+                    "primary key (id) NOT ENFORCED ) " +
+                    "PARTITIONED BY (dt)" +
+                    " with ('connector' = 'lakeSoul'," +
+                    "'format'='parquet','path'='" +
+                    PATH + "'," +
+                    "'useCDC'='true'," +
+                    "'bucket_num'='2')");
 
     tEnvs.executeSql("show tables ").print();
 
