@@ -97,12 +97,6 @@
             <version>3.8.1</version>
         </dependency>
         <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-all</artifactId>
-            <version>4.1.47.Final</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-        <dependency>
             <groupId>org.pegdown</groupId>
             <artifactId>pegdown</artifactId>
             <version>1.6.0</version>
@@ -121,7 +115,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!--    &lt;!&ndash; https://mvnrepository.com/artifact/com.codahale.metrics/metrics-core &ndash;&gt;-->
         <dependency>
             <groupId>com.codahale.metrics</groupId>
             <artifactId>metrics-core</artifactId>
@@ -138,31 +131,7 @@
     </dependencies>
 
     <build>
-<!--        <sourceDirectory>src/main/java</sourceDirectory>-->
-<!--        <testSourceDirectory>src/test/java</testSourceDirectory>-->
         <plugins>
-            <!--<plugin>
-                <groupId>net.alchim31.maven</groupId>
-                <artifactId>scala-maven-plugin</artifactId>
-                <version>4.6.3</version>
-                <executions>
-                    <execution>
-                        <id>scala-compile-first</id>
-                        <phase>process-resources</phase>
-                        <goals>
-                            <goal>add-source</goal>
-                            <goal>compile</goal>
-                        </goals>
-                    </execution>
-                    <execution>
-                        <id>scala-test-compile</id>
-                        <phase>process-test-resources</phase>
-                        <goals>
-                            <goal>testCompile</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>-->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -171,23 +140,6 @@
                     <skip>true</skip>
                 </configuration>
             </plugin>
-            <!--<plugin>
-                <groupId>org.scala-tools</groupId>
-                <artifactId>maven-scala-plugin</artifactId>
-                <version>2.15.2</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>compile</goal>
-                            <goal>testCompile</goal>
-                        </goals>
-                        <configuration>
-                            <includes>**/*.scala</includes>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>-->
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -205,24 +157,6 @@
                     <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
-            <!--<plugin>
-                <groupId>org.scalatest</groupId>
-                <artifactId>scalatest-maven-plugin</artifactId>
-                <version>2.0.2</version>
-                <configuration>
-                    <testFailureIgnore>true</testFailureIgnore>
-                    <runpath>target/scala-2.12/classes,target/scala-2.12/test-classes</runpath>
-                    <htmlreporters>${project.build.directory}/html/scalatest</htmlreporters>
-                </configuration>
-                <executions>
-                    <execution>
-                        <id>test</id>
-                        <goals>
-                            <goal>test</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>-->
             <plugin>
                 <groupId>org.sonatype.plugins</groupId>
                 <artifactId>nexus-staging-maven-plugin</artifactId>

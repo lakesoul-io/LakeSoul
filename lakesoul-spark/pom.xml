@@ -70,20 +70,6 @@
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
-            <!--<exclusions>
-                <exclusion>
-                    <artifactId>parquet-jackson</artifactId>
-                    <groupId>org.apache.parquet</groupId>
-                </exclusion>
-                <exclusion>
-                    <artifactId>parquet-hadoop</artifactId>
-                    <groupId>org.apache.parquet</groupId>
-                </exclusion>
-                <exclusion>
-                    <artifactId>parquet-column</artifactId>
-                    <groupId>org.apache.parquet</groupId>
-                </exclusion>
-            </exclusions>-->
         </dependency>
 
         <dependency>
