@@ -39,8 +39,8 @@ object MetaUtils extends Logging {
   var Meta_port:Int = 9042
 
   lazy val MAX_SIZE_PER_VALUE:Int=50*1024
-  lazy val META_USERNAME: String = "cassandra"
-  lazy val META_PASSWORD: String = "cassandra"
+  lazy val META_USERNAME: String = "yugabyte"
+  lazy val META_PASSWORD: String = "yugabyte"
   lazy val META_CONNECT_TIMEOUT: Int = 60 * 1000
   lazy val META_READ_TIMEOUT: Int = 30 * 1000
   lazy val MAX_COMMIT_ATTEMPTS: Int = 5

@@ -55,7 +55,7 @@ object LakeSoulSQLConf {
     buildConf("meta.database.name")
       .doc(
         """
-          |Default database of meta tables in Cassandra.
+          |Default database of meta tables in PG DB.
           |User should not change it unless you know what you are going to do.
         """.stripMargin)
       .stringConf
@@ -66,7 +66,7 @@ object LakeSoulSQLConf {
     buildConf("meta.host")
       .doc(
         """
-          |Contact point to connect to the Cassandra cluster.
+          |Contact point to connect to the PG DB.
           |A comma separated list may also be used.("127.0.0.1,192.168.0.1")
         """.stripMargin)
       .stringConf
@@ -74,65 +74,27 @@ object LakeSoulSQLConf {
 
   val META_PORT: ConfigEntry[Int] =
     buildConf("meta.port")
-      .doc("Cassandra native connection port.")
+      .doc("PG DB native connection port.")
       .intConf
-      .createWithDefault(9042)
+      .createWithDefault(5433)
 
   val META_USERNAME: ConfigEntry[String] =
     buildConf("meta.username")
       .doc(
         """
-          |Cassandra username, default is `cassandra`.
+          |PG DB username, default is `yugabyte`.
         """.stripMargin)
       .stringConf
-      .createWithDefault("cassandra")
+      .createWithDefault("yugabyte")
 
   val META_PASSWORD: ConfigEntry[String] =
     buildConf("meta.password")
       .doc(
         """
-          |Cassandra password, default is `cassandra`.
+          |PG DB password, default is `yugabyte`.
         """.stripMargin)
       .stringConf
-      .createWithDefault("cassandra")
-
-  val META_CONNECT_FACTORY: ConfigEntry[String] =
-    buildConf("meta.connect.factory")
-      .doc(
-        """
-          |CassandraConnectionFactory providing connections to the Cassandra cluster.
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("com.dmetasoul.lakesoul.meta.CustomConnectionFactory")
-
-  val META_CONNECT_TIMEOUT: ConfigEntry[Int] =
-    buildConf("meta.connect.timeout")
-      .doc(
-        """
-          |Timeout for connecting to cassandra, default is 60s.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(60 * 1000)
-
-  val META_READ_TIMEOUT: ConfigEntry[Int] =
-    buildConf("meta.read.timeout")
-      .doc(
-        """
-          |Timeout for reading to cassandra, default is 30s.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(30 * 1000)
-
-  val META_MAX_CONNECT_PER_EXECUTOR: ConfigEntry[Int] =
-    buildConf("meta.connections_per_executor_max")
-      .doc(
-        """
-          |Maximum number of connections per Host set on each Executor JVM. Will be
-          |updated to DefaultParallelism / Executors for Spark Commands. Defaults to 1
-          | if not specifying and not in a Spark Env.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(600)
+      .createWithDefault("yugabyte")
 
   val META_STREAMING_INFO_TIMEOUT: ConfigEntry[Long] =
     buildConf("meta.streaming_info.timeout")

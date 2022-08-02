@@ -440,12 +440,6 @@ object LakeSoulErrors {
       s"""Schema has been changed for table `$table`. Please check and retry.""")
   }
 
-  def failTakeSchemaLockCauseByCassandraException(table: String): Throwable = {
-    new AnalysisException(
-      s"""Errors happened on cassandra while taking schema lock of table `$table`.
-         |Please check cassandra connection or this table meta info.""".stripMargin)
-  }
-
   def hashBucketNumNotSetException(): Throwable = {
     new AnalysisException(
       s"""You must set the bucket num use `.option("hashBucketNum","20")` when you defined hash partition columns.""")

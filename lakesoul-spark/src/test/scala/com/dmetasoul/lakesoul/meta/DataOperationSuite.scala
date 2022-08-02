@@ -24,9 +24,6 @@ import org.apache.spark.sql.test.SharedSparkSession
 class DataOperationSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
 
-//  private lazy val cassandraConnector = MetaUtils.cassandraConnector
-//  private lazy val database = MetaUtils.DATA_BASE
-
   override def beforeAll(): Unit = {
     super.beforeAll()
   }

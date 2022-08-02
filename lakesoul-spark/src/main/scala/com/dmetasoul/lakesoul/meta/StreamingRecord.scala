@@ -19,8 +19,6 @@ package com.dmetasoul.lakesoul.meta
 import scala.collection.mutable.ArrayBuffer
 
 object StreamingRecord {
-//  private val cassandraConnector = MetaUtils.cassandraConnector
-//  private val database = MetaUtils.DATA_BASE
 
   def getStreamingInfo(tableId: String): (String, Long) = {
     ("", -1L)
