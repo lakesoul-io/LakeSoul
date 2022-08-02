@@ -2,8 +2,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.dmetasoul</groupId>
-    <artifactId>lakesoul</artifactId>
-    <version>2.0.0-spark-3.1.2-SNAPSHOT</version>
+    <artifactId>lakesoul-parent</artifactId>
+    <version>2.1.0-SNAPSHOT</version>
     <inceptionYear>2022</inceptionYear>
     <modules>
         <module>lakesoul-common</module>
@@ -135,45 +135,12 @@
             <artifactId>fastjson</artifactId>
             <version>1.2.83</version>
         </dependency>
-
-<!--        <dependency>-->
-<!--            <groupId>org.apache.parquet</groupId>-->
-<!--            <artifactId>parquet-column</artifactId>-->
-<!--            <version>${parquet.version}</version>-->
-<!--            <scope>${local.scope}</scope>-->
-<!--        </dependency>-->
-
     </dependencies>
 
     <build>
 <!--        <sourceDirectory>src/main/java</sourceDirectory>-->
 <!--        <testSourceDirectory>src/test/java</testSourceDirectory>-->
-
         <plugins>
-            <!--<plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-assembly-plugin</artifactId>
-                <version>3.0.0</version>
-                <configuration>
-                    <archive>
-                        <manifest>
-                            <mainClass></mainClass>
-                        </manifest>
-                    </archive>
-                    <descriptorRefs>
-                        <descriptorRef>jar-with-dependencies</descriptorRef>
-                    </descriptorRefs>
-                </configuration>
-                <executions>
-                    <execution>
-                        <id>make-assembly</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>single</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>-->
             <!--<plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
