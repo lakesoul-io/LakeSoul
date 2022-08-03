@@ -4,7 +4,7 @@
 LakeSoul is a unified streaming and batch table storage for fast data processing built on top of the Apache Spark engine by the [DMetaSoul](https://www.dmetasoul.com) team, and supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and streaming & batch unification.
 ![LakeSoul Arch](doc/LakeSoul.png)
 
-LakeSoul implements incremental upserts for both row and column and allows concurrent updates on the same partition. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales meta data management by using distributed NoSQL DB Cassandra.
+LakeSoul implements incremental upserts for both row and column and allows concurrent updates on the same partition. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales meta data management by using PostgreSQL DB.
 
 More detailed features please refer to our wiki page: [Wiki Home](../../wiki/Home)
 
@@ -19,7 +19,7 @@ Follow the [Quick Start](../../wiki/QuickStart) to quickly set up a test env.
 Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debezium) example on how to sync LakeSoul table with OLTP dbs like MySQL in a realtime manner.
 
 # Feature Roadmap
-* Meta Management
+* Meta Management ([#23](https://github.com/meta-soul/LakeSoul/issues/23))
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
   - [x] Concurrent write with auto conflict resolution
   - [x] MVCC with read isolation
@@ -38,8 +38,8 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [ ] Merge Into SQL support
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
     - [ ] Merge Into SQL with match on non-pk
-    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK)
-* Flink Integration
+    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
+* Flink Integration ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [ ] Table API
   - [ ] Flink CDC
 * Hive Integration
@@ -48,11 +48,13 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [x] CDC ingestion
   - [x] Time Travel (Snapshot read)
   - [x] Snapshot rollback
-  - [ ] MPP Engine Integration
+  - [ ] MPP Engine Integration (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
     - [ ] Presto
     - [ ] Apache Doris
-* Cloud Native
+* Native IO ([#66](https://github.com/meta-soul/LakeSoul/issues/66))
   - [ ] Object storage IO optimization
+  - [ ] Native merge on read
+* Cloud Native
   - [ ] Multi-layer storage classes support with data tiering
 
 # Community guidelines

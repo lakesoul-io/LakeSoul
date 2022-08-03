@@ -251,7 +251,7 @@ mod tests {
     fn test_reader_local_bloked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/home/chenxu/program/opensource/arrow-datafusion/parquet-testing/data/alltypes_plain.snappy.parquet"
+                "parquet-testing/data/alltypes_plain.snappy.parquet"
                     .to_string(),
             ])
             .with_thread_num(2)
