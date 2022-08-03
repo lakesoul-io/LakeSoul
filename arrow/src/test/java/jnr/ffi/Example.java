@@ -22,13 +22,28 @@ public class Example {
         String getenv(String name);
 
         int clearenv();
+
+//        long add_c(long a, long b);
+
+        Pointer new_lakesoul_reader_config_builder();
+
+        Pointer lakesoul_config_builder_add_file(Pointer builder,Pointer files ,int file_num);
+
     }
 
-    public static void main(String[] args) {
+    class Timespec extends Struct {
+
+        protected Timespec(Runtime runtime) {
+            super(runtime);
+        }
+    }
+
+
+        public static void main(String[] args) {
         Map<LibraryOption, Object> libraryOptions = new HashMap<>();
         libraryOptions.put(LibraryOption.LoadNow, true);
         libraryOptions.put(LibraryOption.IgnoreError, true);
-        String libName = Platform.getNativePlatform().getStandardCLibraryName(); // platform specific name for libC
+        String libName = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/target/debug/liblakesoul_io_c.dylib"; // platform specific name for libC
 
         LibC libc = LibraryLoader.loadLibrary(
                 LibC.class,
@@ -40,6 +55,10 @@ public class Example {
         final String shellKey = "SHELL"; // key for system shell (bash, zsh etc)
 
         String pwd = libc.getenv(pwdKey);
+//        System.out.println(libc.add_c(2,3));
+        Pointer builder = libc.new_lakesoul_reader_config_builder();
+        System.out.println(libc.lakesoul_config_builder_add_file(builder, builder, 0));
+
         System.out.println(pwd); // prints current directory
 
         libc.setenv(pwdKey, "/", true); // set PWD to /
