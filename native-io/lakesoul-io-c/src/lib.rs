@@ -83,6 +83,28 @@ pub extern "C" fn new_lakesoul_reader_config_builder() -> NonNull<ReaderConfigBu
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_single_file(
+    builder: NonNull<ReaderConfigBuilder>,
+    file: *const c_char
+) -> NonNull<ReaderConfigBuilder> {
+    unsafe {
+        let file = CStr::from_ptr(file).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_file(file))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_thread_num(
+    builder: NonNull<ReaderConfigBuilder>,
+    thread_num: c_size_t,
+) -> NonNull<ReaderConfigBuilder> {
+    println!("Setting thread_num={} for lakesoul_config_builder", thread_num);
+    convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_thread_num(thread_num))
+}
+
+
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_file(
     builder: NonNull<ReaderConfigBuilder>,
     files: *const *const c_char,
@@ -121,6 +143,7 @@ pub extern "C" fn create_lakesoul_reader_from_config(config: NonNull<ReaderConfi
 pub type ResultCallback = extern "C" fn(bool, *const c_char) -> c_void;
 
 fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
+    println!("[From Rust][call_result_callback], status={}", status);
     callback(status, err);
     if !err.is_null() {
         unsafe {
@@ -167,6 +190,7 @@ pub extern "C" fn next_record_batch(
                     );
                 }
                 Ok(rb) => {
+                    println!("[From Rust][next_record_batch]rb.num_rows()={}", rb.num_rows());
                     let batch: Arc<StructArray> = Arc::new(rb.into());
                     let result = export_array_into_raw(
                         batch,
@@ -189,6 +213,7 @@ pub extern "C" fn next_record_batch(
             },
         };
         reader.as_ref().next_rb_callback(Box::new(f));
+        // try_load_ffi_ptr(schema_addr, array_addr, String::from("[end of next_record_batch]"));
     }
 }
 
