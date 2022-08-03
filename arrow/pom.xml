@@ -56,11 +56,6 @@
             <version>4.13.2</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.apache.arrow</groupId>
-            <artifactId>flight-core</artifactId>
-            <version>${arrow.version}</version>
-        </dependency>
 
         <!-- scala deps -->
         <dependency>
