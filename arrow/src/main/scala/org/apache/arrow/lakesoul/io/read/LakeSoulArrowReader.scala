@@ -3,68 +3,58 @@ package org.apache.arrow.lakesoul.io.read
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.lakesoul.io.ArrowCDataWrapper
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
-import org.apache.arrow.vector.{BigIntVector, VectorSchemaRoot}
+import org.apache.arrow.vector.VectorSchemaRoot
 
 import scala.concurrent.{Future, Promise};
 
 case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
+    def next() = iterator.next()
 
-    def tryWithResource[R <: AutoCloseable, T](createResource: => R)(f: R => T): T = {
-        val resource = createResource
-        try f.apply(resource)
-        finally resource.close()
-    }
+    def hasNext: Boolean = iterator.hasNext
 
-    def readVectorSchemaRoot(): Future[Option[VectorSchemaRoot]] = {
-        val allocator =
-            ArrowMemoryUtils.rootAllocator.newChildAllocator("fromBlazeCallNativeColumnar", 0, Long.MaxValue)
-        val provider = new CDataDictionaryProvider()
+    val allocator =
+        ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
+    val provider = new CDataDictionaryProvider()
 
-        val p = Promise[Option[VectorSchemaRoot]]()
-        tryWithResource(ArrowSchema.allocateNew(allocator)) { consumerSchema =>
-            tryWithResource(ArrowArray.allocateNew(allocator)) { consumerArray =>
-                val schemaPtr: Long = consumerSchema.memoryAddress
-                val arrayPtr: Long = consumerArray.memoryAddress
 
+    val iterator = new Iterator[Future[Option[VectorSchemaRoot]]] {
+        var vsrFuture:Future[Option[VectorSchemaRoot]] = _
+        private var finished = false
+
+        override def hasNext: Boolean = {
+            !finished && {
+                val p = Promise[Option[VectorSchemaRoot]]()
+                vsrFuture = p.future
+                val consumerSchema= ArrowSchema.allocateNew(allocator)
+                val consumerArray = ArrowArray.allocateNew(allocator)
                 wrapper.nextBatch((hasNext) => {
+                    println("[From Java]In wrapper.nextBatch() closure; hasNext="+ hasNext)
                     if (hasNext) {
                         val root: VectorSchemaRoot =
                             Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
                         p.success(Some(root))
+                        return true
                     } else {
+                        finish()
                         p.success(None)
+                        return false
                     }
-                }, schemaPtr, arrayPtr)
-
+                }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
+                !finished
             }
         }
-        p.future
-    }
 
-    def readVector(): Future[Option[BigIntVector]] = {
-        val allocator =
-            ArrowMemoryUtils.rootAllocator.newChildAllocator("fromBlazeCallNativeColumnar", 0, Long.MaxValue)
-        val provider = new CDataDictionaryProvider()
+        override def next(): Future[Option[VectorSchemaRoot]] = {
+            vsrFuture
+        }
 
-        val p = Promise[Option[BigIntVector]]()
-        tryWithResource(ArrowSchema.allocateNew(allocator)) { consumerSchema =>
-            tryWithResource(ArrowArray.allocateNew(allocator)) { consumerArray =>
-                val schemaPtr: Long = consumerSchema.memoryAddress
-                val arrayPtr: Long = consumerArray.memoryAddress
-
-                wrapper.nextArray((hasNext) => {
-                    if (hasNext) {
-                        val root: BigIntVector =
-                            Data.importVector(allocator, consumerArray, consumerSchema, provider).asInstanceOf[BigIntVector]
-                        p.success(Some(root))
-                    } else {
-                        p.success(None)
-                    }
-                }, schemaPtr, arrayPtr)
-
+        private def finish(): Unit = {
+            if (!finished) {
+                finished = true
+//                todo: free_lakesoul_reader after importing done
+//                wrapper.free_lakesoul_reader()
             }
         }
-        p.future
     }
 
 }

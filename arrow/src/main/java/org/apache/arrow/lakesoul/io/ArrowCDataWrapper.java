@@ -3,8 +3,6 @@ package org.apache.arrow.lakesoul.io;
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
 import jnr.ffi.Pointer;
-import org.apache.arrow.c.ArrowArray;
-import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.lakesoul.javacpp.java.CDataJavaToCppInterface;
 
@@ -25,7 +23,7 @@ public class ArrowCDataWrapper {
         Map<LibraryOption, Object> libraryOptions = new HashMap<>();
         libraryOptions.put(LibraryOption.LoadNow, true);
         libraryOptions.put(LibraryOption.IgnoreError, true);
-        String libName = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/target/debug/liblakesoul_io_c.dylib"; // platform specific name for libC
+        String libName = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/target/debug/liblakesoul_io_c.dylib"; // platform specific name for liblakesoul_io_c
 
         libLakeSoulIO = LibraryLoader.loadLibrary(
                 LibLakeSoulIO.class,
@@ -60,16 +58,20 @@ public class ArrowCDataWrapper {
     public static final class Callback implements LibLakeSoulIO.JavaCallback {
 
         public Consumer<Boolean> callback;
+        public long array_ptr;
 
         public Callback(Consumer<Boolean> callback) {
+            this(callback, 0L);
+        }
+
+        public Callback(Consumer<Boolean> callback, long array_ptr) {
             this.callback = callback;
+            this.array_ptr = array_ptr;
         }
 
         @Override
         public void invoke(boolean status, String err) {
-            System.out.println("[From Java][org.apache.arrow.lakesoul.io.ArrowCDataWrapper.Callback.invoke]");
-            System.out.println(status);
-            System.out.println(err);
+            System.out.println("[From Java][org.apache.arrow.lakesoul.io.ArrowCDataWrapper.Callback.invoke] status=" +status +" , errMsg="+err);
             callback.accept(status);
         }
     }
