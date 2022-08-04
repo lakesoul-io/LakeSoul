@@ -86,6 +86,7 @@ public class ArrowCDataWrapper {
     }
 
     public void free_lakesoul_reader(){
+        System.out.println("[From Java][org.apache.arrow.lakesoul.io.ArrowCDataWrapper.free_lakesoul_reader] method called");
         libLakeSoulIO.free_lakesoul_reader(reader);
     }
 

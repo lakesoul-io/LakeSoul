@@ -5,7 +5,9 @@ import org.apache.arrow.lakesoul.io.ArrowCDataWrapper
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
 import org.apache.arrow.vector.VectorSchemaRoot
 
-import scala.concurrent.{Future, Promise};
+import scala.concurrent.ExecutionContext.Implicits._
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.{Await, Future, Promise}
 
 case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
     def next() = iterator.next()
@@ -22,7 +24,7 @@ case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
         private var finished = false
 
         override def hasNext: Boolean = {
-            !finished && {
+            if (!finished) {
                 val p = Promise[Option[VectorSchemaRoot]]()
                 vsrFuture = p.future
                 val consumerSchema= ArrowSchema.allocateNew(allocator)
@@ -35,12 +37,15 @@ case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
                         p.success(Some(root))
                         return true
                     } else {
-                        finish()
                         p.success(None)
+                        finish()
                         return false
                     }
                 }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
                 !finished
+            } else {
+                wrapper.free_lakesoul_reader()
+                false
             }
         }
 
@@ -51,8 +56,6 @@ case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
         private def finish(): Unit = {
             if (!finished) {
                 finished = true
-//                todo: free_lakesoul_reader after importing done
-//                wrapper.free_lakesoul_reader()
             }
         }
     }

@@ -6,7 +6,9 @@ import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
 import org.apache.arrow.vector.VectorSchemaRoot
 
+import scala.concurrent.Await
 import scala.concurrent.ExecutionContext.Implicits._
+import scala.concurrent.duration.DurationInt
 import scala.util.Success
 
 case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with org.scalatest.BeforeAndAfterAll with org.scalatest.BeforeAndAfterEach{
@@ -51,11 +53,7 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
         val wrapper = new ArrowCDataWrapper()
         wrapper.initializeConfigBuilder()
         //        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io/test/test.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/arrow/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/arrow/src/test/resources/sample-parquet-files/part-00001-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/arrow/src/test/resources/sample-parquet-files/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/arrow/src/test/resources/sample-parquet-files/part-00003-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/arrow/src/test/resources/sample-parquet-files/part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
+        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
         wrapper.setThreadNum(2)
         wrapper.createReader()
         wrapper.startReader(_=>{})
@@ -64,15 +62,14 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
         )
         var cnt=0
         while (reader.hasNext) {
-            reader.next().onComplete {
+            Await.ready(reader.next(), 1000 milli).onComplete {
                 case Success(Some(vectorSchemaRoot: VectorSchemaRoot)) =>
                     cnt += 1
                     println("[From Java][Java Suite Test] VectorSchemaRoot Counter=" + cnt)
-                case Success(None) =>{}
+                case Success(None) =>
+                    println("[From Java][Java Suite Test] End of reader")
             }
-            Thread.sleep(1000) // wait for importing done
         }
-        wrapper.free_lakesoul_reader()
 
     }
 }
