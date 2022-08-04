@@ -94,14 +94,7 @@
             <version>${javacpp.version}</version>
         </dependency>
 
-        <!--    jni local deps    -->
-        <dependency>
-            <groupId>com.dmetasoul</groupId>
-            <artifactId>arrow-c-data-jni</artifactId>
-            <version>1.0-SNAPSHOT</version>
-            <scope>system</scope>
-            <systemPath>${basedir}/../arrow-c-data-jni/target/arrow-c-data-jni-1.0-SNAPSHOT.jar</systemPath>
-        </dependency>
+
         <!--        jnr-ffi deps-->
         <dependency>
             <groupId>com.github.jnr</groupId>

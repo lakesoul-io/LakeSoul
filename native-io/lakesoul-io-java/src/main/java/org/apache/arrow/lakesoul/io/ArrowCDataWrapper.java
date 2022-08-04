@@ -4,7 +4,6 @@ import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
 import jnr.ffi.Pointer;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
-import org.apache.arrow.lakesoul.javacpp.java.CDataJavaToCppInterface;
 
 import java.util.HashMap;
 import java.util.List;
@@ -78,11 +77,6 @@ public class ArrowCDataWrapper {
 
     public void startReader(Consumer<Boolean> callback) {
         libLakeSoulIO.start_reader(reader, new Callback(callback));
-    }
-
-    public void nextArray(Consumer<Boolean> callback, long schemaAddr, long arrayAddr){
-        CDataJavaToCppInterface.FillInt64Array(schemaAddr, arrayAddr);
-        callback.accept(true);
     }
 
 
