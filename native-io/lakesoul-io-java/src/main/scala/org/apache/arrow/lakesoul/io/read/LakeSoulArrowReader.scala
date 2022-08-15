@@ -10,54 +10,64 @@ import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise}
 
 case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
-    def next() = iterator.next()
+  def next() = iterator.next()
 
-    def hasNext: Boolean = iterator.hasNext
+  def hasNext: Boolean = iterator.hasNext
 
-    val allocator =
-        ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
-    val provider = new CDataDictionaryProvider()
-
-
-    val iterator = new Iterator[Future[Option[VectorSchemaRoot]]] {
-        var vsrFuture:Future[Option[VectorSchemaRoot]] = _
-        private var finished = false
-
-        override def hasNext: Boolean = {
-            if (!finished) {
-                val p = Promise[Option[VectorSchemaRoot]]()
-                vsrFuture = p.future
-                val consumerSchema= ArrowSchema.allocateNew(allocator)
-                val consumerArray = ArrowArray.allocateNew(allocator)
-                wrapper.nextBatch((hasNext) => {
-                    println("[From Java]In wrapper.nextBatch() closure; hasNext="+ hasNext)
-                    if (hasNext) {
-                        val root: VectorSchemaRoot =
-                            Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
-                        p.success(Some(root))
-                        return true
-                    } else {
-                        p.success(None)
-                        finish()
-                        return false
-                    }
-                }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
-                !finished
-            } else {
-                wrapper.free_lakesoul_reader()
-                false
-            }
-        }
-
-        override def next(): Future[Option[VectorSchemaRoot]] = {
-            vsrFuture
-        }
-
-        private def finish(): Unit = {
-            if (!finished) {
-                finished = true
-            }
-        }
+  def nextResultVectorSchemaRoot(): VectorSchemaRoot = {
+    val result = Await.result(next(), 1000 milli)
+    result match {
+      case Some(vsr) =>
+        vsr
+      case _ =>
+        null
     }
+  }
+
+  val allocator =
+    ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
+  val provider = new CDataDictionaryProvider()
+
+
+  val iterator = new Iterator[Future[Option[VectorSchemaRoot]]] {
+    var vsrFuture:Future[Option[VectorSchemaRoot]] = _
+    private var finished = false
+
+    override def hasNext: Boolean = {
+      if (!finished) {
+        val p = Promise[Option[VectorSchemaRoot]]()
+        vsrFuture = p.future
+        val consumerSchema= ArrowSchema.allocateNew(allocator)
+        val consumerArray = ArrowArray.allocateNew(allocator)
+        wrapper.nextBatch((hasNext) => {
+          println("[From Java]In wrapper.nextBatch() closure; hasNext="+ hasNext)
+          if (hasNext) {
+            val root: VectorSchemaRoot =
+                Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
+            p.success(Some(root))
+            return true
+          } else {
+            p.success(None)
+            finish()
+            return false
+          }
+        }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
+        !finished
+      } else {
+        wrapper.free_lakesoul_reader()
+        false
+      }
+    }
+
+    override def next(): Future[Option[VectorSchemaRoot]] = {
+      vsrFuture
+    }
+
+    private def finish(): Unit = {
+      if (!finished) {
+          finished = true
+      }
+    }
+  }
 
 }
