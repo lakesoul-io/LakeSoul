@@ -64,6 +64,12 @@ class MergeOpInt extends MergeOperator[Int] {
   }
 }
 
+class MergeNonNullOp[T] extends MergeOperator[T] {
+  override def mergeData(input: Seq[T]): T = {
+    val output=input.filter(_!=null)
+    output.filter(!_.equals("null")).last
+  }
+}
 
 class MergeOpString extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
