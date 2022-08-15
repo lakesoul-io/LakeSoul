@@ -1,26 +1,8 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+package org.apache.spark.sql.execution.datasources.v2.parquet
 
-package org.apache.spark.sql.execution.datasources.v2.merge.parquet
-
-import java.net.URI
-import java.time.ZoneId
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapreduce._
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.hadoop.mapreduce.{JobID, RecordReader, TaskAttemptID, TaskID, TaskType}
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
 import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat, ParquetInputSplit}
@@ -30,10 +12,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader}
-import org.apache.spark.sql.execution.datasources.parquet._
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, ParquetReadSupport, ParquetWriteSupport, VectorizedParquetRecordReader}
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedFile, RecordReaderIterator}
 import org.apache.spark.sql.execution.datasources.v2.parquet.Native.NativeMergeVectorizedReader
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
@@ -42,6 +23,8 @@ import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
+import java.net.URI
+import java.time.ZoneId
 import scala.collection.mutable
 
 
@@ -55,15 +38,13 @@ import scala.collection.mutable
   * @param partitionSchema Schema of partitions.
   *                        //  * @param filterMap Filters to be pushed down in the batch scan.
   */
-case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
-                                              broadcastedConf: Broadcast[SerializableConfiguration],
-                                              dataSchema: StructType,
-                                              readDataSchema: StructType,
-                                              partitionSchema: StructType,
-                                              filters: Array[Filter],
-                                              mergeOperatorInfo: Map[String, MergeOperator[Any]],
-                                              defaultMergeOp: MergeOperator[Any])
-  extends MergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
+case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
+                                                    broadcastedConf: Broadcast[SerializableConfiguration],
+                                                    dataSchema: StructType,
+                                                    readDataSchema: StructType,
+                                                    partitionSchema: StructType,
+                                                    filters: Array[Filter])
+  extends NativeMergeFilePartitionReaderFactory with Logging{
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
@@ -95,9 +76,6 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   }
 
 
-  override def buildReader(file: MergePartitionedFile): PartitionReader[InternalRow] = {
-    throw new Exception("LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used.")
-  }
 
   override def buildColumnarReader(file: MergePartitionedFile): PartitionReader[ColumnarBatch] = {
 
@@ -114,46 +92,37 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     }
   }
 
-  private def createVectorizedReader(file: MergePartitionedFile): NativeMergeVectorizedReader = {
+  private def createVectorizedReader(file: MergePartitionedFile): VectorizedParquetRecordReader = {
     val vectorizedReader = buildReaderBase(file, createVectorizedReader)
-      .asInstanceOf[NativeMergeVectorizedReader]
+      .asInstanceOf[VectorizedParquetRecordReader]
     vectorizedReader.initBatch(partitionSchema, file.partitionValues)
     vectorizedReader
   }
 
-//  private def createVectorizedReader(file: MergePartitionedFile): VectorizedParquetRecordReader = {
-//    val vectorizedReader = buildReaderBase(file, createVectorizedReader)
-//      .asInstanceOf[VectorizedParquetRecordReader]
-//    vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-//    vectorizedReader
-//  }
-
   private def createVectorizedReader(split: ParquetInputSplit,
-                                     file: MergePartitionedFile,
+                                     partitionValues: InternalRow,
                                      hadoopAttemptContext: TaskAttemptContextImpl,
                                      pushed: Option[FilterPredicate],
                                      convertTz: Option[ZoneId],
                                      datetimeRebaseMode: LegacyBehaviorPolicy.Value,
-                                     int96RebaseMode: LegacyBehaviorPolicy.Value): NativeMergeVectorizedReader = {
+                                     int96RebaseMode: LegacyBehaviorPolicy.Value): VectorizedParquetRecordReader = {
     val taskContext = Option(TaskContext.get())
-    val vectorizedReader = new NativeMergeVectorizedReader(
+    val vectorizedReader = new VectorizedParquetRecordReader(
       convertTz.orNull,
       datetimeRebaseMode.toString,
       int96RebaseMode.toString,
       enableOffHeapColumnVector && taskContext.isDefined,
-      capacity,
-      file
-    )
+      capacity)
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
-    logDebug(s"Appending $partitionSchema ${file.partitionValues}")
+    logDebug(s"Appending $partitionSchema $partitionValues")
     vectorizedReader
   }
 
   private def buildReaderBase[T](file: MergePartitionedFile,
                                  buildReaderFunc: (
-                                   ParquetInputSplit, MergePartitionedFile, TaskAttemptContextImpl,
+                                   ParquetInputSplit, InternalRow, TaskAttemptContextImpl,
                                      Option[FilterPredicate], Option[ZoneId],
                                      LegacyBehaviorPolicy.Value,
                                      LegacyBehaviorPolicy.Value) => RecordReader[Void, T]): RecordReader[Void, T] = {
@@ -218,10 +187,11 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       footerFileMetaData.getKeyValueMetaData.get,
       SQLConf.get.getConf(SQLConf.LEGACY_PARQUET_INT96_REBASE_MODE_IN_READ))
     val reader = buildReaderFunc(
-      split, file, hadoopAttemptContext, pushed, convertTz, datetimeRebaseMode, int96RebaseMode)
+      split, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseMode, int96RebaseMode)
     reader.initialize(split, hadoopAttemptContext)
     reader
   }
+
 
 
 }

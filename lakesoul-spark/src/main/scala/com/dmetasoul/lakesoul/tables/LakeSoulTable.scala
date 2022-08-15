@@ -32,7 +32,6 @@ import scala.collection.JavaConverters._
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   extends LakeSoulTableOperations with Logging {
-
   /**
     * Apply an alias to the LakeSoulTableRel. This is similar to `Dataset.as(alias)` or
     * SQL `tableName AS alias`.

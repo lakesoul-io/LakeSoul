@@ -5,6 +5,9 @@ import jnr.ffi.LibraryOption;
 import jnr.ffi.Pointer;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 
+import java.io.File;
+import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,8 +25,12 @@ public class ArrowCDataWrapper {
         Map<LibraryOption, Object> libraryOptions = new HashMap<>();
         libraryOptions.put(LibraryOption.LoadNow, true);
         libraryOptions.put(LibraryOption.IgnoreError, true);
-        String libName = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/target/debug/liblakesoul_io_c.dylib"; // platform specific name for liblakesoul_io_c
 
+        String libName = String.join("/", System.getenv("LakeSoulLib"),"liblakesoul_io_c.so"); // platform specific name for liblakesoul_io_c
+//        String libName ="/Users/ceng/local/lib/lakesoul/liblakesoul_io_c.dylib";
+        System.out.println(System.getenv("LakeSoulLib"));
+        System.out.println(System.getenv("lakesoul_home"));
+        System.out.println(libName);
         libLakeSoulIO = LibraryLoader.loadLibrary(
                 LibLakeSoulIO.class,
                 libraryOptions,
@@ -38,6 +45,11 @@ public class ArrowCDataWrapper {
     public void addFile(String file){
         Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, file);
         readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_file(readerConfigBuilder, ptr);
+    }
+
+    public void addColumn(String column){
+        Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
+        readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(readerConfigBuilder, ptr);
     }
 
     public void setThreadNum(int threadNum){

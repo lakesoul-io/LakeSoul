@@ -9,13 +9,14 @@ import scala.concurrent.ExecutionContext.Implicits._
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise}
 
-case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
+case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper,
+                              timeout: Int = 2000) extends AutoCloseable{
   def next() = iterator.next()
 
   def hasNext: Boolean = iterator.hasNext
 
   def nextResultVectorSchemaRoot(): VectorSchemaRoot = {
-    val result = Await.result(next(), 1000 milli)
+    val result = Await.result(next(), timeout milli)
     result match {
       case Some(vsr) =>
         vsr
@@ -54,7 +55,6 @@ case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
         }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
         !finished
       } else {
-        wrapper.free_lakesoul_reader()
         false
       }
     }
@@ -70,4 +70,7 @@ case class LakeSoulArrowReader(wrapper: ArrowCDataWrapper) {
     }
   }
 
+  override def close(): Unit = {
+    wrapper.free_lakesoul_reader()
+  }
 }

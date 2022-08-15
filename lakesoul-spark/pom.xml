@@ -22,10 +22,16 @@
     </properties>
 
     <dependencies>
+        <!-- lakesoul deps -->
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
             <version>2.1.0-SNAPSHOT</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-io-java</artifactId>
+            <version>2.1.1-alpha-SNAPSHOT</version>
         </dependency>
 
         <dependency>
@@ -142,11 +148,17 @@
     </dependencies>
 
     <build>
-        <sourceDirectory>src/main/scala</sourceDirectory>
-        <testSourceDirectory>src/test/scala</testSourceDirectory>
-        <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
-        <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+               <configuration>
+                   <source>1.8</source>
+                   <target>1.8</target>
+                   <encoding>UTF-8</encoding>
+               </configuration>
+            </plugin>
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
@@ -168,6 +180,10 @@
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <recompileMode>all</recompileMode>
+<!--                    <compileOrder>JavaThenScala</compileOrder>-->
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.scala-tools</groupId>

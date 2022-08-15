@@ -31,6 +31,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, Pointer file);
 
+    Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column);
+
     Pointer lakesoul_config_builder_add_file(Pointer builder, Pointer files, int file_num);
 
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);

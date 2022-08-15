@@ -205,6 +205,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   }
 
   override def planInputPartitions(): Array[InputPartition] = {
+    logInfo("[Debug][huazeng]on org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan.planInputPartitions")
     partitions.toArray
   }
 
@@ -306,7 +307,10 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     }
   }
 
-  override def toBatch: Batch = this
+  override def toBatch: Batch = {
+    logInfo("[Debug][huazeng]on org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan.toBatch")
+    this
+  }
 
   override def readSchema(): StructType =
     StructType(readDataSchema.fields ++ readPartitionSchema.fields)

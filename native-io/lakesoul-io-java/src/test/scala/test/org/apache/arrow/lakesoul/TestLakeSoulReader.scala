@@ -17,7 +17,8 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
 
         val wrapper = new ArrowCDataWrapper()
         wrapper.initializeConfigBuilder()
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io/test/test.snappy.parquet")
+        val filePath = "test/table/table_test/gender=Female/part-00000-ca90c62a-fbde-4068-a513-2d8cf1f5c819.c000.snappy.parquet"
+        wrapper.addFile(String.join("/",System.getenv("HOME"),filePath))
         wrapper.setThreadNum(2)
         wrapper.createReader()
         wrapper.startReader(_=>{})
@@ -53,7 +54,8 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
         val wrapper = new ArrowCDataWrapper()
         wrapper.initializeConfigBuilder()
         //        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io/test/test.snappy.parquet")
-        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
+        val filePath = "test/table/table_test/gender=Female/part-00000-ca90c62a-fbde-4068-a513-2d8cf1f5c819.c000.snappy.parquet"
+        wrapper.addFile(String.join("/",System.getenv("HOME"),filePath))
         wrapper.setThreadNum(2)
         wrapper.createReader()
         wrapper.startReader(_=>{})
