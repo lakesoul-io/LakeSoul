@@ -27,7 +27,6 @@ import java.util.concurrent.TimeUnit
 
 object DropTableCommand {
 
-  val MAX_ATTEMPTS: Int = MetaUtils.GET_LOCK_MAX_ATTEMPTS
   val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
   def run(snapshot: Snapshot): Unit = {
        dropTable(snapshot)

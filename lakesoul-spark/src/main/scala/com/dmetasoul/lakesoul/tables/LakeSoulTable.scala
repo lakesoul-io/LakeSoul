@@ -299,11 +299,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     compaction(condition, force, mergeOperatorInfo.asScala.toMap, "")
   }
 
-  /**
-    * If `force` set to true, it will ignore delta file num, compaction interval,
-    * and base file(first write), compaction will execute if is_compacted is not true.
-    *
-    */
   def compaction(condition: String,
                  force: Boolean,
                  mergeOperatorInfo: Map[String, Any],

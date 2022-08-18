@@ -39,13 +39,8 @@ object TestUtils {
     sparkConf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
     sparkConf.set("spark.dmetasoul.lakesoul.deltaFile.enabled", "true")
     sparkConf.set("spark.dmetasoul.lakesoul.schema.autoMerge.enabled", "true")
-    sparkConf.set("spark.dmetasoul.lakesoul.deltaFile.max.num", "2")
-    sparkConf.set("spark.dmetasoul.lakesoul.compaction.interval", "360")
     sparkConf.set("spark.sql.shuffle.partitions", "10")
     sparkConf.set("spark.sql.streaming.schemaInference", "true")
-    sparkConf.set("spark.dmetasoul.lakesoul.meta.streaming_info.timeout", "120000")
-    //    sparkConf.set("spark.dmetasoul.lakesoul.parquet.block.size", "20")
-
     sparkConf.set("spark.default.parallelism", "8")
 
     SparkSession
