@@ -33,7 +33,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 
 import scala.collection.JavaConversions._
-
+import scala.collection.mutable
 
 case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              conditionString: String,
@@ -43,16 +43,10 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   extends RunnableCommand with PredicateHelper with Logging {
 
 
-  /**
-    * now：
-    * 1. delta file num exceed threshold value
-    * 2. this partition not been compacted, and last update time exceed threshold value
-    */
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
                                  partitionInfo: PartitionInfo): Boolean = {
-    partitionInfo.read_files.size >=1
-
+    partitionInfo.read_files.length >=1
   }
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
@@ -96,7 +90,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
     tc.commit(newFiles, newReadFiles)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
-    if (!hiveTableName.isEmpty) {
+    if (hiveTableName.nonEmpty) {
       SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
       SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
     }
@@ -105,7 +99,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   }
 
   def escapeSingleBackQuotedString(str: String): String = {
-    val builder = StringBuilder.newBuilder
+    val builder = mutable.StringBuilder.newBuilder
 
     str.foreach {
       case '\'' => ""
@@ -133,14 +127,11 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         //ensure only one partition execute compaction command
         //todo range_partitions
         val partitionSet = files.map(_.range_partitions).toSet
-//        val partitionSet = files.map(_.range_id).toSet
         if (partitionSet.isEmpty) {
           throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)
         } else if (partitionSet.size > 1) {
           throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, partitionSet.size)
         }
-
-        val range_value = partitionSet.head
 
         lazy val hasNoDeltaFile = if (force) {
           false
