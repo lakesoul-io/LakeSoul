@@ -200,7 +200,7 @@ public class LakeSoulCatalog implements Catalog {
       }
       String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
-      dbManager.createNewTable(tableId, tableName, qualifiedPath,
+      dbManager.createNewTable(tableId, "default", tableName, qualifiedPath,
           FlinkUtil.toSparkSchema(schema, cdcMark).json(),
           properties, FlinkUtil.stringListToString(partitionKeys)+";"+primaryKeys);
     }

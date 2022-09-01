@@ -151,6 +151,7 @@ trait ImplicitMetadataOperation extends Logging {
       //todo: setting
       tc.updateTableInfo(
         TableInfo(
+          namespace = table_info.namespace,
           table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
           table_schema = dataSchema.json,

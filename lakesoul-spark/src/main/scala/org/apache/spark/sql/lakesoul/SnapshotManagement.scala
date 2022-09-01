@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
@@ -65,7 +65,7 @@ class SnapshotManagement(path: String) extends Logging {
 
   private def initSnapshot: Snapshot = {
     val table_id = "table_" + UUID.randomUUID().toString
-    val table_info = TableInfo(Some(table_path), table_id)
+    val table_info = TableInfo(LakeSoulCatalog.currentDefaultNamespace.head, Some(table_path), table_id)
     val partition_arr = Array(
       PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
     )
@@ -74,6 +74,7 @@ class SnapshotManagement(path: String) extends Logging {
 
 
   private def getCurrentSnapshot: Snapshot = {
+
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
@@ -105,7 +106,8 @@ class SnapshotManagement(path: String) extends Logging {
       MetaVersion.getTableInfo(table_path)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
-      TableInfo(Some(table_path), table_id)
+      // TODO: unwrap namespaces: array[string] here
+      TableInfo(LakeSoulCatalog.currentDefaultNamespace.head, Some(table_path), table_id)
     }
   }
 

@@ -238,7 +238,8 @@ case class CreateTableCommand(var table: CatalogTable,
                                    schemaString: String): TableInfo = {
     val hashParitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
     val hashBucketNum = table.properties.getOrElse(LakeSoulOptions.HASH_BUCKET_NUM, "-1").toInt
-    TableInfo(table_path_s = tc.tableInfo.table_path_s,
+    TableInfo(tc.tableInfo.namespace,
+      table_path_s = tc.tableInfo.table_path_s,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
       range_column = table.partitionColumnNames.mkString(","),

@@ -43,6 +43,7 @@ import org.apache.spark.sql.{AnalysisException, DataFrame, SparkSession}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.collection.immutable.Map
 
 /**
   * A Catalog extension which can properly handle the interaction between the HiveMetaStore and
@@ -490,10 +491,31 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     }
   }
 
-  override def listTables(namespace: Array[String]): Array[Identifier] = {
-    MetaVersion.listTables().asScala.map(table => {
-      Identifier.of(Array("default"), table)
-    }).toArray
+  // todo: invalid on spark v3.1.2
+  override def listTables(namespaces: Array[String]): Array[Identifier] = {
+    LakeSoulCatalog.listTables(namespaces)
+//    MetaVersion.listTables().asScala.map(table => {
+//      Identifier.of(Array("default"), table)
+//    }).toArray
+  }
+
+  //=============
+  // Namespace
+  //=============
+
+  // todo: invalid on spark v3.1.2
+  override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
+//    super.createNamespace(namespace, metadata)
+//    MetaVersion.createNamespace(namespace)
+    LakeSoulCatalog.createNamespace(namespaces)
+  }
+
+  override def listNamespaces(): Array[Array[String]] = {
+    LakeSoulCatalog.listNamespaces()
+  }
+
+  override def defaultNamespace(): Array[String] = {
+    LakeSoulCatalog.currentDefaultNamespace
   }
 
 }
@@ -539,4 +561,41 @@ trait SupportsPathIdentifier extends TableCatalog {
       super.tableExists(ident)
     }
   }
+}
+
+object LakeSoulCatalog{
+  //===========
+  // namespaces
+  //===========
+
+
+  def listTables(): Array[Identifier] = {
+    listTables(currentDefaultNamespace)
+  }
+
+  def listTables(namespaces: Array[String]): Array[Identifier] = {
+//    MetaVersion.listTables(namespaces).asScala.toArray
+    MetaVersion.listTables(namespaces).asScala.map(table => {
+      Identifier.of(namespaces, table)
+    }).toArray
+  }
+
+  def createNamespace(namespaces: Array[String]): Unit = {
+    MetaVersion.createNamespace(namespaces.head)
+  }
+
+  var currentDefaultNamespace: Array[String] = Array("default")
+
+  def useNamespace(namespaces: Array[String]): Unit = {
+    currentDefaultNamespace = namespaces
+  }
+
+  def showCurrentNamespace():Array[String] = {
+    currentDefaultNamespace
+  }
+
+  def listNamespaces(): Array[Array[String]] = {
+    Array(MetaVersion.listNamespaces())
+  }
+
 }
