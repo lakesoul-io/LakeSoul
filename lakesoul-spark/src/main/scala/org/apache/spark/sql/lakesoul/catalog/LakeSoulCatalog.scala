@@ -43,6 +43,7 @@ import org.apache.spark.sql.{AnalysisException, DataFrame, SparkSession}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.collection.immutable.Map
 
 /**
   * A Catalog extension which can properly handle the interaction between the HiveMetaStore and
@@ -491,9 +492,19 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
   }
 
   override def listTables(namespace: Array[String]): Array[Identifier] = {
+    println("lakesoul listTables")
     MetaVersion.listTables().asScala.map(table => {
-      Identifier.of(Array("default"), table)
+      Identifier.of(namespace, table)
     }).toArray
+  }
+
+  override def listNamespaces(): Array[Array[String]] = {
+    println("lakesoul listNamespaces")
+    Array(Array("lakesoul"))
+  }
+
+  override def defaultNamespace(): Array[String] = {
+    LakeSoulCatalog.currentDefaultNamespace
   }
 
 }
@@ -539,4 +550,32 @@ trait SupportsPathIdentifier extends TableCatalog {
       super.tableExists(ident)
     }
   }
+}
+
+object LakeSoulCatalog{
+  //===========
+  // namespaces
+  //===========
+
+  def listTables(namespaces: Array[String]): Array[String] = {
+    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.listTables")
+    MetaVersion.listTables(namespaces).asScala.toArray
+  }
+
+  def createNamespace(namespaces: Array[String]): Unit = {
+    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.createNamespace")
+    MetaVersion.createNamespace(namespaces)
+  }
+
+  var currentDefaultNamespace: Array[String] = Array("default")
+
+  def useNamespace(namespaces: Array[String]): Unit = {
+    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.useNamespace")
+    currentDefaultNamespace = namespaces
+  }
+
+  def showCurrentNamespace():Array[String] = {
+    currentDefaultNamespace
+  }
+
 }

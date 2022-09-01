@@ -85,14 +85,15 @@ public class TableInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions) " +
-                    "values (?, ?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions, table_namespace) " +
+                    "values (?, ?, ?, ?, ?, ?, ?)");
             pstmt.setString(1, tableInfo.getTableId());
             pstmt.setString(2, tableInfo.getTableName());
             pstmt.setString(3, tableInfo.getTablePath());
             pstmt.setString(4, tableInfo.getTableSchema());
             pstmt.setString(5, DBUtil.jsonToString(tableInfo.getProperties()));
             pstmt.setString(6, tableInfo.getPartitions());
+            pstmt.setString(7, tableInfo.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
             result = false;
