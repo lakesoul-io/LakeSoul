@@ -131,6 +131,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME), keyGen);
     //redistribution by partitionKey
     dataStream = dataStream.partitionCustom(new DataPartitioner<>(), keyGen::getRePartitionHash);
+    System.out.println(dataStream.getParallelism());
     //rowData sink fileSystem Task
     LakSoulFileWriter<RowData> lakeSoulFileWriter =
         new LakSoulFileWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),
@@ -151,7 +152,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 TypeInformation.of(DataFileMetaData.class),
                 lakeSoulFileWriter).name("DataWrite")
             .setParallelism(bucketParallelism);
-
+  System.out.println(writeResultStream.getParallelism());
     //metadata upload Task
     DataStream<Void> commitStream = writeResultStream.transform(
             MetaDataCommit.class.getSimpleName(),

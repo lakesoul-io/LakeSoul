@@ -66,13 +66,14 @@ public class LakeSoulKeyGen implements Serializable {
   private final List<String> fieldNames;
   private List<String> partitionKey;
   private String simpleRecordKeyType;
-  private int[] partitionKeyIndex;
-  private LogicalType[] partitionKeyType;
+//  private int[] partitionKeyIndex;
+//  private LogicalType[] partitionKeyType;
+  private int[] hashKeyIndex;
+  private LogicalType[] hashKeyType;
 
   public LakeSoulKeyGen(RowType rowType, Configuration conf, List<String> partitionKey) {
     this.conf = conf;
     this.recordKeyFields = getRecordKeyFields();
-
     this.partitionKey = partitionKey;
     this.partitionPathFields = getPartitionFiled();
     this.fieldNames = rowType.getFieldNames();
@@ -100,8 +101,10 @@ public class LakeSoulKeyGen implements Serializable {
     } else {
       this.partitionPathProjection = getProjection(this.partitionPathFields, fieldNames, fieldTypes);
     }
-    this.partitionKeyIndex = getFieldPositions(this.partitionPathFields, fieldNames);
-    this.partitionKeyType = Arrays.stream(partitionKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
+//    this.partitionKeyIndex = getFieldPositions(this.partitionPathFields, fieldNames);
+//    this.partitionKeyType = Arrays.stream(partitionKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
+    this.hashKeyIndex = getFieldPositions(this.recordKeyFields, fieldNames);
+    this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
   }
 
   public static String objToString(@Nullable Object obj) {
@@ -137,16 +140,16 @@ public class LakeSoulKeyGen implements Serializable {
 
   public String getRePartitionHash(RowData rowData) throws Exception {
     int hash = 42;
-    if (this.simplePartitionPath) {
-      Object fieldOrNull = RowData.createFieldGetter(partitionKeyType[0], partitionKeyIndex[0]).getFieldOrNull(rowData);
-      return getHash(partitionKeyType[0], fieldOrNull, hash)+"";
-
-    } else if (this.nonPartitioned) {
+    if(hashKeyType.length==0){
       return hash+"";
+    }
+    if (this.simpleRecordKey) {
+      Object fieldOrNull = RowData.createFieldGetter(hashKeyType[0], hashKeyIndex[0]).getFieldOrNull(rowData);
+      return getHash(hashKeyType[0], fieldOrNull, hash)+"";
     } else {
-      for (int i = 0; i < partitionKeyType.length; i++) {
-        Object fieldOrNull = RowData.createFieldGetter(partitionKeyType[i], partitionKeyIndex[i]).getFieldOrNull(rowData);
-        hash = getHash(partitionKeyType[i], fieldOrNull, hash);
+      for (int i = 0; i < hashKeyType.length; i++) {
+        Object fieldOrNull = RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]).getFieldOrNull(rowData);
+        hash = getHash(hashKeyType[i], fieldOrNull, hash);
       }
       return hash+"";
     }
@@ -157,7 +160,7 @@ public class LakeSoulKeyGen implements Serializable {
     switch (type.getTypeRoot()) {
       case VARCHAR:
         UTF8String utf8String = UTF8String.fromString(java.lang.String.valueOf(filed));
-        seed = (int) Murmur3HashFunction.hash(utf8String, StringType, 42);
+        seed = (int) Murmur3HashFunction.hash(utf8String, StringType, seed);
         break;
       case INTEGER:
         seed =(int) Murmur3HashFunction.hash((int) filed,IntegerType, seed);
