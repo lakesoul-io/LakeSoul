@@ -29,24 +29,15 @@ import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
-import org.apache.spark.unsafe.hash.Murmur3_x86_32;
 import org.apache.spark.unsafe.types.UTF8String;
 
 import javax.annotation.Nullable;
-
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import static org.apache.spark.sql.types.DataTypes.BooleanType;
-import static org.apache.spark.sql.types.DataTypes.ByteType;
-import static org.apache.spark.sql.types.DataTypes.DoubleType;
-import static org.apache.spark.sql.types.DataTypes.FloatType;
-import static org.apache.spark.sql.types.DataTypes.IntegerType;
-import static org.apache.spark.sql.types.DataTypes.LongType;
-import static org.apache.spark.sql.types.DataTypes.ShortType;
-import static org.apache.spark.sql.types.DataTypes.StringType;
+import static org.apache.spark.sql.types.DataTypes.*;
 
 public class LakeSoulKeyGen implements Serializable {
 
@@ -66,8 +57,6 @@ public class LakeSoulKeyGen implements Serializable {
   private final List<String> fieldNames;
   private List<String> partitionKey;
   private String simpleRecordKeyType;
-//  private int[] partitionKeyIndex;
-//  private LogicalType[] partitionKeyType;
   private int[] hashKeyIndex;
   private LogicalType[] hashKeyType;
 
@@ -101,8 +90,6 @@ public class LakeSoulKeyGen implements Serializable {
     } else {
       this.partitionPathProjection = getProjection(this.partitionPathFields, fieldNames, fieldTypes);
     }
-//    this.partitionKeyIndex = getFieldPositions(this.partitionPathFields, fieldNames);
-//    this.partitionKeyType = Arrays.stream(partitionKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
     this.hashKeyIndex = getFieldPositions(this.recordKeyFields, fieldNames);
     this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
   }
@@ -138,20 +125,20 @@ public class LakeSoulKeyGen implements Serializable {
     return new SortCodeGenerator(tableConfig, rowType, builder.build()).generateRecordComparator("comparator");
   }
 
-  public String getRePartitionHash(RowData rowData) throws Exception {
+  public long getRePartitionHash(RowData rowData) {
     int hash = 42;
-    if(hashKeyType.length==0){
-      return hash+"";
+    if (hashKeyType.length == 0) {
+      return hash;
     }
     if (this.simpleRecordKey) {
       Object fieldOrNull = RowData.createFieldGetter(hashKeyType[0], hashKeyIndex[0]).getFieldOrNull(rowData);
-      return getHash(hashKeyType[0], fieldOrNull, hash)+"";
+      return getHash(hashKeyType[0], fieldOrNull, hash);
     } else {
       for (int i = 0; i < hashKeyType.length; i++) {
         Object fieldOrNull = RowData.createFieldGetter(hashKeyType[i], hashKeyIndex[i]).getFieldOrNull(rowData);
         hash = getHash(hashKeyType[i], fieldOrNull, hash);
       }
-      return hash+"";
+      return hash;
     }
   }
 
@@ -163,25 +150,25 @@ public class LakeSoulKeyGen implements Serializable {
         seed = (int) Murmur3HashFunction.hash(utf8String, StringType, seed);
         break;
       case INTEGER:
-        seed =(int) Murmur3HashFunction.hash((int) filed,IntegerType, seed);
+        seed = (int) Murmur3HashFunction.hash(filed, IntegerType, seed);
         break;
       case BIGINT:
-        seed = (int) Murmur3HashFunction.hash((long) filed,LongType, seed);
+        seed = (int) Murmur3HashFunction.hash(filed, LongType, seed);
         break;
       case BINARY:
-        seed = (int) Murmur3HashFunction.hash((byte) filed,ByteType, seed);
+        seed = (int) Murmur3HashFunction.hash(filed, ByteType, seed);
         break;
       case SMALLINT:
-        seed = (int) Murmur3HashFunction.hash((short) filed,ShortType, seed);
+        seed = (int) Murmur3HashFunction.hash(filed, ShortType, seed);
         break;
       case FLOAT:
-        seed = (int) Murmur3HashFunction.hash((float) filed, FloatType,seed);
+        seed = (int) Murmur3HashFunction.hash(filed, FloatType, seed);
         break;
       case DOUBLE:
-        seed = (int) Murmur3HashFunction.hash((double) filed, DoubleType,seed);
+        seed = (int) Murmur3HashFunction.hash(filed, DoubleType, seed);
         break;
       case BOOLEAN:
-        seed = (int) Murmur3HashFunction.hash((boolean) filed ,BooleanType, seed);
+        seed = (int) Murmur3HashFunction.hash(filed, BooleanType, seed);
         break;
       default:
         throw new RuntimeException("not support this partition type now :" + type.getTypeRoot().toString());

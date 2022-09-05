@@ -109,9 +109,9 @@ public class DBUtil {
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
-        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"));
-        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "yugabyte"));
-        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "yugabyte"));
+        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"));
+        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "lakesoul_test"));
+        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "lakesoul_test"));
         return dataBaseProperty;
     }
 

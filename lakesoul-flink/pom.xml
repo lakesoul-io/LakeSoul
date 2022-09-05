@@ -13,7 +13,7 @@
     <version>2.1.0-lakesoul-flink-1.14-SNAPSHOT</version>
     <properties>
         <flink.version>1.14.3</flink.version>
-        <spark.version>3.1.1</spark.version>
+        <spark.version>3.1.2</spark.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
@@ -88,6 +88,12 @@
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-planner_2.12</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime-web_2.12</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>

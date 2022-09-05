@@ -185,8 +185,7 @@ public class LakeSoulBucket<IN, BucketID> {
       this.inProgressPart = this.rollPartFile(currentTime);
       bucketRowCount = new AtomicLong(0L);
     }
-    sortQueue.add(new LakeSoulCDCElement((RowData) element,currentTime));
-
+    sortQueue.add(new LakeSoulCDCElement((RowData) element, currentTime));
   }
 
   private boolean checkRollingPolicy() {
@@ -200,8 +199,7 @@ public class LakeSoulBucket<IN, BucketID> {
 
   void sortWrite(long currentTime) throws IOException {
     while (!sortQueue.isEmpty()) {
-      LakeSoulCDCElement le=sortQueue.poll();
-      //System.out.println(le.element.getInt(0)+" "+le.element.getRowKind().shortString()+" "+le.timedata);
+      LakeSoulCDCElement le = sortQueue.poll();
       RowData poll = le.element;
       this.inProgressPart.write((IN) poll, currentTime);
     }
@@ -228,7 +226,8 @@ public class LakeSoulBucket<IN, BucketID> {
     return new Path(this.bucketPath,
         this.outputFileConfig.getPartPrefix()
             + '-' + subTask + '-' + uuid + '_' + this.subtaskIndex
-            + '.' + 'c' + count + this.outputFileConfig.getPartSuffix());
+            + '.' + 'c' + count + this.outputFileConfig.getPartSuffix()
+            + ".parquet");
   }
 
   InProgressFileWriter.PendingFileRecoverable closePartFile(long currentTime) throws IOException {

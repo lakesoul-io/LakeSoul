@@ -35,18 +35,7 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(true)
 
-  //default meta database name
-  val META_DATABASE_NAME: ConfigEntry[String] =
-    buildConf("meta.database.name")
-      .doc(
-        """
-          |Default database of meta tables in PG DB.
-          |User should not change it unless you know what you are going to do.
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("lakesoul_meta")
-
-  //dorp table await time
+  // drop table await time
   val DROP_TABLE_WAIT_SECONDS: ConfigEntry[Int] =
     buildConf("drop.table.wait.seconds")
       .doc(

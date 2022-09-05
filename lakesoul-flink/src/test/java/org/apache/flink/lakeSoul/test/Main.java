@@ -55,7 +55,7 @@ public class Main {
             "'server-id'='1'," +
             "'username'='root',\n" +
             "'password'='root',\n" +
-            "'database-name'='zhyang_test',\n" +
+            "'database-name'='test_cdc',\n" +
             "'table-name'='test5'\n" +
             ")");
 

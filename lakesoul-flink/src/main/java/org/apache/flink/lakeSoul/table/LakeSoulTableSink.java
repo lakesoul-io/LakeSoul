@@ -147,12 +147,12 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 .withRollingPolicy(rollingPolicy),
             partitionKeyList, flinkConf, fileNameConfig);
 
+    System.out.println("Flink bucket parallelism: " + bucketParallelism);
     DataStream<DataFileMetaData> writeResultStream =
         dataStream.transform(LakSoulFileWriter.class.getSimpleName(),
                 TypeInformation.of(DataFileMetaData.class),
                 lakeSoulFileWriter).name("DataWrite")
             .setParallelism(bucketParallelism);
-  System.out.println(writeResultStream.getParallelism());
     //metadata upload Task
     DataStream<Void> commitStream = writeResultStream.transform(
             MetaDataCommit.class.getSimpleName(),
