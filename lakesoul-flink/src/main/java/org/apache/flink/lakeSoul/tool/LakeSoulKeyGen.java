@@ -126,7 +126,7 @@ public class LakeSoulKeyGen implements Serializable {
   }
 
   public long getRePartitionHash(RowData rowData) {
-    int hash = 42;
+    long hash = 42;
     if (hashKeyType.length == 0) {
       return hash;
     }
@@ -142,33 +142,33 @@ public class LakeSoulKeyGen implements Serializable {
     }
   }
 
-  public int getHash(LogicalType type, Object filed, int seed) {
+  public long getHash(LogicalType type, Object filed, long seed) {
 
     switch (type.getTypeRoot()) {
       case VARCHAR:
         UTF8String utf8String = UTF8String.fromString(java.lang.String.valueOf(filed));
-        seed = (int) Murmur3HashFunction.hash(utf8String, StringType, seed);
+        seed = Murmur3HashFunction.hash(utf8String, StringType, seed);
         break;
       case INTEGER:
-        seed = (int) Murmur3HashFunction.hash(filed, IntegerType, seed);
+        seed = Murmur3HashFunction.hash(filed, IntegerType, seed);
         break;
       case BIGINT:
-        seed = (int) Murmur3HashFunction.hash(filed, LongType, seed);
+        seed = Murmur3HashFunction.hash(filed, LongType, seed);
         break;
       case BINARY:
-        seed = (int) Murmur3HashFunction.hash(filed, ByteType, seed);
+        seed = Murmur3HashFunction.hash(filed, ByteType, seed);
         break;
       case SMALLINT:
-        seed = (int) Murmur3HashFunction.hash(filed, ShortType, seed);
+        seed = Murmur3HashFunction.hash(filed, ShortType, seed);
         break;
       case FLOAT:
-        seed = (int) Murmur3HashFunction.hash(filed, FloatType, seed);
+        seed = Murmur3HashFunction.hash(filed, FloatType, seed);
         break;
       case DOUBLE:
-        seed = (int) Murmur3HashFunction.hash(filed, DoubleType, seed);
+        seed = Murmur3HashFunction.hash(filed, DoubleType, seed);
         break;
       case BOOLEAN:
-        seed = (int) Murmur3HashFunction.hash(filed, BooleanType, seed);
+        seed = Murmur3HashFunction.hash(filed, BooleanType, seed);
         break;
       default:
         throw new RuntimeException("not support this partition type now :" + type.getTypeRoot().toString());

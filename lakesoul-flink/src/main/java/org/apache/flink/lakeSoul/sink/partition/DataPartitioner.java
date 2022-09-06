@@ -21,11 +21,12 @@ package org.apache.flink.lakeSoul.sink.partition;
 
 import org.apache.flink.api.common.functions.Partitioner;
 
-public class DataPartitioner<String> implements Partitioner<String> {
+public class DataPartitioner<Long> implements Partitioner<Long> {
 
   @Override
-  public int partition(String key, int numPartitions) {
-    int hash = Integer.parseInt((java.lang.String) key) % numPartitions;
-    return hash < 0 ? (hash + numPartitions) % numPartitions : hash;
+  public int partition(Long key, int numPartitions) {
+    long hash = (long) key;
+    int part = (int) (hash % (long) numPartitions);
+    return part < 0 ? (part + numPartitions) % numPartitions : part;
   }
 }
