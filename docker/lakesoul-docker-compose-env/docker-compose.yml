@@ -2,7 +2,9 @@ version: '3'
 
 services:
   lakesoul-meta-db:
-    image: postgres:latest
+    image: postgres:14.5
+    ports:
+      - "5432:5432"
     restart: always
     environment:
       POSTGRES_PASSWORD: lakesoul_test
