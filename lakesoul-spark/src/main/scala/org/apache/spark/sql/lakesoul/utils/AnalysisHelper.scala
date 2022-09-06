@@ -24,7 +24,7 @@ trait AnalysisHelper {
     }
   }
 
-  protected def              toDataset(sparkSession: SparkSession, logicalPlan: LogicalPlan): Dataset[Row] = {
+  protected def toDataset(sparkSession: SparkSession, logicalPlan: LogicalPlan): Dataset[Row] = {
     Dataset.ofRows(sparkSession, logicalPlan)
   }
 
