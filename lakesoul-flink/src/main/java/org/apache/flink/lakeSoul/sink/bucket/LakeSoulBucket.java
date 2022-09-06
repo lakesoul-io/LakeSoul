@@ -56,7 +56,8 @@ public class LakeSoulBucket<IN, BucketID> {
   private final NavigableMap<Long, InProgressFileWriter.InProgressFileRecoverable> inProgressFileRecoverablesPerCheckpoint;
   private final NavigableMap<Long, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverablesPerCheckpoint;
   private final OutputFileConfig outputFileConfig;
-  private PriorityQueue<RowData> sortQueue;
+  private PriorityQueue<LakeSoulCDCElement> sortQueue;
+  private LakeSoulCDCComparator lakeCompare;
   private AtomicLong bucketRowCount;
   private final LakeSoulKeyGen keyGen;
   @Nullable
@@ -87,7 +88,9 @@ public class LakeSoulBucket<IN, BucketID> {
     this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
     LakeSoulRollingPolicyImpl lakesoulRollingPolicy = (LakeSoulRollingPolicyImpl) rollingPolicy;
     this.keyGen = lakesoulRollingPolicy.getKeyGen();
-    this.sortQueue = new PriorityQueue<>(keyGen.getCompareFunction());
+    lakeCompare=new LakeSoulCDCComparator(keyGen.getCompareFunction());
+    this.sortQueue = new PriorityQueue<>(lakeCompare);
+    //this.sortQueue = new PriorityQueue<>(keyGen.getCompareFunction());
     bucketRowCount = new AtomicLong(0L);
   }
 
@@ -182,8 +185,7 @@ public class LakeSoulBucket<IN, BucketID> {
       this.inProgressPart = this.rollPartFile(currentTime);
       bucketRowCount = new AtomicLong(0L);
     }
-    sortQueue.add((RowData) element);
-
+    sortQueue.add(new LakeSoulCDCElement((RowData) element, currentTime));
   }
 
   private boolean checkRollingPolicy() {
@@ -197,7 +199,8 @@ public class LakeSoulBucket<IN, BucketID> {
 
   void sortWrite(long currentTime) throws IOException {
     while (!sortQueue.isEmpty()) {
-      RowData poll = sortQueue.poll();
+      LakeSoulCDCElement le = sortQueue.poll();
+      RowData poll = le.element;
       this.inProgressPart.write((IN) poll, currentTime);
     }
   }
@@ -223,7 +226,8 @@ public class LakeSoulBucket<IN, BucketID> {
     return new Path(this.bucketPath,
         this.outputFileConfig.getPartPrefix()
             + '-' + subTask + '-' + uuid + '_' + this.subtaskIndex
-            + '.' + 'c' + count + this.outputFileConfig.getPartSuffix());
+            + '.' + 'c' + count + this.outputFileConfig.getPartSuffix()
+            + ".parquet");
   }
 
   InProgressFileWriter.PendingFileRecoverable closePartFile(long currentTime) throws IOException {

@@ -151,7 +151,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 TypeInformation.of(DataFileMetaData.class),
                 lakeSoulFileWriter).name("DataWrite")
             .setParallelism(bucketParallelism);
-
     //metadata upload Task
     DataStream<Void> commitStream = writeResultStream.transform(
             MetaDataCommit.class.getSimpleName(),

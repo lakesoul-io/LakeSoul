@@ -1,5 +1,6 @@
 package org.apache.flink.lakeSoul.test;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakeSoul.metaData.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
@@ -15,11 +16,11 @@ public class LakeSoulFileSinkTest {
   public void flinkCdcSinkTest() throws InterruptedException {
     StreamTableEnvironment tEnvs;
     StreamExecutionEnvironment env;
-    env = StreamExecutionEnvironment.getExecutionEnvironment();
+    env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
     env.setParallelism(1);
-    env.enableCheckpointing(201);
-    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(403);
-    env.getCheckpointConfig().setCheckpointStorage("file:///Users/zhyang/Downloads/flink");
+    env.enableCheckpointing(10000);
+    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(5000);
+    env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink/test");
     tEnvs = StreamTableEnvironment.create(env);
     tEnvs.getConfig().getConfiguration().set(
         ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
@@ -28,7 +29,7 @@ public class LakeSoulFileSinkTest {
     tEnvs.executeSql("create table mysql_test_1(\n" +
         "id INTEGER primary key NOT ENFORCED ," +
         "name string," +
-        " dt string)" +
+        " dt int)" +
         " with (\n" +
         "'connector'='mysql-cdc'," +
         "'hostname'='127.0.0.1'," +
@@ -36,28 +37,28 @@ public class LakeSoulFileSinkTest {
         "'server-id'='1'," +
         "'username'='root',\n" +
         "'password'='root',\n" +
-        "'database-name'='zhyang_test',\n" +
-        "'table-name'='test5'\n" +
+        "'database-name'='test_cdc',\n" +
+        "'table-name'='mysql_test_1'\n" +
         ")");
 
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
     tEnvs.useCatalog("lakeSoul");
-    String tableName = "flinkI" + (int) (Math.random() * 156439750) % 2235;
-    String PATH = "/Users/zhyang/Downloads/tmp/" + tableName;
+    String tableName = "flinkI1715";
+    String PATH = "/tmp/lakesoul/" + tableName;
 
     //target
     tEnvs.executeSql(
         "CREATE TABLE " + tableName + "( id int," +
             " name string," +
-            " dt string," +
+            " dt int," +
             "primary key (id) NOT ENFORCED ) " +
             "PARTITIONED BY (dt)" +
             " with ('connector' = 'lakeSoul'," +
             "'format'='parquet','path'='" +
             PATH + "'," +
             "'useCDC'='true'," +
-            "'bucket_num'='2')");
+            "'hashBucketNum'='2')");
 
     tEnvs.executeSql("show tables ").print();
 

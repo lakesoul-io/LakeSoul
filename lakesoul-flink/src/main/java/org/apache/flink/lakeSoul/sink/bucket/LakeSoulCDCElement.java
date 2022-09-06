@@ -16,17 +16,15 @@
  *
  *
  */
+package org.apache.flink.lakeSoul.sink.bucket;
 
-package org.apache.flink.lakeSoul.sink.partition;
+import org.apache.flink.table.data.RowData;
 
-import org.apache.flink.api.common.functions.Partitioner;
-
-public class DataPartitioner<Long> implements Partitioner<Long> {
-
-  @Override
-  public int partition(Long key, int numPartitions) {
-    long hash = (long) key;
-    int part = (int) (hash % (long) numPartitions);
-    return part < 0 ? (part + numPartitions) % numPartitions : part;
-  }
+public class LakeSoulCDCElement {
+    public RowData element;
+    public long timedata;
+    public LakeSoulCDCElement(RowData rd, long td){
+        this.element=rd;
+        this.timedata=td;
+    }
 }

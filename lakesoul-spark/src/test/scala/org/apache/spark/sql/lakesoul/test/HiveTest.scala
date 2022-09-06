@@ -44,7 +44,6 @@ trait HiveTest extends SparkFunSuite with BeforeAndAfterAll {
     conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[LakeSoulCatalog].getName)
     conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
       classOf[LakeSoulSparkSessionExtension].getName)
-    conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "test_lakesoul_meta")
 
     _sc = new SparkContext("local", this.getClass.getName, conf)
     _hiveContext = new TestHiveContext(_sc)

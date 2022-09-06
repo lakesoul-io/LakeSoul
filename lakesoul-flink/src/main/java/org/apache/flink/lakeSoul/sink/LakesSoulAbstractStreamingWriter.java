@@ -33,6 +33,9 @@ import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.table.data.RowData;
+
+import java.util.*;
 
 public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends AbstractStreamOperator<OUT>
     implements OneInputStreamOperator<IN, OUT>, BoundedOneInput {
@@ -43,6 +46,10 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
   protected transient LakeSoulBuckets<IN, String> buckets;
   private transient LakeSoulFileSinkHelper<IN> helper;
   protected transient long currentWatermark;
+  protected transient Set<String> currentNewBuckets;
+  protected transient Map<String, Long> inProgressBuckets;
+  protected transient Set<String> committableBuckets;
+  protected transient TreeMap<Long, Set<String>> newBuckets;
 
   public LakesSoulAbstractStreamingWriter(long bucketCheckInterval,
                                           LakeSoulBucketsBuilder<IN, String, ? extends LakeSoulBucketsBuilder<IN, String, ?>> bucketsBuilder) {
@@ -51,9 +58,15 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
     setChainingStrategy(ChainingStrategy.ALWAYS);
   }
 
-  protected abstract void partitionCreated(String partition);
+  protected  void partitionCreated(String partition){
+    this.currentNewBuckets.add(partition);
+    this.inProgressBuckets.putIfAbsent(partition, getProcessingTimeService().getCurrentProcessingTime());
+  };
 
-  protected abstract void partitionInactive(String partition);
+  protected  void partitionInactive(String partition){
+    this.committableBuckets.add(partition);
+    this.inProgressBuckets.remove(partition);
+  };
 
   protected abstract void onPartFileOpened(String partition, Path newPath);
 
@@ -67,8 +80,12 @@ public abstract class LakesSoulAbstractStreamingWriter<IN, OUT> extends Abstract
   @Override
   public void initializeState(StateInitializationContext context) throws Exception {
     super.initializeState(context);
-    buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
+    this.currentNewBuckets = new HashSet<>();
+    this.committableBuckets = new HashSet<>();
+    this.inProgressBuckets = new HashMap<>();
+    this.newBuckets = new TreeMap<>();
 
+    buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
     // Set listener before the initialization of LakeSoulBuckets.
     buckets.setBucketLifeCycleListener(
         new LakeSoulBucketLifeCycleListener<IN, String>() {
