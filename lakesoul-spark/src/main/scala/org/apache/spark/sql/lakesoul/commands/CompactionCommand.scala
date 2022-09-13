@@ -20,7 +20,8 @@ import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
@@ -40,7 +41,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              force: Boolean,
                              mergeOperatorInfo: Map[String, String],
                              hiveTableName: String = "")
-  extends RunnableCommand with PredicateHelper with Logging {
+  extends LeafRunnableCommand with PredicateHelper with Logging {
 
 
   def filterPartitionNeedCompact(spark: SparkSession,
@@ -175,6 +176,5 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
     Seq.empty
   }
-
 
 }

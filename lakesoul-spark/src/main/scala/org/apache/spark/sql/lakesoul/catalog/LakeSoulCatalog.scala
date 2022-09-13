@@ -29,7 +29,7 @@ import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReference, IdentityTransform, Transform}
-import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1WriteBuilder, WriteBuilder}
+import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1Write, WriteBuilder}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
@@ -111,7 +111,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
     val withDb = verifyTableAndSolidify(tableDesc, None)
 
-    ParquetSchemaConverter.checkFieldNames(tableDesc.schema.fieldNames)
+    ParquetSchemaConverter.checkFieldNames(tableDesc.schema)
     CreateTableCommand(
       withDb,
       getExistingTableIfExists(tableDesc),
@@ -329,7 +329,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
     override def capabilities(): util.Set[TableCapability] = Set(V1_BATCH_WRITE).asJava
 
-    override def newWriteBuilder(info: LogicalWriteInfo): V1WriteBuilder = {
+    override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
       // TODO: We now pass both properties and options into CreateTableCommand, because
       // it wasn't supported in the initial APIs, but with DFWriterV2, we should actually separate
       // them
@@ -341,10 +341,13 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     /*
      * WriteBuilder for creating a lakesoul table.
      */
-    private class LakeSoulV1WriteBuilder extends WriteBuilder with V1WriteBuilder {
-      override def buildForV1Write(): InsertableRelation = {
-        (data: DataFrame, _: Boolean) => {
-          asSelectQuery = Option(data)
+    private class LakeSoulV1WriteBuilder extends WriteBuilder {
+      override def build(): V1Write = {
+        new V1Write {
+          override def toInsertableRelation: InsertableRelation =
+            (data: DataFrame, overwrite: Boolean) => {
+              asSelectQuery = Option(data)
+            }
         }
       }
     }

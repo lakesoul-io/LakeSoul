@@ -20,10 +20,10 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
 import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
-import org.apache.spark.sql.lakesoul.{SnapshotManagement, LakeSoulUtils, TransactionCommit}
+import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 
@@ -40,7 +40,7 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
                          target: LogicalPlan,
                          updateExpressions: Seq[Expression],
                          condition: Option[Expression])
-  extends RunnableCommand with Command {
+  extends LeafRunnableCommand with Command {
 
   override def innerChildren: Seq[QueryPlan[_]] = Seq(target)
 

@@ -101,8 +101,8 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
-      BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
+      BATCH_READ, V1_BATCH_WRITE, OVERWRITE_DYNAMIC,
+      OVERWRITE_BY_FILTER, TRUNCATE
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA
@@ -150,7 +150,7 @@ case class LakeSoulTableV2(spark: SparkSession,
 
 private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
                                     writeOptions: CaseInsensitiveStringMap)
-  extends WriteBuilder with V1WriteBuilder with SupportsOverwrite with SupportsTruncate {
+  extends WriteBuilder with SupportsOverwrite with SupportsTruncate {
 
   private var forceOverwrite = false
 
@@ -172,25 +172,20 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
     this
   }
 
-  override def buildForV1Write(): InsertableRelation = {
-    new InsertableRelation {
-      override def insert(data: DataFrame, overwrite: Boolean): Unit = {
-        val session = data.sparkSession
+  // use v1write temporarily
+  override def build(): V1Write = {
+    new V1Write {
+      override def toInsertableRelation: InsertableRelation =
+        (data: DataFrame, overwrite: Boolean) => {
+          val session = data.sparkSession
 
-        WriteIntoTable(
-          snapshotManagement,
-          if (forceOverwrite) SaveMode.Overwrite else SaveMode.Append,
-          new LakeSoulOptions(options.toMap, session.sessionState.conf),
-          //          Nil,
-          snapshotManagement.snapshot.getTableInfo.configuration,
-          data).run(session)
-
-        // TODO: Push this to Apache Spark
-        // Re-cache all cached plans(including this relation itself, if it's cached) that refer
-        // to this data source relation. This is the behavior for InsertInto
-        session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
-      }
+          WriteIntoTable(
+            snapshotManagement,
+            if (forceOverwrite || overwrite) SaveMode.Overwrite else SaveMode.Append,
+            new LakeSoulOptions(options.toMap, session.sessionState.conf),
+            snapshotManagement.snapshot.getTableInfo.configuration,
+            data).run(session)
+        }
     }
   }
 }

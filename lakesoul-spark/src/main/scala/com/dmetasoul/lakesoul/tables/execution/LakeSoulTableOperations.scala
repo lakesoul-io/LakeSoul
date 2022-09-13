@@ -104,13 +104,13 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   force: Boolean = true,
                                   mergeOperatorInfo: Map[String, String],
                                   hiveTableName: String = ""): Unit = {
-    toDataset(sparkSession, CompactionCommand(
+    val df = toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
       force,
       mergeOperatorInfo,
       hiveTableName))
-
+    df
   }
 
   protected def executeDropTable(snapshotManagement: SnapshotManagement): Unit = {

@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.analysis.CannotReplaceMissingTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
@@ -49,7 +49,7 @@ case class CreateTableCommand(var table: CatalogTable,
                               query: Option[LogicalPlan],
                               operation: TableCreationModes.CreationMode = TableCreationModes.Create,
                               tableByPath: Boolean = false)
-  extends RunnableCommand
+  extends LeafRunnableCommand
     with Logging {
 
   override def run(sparkSession: SparkSession): Seq[Row] = {

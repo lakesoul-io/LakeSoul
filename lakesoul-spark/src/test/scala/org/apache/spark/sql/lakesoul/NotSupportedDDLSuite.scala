@@ -42,7 +42,7 @@ abstract class NotSupportedDDLBase extends QueryTest
 
   val partitionedTableName = "partitionedLakeSoulTbl"
 
-  protected override def beforeAll(): Unit = {
+  protected override def beforeEach(): Unit = {
     super.beforeAll()
     try {
       sql(
@@ -66,7 +66,7 @@ abstract class NotSupportedDDLBase extends QueryTest
     }
   }
 
-  protected override def afterAll(): Unit = {
+  protected override def afterEach(): Unit = {
     try {
       val location = Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
         try {
@@ -94,10 +94,11 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   private def assertUnsupported(query: String, messages: String*): Unit = {
-    val allErrMessages = "operation not allowed" +: messages
+    val allErrMessages = "operation not allowed" +: "does not support" +: "is not supported" +: messages
     val e = intercept[AnalysisException] {
       sql(query)
     }
+    println(e.getMessage().toLowerCase(Locale.ROOT))
     assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
   }
 

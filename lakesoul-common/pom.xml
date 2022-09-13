@@ -14,7 +14,6 @@
 
     <properties>
         <postgresql.version>42.4.1</postgresql.version>
-        <spark.version>3.1.2</spark.version>
         <scala.binary.version>2.12</scala.binary.version>
         <local.scope>provided</local.scope>
     </properties>

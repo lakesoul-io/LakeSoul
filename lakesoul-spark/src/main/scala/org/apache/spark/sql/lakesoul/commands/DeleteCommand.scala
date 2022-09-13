@@ -19,8 +19,8 @@ package org.apache.spark.sql.lakesoul.commands
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Literal, Not}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, LakeSoulDelete}
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.catalyst.plans.logical.{LakeSoulDelete, LogicalPlan}
+import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
@@ -41,7 +41,7 @@ import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 case class DeleteCommand(snapshotManagement: SnapshotManagement,
                          target: LogicalPlan,
                          condition: Option[Expression])
-  extends RunnableCommand with Command {
+  extends LeafRunnableCommand with Command {
 
   override def innerChildren: Seq[QueryPlan[_]] = Seq(target)
 

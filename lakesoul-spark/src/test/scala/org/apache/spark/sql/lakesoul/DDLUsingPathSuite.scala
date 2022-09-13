@@ -100,13 +100,13 @@ trait DDLUsingPathTests extends QueryTest
     val ex = intercept[AnalysisException] {
       spark.table(s"lakesoul.`/path/to/lakesoul`")
     }
-    assert(ex.getMessage.contains("/path/to/lakesoul doesn't exist"))
+    assert(ex.getMessage.contains("Table file:/path/to/lakesoul doesn't exist."))
 
     withSQLConf(SQLConf.RUN_SQL_ON_FILES.key -> "false") {
       val ex = intercept[AnalysisException] {
         spark.table(s"lakesoul.`/path/to/lakesoul`")
       }
-      assert(ex.getMessage.contains("Table or view not found: lakesoul./path/to/lakesoul"))
+      assert(ex.getMessage.contains("Table or view not found: lakesoul.`/path/to/lakesoul`"))
     }
   }
 

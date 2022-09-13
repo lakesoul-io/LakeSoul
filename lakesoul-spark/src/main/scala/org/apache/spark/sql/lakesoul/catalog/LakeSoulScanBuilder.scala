@@ -22,11 +22,13 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
 import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
@@ -62,7 +64,9 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     val parquetSchema =
       new SparkToParquetSchemaConverter(sparkSession.sessionState.conf).convert(schema)
     val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
-      pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
+      pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
+      RebaseSpec(LegacyBehaviorPolicy.CORRECTED)
+    )
     parquetFilters.convertibleFilters(this.filters).toArray
   }
 

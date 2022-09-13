@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator
 
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry.FunctionBuilder
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, ScalaReflection}
@@ -35,9 +36,11 @@ trait MergeOperator[T] extends Serializable {
     val info = new ExpressionInfo(
       this.getClass.getCanonicalName, funIdentName.database.orNull, funIdentName.funcName)
 
-    def builder(children: Seq[Expression]) = udf.apply(children.map(Column.apply): _*).expr
+    def builder(children: Seq[Expression]): Expression = udf.apply(children.map(Column.apply): _*).expr
 
-    spark.sessionState.functionRegistry.registerFunction(funIdentName, info, builder)
+    val builderFunc: FunctionBuilder = builder
+
+    spark.sessionState.functionRegistry.registerFunction(funIdentName, info, builderFunc)
   }
 
   private def getUdf(name: String): SparkUserDefinedFunction = {

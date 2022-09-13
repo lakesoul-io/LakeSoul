@@ -62,7 +62,7 @@ case class ExtractMergeOperator(sparkSession: SparkSession)
 
               val newChild = if (udf.children.length == 1) {
                 udf.children.head match {
-                  case Cast(castChild, _, _) => castChild
+                  case Cast(castChild, _, _, _) => castChild
                   case _ => udf.children.head
                 }
               } else {

@@ -199,7 +199,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
   protected def verifyNewMetadata(table_info: TableInfo): Unit = {
     SchemaUtils.checkColumnNameDuplication(table_info.schema, "in the TableInfo update")
-    ParquetSchemaConverter.checkFieldNames(SchemaUtils.explodeNestedFieldNames(table_info.data_schema))
+    ParquetSchemaConverter.checkFieldNames(table_info.data_schema)
   }
 
 

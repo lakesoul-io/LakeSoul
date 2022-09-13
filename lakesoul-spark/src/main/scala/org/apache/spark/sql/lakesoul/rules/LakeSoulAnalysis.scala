@@ -42,7 +42,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsDown {
     // INSERT INTO by ordinal
-    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false)
+    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
@@ -53,7 +53,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
     // INSERT OVERWRITE by ordinal
     case a@OverwriteByExpression(
-    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false)
+    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {

@@ -54,6 +54,7 @@
         <log4j.version>2.17.2</log4j.version>
         <local.scope>provided</local.scope>
         <gpg.keyname>0xA66726C6</gpg.keyname>
+        <spark.version>3.2.1</spark.version>
     </properties>
 
     <distributionManagement>

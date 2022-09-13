@@ -966,7 +966,7 @@ object SchemaUtils {
     * columns have these characters.
     */
   def checkFieldNames(names: Seq[String]): Unit = {
-    ParquetSchemaConverter.checkFieldNames(names)
+    names.foreach(ParquetSchemaConverter.checkFieldName)
     // The method checkFieldNames doesn't have a valid regex to search for '\n'. That should be
     // fixed in Apache Spark, and we can remove this additional check here.
     names.find(_.contains("\n")).foreach(col => throw LakeSoulErrors.invalidColumnName(col))
