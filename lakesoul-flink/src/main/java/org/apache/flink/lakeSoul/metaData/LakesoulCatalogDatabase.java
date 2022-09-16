@@ -18,14 +18,32 @@
 
 package org.apache.flink.lakeSoul.metaData;
 
+import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.catalog.CatalogDatabase;
 
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Optional;
 
 public class LakesoulCatalogDatabase implements CatalogDatabase {
-  private final Map<String, String> properties = null;
+  private final Map<String, String> properties;
   private final String comment = "Only default Database";
+
+
+  public LakesoulCatalogDatabase(Map<String, String> properties) {
+    if (properties != null) {
+      this.properties = new HashMap<>();
+      this.properties.putAll(properties);
+    } else {
+      this.properties = null;
+    }
+  }
+
+  public LakesoulCatalogDatabase() {
+    this(null);
+  }
+
 
   @Override
   public Map<String, String> getProperties() {
