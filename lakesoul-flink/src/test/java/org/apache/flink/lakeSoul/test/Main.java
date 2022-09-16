@@ -59,22 +59,26 @@ public class Main {
             "'table-name'='test5'\n" +
             ")");
 
+    tEnvs.executeSql("show catalogs").print();
+    tEnvs.executeSql("show databases").print();
     Catalog lakesoulCatalog = new LakeSoulCatalog();
     tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
     tEnvs.useCatalog("lakeSoul");
+    tEnvs.executeSql("show catalogs").print();
 
     //target
-    tEnvs.executeSql(
-            "CREATE TABLE " + tableName + "( id bigint," +
-                    " name string," +
-                    " dt string," +
-                    "primary key (id) NOT ENFORCED ) " +
-                    "PARTITIONED BY (dt)" +
-                    " with ('connector' = 'lakeSoul'," +
-                    "'format'='parquet','path'='" +
-                    PATH + "'," +
-                    "'useCDC'='true'," +
-                    "'bucket_num'='2')");
+//    tEnvs.executeSql(
+//            "CREATE TABLE " + tableName + "( id bigint," +
+//                    " name string," +
+//                    " dt string," +
+//                    "primary key (id) NOT ENFORCED ) " +
+//                    "PARTITIONED BY (dt)" +
+//                    " with ('connector' = 'lakeSoul'," +
+//                    "'format'='parquet','path'='" +
+//                    PATH + "'," +
+//                    "'useCDC'='true'," +
+//                    "'bucket_num'='2')");
+    tEnvs.executeSql("show databases").print();
 
     tEnvs.executeSql("show tables ").print();
 

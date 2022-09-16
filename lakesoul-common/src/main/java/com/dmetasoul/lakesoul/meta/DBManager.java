@@ -590,9 +590,14 @@ public class DBManager {
 
         boolean insertNamespaceFlag = namespaceDao.insert(namespace);
         if (!insertNamespaceFlag) {
-            throw new IllegalStateException("this namespace already exists!");
+            throw new IllegalStateException(String.format("namespace %s already exists!", name));
         }
 
+    }
+
+    public Namespace getNamespaceByName(String name) {
+        Namespace namespace = namespaceDao.findByName(name);
+        return namespace;
     }
 
 }

@@ -21,6 +21,7 @@ package org.apache.flink.lakeSoul.metaData;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -43,11 +44,7 @@ import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.util.StringUtils;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
@@ -60,12 +57,17 @@ import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulCatalog implements Catalog {
+
+  public static final String CATALOG_NAME = "lakesoul";
   private static final String LAKE_SOUL_DATA_BASE_NAME = "test_lakesoul_meta";
   private static final String TABLE_PATH = "path";
   private static final String TABLE_ID_PREFIX = "table_";
   private DBManager dbManager;
 
+  private Map<String, CatalogDatabase> databases;
+
   public LakeSoulCatalog() {
+    databases = new HashMap<>();
   }
 
   @Override
@@ -80,20 +82,30 @@ public class LakeSoulCatalog implements Catalog {
 
   @Override
   public String getDefaultDatabase() throws CatalogException {
-    return LAKE_SOUL_DATA_BASE_NAME;
+    return "default";
   }
 
   @Override
   public List<String> listDatabases() throws CatalogException {
-    return Collections.singletonList(LAKE_SOUL_DATA_BASE_NAME);
+    return dbManager.listNamespaces();
   }
 
   @Override
   public CatalogDatabase getDatabase(String databaseName) throws DatabaseNotExistException, CatalogException {
-    if (!getDefaultDatabase().equals(databaseName)) {
-      throw new DatabaseNotExistException(LAKE_SOUL_DATA_BASE_NAME, databaseName);
-    } else {
-      return new LakesoulCatalogDatabase();
+    Namespace namespace = dbManager.getNamespaceByName(databaseName);
+    if (namespace == null) {
+      throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
+    }  else {
+      CatalogDatabase catalogDatabase = databases.getOrDefault(databaseName, null);
+      if (catalogDatabase== null) {
+        Map<String, String> properties = new HashMap<>();
+        for (Map.Entry<String, Object> entry : namespace.getProperties().entrySet()) {
+          properties.put(entry.getKey(), entry.getValue().toString());
+        }
+        catalogDatabase = new LakesoulCatalogDatabase(properties);
+        databases.put(databaseName, catalogDatabase);
+      }
+      return catalogDatabase;
     }
   }
 
@@ -109,6 +121,16 @@ public class LakeSoulCatalog implements Catalog {
 
   @Override
   public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
+    if (databases.containsKey(databaseName)) {
+      throw new CatalogException(String.format("database %s already exists", databaseName));
+    }
+    databases.put(databaseName, catalogDatabase);
+    try {
+      dbManager.createNewNamespace(databaseName, JSONObject.parseObject(JSONObject.toJSONString(catalogDatabase)));
+    } catch (IllegalStateException e) {
+      e.printStackTrace();
+    }
+
   }
 
   @Override
@@ -123,9 +145,7 @@ public class LakeSoulCatalog implements Catalog {
 
   @Override
   public List<String> listTables(String databaseName) throws CatalogException {
-    checkArgument(!StringUtils.isNullOrWhitespaceOnly(databaseName),
-        "databaseName cannot be null or empty");
-    return dbManager.listTables();
+    return dbManager.listTablePathsByNamespace(databaseName);
   }
 
   @Override
@@ -136,7 +156,7 @@ public class LakeSoulCatalog implements Catalog {
   @Override
   public CatalogBaseTable getTable(ObjectPath tablePath) throws TableNotExistException, CatalogException {
     if (!tableExists(tablePath)) {
-      throw new TableNotExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath);
+      throw new TableNotExistException(CATALOG_NAME, tablePath);
     }
     String tableName = tablePath.getObjectName();
     TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
@@ -170,11 +190,11 @@ public class LakeSoulCatalog implements Catalog {
     List<String> columns = schema.getPrimaryKey().get().getColumns();
     String primaryKeys = FlinkUtil.stringListToString(columns);
     if (!databaseExists(tablePath.getDatabaseName())) {
-      throw new DatabaseNotExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath.getDatabaseName());
+      throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
     }
     if (tableExists(tablePath)) {
       if (!ignoreIfExists) {
-        throw new TableAlreadyExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath);
+        throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
       }
     } else {
       Map<String, String> tableOptions = table.getOptions();
@@ -235,7 +255,7 @@ public class LakeSoulCatalog implements Catalog {
   @Override
   public CatalogPartition getPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec) throws PartitionNotExistException, CatalogException {
     if (!partitionExists(tablePath, catalogPartitionSpec)) {
-      throw new PartitionNotExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath, catalogPartitionSpec);
+      throw new PartitionNotExistException(CATALOG_NAME, tablePath, catalogPartitionSpec);
     }
     return null;
   }
@@ -249,14 +269,14 @@ public class LakeSoulCatalog implements Catalog {
   public void createPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, CatalogPartition catalogPartition, boolean ignoreIfExists)
       throws PartitionAlreadyExistsException, CatalogException {
     if (partitionExists(tablePath, catalogPartitionSpec)) {
-      throw new PartitionAlreadyExistsException(LAKE_SOUL_DATA_BASE_NAME, tablePath, catalogPartitionSpec);
+      throw new PartitionAlreadyExistsException(CATALOG_NAME, tablePath, catalogPartitionSpec);
     }
   }
 
   @Override
   public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfExists) throws PartitionNotExistException, CatalogException {
     if (!partitionExists(tablePath, catalogPartitionSpec)) {
-      throw new PartitionNotExistException(LAKE_SOUL_DATA_BASE_NAME, tablePath, catalogPartitionSpec);
+      throw new PartitionNotExistException(CATALOG_NAME, tablePath, catalogPartitionSpec);
     }
     String tableName = tablePath.getFullName();
     String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);

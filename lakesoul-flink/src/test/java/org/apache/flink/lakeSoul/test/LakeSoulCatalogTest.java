@@ -20,6 +20,7 @@ package org.apache.flink.lakeSoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.flink.lakeSoul.metaData.LakesoulCatalogDatabase;
 import org.apache.flink.lakeSoul.table.LakeSoulCatalogFactory;
 import org.apache.flink.lakeSoul.metaData.LakeSoulCatalog;
 import org.apache.flink.table.api.EnvironmentSettings;
@@ -28,6 +29,7 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
 import org.junit.Before;
 import org.junit.Test;
 import java.util.HashMap;
@@ -49,8 +51,17 @@ public class LakeSoulCatalogTest {
         env.setParallelism(1);
         tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
-        tEnvs.registerCatalog(LAKESOUL,lakesoulCatalog);
+        lakesoulCatalog.open();
+
+        try {
+            lakesoulCatalog.createDatabase("test_lakesoul_meta", new LakesoulCatalogDatabase(), false);
+        } catch (DatabaseAlreadyExistException e) {
+            throw new RuntimeException(e);
+        }
+        tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
         tEnvs.useCatalog(LAKESOUL);
+//        System.out.println(lakesoulCatalog.listDatabases());
+        tEnvs.useDatabase("test_lakesoul_meta");
         DbManage = new DBManager();
     }
 
@@ -75,15 +86,15 @@ public class LakeSoulCatalogTest {
 
     @Test
     public void createTable(){
-        tEnvs.executeSql( "CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')" );
+        tEnvs.executeSql( "CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='5433')" );
         tEnvs.executeSql("show tables").print();
         TableInfo info = DbManage.getTableInfo("MetaCommon.DATA_BASE().user_behaviorgg");
-        System.out.println(info.getTableSchema());
+        System.out.println(info);
     }
 
     @Test
     public void dropTable() {
-        tEnvs.executeSql("drop table user_behavior7464434");
+//        tEnvs.executeSql("drop table user_behavior7464434");
         tEnvs.executeSql("show tables").print();
     }
 
@@ -103,7 +114,7 @@ public class LakeSoulCatalogTest {
                         + "WITH ('connector'='datagen')");
 
         Table table = tableEnv.from("GeneratedTable");
-        tableEnv.toDataStream(table).print();
+//        tableEnv.toDataStream(table).print();
 //        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
     }
 }
