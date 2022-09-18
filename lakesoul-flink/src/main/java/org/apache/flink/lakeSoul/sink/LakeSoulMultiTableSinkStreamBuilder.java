@@ -23,15 +23,13 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaAndValue;
+import io.debezium.relational.TableId;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakeSoul.types.JsonDebeziumDeserializationSchema;
 import org.apache.flink.lakeSoul.types.JsonSourceRecord;
 import org.apache.flink.lakeSoul.types.SourceRecordJsonSerde;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.DataStreamSink;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.datastream.*;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
@@ -98,6 +96,10 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         DataStream<JsonSourceRecord> ddlStream = cdcStream.getSideOutput(outputTag);
 
         return Tuple2.of(cdcStream, ddlStream);
+    }
+
+    public KeyedStream<JsonSourceRecord, TableId> buildStreamKeyedByTableSchema(DataStream<JsonSourceRecord> stream) {
+        return stream.keyBy(JsonSourceRecord::getTableId);
     }
 
     public DataStreamSink<JsonSourceRecord> printStream(DataStream<JsonSourceRecord> stream, String name) {

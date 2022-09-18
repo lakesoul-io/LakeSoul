@@ -26,8 +26,7 @@ import java.util.stream.Collectors;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.lakeSoul.metaData.DataFileMetaData;
-import org.apache.flink.lakeSoul.sink.LakSoulFileWriter;
-import org.apache.flink.lakeSoul.sink.FileSinkFunction;
+import org.apache.flink.lakeSoul.sink.DefaultBulkFormatCreator;
 import org.apache.flink.lakeSoul.sink.MetaDataCommit;
 import org.apache.flink.lakeSoul.sink.bucket.FlinkBucketAssigner;
 import org.apache.flink.lakeSoul.sink.bucket.LakeSoulRollingPolicyImpl;
@@ -35,6 +34,7 @@ import org.apache.flink.lakeSoul.sink.bucket.bulkFormat.ProjectionBulkFactory;
 import org.apache.flink.lakeSoul.sink.partition.DataPartitioner;
 import org.apache.flink.lakeSoul.sink.partition.CdcPartitionComputer;
 import org.apache.flink.lakeSoul.tool.FlinkUtil;
+import org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -58,21 +58,16 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.types.RowKind;
 
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.lakeSoul.tool.LakeSoulKeyGen.DEFAULT_PARTITION_PATH;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.FILE_ROLLING_TIME;
-import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
-  private EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
+  private final EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private boolean overwrite;
-  private DataType dataType;
-  private ResolvedSchema schema;
-  private Configuration flinkConf;
-  private List<String> partitionKeyList;
+  private final DataType dataType;
+  private final ResolvedSchema schema;
+  private final Configuration flinkConf;
+  private final List<String> partitionKeyList;
 
   private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
     return new LakeSoulTableSink(lts);
@@ -93,7 +88,12 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   private LakeSoulTableSink(LakeSoulTableSink tableSink) {
+    this.bulkWriterFormat = tableSink.bulkWriterFormat;
     this.overwrite = tableSink.overwrite;
+    this.dataType = tableSink.dataType;
+    this.schema = tableSink.schema;
+    this.flinkConf = tableSink.flinkConf;
+    this.partitionKeyList = tableSink.partitionKeyList;
   }
 
   @Override
@@ -118,8 +118,11 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     Path path = new Path(flinkConf.getString(CATALOG_PATH));
     int bucketParallelism = flinkConf.getInteger(BUCKET_PARALLELISM);
     //rowData key tools
-    LakeSoulKeyGen keyGen = new LakeSoulKeyGen((RowType) schema.toSourceRowDataType().notNull().getLogicalType(),
-        flinkConf, partitionKeyList);
+    LakeSoulKeyGen keyGen = new LakeSoulKeyGen(
+            (RowType) schema.toSourceRowDataType().notNull().getLogicalType(),
+            flinkConf,
+            flinkConf.getString(LakeSoulSinkOptions.KEY_FIELD).split(",")
+            );
     //bucket file name config
     OutputFileConfig fileNameConfig = OutputFileConfig.builder().build();
     //if use cdc  add rowKind column
@@ -132,24 +135,25 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //redistribution by partitionKey
     dataStream = dataStream.partitionCustom(new DataPartitioner<>(), keyGen::getRePartitionHash);
     //rowData sink fileSystem Task
-    LakSoulFileWriter<RowData> lakeSoulFileWriter =
-        new LakSoulFileWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),
+    LakeSoulTableWriter<RowData> lakeSoulTableWriter =
+        new LakeSoulTableWriter<>(flinkConf.getLong(BUCKET_CHECK_INTERVAL),
             keyGen,
             //create sink Bulk format
-            FileSinkFunction.forBulkFormat(
+            DefaultBulkFormatCreator.forBulkFormat(
                     path,
                     new ProjectionBulkFactory(
-                        (BulkWriter.Factory<RowData>) getParquetFormat(sinkContext),
+                            getParquetFormat(sinkContext),
                         partitionComputer))
                 .withBucketAssigner(assigner)
                 .withOutputFileConfig(fileNameConfig)
                 .withRollingPolicy(rollingPolicy),
+                flinkConf.getString(TABLE_NAME),
             partitionKeyList, flinkConf, fileNameConfig);
 
     DataStream<DataFileMetaData> writeResultStream =
-        dataStream.transform(LakSoulFileWriter.class.getSimpleName(),
+        dataStream.transform(LakeSoulTableWriter.class.getSimpleName(),
                 TypeInformation.of(DataFileMetaData.class),
-                lakeSoulFileWriter).name("DataWrite")
+                        lakeSoulTableWriter).name("DataWrite")
             .setParallelism(bucketParallelism);
     //metadata upload Task
     DataStream<Void> commitStream = writeResultStream.transform(
@@ -167,7 +171,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   /*
    * create parquet data type
    */
-  private Object getParquetFormat(Context sinkContext) {
+  private BulkWriter.Factory<RowData> getParquetFormat(Context sinkContext) {
     DataType resultType = FlinkUtil.getFields(dataType, flinkConf.getBoolean(USE_CDC)).stream()
         .filter(field -> !partitionKeyList.contains(field.getName()))
         .collect(Collectors.collectingAndThen(Collectors.toList(), LakeSoulTableSink::getDataType));

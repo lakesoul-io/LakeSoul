@@ -24,12 +24,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakeSoul.sink.bucket.LakeSoulRollingPolicyImpl;
-import org.apache.flink.lakeSoul.sink.FileSinkFunction;
-import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketFactory;
-import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketFactoryImpl;
-import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBuckets;
-import org.apache.flink.lakeSoul.sink.bucket.LakeSoulBucketsBuilder;
+import org.apache.flink.lakeSoul.sink.bucket.*;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
@@ -47,7 +42,7 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
 
   private final Path basePath;
 
-  private BulkWriter.Factory<IN> writerFactory;
+  private final BulkWriter.Factory<IN> writerFactory;
 
   private BucketAssigner<IN, BucketID> bucketAssigner;
 
@@ -116,13 +111,6 @@ public class BulkFormatBuilder<IN, BucketID, T extends LakeSoulBucketsBuilder<IN
   public T withOutputFileConfig(final OutputFileConfig outputFileConfig) {
     this.outputFileConfig = outputFileConfig;
     return self();
-  }
-
-  /**
-   * Creates the actual sink.
-   */
-  public FileSinkFunction<IN> build() {
-    return new FileSinkFunction<>(this, bucketCheckInterval);
   }
 
   @Internal

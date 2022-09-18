@@ -24,6 +24,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.filesystem.PartitionComputer;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -41,57 +42,75 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
   protected LogicalType[] partitionTypes;
   protected RowData.FieldGetter[] partitionFieldGetters;
 
-  private int[] nonPartitionIndexes;
-  private LogicalType[] nonPartitionTypes;
+  private final int[] nonPartitionIndexes;
+  private final LogicalType[] nonPartitionTypes;
   protected RowData.FieldGetter[] nonPartitionFieldGetters;
-  private Boolean isCdc;
+  private final Boolean isCdc;
   private transient GenericRowData reuseRow;
 
   public CdcPartitionComputer(
-      String defaultPartValue,
-      String[] columnNames,
-      DataType[] columnTypes,
-      String[] partitionColumns, Boolean isCdc) {
-    this.defaultPartValue =   defaultPartValue;
+          String defaultPartValue,
+          String[] columnNames,
+          RowType rowType,
+          String[] partitionColumns, Boolean isCdc) {
+    this(defaultPartValue, columnNames,
+            rowType.getChildren(),
+            partitionColumns, isCdc);
+  }
+
+  public CdcPartitionComputer(
+          String defaultPartValue,
+          String[] columnNames,
+          DataType[] columnTypes,
+          String[] partitionColumns, Boolean isCdc) {
+    this(defaultPartValue, columnNames,
+            Arrays.stream(columnTypes)
+                    .map(DataType::getLogicalType)
+                    .collect(Collectors.toList()),
+            partitionColumns, isCdc);
+  }
+
+  public CdcPartitionComputer(
+          String defaultPartValue,
+          String[] columnNames,
+          List<LogicalType> columnTypeList,
+          String[] partitionColumns, Boolean isCdc) {
+    this.defaultPartValue = defaultPartValue;
     this.isCdc = isCdc;
     List<String> columnList = Arrays.asList(columnNames);
-    List<LogicalType> columnTypeList =
-        Arrays.stream(columnTypes)
-            .map(DataType::getLogicalType)
-            .collect(Collectors.toList());
 
     this.partitionColumns = partitionColumns;
     this.partitionIndexes =
-        Arrays.stream(this.partitionColumns).mapToInt(columnList::indexOf).toArray();
+            Arrays.stream(this.partitionColumns).mapToInt(columnList::indexOf).toArray();
     this.partitionTypes =
-        Arrays.stream(partitionIndexes)
-            .mapToObj(columnTypeList::get)
-            .toArray(LogicalType[]::new);
+            Arrays.stream(partitionIndexes)
+                    .mapToObj(columnTypeList::get)
+                    .toArray(LogicalType[]::new);
     this.partitionFieldGetters =
-        IntStream.range(0, partitionTypes.length)
-            .mapToObj(
-                i ->
-                    RowData.createFieldGetter(
-                        partitionTypes[i], partitionIndexes[i]))
-            .toArray(RowData.FieldGetter[]::new);
+            IntStream.range(0, partitionTypes.length)
+                    .mapToObj(
+                            i ->
+                                    RowData.createFieldGetter(
+                                            partitionTypes[i], partitionIndexes[i]))
+                    .toArray(RowData.FieldGetter[]::new);
 
     List<Integer> partitionIndexList =
-        Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
+            Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
     this.nonPartitionIndexes =
-        IntStream.range(0, columnNames.length)
-            .filter(c -> !partitionIndexList.contains(c))
-            .toArray();
+            IntStream.range(0, columnNames.length)
+                    .filter(c -> !partitionIndexList.contains(c))
+                    .toArray();
     this.nonPartitionTypes =
-        Arrays.stream(nonPartitionIndexes)
-            .mapToObj(columnTypeList::get)
-            .toArray(LogicalType[]::new);
+            Arrays.stream(nonPartitionIndexes)
+                    .mapToObj(columnTypeList::get)
+                    .toArray(LogicalType[]::new);
     this.nonPartitionFieldGetters =
-        IntStream.range(0, nonPartitionTypes.length)
-            .mapToObj(
-                i ->
-                    RowData.createFieldGetter(
-                        nonPartitionTypes[i], nonPartitionIndexes[i]))
-            .toArray(RowData.FieldGetter[]::new);
+            IntStream.range(0, nonPartitionTypes.length)
+                    .mapToObj(
+                            i ->
+                                    RowData.createFieldGetter(
+                                            nonPartitionTypes[i], nonPartitionIndexes[i]))
+                    .toArray(RowData.FieldGetter[]::new);
   }
 
   @Override

@@ -31,7 +31,6 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
 import org.apache.spark.unsafe.types.UTF8String;
 
-import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
@@ -43,75 +42,22 @@ public class LakeSoulKeyGen implements Serializable {
 
   public static final String DEFAULT_PARTITION_PATH = "default";
   private final Configuration conf;
-  private final String[] recordKeyFields;
-  private final String[] partitionPathFields;
-  private final RowDataProjection recordKeyProjection;
-  private final RowDataProjection partitionPathProjection;
-  private RowData.FieldGetter recordKeyFieldGetter;
-  private RowData.FieldGetter partitionPathFieldGetter;
   private final GeneratedRecordComparator comparator;
   private RecordComparator compareFunction;
-  private boolean nonPartitioned;
   private boolean simpleRecordKey = false;
-  private boolean simplePartitionPath = false;
-  private final List<String> fieldNames;
-  private List<String> partitionKey;
-  private String simpleRecordKeyType;
-  private int[] hashKeyIndex;
-  private LogicalType[] hashKeyType;
+  private final int[] hashKeyIndex;
+  private final LogicalType[] hashKeyType;
 
-  public LakeSoulKeyGen(RowType rowType, Configuration conf, List<String> partitionKey) {
+  public LakeSoulKeyGen(RowType rowType, Configuration conf, String[] recordKeyFields) {
     this.conf = conf;
-    this.recordKeyFields = getRecordKeyFields();
-    this.partitionKey = partitionKey;
-    this.partitionPathFields = getPartitionFiled();
-    this.fieldNames = rowType.getFieldNames();
+    List<String> fieldNames = rowType.getFieldNames();
     List<LogicalType> fieldTypes = rowType.getChildren();
-    if (this.recordKeyFields.length == 1) {
+    if (recordKeyFields.length == 1) {
       this.simpleRecordKey = true;
-      int recordKeyIdx = fieldNames.indexOf(this.recordKeyFields[0]);
-      LogicalType logicalType = fieldTypes.get(recordKeyIdx);
-      simpleRecordKeyType = logicalType.toString();
-      this.recordKeyFieldGetter = RowData.createFieldGetter(logicalType, recordKeyIdx);
-      this.recordKeyProjection = null;
-    } else {
-      this.recordKeyProjection = getProjection(this.recordKeyFields, fieldNames, fieldTypes);
     }
-    this.comparator = createSortComparator(getFieldPositions(this.recordKeyFields, fieldNames), rowType);
-    if (this.partitionPathFields.length == 1) {
-      this.simplePartitionPath = true;
-      if (this.partitionPathFields[0].equals("")) {
-        this.nonPartitioned = true;
-      } else {
-        int partitionPathIdx = fieldNames.indexOf(this.partitionPathFields[0]);
-        this.partitionPathFieldGetter = RowData.createFieldGetter(fieldTypes.get(partitionPathIdx), partitionPathIdx);
-      }
-      this.partitionPathProjection = null;
-    } else {
-      this.partitionPathProjection = getProjection(this.partitionPathFields, fieldNames, fieldTypes);
-    }
-    this.hashKeyIndex = getFieldPositions(this.recordKeyFields, fieldNames);
+    this.comparator = createSortComparator(getFieldPositions(recordKeyFields, fieldNames), rowType);
+    this.hashKeyIndex = getFieldPositions(recordKeyFields, fieldNames);
     this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
-  }
-
-  public static String objToString(@Nullable Object obj) {
-    return obj == null ? null : obj.toString();
-  }
-
-  public String[] getRecordKeyFields() {
-    String keyField = conf.getString(LakeSoulSinkOptions.KEY_FIELD);
-    return keyField.split(",");
-  }
-
-  private String[] getPartitionFiled() {
-    String partitionField = conf.getString(LakeSoulSinkOptions.PARTITION_FIELD);
-    return partitionField.split(",");
-  }
-
-  private static RowDataProjection getProjection(String[] fields, List<String> schemaFields, List<LogicalType> schemaTypes) {
-    int[] positions = getFieldPositions(fields, schemaFields);
-    LogicalType[] types = Arrays.stream(positions).mapToObj(schemaTypes::get).toArray(LogicalType[]::new);
-    return RowDataProjection.instance(types, positions);
   }
 
   private static int[] getFieldPositions(String[] fields, List<String> allFields) {
@@ -142,7 +88,7 @@ public class LakeSoulKeyGen implements Serializable {
     }
   }
 
-  public long getHash(LogicalType type, Object filed, long seed) {
+  public static long getHash(LogicalType type, Object filed, long seed) {
 
     switch (type.getTypeRoot()) {
       case VARCHAR:

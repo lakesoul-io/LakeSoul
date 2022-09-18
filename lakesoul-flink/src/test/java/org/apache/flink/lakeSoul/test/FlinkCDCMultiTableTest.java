@@ -21,12 +21,15 @@ package org.apache.flink.lakeSoul.test;
 
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import io.debezium.relational.TableId;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakeSoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakeSoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 public class FlinkCDCMultiTableTest {

@@ -19,30 +19,28 @@
 
 package org.apache.flink.lakeSoul.sink.bucket;
 
-import org.apache.flink.api.common.state.ListState;
-import org.apache.flink.api.common.state.ListStateDescriptor;
-import org.apache.flink.api.common.state.OperatorStateStore;
-import org.apache.flink.api.common.typeutils.base.LongSerializer;
-import org.apache.flink.api.common.typeutils.base.array.BytePrimitiveArraySerializer;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeCallback;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 
 import javax.annotation.Nullable;
+import java.util.List;
 
 public class LakeSoulFileSinkHelper<IN> implements ProcessingTimeCallback {
-  private static final ListStateDescriptor<byte[]> BUCKET_STATE_DESC;
-  private static final ListStateDescriptor<Long> MAX_PART_COUNTER_STATE_DESC;
   private final long bucketCheckInterval;
   private final ProcessingTimeService procTimeService;
   private final LakeSoulBuckets<IN, ?> buckets;
-  private final ListState<byte[]> bucketStates;
-  private final ListState<Long> maxPartCountersState;
+  private final List<byte[]> bucketStates;
+  private final List<Long> maxPartCountersState;
 
-  public LakeSoulFileSinkHelper(LakeSoulBuckets<IN, ?> buckets, boolean isRestored, OperatorStateStore stateStore, ProcessingTimeService procTimeService, long bucketCheckInterval) throws Exception {
+  public LakeSoulFileSinkHelper(LakeSoulBuckets<IN, ?> buckets, boolean isRestored,
+                                ProcessingTimeService procTimeService, long bucketCheckInterval,
+                                List<byte[]> bucketStates,
+                                List<Long> maxPartCountersState
+                                ) throws Exception {
     this.bucketCheckInterval = bucketCheckInterval;
     this.buckets = buckets;
-    this.bucketStates = stateStore.getListState(BUCKET_STATE_DESC);
-    this.maxPartCountersState = stateStore.getUnionListState(MAX_PART_COUNTER_STATE_DESC);
+    this.bucketStates = bucketStates;
+    this.maxPartCountersState = maxPartCountersState;
     this.procTimeService = procTimeService;
     if (isRestored) {
       buckets.initializeState(this.bucketStates, this.maxPartCountersState);
@@ -76,9 +74,5 @@ public class LakeSoulFileSinkHelper<IN> implements ProcessingTimeCallback {
     this.buckets.close();
   }
 
-  static {
-    BUCKET_STATE_DESC = new ListStateDescriptor("bucket-states", BytePrimitiveArraySerializer.INSTANCE);
-    MAX_PART_COUNTER_STATE_DESC = new ListStateDescriptor("max-part-counter", LongSerializer.INSTANCE);
-  }
 }
 

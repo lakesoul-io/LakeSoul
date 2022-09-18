@@ -23,7 +23,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.FileLifeCycleListener;
@@ -37,6 +36,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 public class LakeSoulBuckets<IN, BucketID> {
@@ -60,54 +60,53 @@ public class LakeSoulBuckets<IN, BucketID> {
   public LakeSoulBuckets(Path basePath, BucketAssigner<IN, BucketID> bucketAssigner, LakeSoulBucketFactory<IN, BucketID> bucketFactory, BucketWriter<IN, BucketID> bucketWriter,
                          LakeSoulRollingPolicyImpl rollingPolicy, int subtaskIndex, OutputFileConfig outputFileConfig) {
     this.basePath = Preconditions.checkNotNull(basePath);
-    this.bucketAssigner = (BucketAssigner) Preconditions.checkNotNull(bucketAssigner);
-    this.bucketFactory = (LakeSoulBucketFactory<IN, BucketID>) Preconditions.checkNotNull(bucketFactory);
-    this.bucketWriter = (BucketWriter) Preconditions.checkNotNull(bucketWriter);
-    this.rollingPolicy = (LakeSoulRollingPolicyImpl) Preconditions.checkNotNull(rollingPolicy);
+    this.bucketAssigner = Preconditions.checkNotNull(bucketAssigner);
+    this.bucketFactory = Preconditions.checkNotNull(bucketFactory);
+    this.bucketWriter = Preconditions.checkNotNull(bucketWriter);
+    this.rollingPolicy = Preconditions.checkNotNull(rollingPolicy);
     this.subtaskIndex = subtaskIndex;
-    this.outputFileConfig = (OutputFileConfig) Preconditions.checkNotNull(outputFileConfig);
-    this.activeBuckets = new HashMap();
+    this.outputFileConfig = Preconditions.checkNotNull(outputFileConfig);
+    this.activeBuckets = new HashMap<>();
     this.bucketContext = new BucketContext();
-    this.bucketStateSerializer = new BucketStateSerializer(bucketWriter.getProperties().getInProgressFileRecoverableSerializer(), bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
+    this.bucketStateSerializer = new BucketStateSerializer<>(
+            bucketWriter.getProperties().getInProgressFileRecoverableSerializer(),
+            bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
         bucketAssigner.getSerializer());
     this.maxPartCounter = 0L;
 
   }
 
   public void setBucketLifeCycleListener(LakeSoulBucketLifeCycleListener<IN, BucketID> bucketLifeCycleListener) {
-    this.bucketLifeCycleListener = (LakeSoulBucketLifeCycleListener) Preconditions.checkNotNull(bucketLifeCycleListener);
+    this.bucketLifeCycleListener = Preconditions.checkNotNull(bucketLifeCycleListener);
   }
 
   public void setFileLifeCycleListener(FileLifeCycleListener<BucketID> fileLifeCycleListener) {
-    this.fileLifeCycleListener = (FileLifeCycleListener) Preconditions.checkNotNull(fileLifeCycleListener);
+    this.fileLifeCycleListener = Preconditions.checkNotNull(fileLifeCycleListener);
   }
 
-  public void initializeState(ListState<byte[]> bucketStates, ListState<Long> partCounterState) throws Exception {
+  public void initializeState(List<byte[]> bucketStates, List<Long> partCounterState) throws Exception {
     this.initializePartCounter(partCounterState);
     LOG.info("Subtask {} initializing its state (max part counter={}).", this.subtaskIndex, this.maxPartCounter);
     this.initializeActiveBuckets(bucketStates);
   }
 
-  private void initializePartCounter(ListState<Long> partCounterState) throws Exception {
+  private void initializePartCounter(List<Long> partCounterState) throws Exception {
     long maxCounter = 0L;
 
     long partCounter;
-    for (Iterator var4 = ((Iterable) partCounterState.get()).iterator(); var4.hasNext(); maxCounter = Math.max(partCounter, maxCounter)) {
-      partCounter = (Long) var4.next();
+    for (Iterator<Long> var4 = partCounterState.iterator(); var4.hasNext(); maxCounter = Math.max(partCounter, maxCounter)) {
+      partCounter = var4.next();
     }
 
     this.maxPartCounter = maxCounter;
   }
 
-  private void initializeActiveBuckets(ListState<byte[]> bucketStates) throws Exception {
-    Iterator var2 = ((Iterable) bucketStates.get()).iterator();
-
-    while (var2.hasNext()) {
-      byte[] serializedRecoveredState = (byte[]) var2.next();
-      BucketState<BucketID> recoveredState = (BucketState) SimpleVersionedSerialization.readVersionAndDeSerialize(this.bucketStateSerializer, serializedRecoveredState);
+  private void initializeActiveBuckets(List<byte[]> bucketStates) throws Exception {
+    for (byte[] serializedRecoveredState : bucketStates) {
+      BucketState<BucketID> recoveredState = SimpleVersionedSerialization.readVersionAndDeSerialize(
+              this.bucketStateSerializer, serializedRecoveredState);
       this.handleRestoredBucketState(recoveredState);
     }
-
   }
 
   private void handleRestoredBucketState(BucketState<BucketID> recoveredState) throws Exception {
@@ -126,7 +125,7 @@ public class LakeSoulBuckets<IN, BucketID> {
     if (!restoredLakeSoulBucket.isActive()) {
       this.notifyBucketInactive(restoredLakeSoulBucket);
     } else {
-      LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) this.activeBuckets.get(bucketId);
+      LakeSoulBucket<IN, BucketID> lakeSoulBucket = this.activeBuckets.get(bucketId);
       if (lakeSoulBucket != null) {
         lakeSoulBucket.merge(restoredLakeSoulBucket);
       } else {
@@ -141,7 +140,7 @@ public class LakeSoulBuckets<IN, BucketID> {
     LOG.info("Subtask {} received completion notification for checkpoint with id={}.", this.subtaskIndex, checkpointId);
 
     while (activeBucketIt.hasNext()) {
-      LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) ((Map.Entry) activeBucketIt.next()).getValue();
+      LakeSoulBucket<IN, BucketID> lakeSoulBucket = activeBucketIt.next().getValue();
       lakeSoulBucket.onSuccessfulCompletionOfCheckpoint(checkpointId);
       if (!lakeSoulBucket.isActive()) {
         activeBucketIt.remove();
@@ -151,20 +150,17 @@ public class LakeSoulBuckets<IN, BucketID> {
 
   }
 
-  public void snapshotState(long checkpointId, ListState<byte[]> bucketStatesContainer, ListState<Long> partCounterStateContainer) throws Exception {
+  public void snapshotState(long checkpointId, List<byte[]> bucketStatesContainer, List<Long> partCounterStateContainer) throws Exception {
     Preconditions.checkState(this.bucketWriter != null && this.bucketStateSerializer != null, "sink has not been initialized");
-    LOG.info("Subtask {} checkpointing for checkpoint with id={} (max part counter={}).", new Object[] {this.subtaskIndex, checkpointId, this.maxPartCounter});
+    LOG.info("Subtask {} checkpointing for checkpoint with id={} (max part counter={}).", this.subtaskIndex, checkpointId, this.maxPartCounter);
     bucketStatesContainer.clear();
     partCounterStateContainer.clear();
     this.snapshotActiveBuckets(checkpointId, bucketStatesContainer);
     partCounterStateContainer.add(this.maxPartCounter);
   }
 
-  private void snapshotActiveBuckets(long checkpointId, ListState<byte[]> bucketStatesContainer) throws Exception {
-    Iterator var4 = this.activeBuckets.values().iterator();
-
-    while (var4.hasNext()) {
-      LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) var4.next();
+  private void snapshotActiveBuckets(long checkpointId, List<byte[]> bucketStatesContainer) throws Exception {
+    for (LakeSoulBucket<IN, BucketID> lakeSoulBucket : this.activeBuckets.values()) {
       BucketState<BucketID> bucketState = lakeSoulBucket.onReceptionOfCheckpoint(checkpointId);
       byte[] serializedBucketState = SimpleVersionedSerialization.writeVersionAndSerialize(this.bucketStateSerializer, bucketState);
       bucketStatesContainer.add(serializedBucketState);
@@ -172,12 +168,6 @@ public class LakeSoulBuckets<IN, BucketID> {
         LOG.debug("Subtask {} checkpointing: {}", this.subtaskIndex, bucketState);
       }
     }
-
-  }
-
-  @VisibleForTesting
-  public LakeSoulBucket<IN, BucketID> onElement(IN value, SinkFunction.Context context) throws Exception {
-    return this.onElement(value, context.currentProcessingTime(), context.timestamp(), context.currentWatermark());
   }
 
   public LakeSoulBucket<IN, BucketID> onElement(IN value,
@@ -193,11 +183,13 @@ public class LakeSoulBuckets<IN, BucketID> {
   }
 
   private LakeSoulBucket<IN, BucketID> getOrCreateBucketForBucketId(BucketID bucketId) throws IOException {
-    LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) this.activeBuckets.get(bucketId);
+    LakeSoulBucket<IN, BucketID> lakeSoulBucket = this.activeBuckets.get(bucketId);
     if (lakeSoulBucket == null) {
       Path bucketPath = this.assembleBucketPath(bucketId);
       lakeSoulBucket =
-          this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath, this.maxPartCounter, this.bucketWriter, this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig);
+          this.bucketFactory.getNewBucket(this.subtaskIndex, bucketId, bucketPath,
+                  this.maxPartCounter, this.bucketWriter,
+                  this.rollingPolicy, this.fileLifeCycleListener, this.outputFileConfig);
       this.activeBuckets.put(bucketId, lakeSoulBucket);
       this.notifyBucketCreate(lakeSoulBucket);
     }
@@ -206,11 +198,9 @@ public class LakeSoulBuckets<IN, BucketID> {
   }
 
   public void onProcessingTime(long timestamp) throws Exception {
-    Iterator var3 = this.activeBuckets.values().iterator();
 
-    while (var3.hasNext()) {
-      LakeSoulBucket<IN, BucketID> lakeSoulBucket = (LakeSoulBucket) var3.next();
-      lakeSoulBucket.onProcessingTime(timestamp);
+    for (LakeSoulBucket<IN, BucketID> inBucketIDLakeSoulBucket : this.activeBuckets.values()) {
+      inBucketIDLakeSoulBucket.onProcessingTime(timestamp);
     }
 
   }
