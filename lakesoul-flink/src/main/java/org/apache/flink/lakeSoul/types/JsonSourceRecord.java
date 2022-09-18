@@ -81,6 +81,10 @@ public final class JsonSourceRecord implements Serializable {
         return this;
     }
 
+    public List<String> getPrimaryKeys() {
+        return primaryKeys;
+    }
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder()

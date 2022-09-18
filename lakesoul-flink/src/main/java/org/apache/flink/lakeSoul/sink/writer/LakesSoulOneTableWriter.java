@@ -183,6 +183,14 @@ public class LakesSoulOneTableWriter<IN> implements Serializable {
     return committableBuckets;
   }
 
+  public List<byte[]> getBucketStates() {
+    return bucketStates;
+  }
+
+  public List<Long> getMaxPartCountersStates() {
+    return maxPartCountersStates;
+  }
+
   public TreeMap<Long, Set<String>> getNewBuckets() {
     return newBuckets;
   }

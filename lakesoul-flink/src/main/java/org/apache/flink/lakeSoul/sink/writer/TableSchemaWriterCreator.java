@@ -33,12 +33,15 @@ import org.apache.flink.lakeSoul.table.LakeSoulTableWriter;
 import org.apache.flink.lakeSoul.tool.LakeSoulKeyGen;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
+import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.filesystem.stream.PartitionCommitPredicate;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
 
 import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.IDENTIFIER;
@@ -46,9 +49,32 @@ import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.UTC_TIME
 import static org.apache.flink.lakeSoul.tool.LakeSoulSinkOptions.*;
 
 public class TableSchemaWriterCreator implements Serializable {
-    public TableId tableId;
 
-    public RowType rowType;
+    public static final class TableSchemaIdentity {
+        public TableId tableId;
+
+        public RowType rowType;
+
+        public TableSchemaIdentity(TableId tableId, RowType rowType) {
+            this.tableId = tableId;
+            this.rowType = rowType;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            TableSchemaIdentity that = (TableSchemaIdentity) o;
+            return tableId.equals(that.tableId) && rowType.equals(that.rowType);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(tableId, rowType);
+        }
+    }
+
+    public TableSchemaIdentity identity;
 
     public LakeSoulKeyGen keyGen;
 
@@ -74,8 +100,7 @@ public class TableSchemaWriterCreator implements Serializable {
             List<String> partitionKeyList,
             Configuration conf) throws IOException {
         TableSchemaWriterCreator info = new TableSchemaWriterCreator();
-        info.tableId = tableId;
-        info.rowType = rowType;
+        info.identity = new TableSchemaIdentity(tableId, rowType);
         info.primaryKeys = primaryKeys;
         info.partitionKeyList = partitionKeyList;
         info.outputFileConfig = OutputFileConfig.builder().build();
@@ -119,11 +144,13 @@ public class TableSchemaWriterCreator implements Serializable {
         return conf;
     }
 
-    public LakeSoulTableWriter<RowData> createTableSchemaWriter(Configuration conf) {
-        return new LakeSoulTableWriter<>(conf.getLong(BUCKET_CHECK_INTERVAL),
-                keyGen,
-                this.bucketsBuilder,
-                tableId.table(),
-                partitionKeyList, conf, this.outputFileConfig);
+    public LakesSoulOneTableWriter<RowData> createTableSchemaWriter(
+            int bucketCheckInterval,
+            ClassLoader classLoader,
+            Configuration conf,
+            StreamingRuntimeContext context) {
+        return new LakesSoulOneTableWriter<>(bucketCheckInterval, bucketsBuilder,
+                PartitionCommitPredicate.create(conf, classLoader, partitionKeyList),
+                context);
     }
 }

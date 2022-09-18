@@ -57,7 +57,7 @@ public class LakeSoulTableWriter<IN> extends AbstractStreamOperator<DataFileMeta
   private final OutputFileConfig outputFileConfig;
   private final LakeSoulKeyGen keyGen;
 
-  private String tableName;
+  private final String tableName;
 
   private LakesSoulOneTableWriter<IN> writer;
 
@@ -110,8 +110,11 @@ public class LakeSoulTableWriter<IN> extends AbstractStreamOperator<DataFileMeta
 
   @Override
   public void snapshotState(StateSnapshotContext context) throws Exception {
-    super.snapshotState(context);
     this.writer.snapshotState(context);
+    ListState<byte[]> bucketStates = getRuntimeContext().getListState(BUCKET_STATE_DESC);
+    bucketStates.update(writer.getBucketStates());
+    ListState<Long> maxParCounterStates = getRuntimeContext().getListState(MAX_PART_COUNTER_STATE_DESC);
+    maxParCounterStates.update(writer.getMaxPartCountersStates());
   }
 
   /**
@@ -128,13 +131,10 @@ public class LakeSoulTableWriter<IN> extends AbstractStreamOperator<DataFileMeta
     headBuckets.values().forEach(partitions::addAll);
     headBuckets.clear();
     String pathPre = outputFileConfig.getPartPrefix() + "-";
-    DataFileMetaData nowFileMeta = new DataFileMetaData(checkpointId,
+    DataFileMetaData newFileMeta = new DataFileMetaData(checkpointId,
         getRuntimeContext().getIndexOfThisSubtask(), getRuntimeContext().getNumberOfParallelSubtasks(),
         new ArrayList<>(partitions), pathPre, tableName);
-    output.collect(
-        new StreamRecord<>(nowFileMeta)
-    );
-
+    output.collect(new StreamRecord<>(newFileMeta));
   }
 
   @Override
