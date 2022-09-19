@@ -1,10 +1,11 @@
 create table if not exists namespace (
-    name text,
+    namespace text,
     properties json,
-    primary key(name)
+    comment text,
+    primary key(namespace)
 );
 
-insert into namespace(name, properties) values ('default', '{}');
+insert into namespace(namespace, properties) values ('default', '{}');
 
 create table if not exists table_info (
     table_id text,

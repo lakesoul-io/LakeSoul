@@ -21,6 +21,7 @@ package org.apache.flink.lakeSoul.metaData;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
@@ -41,7 +42,6 @@ import org.apache.flink.table.catalog.exceptions.PartitionAlreadyExistsException
 import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
 import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
-import org.apache.flink.util.StringUtils;
 
 import java.io.IOException;
 import java.util.*;
@@ -64,15 +64,15 @@ public class LakeSoulCatalog implements Catalog {
   private static final String TABLE_ID_PREFIX = "table_";
   private DBManager dbManager;
 
-  private Map<String, CatalogDatabase> databases;
 
   public LakeSoulCatalog() {
-    databases = new HashMap<>();
+    dbManager = new DBManager();
+    createDatabase("default", new LakesoulCatalogDatabase(), true);
   }
 
   @Override
   public void open() throws CatalogException {
-    dbManager = new DBManager();
+
   }
 
   @Override
@@ -92,42 +92,38 @@ public class LakeSoulCatalog implements Catalog {
 
   @Override
   public CatalogDatabase getDatabase(String databaseName) throws DatabaseNotExistException, CatalogException {
-    Namespace namespace = dbManager.getNamespaceByName(databaseName);
-    if (namespace == null) {
+
+    Namespace namespaceEntity = dbManager.getNamespaceByNamespace(databaseName);
+    if (namespaceEntity == null) {
       throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
     }  else {
-      CatalogDatabase catalogDatabase = databases.getOrDefault(databaseName, null);
-      if (catalogDatabase== null) {
-        Map<String, String> properties = new HashMap<>();
-        for (Map.Entry<String, Object> entry : namespace.getProperties().entrySet()) {
-          properties.put(entry.getKey(), entry.getValue().toString());
-        }
-        catalogDatabase = new LakesoulCatalogDatabase(properties);
-        databases.put(databaseName, catalogDatabase);
-      }
+
+      Map<String, String> properties = DBUtil.jsonToStringMap(namespaceEntity.getProperties());
+      CatalogDatabase catalogDatabase = new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
+
       return catalogDatabase;
     }
   }
 
   @Override
   public boolean databaseExists(String databaseName) throws CatalogException {
-    try {
-      getDatabase(databaseName);
-      return true;
-    } catch (DatabaseNotExistException ignore) {
-      return false;
-    }
+    Namespace namespaceEntity = dbManager.getNamespaceByNamespace(databaseName);
+    return namespaceEntity != null;
   }
 
   @Override
-  public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
-    if (databases.containsKey(databaseName)) {
+  public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean ignoreIfExists) throws CatalogException {
+    if (databaseExists(databaseName)) {
+      if (ignoreIfExists) {
+        return;
+      }
       throw new CatalogException(String.format("database %s already exists", databaseName));
     }
-    databases.put(databaseName, catalogDatabase);
     try {
-      dbManager.createNewNamespace(databaseName, JSONObject.parseObject(JSONObject.toJSONString(catalogDatabase)));
-    } catch (IllegalStateException e) {
+      dbManager.createNewNamespace(databaseName,
+              DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+              catalogDatabase.getComment());
+    } catch (RuntimeException e) {
       e.printStackTrace();
     }
 
@@ -135,12 +131,12 @@ public class LakeSoulCatalog implements Catalog {
 
   @Override
   public void dropDatabase(String databaseName, boolean b, boolean b1) throws CatalogException {
-    throw new CatalogException("not supported now");
+    dbManager.deleteNamespace(databaseName);
   }
 
   @Override
   public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
-    throw new CatalogException("not supported now");
+    dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()));
   }
 
   @Override
@@ -175,6 +171,13 @@ public class LakeSoulCatalog implements Catalog {
   @Override
   public void dropTable(ObjectPath tablePath, boolean b) throws TableNotExistException, CatalogException {
     checkNotNull(tablePath);
+    String tableName = tablePath.getObjectName();
+    TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
+    String tableId = tableInfo.getTableId();
+    dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId);
+    dbManager.deleteShortTableName(tableInfo.getTableName(), tableName);
+    dbManager.deletePartitionInfoByTableId(tableId);
+
   }
 
   @Override
@@ -220,7 +223,7 @@ public class LakeSoulCatalog implements Catalog {
       }
       String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
-      dbManager.createNewTable(tableId, "default", tableName, qualifiedPath,
+      dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
           FlinkUtil.toSparkSchema(schema, cdcMark).json(),
           properties, FlinkUtil.stringListToString(partitionKeys)+";"+primaryKeys);
     }

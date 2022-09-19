@@ -1,11 +1,9 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
+import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
-import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.dmetasoul.lakesoul.meta.entity.TablePathId;
-import org.apache.commons.lang.NotImplementedException;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -21,10 +19,11 @@ public class NamespaceDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into namespace(name, properties) " +
-                    "values (?, ?)");
-            pstmt.setString(1, namespace.getName());
+            pstmt = conn.prepareStatement("insert into namespace(namespace, properties, comment) " +
+                    "values (?, ?, ?)");
+            pstmt.setString(1, namespace.getNamespace());
             pstmt.setString(2, DBUtil.jsonToString(namespace.getProperties()));
+            pstmt.setString(3, namespace.getComment());
             pstmt.execute();
         } catch (SQLException e) {
             result = false;
@@ -35,20 +34,21 @@ public class NamespaceDao {
         return result;
     }
 
-    public Namespace findByName(String name) {
+    public Namespace findByNamespace(String name) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from namespace where name = '%s'", name);
+        String sql = String.format("select * from namespace where namespace = '%s'", name);
         Namespace namespace = null;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
-            namespace = new Namespace();
             while (rs.next()) {
-                namespace.setName(rs.getString("name"));
+                namespace = new Namespace();
+                namespace.setNamespace(rs.getString("namespace"));
                 namespace.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
+                namespace.setComment(rs.getString("comment"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -58,10 +58,10 @@ public class NamespaceDao {
         return namespace;
     }
 
-    public void deleteByName(String name) {
+    public void deleteByNamespace(String namespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from namespace where name = '%s' ", name);
+        String sql = String.format("delete from namespace where namespace = '%s' ", namespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -77,14 +77,14 @@ public class NamespaceDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select name from namespace");
+        String sql = String.format("select namespace from namespace");
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                String tablePath = rs.getString("name");
+                String tablePath = rs.getString("namespace");
                 list.add(tablePath);
             }
         } catch (SQLException e) {
@@ -93,5 +93,40 @@ public class NamespaceDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
+    }
+
+    public int updatePropertiesByNamespace(String namespace, JSONObject properties) {
+        int result = 0;
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        StringBuilder sb = new StringBuilder();
+        sb.append("update namespace set ");
+        sb.append(String.format("properties = '%s'", properties.toJSONString()));
+        sb.append(String.format(" where namespace = '%s'", namespace));
+        System.out.println(sb.toString());
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sb.toString());
+            result = pstmt.executeUpdate();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+        return result;
+    }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement("delete from namespace;");
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
     }
 }

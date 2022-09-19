@@ -27,21 +27,22 @@ import java.util.Map;
 import java.util.Optional;
 
 public class LakesoulCatalogDatabase implements CatalogDatabase {
+
+  private static final String DefaultComment = "Default Comment";
   private final Map<String, String> properties;
-  private final String comment = "Only default Database";
+  private final String comment;
 
 
-  public LakesoulCatalogDatabase(Map<String, String> properties) {
-    if (properties != null) {
-      this.properties = new HashMap<>();
+  public LakesoulCatalogDatabase(Map<String, String> properties, String comment) {
+    this.properties = new HashMap<>();
+    if (properties != null){
       this.properties.putAll(properties);
-    } else {
-      this.properties = null;
     }
+    this.comment = comment;
   }
 
   public LakesoulCatalogDatabase() {
-    this(null);
+    this(null, DefaultComment);
   }
 
 
