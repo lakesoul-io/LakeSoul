@@ -43,7 +43,7 @@ public class DBManager {
     }
 
     public boolean isNamespaceExists(String table_namespace) {
-        Namespace namespace = namespaceDao.findByName(table_namespace);
+        Namespace namespace = namespaceDao.findByNamespace(table_namespace);
         if (namespace == null) {
             return false;
         }
@@ -583,21 +583,44 @@ public class DBManager {
     }
 
     public void createNewNamespace(String name,
-                                   JSONObject properties) {
+                                   JSONObject properties,
+                                   String comment) {
         Namespace namespace = new Namespace();
-        namespace.setName(name);
+        namespace.setNamespace(name);
         namespace.setProperties(properties);
+        namespace.setComment(comment);
 
         boolean insertNamespaceFlag = namespaceDao.insert(namespace);
         if (!insertNamespaceFlag) {
-            throw new IllegalStateException(String.format("namespace %s already exists!", name));
+//            throw new IllegalStateException(String.format("namespace %s already exists!", name));
         }
 
     }
 
-    public Namespace getNamespaceByName(String name) {
-        Namespace namespace = namespaceDao.findByName(name);
-        return namespace;
+    public Namespace getNamespaceByNamespace(String namespace) {
+        Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
+        return namespaceEntity;
+    }
+
+    public void updateNamespaceProperties(String namespace, JSONObject properties) {
+        Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
+        namespaceEntity.setProperties(properties);
+        namespaceDao.updatePropertiesByNamespace(namespace, properties);
+    }
+
+    public void deleteNamespace(String namespace) {
+        namespaceDao.deleteByNamespace(namespace);
+    }
+
+    // just for test
+    public void cleanMeta() {
+
+        namespaceDao.clean();
+        dataCommitInfoDao.clean();
+        tableInfoDao.clean();
+        tablePathIdDao.clean();
+        tableNameIdDao.clean();
+        partitionInfoDao.clean();
     }
 
 }
