@@ -1,7 +1,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{CharType, DataType, DecimalType}
+import org.apache.spark.sql.types.{CharType, DataType, DecimalType,BinaryType}
 
 object DataTypeUtil {
 
@@ -10,7 +10,6 @@ object DataTypeUtil {
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
 
   def convertDatatype(datatype: String): DataType = {
-
     val convert = datatype.toLowerCase match {
       case "string" => StringType
       case "bigint" => LongType
@@ -28,6 +27,39 @@ object DataTypeUtil {
     }
     convert
   }
+
+  // since spark 3.2 support YearMonthIntervalType and DayTimeIntervalType
+  def convertMysqlToSparkDatatype(datatype: String,precisionNum:Int=9,scaleNum:Int=3): Option[DataType] = {
+    val convert = datatype.toLowerCase match {
+      case "bigint" => Some(LongType)
+      case "int" => Some(IntegerType)
+      case "tinyint" => Some(IntegerType)
+      case "smallint" => Some(IntegerType)
+      case "mediumint" => Some(IntegerType)
+      case "double" => Some(DoubleType)
+      case "float" => Some(FloatType)
+      case "numeric" => Some(DecimalType(precisionNum,scaleNum))
+      case "decimal" => Some(DecimalType(precisionNum,scaleNum))
+      case "date" => Some(DateType)
+      case "boolean" => Some(BooleanType)
+      case "timestamp" => Some(TimestampType)
+      case "tinytext" => Some(StringType)
+      case "text" => Some(StringType)
+      case "mediumtext" => Some(StringType)
+      case "longtext" => Some(StringType)
+      case "tinyblob" => Some(BinaryType)
+      case "blob" => Some(BinaryType)
+      case "mediumblob" => Some(BinaryType)
+      case "longblob" => Some(BinaryType)
+      case FIXED_DECIMAL(precision, scale) => Some(DecimalType(precision.toInt, scale.toInt))
+      case CHAR_TYPE(length) => Some(CharType(length.toInt))
+      case VARCHAR_TYPE(length) => Some(StringType)
+      case "varchar" => Some(StringType)
+      case _ => None
+    }
+    convert
+  }
+
 
   def convertToFlinkDatatype(datatype: String): String = {
 
