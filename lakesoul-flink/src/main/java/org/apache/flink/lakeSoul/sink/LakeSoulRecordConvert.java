@@ -25,9 +25,7 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
+import java.util.*;
 
 public class LakeSoulRecordConvert {
     SourceRecordJsonSerde srj = SourceRecordJsonSerde.getInstance();
@@ -111,7 +109,7 @@ public class LakeSoulRecordConvert {
             case STRING:
                 return new VarCharType(Integer.MAX_VALUE);
             case BYTES:
-                return new BinaryType();
+                return new BinaryType(Integer.MAX_VALUE);
             default:
                 return null;
         }
@@ -124,14 +122,17 @@ public class LakeSoulRecordConvert {
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
-                return new TimestampType();
+                return new TimestampType(9);
             case Decimal.LOGICAL_NAME:
-                return  new DecimalType(20,3);
+                Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
+                return  new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
             case Date.SCHEMA_NAME:
-                return new DateType();//date
+                return new DateType();
+            case Year.SCHEMA_NAME:
+                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
-                return new ZonedTimestampType();
+                return new ZonedTimestampType(9);
             default: return null;
         }
 
@@ -196,6 +197,7 @@ public class LakeSoulRecordConvert {
                 ||NanoTimestamp.SCHEMA_NAME.equals(name)
                 ||Decimal.LOGICAL_NAME.equals(name)
                 ||Date.SCHEMA_NAME.equals(name)
+                ||Year.SCHEMA_NAME.equals(name)
                 ||ZonedTime.SCHEMA_NAME.equals(name)
                 ||ZonedTimestamp.SCHEMA_NAME.equals(name)
         ){
@@ -251,6 +253,8 @@ public class LakeSoulRecordConvert {
                 return  convertToDecimal(fieldValue,fieldSchema);
             case Date.SCHEMA_NAME:
                 return convertToDate(fieldValue,fieldSchema);//date
+            case Year.SCHEMA_NAME:
+                return  convertToInt(fieldValue, fieldSchema);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return convertToZonedTimeStamp(fieldValue,fieldSchema,serverTimeZone);

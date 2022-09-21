@@ -22,7 +22,9 @@ package org.apache.flink.lakeSoul.test;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakeSoul.sink.LakeSoulDDLSink;
 import org.apache.flink.lakeSoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakeSoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -34,12 +36,19 @@ public class FlinkCDCMultiTableTest {
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
         env.enableCheckpointing(3000);
+        Configuration conf = new Configuration();
 
+        conf.setString("database","sms");
+        conf.setString("user","root");
+        conf.setString("user","root");
+        conf.setString("password","root");
+        ParameterTool pt = ParameterTool.fromMap(conf.toMap());
+        env.getConfig().setGlobalJobParameters(pt);
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
                 .hostname("localhost")
                 .port(3306)
-                .databaseList("test_cdc") // set captured database
-                .tableList("test_cdc.*") // set captured table
+                .databaseList("sms") // set captured database
+                .tableList("sms.*") // set captured table
                 .username("root")
                 .password("root");
 
@@ -54,8 +63,9 @@ public class FlinkCDCMultiTableTest {
         Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
 
         builder.printStream(streams.f0, "Print CDC Stream");
-        builder.printStream(streams.f1, "Print DDL Stream");
-
+//        builder.printStream(streams.f1, "Print DDL Stream");
+        streams.f1.addSink(new LakeSoulDDLSink()).setParallelism(1);
         env.execute("Print MySQL Snapshot + Binlog");
+        Thread.sleep(300000);
     }
 }
