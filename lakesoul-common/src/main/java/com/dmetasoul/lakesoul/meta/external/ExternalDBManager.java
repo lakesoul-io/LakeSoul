@@ -23,9 +23,13 @@ import java.util.*;
 
 public interface ExternalDBManager {
 
-    List<String> listTablesByNamespace(String namespace);
+    List<String> listTables();
 
     List<Namespace> listNamespaces();
 
     DatabaseSchemaedTables getDatabaseAndTablesWithSchema();
+
+    void registerLakeSoulTable(String tableName);
+
+    void registerLakeSoulNamespace(String namespace);
 }
