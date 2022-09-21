@@ -31,7 +31,7 @@ object MetaVersion {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, new JSONObject())
+    dbManager.createNewNamespace(namespace, new JSONObject(), "")
   }
 
   def listNamespaces(): Array[String] = {
