@@ -579,7 +579,7 @@ public class DBManager {
     //namespace
     //==============
     public List<String> listNamespaces() {
-        return namespaceDao.listNamespace();
+        return namespaceDao.listNamespaces();
     }
 
     public void createNewNamespace(String name,

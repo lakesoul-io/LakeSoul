@@ -73,7 +73,7 @@ public class NamespaceDao {
         }
     }
 
-    public List<String> listNamespace() {
+    public List<String> listNamespaces() {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -84,8 +84,8 @@ public class NamespaceDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                String tablePath = rs.getString("namespace");
-                list.add(tablePath);
+                String namespace = rs.getString("namespace");
+                list.add(namespace);
             }
         } catch (SQLException e) {
             e.printStackTrace();
