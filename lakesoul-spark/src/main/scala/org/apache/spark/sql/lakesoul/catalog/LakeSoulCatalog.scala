@@ -507,6 +507,10 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     LakeSoulCatalog.currentDefaultNamespace
   }
 
+  override def defaultNamespace(): Array[String] = {
+    LakeSoulTable.currentDefaultNamespace
+  }
+
 }
 
 /**

@@ -51,10 +51,14 @@ public class TablePathIdDao {
     }
 
     public List<TablePathId> listAll() {
+        return listAll("default");
+    }
+
+    public List<TablePathId> listAll(String table_namespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "select * from table_path_id";
+        String sql = String.format("select * from table_path_id where table_namespace = '%s'", table_namespace);
         List<TablePathId> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -99,12 +103,33 @@ public class TablePathIdDao {
         }
         return list;
     }
-
     public List<String> listAllPath() {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "select table_path from table_path_id";
+        String sql = String.format("select table_path from table_path_id");
+        List<String> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String tablePath = rs.getString("table_path");
+                list.add(tablePath);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
+    public List<String> listAllPathByNamespace(String table_namespace) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", table_namespace);
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();

@@ -27,7 +27,7 @@ public class MysqlDBManager implements ExternalDBManager {
     private static final String TABLE_NAME_PREFIX = "external_mysql_table_";
     private DBConnector dbConnector;
 
-    private DBManager internalDBManager;
+    private DBManager lakesoulDBManager;
     private String DBName;
     private HashSet<String> excludeTables;
     private String[] filterTables = new String[]{"sys_config"};
@@ -49,9 +49,9 @@ public class MysqlDBManager implements ExternalDBManager {
         dataBaseProperty.setPassword(passwd);
         dbConnector = new DBConnector(dataBaseProperty);
 
-        internalDBManager = new DBManager();
+        lakesoulDBManager = new DBManager();
 
-        MysqlDataTypeConverter converter = new MysqlDataTypeConverter();
+        converter = new MysqlDataTypeConverter();
 
         parser = new MySqlAntlrDdlParser(false,
                 false,
@@ -123,7 +123,7 @@ public class MysqlDBManager implements ExternalDBManager {
         String ddl = showCreateTable(tableName);
         String tableSchema = ddlToSparkSchema(tableName, ddl).json();
 
-        internalDBManager.createNewTable(tableId, namespace, TABLE_NAME_PREFIX + tableName, qualifiedPath,
+        lakesoulDBManager.createNewTable(tableId, namespace, TABLE_NAME_PREFIX + tableName, qualifiedPath,
                 tableSchema,
                 new JSONObject(), ""
                 );
@@ -131,11 +131,11 @@ public class MysqlDBManager implements ExternalDBManager {
 
     @Override
     public void registerLakeSoulNamespace(String namespace) {
-        if (internalDBManager.getNamespaceByNamespace(namespace) != null) {
+        if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             System.out.println(String.format("Namespace %s already exists", namespace));
             return;
         }
-        internalDBManager.createNewNamespace(namespace, new JSONObject(), "");
+        lakesoulDBManager.createNewNamespace(namespace, new JSONObject(), "");
     }
 
     @Override
@@ -197,8 +197,6 @@ public class MysqlDBManager implements ExternalDBManager {
     public StructType ddlToSparkSchema(String tableName, String ddl) {
         final StructType[] stNew = {new StructType()};
 
-
-        MysqlDataTypeConverter converter = new MysqlDataTypeConverter();
         parser.parse(ddl, new Tables());
         parser.databaseTables().forTable(null, null, tableName).columns()
             .forEach(col-> {
