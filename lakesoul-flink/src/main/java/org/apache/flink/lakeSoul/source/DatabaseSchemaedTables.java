@@ -1,6 +1,6 @@
 package org.apache.flink.lakeSoul.source;
 
-import com.dmetasoul.lakesoul.meta.FlinkCDCTypeConvert;
+//import com.dmetasoul.lakesoul.meta.FlinkCDCTypeConvert;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.logging.log4j.util.Strings;
@@ -43,14 +43,14 @@ public class DatabaseSchemaedTables {
                 PKs.add(new PK(key, index));
             }
         }
-        public RowType toFlinkRowType(){
-            int len = cols.size();
-            LogicalType[] lt = new LogicalType[len];
-            for(Column col : cols){
-                FlinkCDCTypeConvert.convertLogicalType(col.type);
-            }
-            return null;
-        }
+//        public RowType toFlinkRowType(){
+//            int len = cols.size();
+//            LogicalType[] lt = new LogicalType[len];
+//            for(Column col : cols){
+//                FlinkCDCTypeConvert.convertLogicalType(col.type);
+//            }
+//            return null;
+//        }
     }
 
     class Column {

@@ -1,0 +1,4 @@
+lakesoul.pg.driver=org.postgresql.Driver
+lakesoul.pg.url=jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified
+lakesoul.pg.username=yugabyte
+lakesoul.pg.password=yugabyte

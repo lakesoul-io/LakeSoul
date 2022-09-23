@@ -8,8 +8,6 @@ import io.debezium.jdbc.JdbcValueConverters;
 import io.debezium.jdbc.TemporalPrecisionMode;
 import io.debezium.relational.Column;
 import io.debezium.time.*;
-import org.apache.kafka.connect.data.Decimal;
-import org.apache.kafka.connect.data.SchemaBuilder;
 
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DecimalType;
@@ -188,7 +186,7 @@ public class JdbcDataTypeConverter {
             // Date and time values
             case Types.DATE:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {
-                    return IntegerType;
+                    return DateType;
 //                    return Date.builder();
                 }
                 return IntegerType;
@@ -228,10 +226,10 @@ public class JdbcDataTypeConverter {
                 return TimestampType;
 //                return org.apache.kafka.connect.data.Timestamp.builder();
             case Types.TIME_WITH_TIMEZONE:
-                return StringType;
+                return TimestampType;
 //                return ZonedTime.builder();
             case Types.TIMESTAMP_WITH_TIMEZONE:
-                return StringType;
+                return TimestampType;
 //                return ZonedTimestamp.builder();
 
             // Other types ...

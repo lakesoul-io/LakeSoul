@@ -25,11 +25,11 @@ public interface ExternalDBManager {
 
     List<String> listTables();
 
-    List<Namespace> listNamespaces();
+//    List<Namespace> listNamespaces();
+//
+//    DatabaseSchemaedTables getDatabaseAndTablesWithSchema();
 
-    DatabaseSchemaedTables getDatabaseAndTablesWithSchema();
+    void importOrSyncLakeSoulTable(String tableName);
 
-    void registerLakeSoulTable(String tableName);
-
-    void registerLakeSoulNamespace(String namespace);
+    void importOrSyncLakeSoulNamespace(String namespace);
 }

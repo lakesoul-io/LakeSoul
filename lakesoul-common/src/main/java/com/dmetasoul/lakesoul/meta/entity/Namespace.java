@@ -1,7 +1,7 @@
 package com.dmetasoul.lakesoul.meta.entity;
 
-import avro.shaded.com.google.common.base.Joiner;
 import com.alibaba.fastjson.JSONObject;
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 
 import java.util.function.Predicate;

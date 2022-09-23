@@ -1,45 +1,28 @@
-/*
- *
- * Copyright [2022] [DMetaSoul Team]
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- *
- */
-
-package org.apache.flink.lakeSoul.test;
+package org.apache.flink.lakeSoul.example;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakeSoul.sink.LakeSoulDDLSink;
 import org.apache.flink.lakeSoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakeSoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-
 import java.util.HashSet;
 
-public class FlinkCDCMultiTableTest {
+
+public class MysqlCdc {
 
     public static void main(String[] args) throws Exception {
-        String DBName = "sms";
+        String DBName = "test_cdc";
         String userName = "root";
-        String passWrd = "192.168.0.222";
-        String host = "192.168.0.222";
+        String passWrd = "mysql123";
+        String host = "localhost";
         int port = 3306;
 
         MysqlDBManager mysqlDBManager = new MysqlDBManager(DBName,
@@ -54,21 +37,33 @@ public class FlinkCDCMultiTableTest {
         mysqlDBManager.importOrSyncLakeSoulNamespace(DBName);
         mysqlDBManager.listTables().forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
-//        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+
+        Configuration conf= new Configuration();
+        conf.setString(LakeSoulDDLSink.ConfKey.DB_NAME, DBName);
+        conf.setString(LakeSoulDDLSink.ConfKey.DB_USER, userName);
+        conf.setString(LakeSoulDDLSink.ConfKey.DB_PASSWORD, passWrd);
+        conf.setString(LakeSoulDDLSink.ConfKey.DB_HOST, host);
+        conf.setInteger(LakeSoulDDLSink.ConfKey.DB_PORT, port);
+        conf.setString(LakeSoulDDLSink.ConfKey.LAKESOUL_TABLE_PATH_PREFIX, MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
+
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
+//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+
+        ParameterTool pt = ParameterTool.fromMap(conf.toMap());
+        env.getConfig().setGlobalJobParameters(pt);
+
+//        env.getConfig().setGlobalJobParameters(conf);
 
         env.setParallelism(1);
         env.enableCheckpointing(5021);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
 
-
-
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
                 .hostname(host)
                 .port(port)
                 .databaseList(DBName) // set captured database
-                .tableList("sms.*") // set captured table
+                .tableList(DBName+".*") // set captured table
                 .username(userName)
                 .password(passWrd);
 

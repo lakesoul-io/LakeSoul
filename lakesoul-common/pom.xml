@@ -21,12 +21,32 @@
                     <target>11</target>
                 </configuration>
             </plugin>
+<!--            <plugin>-->
+<!--                <groupId>org.apache.maven.plugins</groupId>-->
+<!--                <artifactId>maven-assembly-plugin</artifactId>-->
+<!--                <configuration>-->
+<!--                    <descriptorRefs>-->
+<!--                        <descriptorRef>jar-with-dependencies</descriptorRef>-->
+<!--                    </descriptorRefs>-->
+<!--                </configuration>-->
+
+<!--                <executions>-->
+<!--                    <execution>-->
+<!--                        <id>make-assembly</id> &lt;!&ndash; this is used for inheritance merges &ndash;&gt;-->
+<!--                        <phase>package</phase> &lt;!&ndash; bind to the packaging phase &ndash;&gt;-->
+<!--                        <goals>-->
+<!--                            <goal>single</goal>-->
+<!--                        </goals>-->
+<!--                    </execution>-->
+<!--                </executions>-->
+<!--            </plugin>-->
         </plugins>
     </build>
 
     <properties>
         <postgresql.version>42.4.1</postgresql.version>
         <spark.version>3.1.2</spark.version>
+        <debezium.version>1.5.4.Final</debezium.version>
         <scala.binary.version>2.12</scala.binary.version>
         <local.scope>provided</local.scope>
     </properties>
@@ -63,15 +83,10 @@
         </dependency>
 
         <dependency>
-            <groupId>io.debezium</groupId>
-            <artifactId>debezium-connector-mysql</artifactId>
-            <version>1.9.5.Final</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.kafka</groupId>
-            <artifactId>connect-api</artifactId>
-            <version>3.2.1</version>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-mysql-cdc</artifactId>
+            <version>2.2.0</version>
+            <scope>${local.scope}</scope>
         </dependency>
     </dependencies>
 

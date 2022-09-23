@@ -63,6 +63,18 @@ public class DBManager {
         return true;
     }
 
+    public boolean isTableExistsByTableName(String tableName) {
+        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
+        if (tableNameId == null) {
+            return false;
+        }
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
+        if (tableInfo == null) {
+            return false;
+        }
+        return true;
+    }
+
     public boolean isTableIdExists(String tablePath, String tableId) {
         TableInfo tableInfo = tableInfoDao.selectByIdAndTablePath(tableId, tablePath);
         if (tableInfo != null) {

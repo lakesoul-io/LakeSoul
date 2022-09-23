@@ -36,7 +36,7 @@ public class DBConnector {
     public DBConnector(DataBaseProperty dataBaseProperty) {
         HikariConfig config = new HikariConfig();
 
-//        config.setDriverClassName( dataBaseProperty.getDriver());
+        config.setDriverClassName( dataBaseProperty.getDriver());
         config.setJdbcUrl( dataBaseProperty.getUrl());
         config.setUsername( dataBaseProperty.getUsername());
         config.setPassword( dataBaseProperty.getPassword());

@@ -47,7 +47,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
         public MySqlSourceBuilder<JsonSourceRecord> sourceBuilder;
 
-        int sourceParallelism = 16;
+        int sourceParallelism = 1;
     }
 
     private MySqlSource<JsonSourceRecord> mySqlSource;
@@ -87,6 +87,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                         SchemaAndValue key = value.getKey(SourceRecordJsonSerde.getInstance());
                         Schema keySchema = key.schema();
                         assert keySchema != null;
+                        System.out.println(key);
                         if (SCHEMA_CHANGE_EVENT_KEY_NAME.equalsIgnoreCase(keySchema.name())) {
                             ctx.output(outputTag, value);
                         } else {

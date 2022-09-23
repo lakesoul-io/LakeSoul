@@ -289,14 +289,14 @@ public class LakeSoulRecordConvert {
             // decimal.handling.mode=double
             bigDecimal = BigDecimal.valueOf((Double) dbzObj);
         } else {
-            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
-                SpecialValueDecimal decimal =
-                        VariableScaleDecimal.toLogical((Struct) dbzObj);
-                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
-            } else {
+//            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
+//                SpecialValueDecimal decimal =
+//                        VariableScaleDecimal.toLogical((Struct) dbzObj);
+//                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
+//            } else {
                 // fallback to string
                 bigDecimal = new BigDecimal(dbzObj.toString());
-            }
+//            }
         }
         return DecimalData.fromBigDecimal(bigDecimal, 20, 3);
     }

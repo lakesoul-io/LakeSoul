@@ -7,9 +7,6 @@ import io.debezium.data.Json;
 import io.debezium.relational.Column;
 import io.debezium.time.Year;
 import io.debezium.util.Strings;
-import org.apache.kafka.connect.data.Decimal;
-import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DecimalType;
 
