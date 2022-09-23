@@ -553,4 +553,18 @@ public class DBManager {
         return partitionInfoDao.insert(partitionInfo);
     }
 
+    public boolean ifExistsCommitId(String tableId, String partitionDesc, UUID uuid) {
+        boolean result = false;
+        PartitionInfo partitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
+        if ("CompactionCommit".equals(partitionInfo.getCommitOp())) {
+            partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, partitionInfo.getVersion() - 1);
+        }
+        List<UUID> snapshot = partitionInfo.getSnapshot();
+        if (snapshot.contains(uuid)) {
+            return true;
+        } else {
+            return result;
+        }
+    }
+
 }
