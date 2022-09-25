@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.sink;
+package org.apache.flink.lakesoul.sink.bucket;
 
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;

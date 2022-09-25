@@ -21,7 +21,7 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.api.common.functions.Partitioner;
 
-public class DataPartitioner<Long> implements Partitioner<Long> {
+public class HashPartitioner<Long> implements Partitioner<Long> {
 
   @Override
   public int partition(Long key, int numPartitions) {

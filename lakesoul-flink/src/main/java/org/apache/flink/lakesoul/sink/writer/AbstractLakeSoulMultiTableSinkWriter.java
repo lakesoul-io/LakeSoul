@@ -1,19 +1,19 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *  * Copyright [2022] [DMetaSoul Team]
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  *     http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 package org.apache.flink.lakesoul.sink.writer;
@@ -23,9 +23,9 @@ import org.apache.flink.api.connector.sink.SinkWriter;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.FileSinkCommittable;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
-import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
@@ -48,20 +48,20 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * A {@link SinkWriter} implementation for {@link LakeSoulMultiTablesSink}.
  *
- * <p>It writes data to and manages the different active {@link FileWriterBucket buckes} in the
+ * <p>It writes data to and manages the different active {@link LakeSoulWriterBucket buckes} in the
  * {@link LakeSoulMultiTablesSink}.
  *
  * @param <IN> The type of input elements.
  */
 public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
-        implements SinkWriter<IN, FileSinkCommittable, FileWriterBucketState>,
+        implements SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState>,
                 Sink.ProcessingTimeService.ProcessingTimeCallback {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractLakeSoulMultiTableSinkWriter.class);
 
     private final int subTaskId;
 
-    private final FileWriterBucketFactory bucketFactory;
+    private final LakeSoulWriterBucketFactory bucketFactory;
 
     private final RollingPolicy<RowData, String> rollingPolicy;
 
@@ -73,7 +73,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final BucketerContext bucketerContext;
 
-    private final Map<Tuple2<TableId, String>, FileWriterBucket> activeBuckets;
+    private final Map<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket> activeBuckets;
 
     private final OutputFileConfig outputFileConfig;
 
@@ -85,21 +85,10 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final Configuration conf;
 
-    /**
-     * A constructor creating a new empty bucket manager.
-     * <p>
-     * //     * @param basePath The base path for our buckets.
-     *
-     * @param subTaskId
-     * @param metricGroup   {@link SinkWriterMetricGroup} to set sink writer specific metrics.
-     *                      //     * @param bucketAssigner The {@link BucketAssigner} provided by the user.
-     * @param bucketFactory The {@link FileWriterBucketFactory} to be used to create buckets.
-     *                      //     * @param bucketWriter The {@link BucketWriter} to be used when writing data.
-     * @param rollingPolicy The {@link RollingPolicy} as specified by the user.
-     */
     public AbstractLakeSoulMultiTableSinkWriter(
-            int subTaskId, final SinkWriterMetricGroup metricGroup,
-            final FileWriterBucketFactory bucketFactory,
+            int subTaskId,
+            final SinkWriterMetricGroup metricGroup,
+            final LakeSoulWriterBucketFactory bucketFactory,
             final RollingPolicy<RowData, String> rollingPolicy,
             final OutputFileConfig outputFileConfig,
             final Sink.ProcessingTimeService processingTimeService,
@@ -129,47 +118,38 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         this.conf = conf;
     }
 
-    /**
-     * Initializes the state after recovery from a failure.
-     *
-     * <p>During this process:
-     *
-     * <ol>
-     *   <li>we set the initial value for part counter to the maximum value used before across all
-     *       tasks and buckets. This guarantees that we do not overwrite valid data,
-     *   <li>we commit any pending files for previous checkpoints (previous to the last successful
-     *       one from which we restore),
-     *   <li>we resume writing to the previous in-progress file of each bucket, and
-     *   <li>if we receive multiple states for the same bucket, we merge them.
-     * </ol>
-     *
-     * @param bucketStates the state holding recovered state about active buckets.
-     * @throws IOException if anything goes wrong during retrieving the state or
-     *     restoring/committing of any in-progress/pending part files
-     */
-    public void initializeState(List<FileWriterBucketState> bucketStates) throws IOException {
+    public void initializeState(List<LakeSoulWriterBucketState> bucketStates) throws IOException {
         checkNotNull(bucketStates, "The retrieved state was null.");
 
-        for (FileWriterBucketState state : bucketStates) {
+        for (LakeSoulWriterBucketState state : bucketStates) {
             String bucketId = state.getBucketId();
 
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Restoring: {}", state);
             }
 
-//            FileWriterBucket<IN> restoredBucket =
-//                    bucketFactory.restoreBucket(
-//                            bucketWriter, rollingPolicy, state, outputFileConfig);
-//
-//            updateActiveBucketId(bucketId, restoredBucket);
+            TableSchemaIdentity identity = state.getIdentity();
+            TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
+
+            LakeSoulWriterBucket restoredBucket =
+                    bucketFactory.restoreBucket(
+                            subTaskId,
+                            state.getIdentity(),
+                            creator.createBucketWriter(),
+                            rollingPolicy,
+                            state,
+                            outputFileConfig,
+                            creator.comparator);
+
+            updateActiveBucketId(identity, bucketId, restoredBucket);
         }
 
         registerNextBucketInspectionTimer();
     }
 
-    private void updateActiveBucketId(TableId tableId, String bucketId, FileWriterBucket restoredBucket)
+    private void updateActiveBucketId(TableSchemaIdentity tableId, String bucketId, LakeSoulWriterBucket restoredBucket)
             throws IOException {
-        final FileWriterBucket bucket = activeBuckets.get(Tuple2.of(tableId, bucketId));
+        final LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(tableId, bucketId));
         if (bucket != null) {
             bucket.merge(restoredBucket);
         } else {
@@ -210,23 +190,23 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             RowData rowData = schemaAndRowData.f1;
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
             final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
-            final FileWriterBucket bucket = getOrCreateBucketForBucketId(identity.tableId, bucketId, creator);
+            final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
             bucket.write(rowData, processingTimeService.getCurrentProcessingTime());
             recordsOutCounter.inc();
         }
     }
 
     @Override
-    public List<FileSinkCommittable> prepareCommit(boolean flush) throws IOException {
-        List<FileSinkCommittable> committables = new ArrayList<>();
+    public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+        List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
 
         // Every time before we prepare commit, we first check and remove the inactive
         // buckets. Checking the activeness right before pre-committing avoid re-creating
         // the bucket every time if the bucket use OnCheckpointingRollingPolicy.
-        Iterator<Map.Entry<Tuple2<TableId, String>, FileWriterBucket>> activeBucketIt =
+        Iterator<Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket>> activeBucketIt =
                 activeBuckets.entrySet().iterator();
         while (activeBucketIt.hasNext()) {
-            Map.Entry<Tuple2<TableId, String>, FileWriterBucket> entry = activeBucketIt.next();
+            Map.Entry<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket> entry = activeBucketIt.next();
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
@@ -238,21 +218,21 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     }
 
     @Override
-    public List<FileWriterBucketState> snapshotState(long checkpointId) throws IOException {
+    public List<LakeSoulWriterBucketState> snapshotState(long checkpointId) throws IOException {
 
-        List<FileWriterBucketState> state = new ArrayList<>();
-        for (FileWriterBucket bucket : activeBuckets.values()) {
+        List<LakeSoulWriterBucketState> state = new ArrayList<>();
+        for (LakeSoulWriterBucket bucket : activeBuckets.values()) {
             state.add(bucket.snapshotState());
         }
 
         return state;
     }
 
-    private FileWriterBucket getOrCreateBucketForBucketId(
-            TableId tableId,
+    private LakeSoulWriterBucket getOrCreateBucketForBucketId(
+            TableSchemaIdentity tableId,
             String bucketId,
             TableSchemaWriterCreator creator) throws IOException {
-        FileWriterBucket bucket = activeBuckets.get(Tuple2.of(creator.identity.tableId, bucketId));
+        LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(creator.identity.tableId, bucketId));
         if (bucket == null) {
             final Path bucketPath = assembleBucketPath(creator.tableLocation, bucketId);
             BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter();
@@ -269,7 +249,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     @Override
     public void close() {
         if (activeBuckets != null) {
-            activeBuckets.values().forEach(FileWriterBucket::disposePartFile);
+            activeBuckets.values().forEach(LakeSoulWriterBucket::disposePartFile);
         }
     }
 
@@ -283,7 +263,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     @Override
     public void onProcessingTime(long time) throws IOException {
-        for (FileWriterBucket bucket : activeBuckets.values()) {
+        for (LakeSoulWriterBucket bucket : activeBuckets.values()) {
             bucket.onProcessingTime(time);
         }
 

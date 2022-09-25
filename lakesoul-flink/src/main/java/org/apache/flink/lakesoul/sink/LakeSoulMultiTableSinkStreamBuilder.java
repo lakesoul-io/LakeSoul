@@ -90,8 +90,8 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStream<JsonSourceRecord> buildHashPartitionedCDCStream(DataStream<JsonSourceRecord> stream) {
-        LakeSoulRecordConvert convert = new LakeSoulRecordConvert();
-        return stream.partitionCustom(new DataPartitioner<>(), convert::computeJsonRecordPrimaryKeyHash);
+        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC));
+        return stream.partitionCustom(new HashPartitioner<>(), convert::computeJsonRecordPrimaryKeyHash);
     }
 
     public DataStreamSink<JsonSourceRecord> buildSink(DataStream<JsonSourceRecord> stream) {
@@ -113,7 +113,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         return stream.addSink(printFunction).name(name);
     }
 
-    private class JsonSourceRecordSplitProcessFunction extends ProcessFunction<JsonSourceRecord, JsonSourceRecord> {
+    private static class JsonSourceRecordSplitProcessFunction extends ProcessFunction<JsonSourceRecord, JsonSourceRecord> {
         private final OutputTag<JsonSourceRecord> outputTag;
 
         private final String basePath;

@@ -24,7 +24,7 @@ import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.DataPartitioner;
+import org.apache.flink.lakesoul.sink.HashPartitioner;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
@@ -129,7 +129,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
         flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME));
     //redistribution by partitionKey
-    dataStream = dataStream.partitionCustom(new DataPartitioner<>(), keyGen::getRePartitionHash);
+    dataStream = dataStream.partitionCustom(new HashPartitioner<>(), keyGen::getRePartitionHash);
     //rowData sink fileSystem Task
     String tableName = flinkConf.getString(TABLE_NAME);
     LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(

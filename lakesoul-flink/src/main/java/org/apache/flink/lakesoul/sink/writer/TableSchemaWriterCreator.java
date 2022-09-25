@@ -25,10 +25,11 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
-import org.apache.flink.lakesoul.sink.CdcPartitionComputer;
-import org.apache.flink.lakesoul.sink.FlinkBucketAssigner;
+import org.apache.flink.lakesoul.sink.bucket.CdcPartitionComputer;
+import org.apache.flink.lakesoul.sink.bucket.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.LakeSoulCDCComparator;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
@@ -91,7 +92,7 @@ public class TableSchemaWriterCreator implements Serializable {
                 rowType.getFieldNames().toArray(new String[0]),
                 rowType,
                 partitionKeyList.toArray(new String[0]),
-                true
+                conf.getBoolean(LakeSoulSinkOptions.USE_CDC)
         );
 
         info.bucketAssigner = new FlinkBucketAssigner(info.partitionComputer);

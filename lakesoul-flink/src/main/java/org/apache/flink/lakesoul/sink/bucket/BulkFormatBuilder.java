@@ -1,4 +1,22 @@
-package org.apache.flink.lakesoul.sink;
+/*
+ *
+ *  * Copyright [2022] [DMetaSoul Team]
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  *     http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ *
+ */
+
+package org.apache.flink.lakesoul.sink.bucket;
 
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.connector.sink.Sink;
@@ -7,7 +25,12 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
-import org.apache.flink.lakesoul.sink.committer.FileCommitter;
+import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
+import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
+import org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketStateSerializer;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.*;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
@@ -36,7 +59,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     protected long bucketCheckInterval;
 
-    protected final FileWriterBucketFactory bucketFactory;
+    protected final LakeSoulWriterBucketFactory bucketFactory;
 
     protected CheckpointRollingPolicy<RowData, String> rollingPolicy;
 
@@ -50,7 +73,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
                 conf,
                 DEFAULT_BUCKET_CHECK_INTERVAL,
                 OnCheckpointRollingPolicy.build(),
-                new DefaultFileWriterBucketFactory(),
+                new DefaultLakeSoulWriterBucketFactory(),
                 OutputFileConfig.builder().build());
     }
 
@@ -59,7 +82,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
             Configuration conf,
             long bucketCheckInterval,
             CheckpointRollingPolicy<RowData, String> policy,
-            FileWriterBucketFactory bucketFactory,
+            LakeSoulWriterBucketFactory bucketFactory,
             OutputFileConfig outputFileConfig) {
         this.basePath = basePath;
         this.conf = conf;
@@ -100,29 +123,28 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
     }
 
     @Override
-    abstract AbstractLakeSoulMultiTableSinkWriter<IN> createWriter(Sink.InitContext context, int subTaskId);
+    public abstract AbstractLakeSoulMultiTableSinkWriter<IN> createWriter(Sink.InitContext context, int subTaskId);
 
     @Override
-    FileCommitter createCommitter() throws IOException {
-        return new FileCommitter(createBucketWriter());
+    public LakeSoulSinkCommitter createCommitter() throws IOException {
+        return new LakeSoulSinkCommitter(createBucketWriter());
     }
 
     @Override
-    SimpleVersionedSerializer<FileWriterBucketState> getWriterStateSerializer()
+    public SimpleVersionedSerializer<LakeSoulWriterBucketState> getWriterStateSerializer()
             throws IOException {
         BucketWriter<RowData, String> bucketWriter = createBucketWriter();
 
-        return new FileWriterBucketStateSerializer(
-                bucketWriter.getProperties().getInProgressFileRecoverableSerializer(),
-                bucketWriter.getProperties().getPendingFileRecoverableSerializer());
+        return new LakeSoulWriterBucketStateSerializer(
+                bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
     }
 
     @Override
-    SimpleVersionedSerializer<FileSinkCommittable> getCommittableSerializer()
+    public SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer()
             throws IOException {
         BucketWriter<RowData, String> bucketWriter = createBucketWriter();
 
-        return new FileSinkCommittableSerializer(
+        return new LakeSoulSinkCommittableSerializer(
                 bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
                 bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
     }

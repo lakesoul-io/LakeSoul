@@ -16,7 +16,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.sink;
+package org.apache.flink.lakesoul.sink.bucket;
 
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;

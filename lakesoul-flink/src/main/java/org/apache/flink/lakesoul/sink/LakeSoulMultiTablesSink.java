@@ -25,7 +25,11 @@ import org.apache.flink.api.connector.sink.SinkWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.lakesoul.sink.writer.FileWriterBucketState;
+import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
+import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesBulkFormatBuilder;
+import org.apache.flink.lakesoul.sink.bucket.DefaultOneTableBulkFormatBuilder;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
@@ -39,7 +43,7 @@ import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakeSoulMultiTablesSink<IN> implements Sink<IN, FileSinkCommittable, FileWriterBucketState, Void> {
+public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState, Void> {
 
     private final BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder;
 
@@ -48,8 +52,8 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, FileSinkCommittable
     }
 
     @Override
-    public SinkWriter<IN, FileSinkCommittable, FileWriterBucketState> createWriter(
-            InitContext context, List<FileWriterBucketState> states) throws IOException {
+    public SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState> createWriter(
+            InitContext context, List<LakeSoulWriterBucketState> states) throws IOException {
         int subTaskId = context.getSubtaskId();
         AbstractLakeSoulMultiTableSinkWriter<IN> writer = bucketsBuilder.createWriter(context, subTaskId);
         writer.initializeState(states);
@@ -57,7 +61,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, FileSinkCommittable
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<FileWriterBucketState>> getWriterStateSerializer() {
+    public Optional<SimpleVersionedSerializer<LakeSoulWriterBucketState>> getWriterStateSerializer() {
         try {
             return Optional.of(bucketsBuilder.getWriterStateSerializer());
         } catch (IOException e) {
@@ -69,12 +73,12 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, FileSinkCommittable
     }
 
     @Override
-    public Optional<Committer<FileSinkCommittable>> createCommitter() throws IOException {
+    public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
         return Optional.of(bucketsBuilder.createCommitter());
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<FileSinkCommittable>> getCommittableSerializer() {
+    public Optional<SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable>> getCommittableSerializer() {
         try {
             return Optional.of(bucketsBuilder.getCommittableSerializer());
         } catch (IOException e) {
@@ -86,7 +90,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, FileSinkCommittable
     }
 
     @Override
-    public Optional<GlobalCommitter<FileSinkCommittable, Void>> createGlobalCommitter() {
+    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, Void>> createGlobalCommitter() {
         return Optional.empty();
     }
 

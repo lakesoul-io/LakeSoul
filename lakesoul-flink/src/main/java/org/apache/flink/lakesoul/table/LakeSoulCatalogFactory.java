@@ -16,6 +16,7 @@
  *
  *
  */
+
 package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
