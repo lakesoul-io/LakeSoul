@@ -48,12 +48,10 @@ public class MysqlCdc {
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
-//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
 
-//        env.getConfig().setGlobalJobParameters(conf);
 
         env.setParallelism(1);
         env.enableCheckpointing(5021);
@@ -78,9 +76,7 @@ public class MysqlCdc {
         Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
 
         builder.printStream(streams.f0, "Print CDC Stream");
-//        builder.printStream(streams.f1, "Print DDL Stream");
         streams.f1.addSink(new LakeSoulDDLSink()).setParallelism(1);
         env.execute("Print MySQL Snapshot + Binlog");
-        //Thread.sleep(300000);
     }
 }

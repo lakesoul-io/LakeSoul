@@ -94,75 +94,60 @@ public class JdbcDataTypeConverter {
             case Types.NULL:
                 logger.warn("Unexpected JDBC type: NULL");
                 return NullType;
-//                return null;
 
             // Single- and multi-bit values ...
             case Types.BIT:
                 if (column.length() > 1) {
-//                    return Bits.builder(column.length());
                     return ByteType;
                 }
                 // otherwise, it is just one bit so use a boolean ...
             case Types.BOOLEAN:
-//                return SchemaBuilder.bool();
                 return BooleanType;
 
             // Fixed-length binary values ...
             case Types.BLOB:
             case Types.BINARY:
                 return BinaryType;
-//                return binaryMode.getSchema();
 
             // Variable-length binary values ...
             case Types.VARBINARY:
             case Types.LONGVARBINARY:
                 return BinaryType;
-//                return binaryMode.getSchema();
 
             // Numeric integers
             case Types.TINYINT:
                 // values are an 8-bit unsigned integer value between 0 and 255
                 return IntegerType;
-//                return SchemaBuilder.int8();
             case Types.SMALLINT:
                 // values are a 16-bit signed integer value between -32768 and 32767
                 return IntegerType;
-//                return SchemaBuilder.int16();
             case Types.INTEGER:
                 // values are a 32-bit signed integer value between - 2147483648 and 2147483647
                 return IntegerType;
-//                return SchemaBuilder.int32();
             case Types.BIGINT:
                 // values are a 64-bit signed integer value between -9223372036854775808 and 9223372036854775807
                 return LongType;
-//                return SchemaBuilder.int64();
 
             // Numeric decimal numbers
             case Types.REAL:
                 // values are single precision floating point number which supports 7 digits of mantissa.
                 return FloatType;
-//                return SchemaBuilder.float32();
             case Types.FLOAT:
             case Types.DOUBLE:
                 // values are double precision floating point number which supports 15 digits of mantissa.
                 return DoubleType;
-//                return SchemaBuilder.float64();
             case Types.NUMERIC:
             case Types.DECIMAL:
                 switch (decimalMode) {
                     case DOUBLE:
                         return DoubleType;
-//                        return SchemaBuilder.float64();
                     case PRECISE:
                         return new DecimalType(column.length(), column.scale().get());
-//                        return Decimal.builder(scale).parameter("connect.decimal.precision", String.valueOf(precision));
                     case STRING:
                         return StringType;
-//                        return SchemaBuilder.string();
                     default:
                         throw new IllegalArgumentException("Unknown decimalMode");
                 }
-//                return SpecialValueDecimal.builder(decimalMode, column.length(), column.scale().get());
 
             // Fixed-length string values
             case Types.CHAR:
@@ -171,7 +156,6 @@ public class JdbcDataTypeConverter {
             case Types.LONGNVARCHAR:
             case Types.NCLOB:
                 return StringType;
-//                return SchemaBuilder.string();
 
             // Variable-length string values
             case Types.VARCHAR:
@@ -179,64 +163,49 @@ public class JdbcDataTypeConverter {
             case Types.CLOB:
             case Types.DATALINK:
                 return StringType;
-//                return SchemaBuilder.string();
             case Types.SQLXML:
                 return StringType;
-//                return Xml.builder();
             // Date and time values
             case Types.DATE:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {
                     return DateType;
-//                    return Date.builder();
                 }
                 return IntegerType;
 //                return org.apache.kafka.connect.data.Date.builder();
             case Types.TIME:
                 if (adaptiveTimeMicrosecondsPrecisionMode) {
                     return CalendarIntervalType;
-//                    return MicroTime.builder();
                 }
                 if (adaptiveTimePrecisionMode) {
                     if (getTimePrecision(column) <= 3) {
                         return CalendarIntervalType;
-//                        return Time.builder();
                     }
                     if (getTimePrecision(column) <= 6) {
                         return CalendarIntervalType;
-//                        return MicroTime.builder();
                     }
                     return CalendarIntervalType;
-//                    return NanoTime.builder();
                 }
                 return IntegerType;
-//                return org.apache.kafka.connect.data.Time.builder();
             case Types.TIMESTAMP:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {
                     if (getTimePrecision(column) <= 3) {
                         return TimestampType;
-//                        return Timestamp.builder();
                     }
                     if (getTimePrecision(column) <= 6) {
                         return TimestampType;
-//                        return MicroTimestamp.builder();
                     }
                     return TimestampType;
-//                    return NanoTimestamp.builder();
                 }
                 return TimestampType;
-//                return org.apache.kafka.connect.data.Timestamp.builder();
             case Types.TIME_WITH_TIMEZONE:
                 return TimestampType;
-//                return ZonedTime.builder();
             case Types.TIMESTAMP_WITH_TIMEZONE:
                 return TimestampType;
-//                return ZonedTimestamp.builder();
 
             // Other types ...
             case Types.ROWID:
                 // often treated as a string, but we'll generalize and treat it as a byte array
                 return ByteType;
-//                return SchemaBuilder.bytes();
 
             // Unhandled types
             case Types.DISTINCT:

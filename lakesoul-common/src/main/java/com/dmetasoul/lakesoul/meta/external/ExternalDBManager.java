@@ -25,9 +25,6 @@ public interface ExternalDBManager {
 
     List<String> listTables();
 
-//    List<Namespace> listNamespaces();
-//
-//    DatabaseSchemaedTables getDatabaseAndTablesWithSchema();
 
     void importOrSyncLakeSoulTable(String tableName);
 

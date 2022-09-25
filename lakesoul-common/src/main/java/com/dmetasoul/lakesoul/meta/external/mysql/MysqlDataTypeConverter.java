@@ -28,11 +28,9 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
         String typeName = column.typeName().toUpperCase();
         if (matches(typeName, "JSON")) {
             return StringType;
-//            return Json.builder();
         }
         if (matches(typeName, "POINT")) {
             return StringType;
-//            return io.debezium.data.geometry.Point.builder();
         }
         if (matches(typeName, "GEOMETRY")
                 || matches(typeName, "LINESTRING")
@@ -42,52 +40,43 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
                 || matches(typeName, "MULTIPOLYGON")
                 || isGeometryCollection(typeName)) {
             return StringType;
-//            return io.debezium.data.geometry.Geometry.builder();
         }
         if (matches(typeName, "YEAR")) {
             return IntegerType;
-//            return Year.builder();
         }
         if (matches(typeName, "ENUM")) {
             String commaSeparatedOptions = extractEnumAndSetOptionsAsString(column);
             return StringType;
-//            return io.debezium.data.Enum.builder(commaSeparatedOptions);
         }
         if (matches(typeName, "SET")) {
             String commaSeparatedOptions = extractEnumAndSetOptionsAsString(column);
             return StringType;
-//            return io.debezium.data.EnumSet.builder(commaSeparatedOptions);
         }
         if (matches(typeName, "SMALLINT UNSIGNED") || matches(typeName, "SMALLINT UNSIGNED ZEROFILL")
                 || matches(typeName, "INT2 UNSIGNED") || matches(typeName, "INT2 UNSIGNED ZEROFILL")) {
             // In order to capture unsigned SMALLINT 16-bit data source, INT32 will be required to safely capture all valid values
             // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
             return IntegerType;
-//            return SchemaBuilder.int32();
         }
         if (matches(typeName, "INT UNSIGNED") || matches(typeName, "INT UNSIGNED ZEROFILL")
                 || matches(typeName, "INT4 UNSIGNED") || matches(typeName, "INT4 UNSIGNED ZEROFILL")) {
             // In order to capture unsigned INT 32-bit data source, INT64 will be required to safely capture all valid values
             // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
             return LongType;
-//            return SchemaBuilder.int64();
         }
         if (matches(typeName, "BIGINT UNSIGNED") || matches(typeName, "BIGINT UNSIGNED ZEROFILL")
                 || matches(typeName, "INT8 UNSIGNED") || matches(typeName, "INT8 UNSIGNED ZEROFILL")) {
             switch (super.bigIntUnsignedMode) {
                 case LONG:
                     return LongType;
-//                    return SchemaBuilder.int64();
                 case PRECISE:
                     // In order to capture unsigned INT 64-bit data source, org.apache.kafka.connect.data.Decimal:Byte will be required to safely capture all valid values with scale of 0
                     // Source: https://kafka.apache.org/0102/javadoc/org/apache/kafka/connect/data/Schema.Type.html
                     return new DecimalType(column.length(),0);
-//                    return Decimal.builder(0);
             }
         }
         if (matches(typeName, "FLOAT") && column.scale().isEmpty() && column.length() <= 24) {
             return FloatType;
-//            return SchemaBuilder.float32();
         }
         // Otherwise, let the base class handle it ...
         return super.schemaBuilder(column);

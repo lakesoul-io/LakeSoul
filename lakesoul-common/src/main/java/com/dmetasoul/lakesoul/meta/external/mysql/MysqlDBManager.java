@@ -23,8 +23,6 @@ public class MysqlDBManager implements ExternalDBManager {
 
     private static final String EXTERNAL_MYSQL_TABLE_PREFIX = "external_mysql_table_";
 
-//    private static final String TABLE_NAME_PREFIX = "external_mysql_table_";
-
     public static final int DEFAULT_MYSQL_PORT = 3306;
 
     public static final String DEFAULT_LAKESOUL_TABLE_PATH_PREFIX = "file://";
@@ -92,29 +90,6 @@ public class MysqlDBManager implements ExternalDBManager {
         return list;
     }
 
-//    @Override
-//    public List<Namespace> listNamespaces() {
-//        Connection conn = null;
-//        PreparedStatement pstmt = null;
-//        ResultSet rs = null;
-//        String sql = "show databases";
-//        List<Namespace> list = new ArrayList<>();
-//        try {
-//            conn = dbConnector.getConn();
-//            pstmt = conn.prepareStatement(sql);
-//            rs = pstmt.executeQuery();
-//            while (rs.next()) {
-//                Namespace namespace = new Namespace(rs.getString("Database"));
-//                list.add(namespace);
-//            }
-//        } catch (SQLException e) {
-//            e.printStackTrace();
-//        } finally {
-//            dbConnector.closeConn(rs, pstmt, conn);
-//        }
-//        return list;
-//    }
-
 
     @Override
     public void importOrSyncLakeSoulTable(String tableName) {
@@ -155,41 +130,6 @@ public class MysqlDBManager implements ExternalDBManager {
         }
         lakesoulDBManager.createNewNamespace(namespace, new JSONObject(), "");
     }
-
-//    @Override
-//    public DatabaseSchemaedTables getDatabaseAndTablesWithSchema() {
-//        Connection connection = null;
-//        DatabaseSchemaedTables dct = new DatabaseSchemaedTables(DBName);
-//        try {
-//            connection = dbConnector.getConn();
-//            DatabaseMetaData dmd = connection.getMetaData();
-//
-//            ResultSet tables = dmd.getTables(DBName, null, null, new String[]{"TABLE"});
-//            while (tables.next()) {
-//                String tablename = tables.getString("TABLE_NAME");
-//                System.out.println(tablename);
-//                if (excludeTables.contains(tablename)) {
-//                    continue;
-//                }
-//                DatabaseSchemaedTables.Table tbl = dct.addTable(tablename);
-//                ResultSet cols = dmd.getColumns(null, null, tablename, null);
-//                while (cols.next()) {
-////                    System.out.println(cols.getString("COLUMN_NAME")+" "+cols.getString("TYPE_NAME")+" "+cols.getString("COLUMN_SIZE"));
-//                    tbl.addColumn(cols.getString("COLUMN_NAME"), cols.getString("TYPE_NAME"));
-//                }
-//                ResultSet pks = dmd.getPrimaryKeys(null, null, tablename);
-//                while (pks.next()) {
-//                    tbl.addPrimaryKey(pks.getString("COLUMN_NAME"), pks.getShort("KEY_SEQ"));
-//                }
-//            }
-//        } catch (SQLException e) {
-//            e.printStackTrace();
-//        } finally {
-//            dbConnector.closeConn(connection);
-//        }
-//
-//        return dct;
-//    }
 
     public String showCreateTable(String tableName) {
         Connection conn = null;

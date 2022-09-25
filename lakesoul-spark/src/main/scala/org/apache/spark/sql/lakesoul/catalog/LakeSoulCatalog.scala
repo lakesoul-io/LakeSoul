@@ -494,9 +494,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
   // todo: invalid on spark v3.1.2
   override def listTables(namespaces: Array[String]): Array[Identifier] = {
     LakeSoulCatalog.listTables(namespaces)
-//    MetaVersion.listTables().asScala.map(table => {
-//      Identifier.of(Array("default"), table)
-//    }).toArray
   }
 
   //=============
@@ -505,8 +502,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
   // todo: invalid on spark v3.1.2
   override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
-//    super.createNamespace(namespace, metadata)
-//    MetaVersion.createNamespace(namespace)
+
     LakeSoulCatalog.createNamespace(namespaces)
   }
 
@@ -574,7 +570,6 @@ object LakeSoulCatalog{
   }
 
   def listTables(namespaces: Array[String]): Array[Identifier] = {
-//    MetaVersion.listTables(namespaces).asScala.toArray
     MetaVersion.listTables(namespaces).asScala.map(table => {
       Identifier.of(namespaces, table)
     }).toArray

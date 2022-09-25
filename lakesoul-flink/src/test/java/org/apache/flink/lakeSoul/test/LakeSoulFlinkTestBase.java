@@ -35,14 +35,12 @@ public class LakeSoulFlinkTestBase extends TestBaseUtils {
         System.out.println("Initializing DBManager");
         LakeSoulFlinkTestBase.dbManager = new DBManager();
         dbManager.cleanMeta();
-//        dbManager.start();
         LakeSoulFlinkTestBase.catalog = new LakeSoulCatalog();
     }
 
     @AfterClass
     public static void stopMetastore() throws Exception {
-//        LakeSoulFlinkTestBase.dbManager.stop();
-//        dbManager.cleanMeta();
+        dbManager.cleanMeta();
         LakeSoulFlinkTestBase.catalog = null;
     }
 
@@ -55,7 +53,6 @@ public class LakeSoulFlinkTestBase extends TestBaseUtils {
                     TableEnvironment env = TableEnvironment.create(settings);
                     env.getConfig()
                             .getConfiguration()
-//                            .set(FlinkConfigOptions.TABLE_EXEC_ICEBERG_INFER_SOURCE_PARALLELISM, false)
                     ;
                     env.registerCatalog("lakesoul", catalog);
 

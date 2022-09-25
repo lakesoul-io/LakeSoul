@@ -139,7 +139,6 @@ public class DBManager {
 
 
     public List<String> listTables() {
-//        List<String> rsList = tablePathIdDao.listAllPath();
         List<String> rsList = tablePathIdDao.listAllPath();
         return rsList;
     }
@@ -604,7 +603,7 @@ public class DBManager {
 
         boolean insertNamespaceFlag = namespaceDao.insert(namespace);
         if (!insertNamespaceFlag) {
-//            throw new IllegalStateException(String.format("namespace %s already exists!", name));
+            throw new IllegalStateException(String.format("namespace %s already exists!", name));
         }
 
     }

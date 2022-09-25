@@ -24,8 +24,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
 
     @Before
     public void before() {
-//        sql("CREATE CATALOG %s", catalogName);
-//        sql("CREATE CATALOG %s WITH %s", catalogName, toWithClause(config));
         getTableEnv().useCatalog(catalogName);
     }
 
@@ -46,9 +44,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
     protected final String catalogName;
     protected final Namespace baseNamespace;
     protected final Catalog validationCatalog;
-//    protected final SupportsNamespaces validationNamespaceCatalog;
-    protected final Map<String, String> config = Maps.newHashMap();
-
     protected final String flinkDatabase;
 
     protected final String flinkTable;
@@ -60,19 +55,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
         this.catalogName = catalogName;
         this.baseNamespace = baseNamespace;
         this.validationCatalog = catalog;
-//        this.validationNamespaceCatalog = (SupportsNamespaces) validationCatalog;
-
-        config.put("type", "lakesoul");
-//        if (!baseNamespace.isEmpty()) {
-//            config.put(FlinkCatalogFactory.BASE_NAMESPACE, baseNamespace.toString());
-//        }
-//        if (isHadoopCatalog) {
-//            config.put(FlinkCatalogFactory.ICEBERG_CATALOG_TYPE, "hadoop");
-//        } else {
-//            config.put(FlinkCatalogFactory.ICEBERG_CATALOG_TYPE, "hive");
-//            config.put(CatalogProperties.URI, getURI(hiveConf));
-//        }
-//        config.put(CatalogProperties.WAREHOUSE_LOCATION, String.format("file://%s", warehouseRoot()));
 
         this.flinkDatabase = catalogName + "." + DATABASE;
         this.flinkTable = "test_table";

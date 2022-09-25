@@ -54,7 +54,6 @@ public class FlinkCDCMultiTableTest {
         mysqlDBManager.importOrSyncLakeSoulNamespace(DBName);
         mysqlDBManager.listTables().forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
-//        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -83,9 +82,7 @@ public class FlinkCDCMultiTableTest {
         Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
 
         builder.printStream(streams.f0, "Print CDC Stream");
-//        builder.printStream(streams.f1, "Print DDL Stream");
         streams.f1.addSink(new LakeSoulDDLSink()).setParallelism(1);
         env.execute("Print MySQL Snapshot + Binlog");
-        //Thread.sleep(300000);
     }
 }

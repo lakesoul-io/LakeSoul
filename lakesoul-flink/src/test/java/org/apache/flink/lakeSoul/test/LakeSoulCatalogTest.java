@@ -60,7 +60,6 @@ public class LakeSoulCatalogTest {
         }
         tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
         tEnvs.useCatalog(LAKESOUL);
-//        System.out.println(lakesoulCatalog.listDatabases());
         tEnvs.useDatabase("test_lakesoul_meta");
         DbManage = new DBManager();
     }
@@ -86,15 +85,15 @@ public class LakeSoulCatalogTest {
 
     @Test
     public void createTable(){
-        tEnvs.executeSql( "CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='5433')" );
+        tEnvs.executeSql( "CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')" );
         tEnvs.executeSql("show tables").print();
         TableInfo info = DbManage.getTableInfo("MetaCommon.DATA_BASE().user_behaviorgg");
-        System.out.println(info);
+        System.out.println(info.getTableSchema());
     }
 
     @Test
     public void dropTable() {
-//        tEnvs.executeSql("drop table user_behavior7464434");
+        tEnvs.executeSql("drop table user_behavior7464434");
         tEnvs.executeSql("show tables").print();
     }
 
@@ -114,7 +113,7 @@ public class LakeSoulCatalogTest {
                         + "WITH ('connector'='datagen')");
 
         Table table = tableEnv.from("GeneratedTable");
-//        tableEnv.toDataStream(table).print();
-//        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
+        tableEnv.toDataStream(table).print();
+        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
     }
 }
