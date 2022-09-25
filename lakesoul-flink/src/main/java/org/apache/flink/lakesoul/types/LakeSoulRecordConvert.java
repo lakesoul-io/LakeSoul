@@ -22,8 +22,6 @@ package org.apache.flink.lakesoul.types;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Envelope;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.VariableScaleDecimal;
 import io.debezium.time.Date;
 import io.debezium.time.Timestamp;
 import io.debezium.time.*;
@@ -40,8 +38,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
-import java.util.stream.IntStream;
-import java.util.*;
+import java.util.Map;
 
 public class LakeSoulRecordConvert implements Serializable {
     private final ZoneId serverTimeZone = ZoneId.of("UTC");

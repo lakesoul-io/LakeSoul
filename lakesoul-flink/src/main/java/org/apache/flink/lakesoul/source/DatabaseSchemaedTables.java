@@ -16,8 +16,8 @@
  *
  *
  */
-package org.apache.flink.lakesoul.source;
 
+package org.apache.flink.lakesoul.source;
 
 import java.util.ArrayList;
 import java.util.HashMap;

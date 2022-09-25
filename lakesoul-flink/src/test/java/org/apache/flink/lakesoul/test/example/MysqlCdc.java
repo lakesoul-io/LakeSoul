@@ -16,6 +16,7 @@
  *
  *
  */
+
 package org.apache.flink.lakesoul.test.example;
 
 import com.dmetasoul.lakesoul.meta.DBManager;

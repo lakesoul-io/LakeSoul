@@ -16,8 +16,8 @@
  *
  *
  */
-package org.apache.flink.lakesoul.sink;
 
+package org.apache.flink.lakesoul.sink;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
