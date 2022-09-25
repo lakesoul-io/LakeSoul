@@ -29,6 +29,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -90,7 +91,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                                                                          identity.rowType.getFieldNames()));
                 for (String file : files) {
                     DataFileOp dataFileOp = new DataFileOp();
-                    dataFileOp.setFileOp("add");
+                    dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);
                     dataFileOp.setPath(file);
                     Path path = new Path(file);
                     FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
@@ -104,9 +105,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
                 dataCommitInfo.setTableId(tableInfo.getTableId());
-                dataCommitInfo.setPartitionDesc(partition);
+                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition);
                 dataCommitInfo.setFileOps(dataFileOpList);
-                dataCommitInfo.setCommitOp("MergeCommit");
+                dataCommitInfo.setCommitOp(LakeSoulSinkOptions.MERGE_COMMIT_TYPE);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
                 assert committable.getCommitId() != null;
                 dataCommitInfo.setCommitId(UUID.fromString(committable.getCommitId()));

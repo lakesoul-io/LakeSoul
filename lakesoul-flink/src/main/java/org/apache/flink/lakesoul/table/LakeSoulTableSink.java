@@ -19,7 +19,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-import io.debezium.relational.TableId;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
@@ -29,7 +28,7 @@ import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.LakeSoulRollingPolicyImpl;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
-import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
+import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
@@ -47,18 +46,19 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
+  private final String tableName;
   private final EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private boolean overwrite;
   private final DataType dataType;
   private final ResolvedSchema schema;
   private final Configuration flinkConf;
+  private final List<String> primaryKeyList;
   private final List<String> partitionKeyList;
 
   private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
@@ -66,12 +66,14 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   public LakeSoulTableSink(
-      DataType dataType,
-      List<String> partitionKeyList,
-      ReadableConfig flinkConf,
-      EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
-      ResolvedSchema schema
+          String tableName, DataType dataType,
+          List<String> primaryKeyList, List<String> partitionKeyList,
+          ReadableConfig flinkConf,
+          EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
+          ResolvedSchema schema
   ) {
+    this.tableName = tableName;
+    this.primaryKeyList = primaryKeyList;
     this.bulkWriterFormat = bulkWriterFormat;
     this.schema = schema;
     this.partitionKeyList = partitionKeyList;
@@ -80,11 +82,13 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   private LakeSoulTableSink(LakeSoulTableSink tableSink) {
+    this.tableName = tableSink.tableName;
     this.bulkWriterFormat = tableSink.bulkWriterFormat;
     this.overwrite = tableSink.overwrite;
     this.dataType = tableSink.dataType;
     this.schema = tableSink.schema;
     this.flinkConf = tableSink.flinkConf;
+    this.primaryKeyList = tableSink.primaryKeyList;
     this.partitionKeyList = tableSink.partitionKeyList;
   }
 
@@ -119,7 +123,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
     LakeSoulKeyGen keyGen = new LakeSoulKeyGen(
             rowType,
-            flinkConf.getString(LakeSoulSinkOptions.KEY_FIELD).split(",")
+            primaryKeyList.toArray(new String[0])
             );
     //bucket file name config
     OutputFileConfig fileNameConfig = OutputFileConfig.builder()
@@ -131,12 +135,13 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //redistribution by partitionKey
     dataStream = dataStream.partitionCustom(new HashPartitioner<>(), keyGen::getRePartitionHash);
     //rowData sink fileSystem Task
-    String tableName = flinkConf.getString(TABLE_NAME);
     LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(
                path,
-               new TableSchemaIdentity(new org.apache.flink.lakesoul.types.TableId(TableId.parse(tableName)), rowType,
+               new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(tableName)),
+                                       rowType,
                                        path.toString(),
-                                       Arrays.asList(flinkConf.getString(KEY_FIELD).split(",")), partitionKeyList),
+                                       primaryKeyList,
+                                       partitionKeyList),
                flinkConf)
        .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL))
        .withRollingPolicy(rollingPolicy)

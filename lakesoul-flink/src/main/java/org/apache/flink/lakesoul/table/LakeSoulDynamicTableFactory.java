@@ -21,7 +21,6 @@ package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -34,7 +33,6 @@ import org.apache.flink.table.factories.EncodingFormatFactory;
 import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FactoryUtil;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -45,10 +43,6 @@ import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_EXIST_COLUMN_KEY;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.PARTITION_FIELD;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
 
@@ -61,25 +55,13 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
     ResolvedCatalogTable catalogTable = context.getCatalogTable();
     TableSchema schema = catalogTable.getSchema();
     List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
-    String primaryKeys = FlinkUtil.stringListToString(pkColumns);
-    List<String> partitionKeysList = catalogTable.getPartitionKeys();
-    String partitionKeys = FlinkUtil.stringListToString(partitionKeysList);
-    List<String> fileExistColumnKey = Arrays.stream(schema.getFieldNames())
-        .filter(o -> !partitionKeysList.contains(o)).collect(Collectors.toList());
-    if (options.getBoolean(USE_CDC)){
-      fileExistColumnKey.add("rowKinds");
-    }
-    options.setString(FILE_EXIST_COLUMN_KEY, FlinkUtil.stringListToString(fileExistColumnKey));
-    options.setString(TABLE_NAME, objectIdentifier.getObjectName());
-    options.setString(RECORD_KEY_NAME, primaryKeys);
-    options.setString(PARTITION_FIELD.key(), partitionKeys);
 
     return new LakeSoulTableSink(
-        catalogTable.getResolvedSchema().toPhysicalRowDataType(),
-        catalogTable.getPartitionKeys(),
-        options,
-        discoverEncodingFormat(context, BulkWriterFormatFactory.class),
-        context.getCatalogTable().getResolvedSchema()
+            objectIdentifier.getObjectName(), catalogTable.getResolvedSchema().toPhysicalRowDataType(),
+            pkColumns, catalogTable.getPartitionKeys(),
+            options,
+            discoverEncodingFormat(context, BulkWriterFormatFactory.class),
+            context.getCatalogTable().getResolvedSchema()
     );
   }
 
