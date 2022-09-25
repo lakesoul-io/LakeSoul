@@ -22,6 +22,8 @@ package org.apache.flink.lakesoul.types;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Envelope;
+import io.debezium.data.SpecialValueDecimal;
+import io.debezium.data.VariableScaleDecimal;
 import io.debezium.time.Date;
 import io.debezium.time.Timestamp;
 import io.debezium.time.*;
@@ -404,16 +406,17 @@ public class LakeSoulRecordConvert implements Serializable {
             // decimal.handling.mode=double
             bigDecimal = BigDecimal.valueOf((Double) dbzObj);
         } else {
-//            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
-//                SpecialValueDecimal decimal =
-//                        VariableScaleDecimal.toLogical((Struct) dbzObj);
-//                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
-//            } else {
+            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
+                SpecialValueDecimal decimal =
+                        VariableScaleDecimal.toLogical((Struct) dbzObj);
+                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
+            } else {
                 // fallback to string
                 bigDecimal = new BigDecimal(dbzObj.toString());
-//            }
+            }
         }
-        return DecimalData.fromBigDecimal(bigDecimal, 20, 3);
+        Map<String,String> paras= ((ConnectSchema) schema).parameters();
+        return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
     }
 
     public Object convertToDate(Object dbzObj, Schema schema) {
