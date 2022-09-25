@@ -33,7 +33,7 @@ create table if not exists data_commit_info (
     commit_id UUID,
     file_ops data_file_op [],
     commit_op text,
-    commited boolean default 'false',
+    committed boolean default 'false',
     timestamp bigint,
     primary key(table_id, partition_desc, commit_id)
 );

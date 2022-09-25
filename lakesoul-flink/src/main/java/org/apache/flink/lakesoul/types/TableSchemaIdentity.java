@@ -30,10 +30,20 @@ public final class TableSchemaIdentity implements Serializable {
     public RowType rowType;
 
     public final String tableLocation;
+
     public final List<String> primaryKeys;
+
     public final List<String> partitionKeyList;
 
-    public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys, List<String> partitionKeyList) {
+    public TableSchemaIdentity() {
+        this.tableId = null;
+        this.tableLocation = null;
+        this.primaryKeys = null;
+        this.partitionKeyList = null;
+    }
+
+    public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
+                               List<String> partitionKeyList) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.tableLocation = tableLocation;
@@ -46,6 +56,7 @@ public final class TableSchemaIdentity implements Serializable {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         TableSchemaIdentity that = (TableSchemaIdentity) o;
+        assert tableId != null;
         return tableId.equals(that.tableId) && rowType.equals(that.rowType);
     }
 

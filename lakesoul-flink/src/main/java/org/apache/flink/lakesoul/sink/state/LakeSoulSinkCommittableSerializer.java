@@ -85,20 +85,22 @@ public class LakeSoulSinkCommittableSerializer
             throws IOException {
 
         if (committable.hasPendingFile()) {
-            dataOutputView.writeBoolean(true);
             assert committable.getPendingFiles() != null;
+            assert committable.getFilePaths() != null;
+            assert committable.getPendingFiles().size() == committable.getFilePaths().size();
+            assert committable.getCommitId() != null;
+
+            dataOutputView.writeBoolean(true);
             dataOutputView.writeInt(committable.getPendingFiles().size());
             for (InProgressFileWriter.PendingFileRecoverable pennding :
                 committable.getPendingFiles()) {
                 SimpleVersionedSerialization.writeVersionAndSerialize(
                         pendingFileSerializer, pennding, dataOutputView);
             }
-            assert committable.getFilePaths() != null;
             for (String paths : committable.getFilePaths()) {
                 dataOutputView.writeUTF(paths);
             }
             dataOutputView.writeLong(committable.getCreationTime());
-            assert committable.getCommitId() != null;
             dataOutputView.writeUTF(committable.getCommitId());
         } else {
             dataOutputView.writeBoolean(false);

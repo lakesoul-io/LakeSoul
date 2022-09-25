@@ -24,7 +24,6 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWr
 
 import javax.annotation.Nullable;
 import java.io.Serializable;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
@@ -36,7 +35,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparable<LakeSoulMultiTableSinkCommittable> {
 
-    private long creationTime = 0;
+    static final long serialVersionUID = 42L;
+
+    private final long creationTime;
 
     private final String bucketId;
 
@@ -57,12 +58,12 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     public LakeSoulMultiTableSinkCommittable(
             String bucketId,
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
-            @Nullable List<String> filePaths,
+            List<String> filePaths,
             long creationTime,
             TableSchemaIdentity identity) {
         this.bucketId = bucketId;
         this.pendingFiles = checkNotNull(pendingFiles);
-        this.filePaths = filePaths;
+        this.filePaths = checkNotNull(filePaths);
         this.creationTime = creationTime;
         this.identity = identity;
         this.commitId = UUID.randomUUID().toString();
@@ -79,6 +80,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup) {
         this.bucketId = bucketId;
         this.identity = identity;
+        this.creationTime = Long.MAX_VALUE;
         this.filePaths = null;
         this.pendingFiles = null;
         this.commitId = null;
@@ -95,7 +97,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             @Nullable List<String> filePaths,
             long time,
-            String commitId,
+            @Nullable String commitId,
             @Nullable InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup) {
         this.bucketId = bucketId;
         this.identity = identity;

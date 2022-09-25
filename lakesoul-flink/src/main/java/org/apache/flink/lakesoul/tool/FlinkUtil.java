@@ -132,9 +132,12 @@ public class FlinkUtil {
   }
 
   public static String stringListToString(List<String> list) {
+    if (list.isEmpty()) {
+      return "";
+    }
     StringBuilder builder = new StringBuilder();
-    for (int i = 0; i < list.size(); i++) {
-      builder.append(list.get(i)).append(",");
+    for (String s : list) {
+      builder.append(s).append(",");
     }
     return builder.deleteCharAt(builder.length() - 1).toString();
   }

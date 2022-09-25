@@ -21,18 +21,22 @@ package org.apache.flink.lakesoul.sink.state;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
+import com.esotericsoftware.kryo.serializers.JavaSerializer;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 
 public class TableSchemaIdentitySerializer
         implements SimpleVersionedSerializer<TableSchemaIdentity> {
 
     private final Kryo kryo = new Kryo();
+
+    public TableSchemaIdentitySerializer() {
+        kryo.register(TableSchemaIdentity.class, new JavaSerializer());
+    }
 
     @Override
     public int getVersion() {
@@ -42,9 +46,10 @@ public class TableSchemaIdentitySerializer
     @Override
     public byte[] serialize(TableSchemaIdentity obj) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(256);
-        Output output = new Output(new ByteArrayOutputStream());
+        Output output = new Output(4096, 1024 * 1024);
         kryo.writeClassAndObject(output, obj);
         out.write(output.toBytes());
+        output.close();
 
         return out.getCopyOfBuffer();
     }

@@ -198,7 +198,7 @@ public class LakeSoulWriterBucket {
             inProgressPart = rollPartFile(currentTime);
         }
 
-        inProgressPart.write(element, currentTime);
+        sortQueue.add(new LakeSoulCDCElement(element, currentTime));
     }
 
     List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
@@ -216,7 +216,7 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
                 pendingFiles.stream().map(p -> p.pendingFile).collect(Collectors.toList()),
-                filePaths, time, tableId));
+                List.copyOf(filePaths), time, tableId));
         pendingFiles.clear();
         filePaths.clear();
 
@@ -302,6 +302,10 @@ public class LakeSoulWriterBucket {
     private void closePartFile() throws IOException {
         if (inProgressPart != null) {
             long creationTime = inProgressPart.getCreationTime();
+            for (LakeSoulCDCElement element : sortQueue) {
+                inProgressPart.write(element.element, element.timedata);
+            }
+            sortQueue.clear();
             InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                     inProgressPart.closeForCommit();
             pendingFiles.add(new PendingFileAndCreateTime(pendingFileRecoverable, creationTime));
