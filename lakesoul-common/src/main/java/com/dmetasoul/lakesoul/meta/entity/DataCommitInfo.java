@@ -34,6 +34,8 @@ public class DataCommitInfo {
 
   private long timestamp;
 
+  private boolean committed;
+
   public String getTableId() {
     return tableId;
   }
@@ -89,5 +91,13 @@ public class DataCommitInfo {
 
   public void setTimestamp(long timestamp) {
     this.timestamp = timestamp;
+  }
+
+  public boolean isCommitted() {
+    return committed;
+  }
+
+  public void setCommitted(boolean committed) {
+    this.committed = committed;
   }
 }

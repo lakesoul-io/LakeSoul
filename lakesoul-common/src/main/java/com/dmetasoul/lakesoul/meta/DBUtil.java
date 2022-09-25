@@ -68,6 +68,7 @@ public class DBUtil {
                 "file_ops data_file_op[]," +
                 "commit_op text," +
                 "timestamp bigint," +
+                "committed boolean default 'false'," +
                 "primary key(table_id, partition_desc, commit_id)" +
                 ")";
         String partitionInfo = "create table if not exists partition_info (" +

@@ -37,8 +37,8 @@ public class TablePathIdDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
-            tablePathId = new TablePathId();
             while (rs.next()) {
+                tablePathId = new TablePathId();
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
             }
