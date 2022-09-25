@@ -491,24 +491,31 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     }
   }
 
-  override def listTables(namespace: Array[String]): Array[Identifier] = {
-    println("lakesoul listTables")
-    MetaVersion.listTables().asScala.map(table => {
-      Identifier.of(namespace, table)
-    }).toArray
+  // todo: invalid on spark v3.1.2
+  override def listTables(namespaces: Array[String]): Array[Identifier] = {
+    LakeSoulCatalog.listTables(namespaces)
+//    MetaVersion.listTables().asScala.map(table => {
+//      Identifier.of(Array("default"), table)
+//    }).toArray
+  }
+
+  //=============
+  // Namespace
+  //=============
+
+  // todo: invalid on spark v3.1.2
+  override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
+//    super.createNamespace(namespace, metadata)
+//    MetaVersion.createNamespace(namespace)
+    LakeSoulCatalog.createNamespace(namespaces)
   }
 
   override def listNamespaces(): Array[Array[String]] = {
-    println("lakesoul listNamespaces")
-    Array(Array("lakesoul"))
+    LakeSoulCatalog.listNamespaces()
   }
 
   override def defaultNamespace(): Array[String] = {
     LakeSoulCatalog.currentDefaultNamespace
-  }
-
-  override def defaultNamespace(): Array[String] = {
-    LakeSoulTable.currentDefaultNamespace
   }
 
 }
@@ -561,25 +568,34 @@ object LakeSoulCatalog{
   // namespaces
   //===========
 
-  def listTables(namespaces: Array[String]): Array[String] = {
-    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.listTables")
-    MetaVersion.listTables(namespaces).asScala.toArray
+
+  def listTables(): Array[Identifier] = {
+    listTables(currentDefaultNamespace)
+  }
+
+  def listTables(namespaces: Array[String]): Array[Identifier] = {
+//    MetaVersion.listTables(namespaces).asScala.toArray
+    MetaVersion.listTables(namespaces).asScala.map(table => {
+      Identifier.of(namespaces, table)
+    }).toArray
   }
 
   def createNamespace(namespaces: Array[String]): Unit = {
-    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.createNamespace")
-    MetaVersion.createNamespace(namespaces)
+    MetaVersion.createNamespace(namespaces.head)
   }
 
   var currentDefaultNamespace: Array[String] = Array("default")
 
   def useNamespace(namespaces: Array[String]): Unit = {
-    println("[DEBUG]on org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.useNamespace")
     currentDefaultNamespace = namespaces
   }
 
   def showCurrentNamespace():Array[String] = {
     currentDefaultNamespace
+  }
+
+  def listNamespaces(): Array[Array[String]] = {
+    Array(MetaVersion.listNamespaces())
   }
 
 }
