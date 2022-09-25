@@ -67,27 +67,29 @@ public class LakeSoulCatalogTest {
     }
 
     @Test
-    public void LakesoulCatalog(){
-        LakeSoulCatalogFactory catalogFactory =new LakeSoulCatalogFactory();
-        Catalog lakesoulCatalog = catalogFactory.createCatalog(LAKESOUL,props);
+    public void LakesoulCatalog() {
+        LakeSoulCatalogFactory catalogFactory = new LakeSoulCatalogFactory();
+        Catalog lakesoulCatalog = catalogFactory.createCatalog(LAKESOUL, props);
         assertTrue(lakesoulCatalog instanceof LakeSoulCatalog);
     }
 
     @Test
-    public void registerCatalog(){
+    public void registerCatalog() {
         EnvironmentSettings bbSettings = EnvironmentSettings.newInstance().inBatchMode().build();
         TableEnvironment tableEnv = TableEnvironment.create(bbSettings);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
-        tableEnv.registerCatalog(LAKESOUL,lakesoulCatalog);
+        tableEnv.registerCatalog(LAKESOUL, lakesoulCatalog);
         tableEnv.useCatalog(LAKESOUL);
         System.out.println(tableEnv.getCurrentCatalog());
-        assertEquals(true, tableEnv.getCatalog(LAKESOUL).get() instanceof LakeSoulCatalog);
+        assertTrue(tableEnv.getCatalog(LAKESOUL).get() instanceof LakeSoulCatalog);
     }
 
 
     @Test
-    public void createTable(){
-        tEnvs.executeSql( "CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id) NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name','lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')" );
+    public void createTable() {
+        tEnvs.executeSql("CREATE TABLE user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id)" +
+                         " NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name'," +
+                         "'lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')");
         tEnvs.executeSql("show tables").print();
         TableInfo info = DbManage.getTableInfo("MetaCommon.DATA_BASE().user_behaviorgg");
         System.out.println(info.getTableSchema());
@@ -101,21 +103,23 @@ public class LakeSoulCatalogTest {
 
 
     @Test
-    public void sqlDefaultSink(){
+    public void sqlDefaultSink() {
 
-        StreamTableEnvironment tableEnv = StreamTableEnvironment.create(StreamExecutionEnvironment.getExecutionEnvironment());
+        StreamTableEnvironment tableEnv =
+                StreamTableEnvironment.create(StreamExecutionEnvironment.getExecutionEnvironment());
         tableEnv.executeSql(
                 "CREATE TABLE GeneratedTable "
-                        + "("
-                        + "  name STRING,"
-                        + "  score INT,"
-                        + "  event_time TIMESTAMP_LTZ(3),"
-                        + "  WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND"
-                        + ")"
-                        + "WITH ('connector'='datagen')");
+                + "("
+                + "  name STRING,"
+                + "  score INT,"
+                + "  event_time TIMESTAMP_LTZ(3),"
+                + "  WATERMARK FOR event_time AS event_time - INTERVAL '10' SECOND"
+                + ")"
+                + "WITH ('connector'='datagen')");
 
         Table table = tableEnv.from("GeneratedTable");
         tableEnv.toDataStream(table).print();
-        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
+        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3'," +
+                            "'value3')");
     }
 }

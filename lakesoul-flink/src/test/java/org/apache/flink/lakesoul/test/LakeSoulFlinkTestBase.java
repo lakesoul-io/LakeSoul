@@ -37,7 +37,8 @@ import java.util.List;
 
 public class LakeSoulFlinkTestBase extends TestBaseUtils {
 
-    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @ClassRule
+    public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
     private static DBManager dbManager = null;
     protected static LakeSoulCatalog catalog = null;
@@ -66,7 +67,7 @@ public class LakeSoulFlinkTestBase extends TestBaseUtils {
 
                     TableEnvironment env = TableEnvironment.create(settings);
                     env.getConfig()
-                            .getConfiguration()
+                       .getConfiguration()
                     ;
                     env.registerCatalog("lakesoul", catalog);
 
@@ -101,9 +102,9 @@ public class LakeSoulFlinkTestBase extends TestBaseUtils {
 
     protected void assertSameElements(String message, Iterable<Row> expected, Iterable<Row> actual) {
         Assertions.assertThat(actual)
-                .isNotNull()
-                .as(message)
-                .containsExactlyInAnyOrderElementsOf(expected);
+                  .isNotNull()
+                  .as(message)
+                  .containsExactlyInAnyOrderElementsOf(expected);
     }
 
 }

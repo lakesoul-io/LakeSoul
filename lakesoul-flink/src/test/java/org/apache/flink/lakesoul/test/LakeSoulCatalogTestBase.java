@@ -47,10 +47,9 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
 
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
-//        return null;
         return Lists.newArrayList(
-                new Object[] {"lakesoul", Namespace.defaultNamespace()},
-                new Object[] {"lakesoul", Namespace.defaultNamespace()});
+                new Object[]{"lakesoul", Namespace.defaultNamespace()},
+                new Object[]{"lakesoul", Namespace.defaultNamespace()});
     }
 
     protected final String catalogName;
@@ -70,7 +69,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
 
         this.flinkDatabase = catalogName + "." + DATABASE;
         this.flinkTable = "test_table";
-        this.flinkTablePath = "file:/tmp/"+flinkTable;
+        this.flinkTablePath = "file:/tmp/" + flinkTable;
         this.lakesoulNamespace = baseNamespace;
     }
 
@@ -80,7 +79,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
         levels.add(tableName);
         return Joiner.on('.').join(levels);
     }
-
 
 
     static String toWithClause(Map<String, String> props) {

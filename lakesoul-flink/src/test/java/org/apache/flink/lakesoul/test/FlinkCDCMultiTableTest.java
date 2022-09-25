@@ -25,7 +25,6 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
-import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.CheckpointingMode;
@@ -78,12 +77,13 @@ public class FlinkCDCMultiTableTest {
                 "'hashBucketNum'='2')");
 
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
-                .hostname("localhost")
-                .port(3306)
-                .databaseList("test_cdc") // set captured database
-                .tableList("test_cdc.*") // set captured table
-                .username("root")
-                .password("root");
+                                                                        .hostname("localhost")
+                                                                        .port(3306)
+                                                                        .databaseList("test_cdc") // set captured
+                                                                        // database
+                                                                        .tableList("test_cdc.*") // set captured table
+                                                                        .username("root")
+                                                                        .password("root");
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
