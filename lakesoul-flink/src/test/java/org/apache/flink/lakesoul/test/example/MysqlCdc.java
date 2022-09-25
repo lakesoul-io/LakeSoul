@@ -32,6 +32,7 @@ import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+
 import java.util.HashSet;
 
 
@@ -45,25 +46,26 @@ public class MysqlCdc {
         int port = 3306;
 
         MysqlDBManager mysqlDBManager = new MysqlDBManager(DBName,
-                userName,
-                passWrd,
-                host,
-                Integer.toString(port),
-                new HashSet<>(),
-                MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
+                                                           userName,
+                                                           passWrd,
+                                                           host,
+                                                           Integer.toString(port),
+                                                           new HashSet<>(),
+                                                           MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
         DBManager dbManager = new DBManager();
         dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(DBName);
         mysqlDBManager.listTables().forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
 
-        Configuration conf= new Configuration();
+        Configuration conf = new Configuration();
         conf.setString(LakeSoulDDLSink.ConfKey.DB_NAME, DBName);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_USER, userName);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_PASSWORD, passWrd);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_HOST, host);
         conf.setInteger(LakeSoulDDLSink.ConfKey.DB_PORT, port);
-        conf.setString(LakeSoulDDLSink.ConfKey.LAKESOUL_TABLE_PATH_PREFIX, MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
+        conf.setString(LakeSoulDDLSink.ConfKey.LAKESOUL_TABLE_PATH_PREFIX,
+                       MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -77,12 +79,12 @@ public class MysqlCdc {
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
 
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
-                .hostname(host)
-                .port(port)
-                .databaseList(DBName) // set captured database
-                .tableList(DBName+".*") // set captured table
-                .username(userName)
-                .password(passWrd);
+                                                                        .hostname(host)
+                                                                        .port(port)
+                                                                        .databaseList(DBName) // set captured database
+                                                                        .tableList(DBName + ".*") // set captured table
+                                                                        .username(userName)
+                                                                        .password(passWrd);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;

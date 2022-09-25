@@ -32,12 +32,13 @@ import java.util.HashSet;
 public class MysqlMetaDataSource implements JdbcMetaDataSource {
 
     HashSet<String> excludeTables;
-    private HikariConfig config = new HikariConfig();
-    private HikariDataSource ds;
-    private String databaseName;
-    private String[] filterTables = new String[]{"sys_config"};
+    private final HikariConfig config = new HikariConfig();
+    private final HikariDataSource ds;
+    private final String databaseName;
+    private final String[] filterTables = new String[]{"sys_config"};
 
-    public MysqlMetaDataSource(String DBName, String user, String passwd, String host, String port, HashSet<String> excludeTables) {
+    public MysqlMetaDataSource(String DBName, String user, String passwd, String host, String port,
+                               HashSet<String> excludeTables) {
         this.excludeTables = excludeTables;
         excludeTables.addAll(Arrays.asList(filterTables));
         this.databaseName = DBName;
@@ -68,7 +69,6 @@ public class MysqlMetaDataSource implements JdbcMetaDataSource {
                 DatabaseSchemaedTables.Table tbl = dct.addTable(tablename);
                 ResultSet cols = dmd.getColumns(null, null, tablename, null);
                 while (cols.next()) {
-                    System.out.println(cols.getString("COLUMN_NAME")+" "+cols.getString("TYPE_NAME")+" "+cols.getString("COLUMN_SIZE"));
                     tbl.addColumn(cols.getString("COLUMN_NAME"), cols.getString("TYPE_NAME"));
                 }
                 ResultSet pks = dmd.getPrimaryKeys(null, null, tablename);

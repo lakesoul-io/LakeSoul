@@ -24,7 +24,6 @@ import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.flink.types.Row;
 import org.junit.After;
 import org.junit.Assert;
-import org.junit.Assume;
 import org.junit.Test;
 
 import java.io.File;
@@ -58,7 +57,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                 "Should use the configured default namespace",
                 "default",
                 getTableEnv().getCurrentDatabase()
-                );
+                           );
     }
 
     @Test
@@ -112,8 +111,9 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
 
         sql("CREATE DATABASE %s", flinkDatabase);
 
-        sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt) " +
-                "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
+        sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt)" +
+            " " +
+            "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
 
         Assert.assertTrue(
                 "databases should exist", validationCatalog.databaseExists(DATABASE));
@@ -138,7 +138,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
         sql("USE CATALOG %s", catalogName);
         Assert.assertEquals("Database default should be in use", "default", validationCatalog.getDefaultDatabase());
         sql("USE %s", DATABASE);
-        Assert.assertEquals("Database "+ DATABASE + " should be in use", DATABASE, getTableEnv().getCurrentDatabase());
+        Assert.assertEquals("Database " + DATABASE + " should be in use", DATABASE, getTableEnv().getCurrentDatabase());
 
 
         Assert.assertTrue(
@@ -146,8 +146,9 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
 
         Assert.assertEquals("Should not list any tables", 0, sql("SHOW TABLES").size());
 
-        sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt) " +
-                "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
+        sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt)" +
+            " " +
+            "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
 
         List<Row> tables = sql("SHOW TABLES");
         Assert.assertEquals("Only 1 table", 1, tables.size());
@@ -173,7 +174,6 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                 "Database should exist", validationCatalog.databaseExists(DATABASE));
 
         List<Row> databases = sql("SHOW DATABASES");
-
 
 
         Assert.assertTrue(
@@ -271,7 +271,7 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                     "Namespace should have expected location",
                     location.getPath(),
                     nsMetadata.get("location"));
-        } catch (DatabaseNotExistException e){
+        } catch (DatabaseNotExistException e) {
             throw new RuntimeException(e);
         }
 

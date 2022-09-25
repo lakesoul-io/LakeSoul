@@ -29,7 +29,8 @@ public class LakeSoulRowDataWrapper {
     RowType beforeType;
     RowType afterType;
 
-    public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType, RowType afterType) {
+    public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType,
+                                  RowType afterType) {
         this.tableId = tableId;
         this.op = op;
         this.before = before;
@@ -65,13 +66,13 @@ public class LakeSoulRowDataWrapper {
     @Override
     public String toString() {
         return "LakeSoulRowDataWrapper{" +
-                "tableId=" + tableId +
-                ", op='" + op + '\'' +
-                ", before=" + before +
-                ", after=" + after +
-                ", beforeType=" + beforeType +
-                ", afterType=" + afterType +
-                '}';
+               "tableId=" + tableId +
+               ", op='" + op + '\'' +
+               ", before=" + before +
+               ", after=" + after +
+               ", beforeType=" + beforeType +
+               ", afterType=" + afterType +
+               '}';
     }
 
     public static Build newBuild() {
@@ -115,8 +116,10 @@ public class LakeSoulRowDataWrapper {
             this.afterType = after;
             return this;
         }
+
         public LakeSoulRowDataWrapper build() {
-            return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType, this.afterType);
+            return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType,
+                                              this.afterType);
         }
     }
 }
