@@ -41,10 +41,11 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
     - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
 * Flink Integration ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
-  - [ ] Flink CDC
-    - [ ] Exactly Once Sink
-    - [ ] Auto Schema Sync
-    - [ ] Auto Table Creation (depends on #78)
+  - [x] Flink CDC
+    - [x] Exactly Once Sink
+    - [x] Auto Schema Sync
+    - [x] Auto Table Creation (depends on #78)
+    - [x] Support multiple source tables with different schemas
 * Hive Integration
   - [x] Export to Hive partition after compaction
 * Realtime Data Warehousing
