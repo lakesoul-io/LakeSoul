@@ -20,18 +20,22 @@ package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.lakesoul.table.LakeSoulCatalogFactory;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
-import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.lakesoul.metadata.LakesoulCatalogDatabase;
+import org.apache.flink.lakesoul.table.LakeSoulCatalogFactory;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
 import org.junit.Before;
 import org.junit.Test;
+
 import java.util.HashMap;
 import java.util.Map;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -49,8 +53,16 @@ public class LakeSoulCatalogTest {
         env.setParallelism(1);
         tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
-        tEnvs.registerCatalog(LAKESOUL,lakesoulCatalog);
+        lakesoulCatalog.open();
+
+        try {
+            lakesoulCatalog.createDatabase("test_lakesoul_meta", new LakesoulCatalogDatabase(), false);
+        } catch (DatabaseAlreadyExistException e) {
+            throw new RuntimeException(e);
+        }
+        tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
         tEnvs.useCatalog(LAKESOUL);
+        tEnvs.useDatabase("test_lakesoul_meta");
         DbManage = new DBManager();
     }
 
@@ -104,6 +116,6 @@ public class LakeSoulCatalogTest {
 
         Table table = tableEnv.from("GeneratedTable");
         tableEnv.toDataStream(table).print();
-//        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
+        tableEnv.executeSql("insert into user_behavior27 values (1,'key1','value1'),(2,'key1','value2'),(3,'key3','value3')");
     }
 }

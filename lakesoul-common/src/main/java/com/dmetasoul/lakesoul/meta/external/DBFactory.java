@@ -15,7 +15,7 @@
  *
  */
 
-package com.dmetasoul.lakesoul.meta;
+package com.dmetasoul.lakesoul.meta.external;
 
 import com.dmetasoul.lakesoul.meta.dao.*;
 

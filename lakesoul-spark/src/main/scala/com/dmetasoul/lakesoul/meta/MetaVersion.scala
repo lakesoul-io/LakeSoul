@@ -18,6 +18,7 @@ package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
 import com.google.common.base.Splitter
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo}
 
 import java.util
@@ -29,12 +30,24 @@ object MetaVersion {
 
   val dbManager = new DBManager()
 
+  def createNamespace(namespace: String): Unit = {
+    dbManager.createNewNamespace(namespace, new JSONObject(), "")
+  }
+
+  def listNamespaces(): Array[String] = {
+    dbManager.listNamespaces.asScala.toArray
+  }
+
   def isTableExists(table_name: String): Boolean = {
     dbManager.isTableExists(table_name)
   }
 
   def isTableIdExists(table_name: String, table_id: String): Boolean = {
     dbManager.isTableIdExists(table_name, table_id)
+  }
+
+  def isNamespaceExists(table_namespace: String):Boolean ={
+    dbManager.isNamespaceExists(table_namespace)
   }
 
   //check whether short_table_name exists, and return table path if exists
@@ -48,7 +61,8 @@ object MetaVersion {
     dbManager.getTablePathFromShortTableName(short_table_name)
   }
 
-  def createNewTable(table_path: String,
+  def createNewTable(table_namespace: String,
+                     table_path: String,
                      short_table_name: String,
                      table_id: String,
                      table_schema: String,
@@ -61,14 +75,22 @@ object MetaVersion {
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1,x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
-    dbManager.createNewTable(table_id, short_table_name, table_path, table_schema, json, partitions)
+    dbManager.createNewTable(table_id, table_namespace, short_table_name, table_path, table_schema, json, partitions)
   }
 
   def listTables(): util.List[String] = {
-    dbManager.listTables()
+    listTables(Array("default"))
+  }
+
+  def listTables(namespaces: Array[String]): util.List[String] = {
+    dbManager.listTablePathsByNamespace(namespaces.head)
   }
 
   def getTableInfo(table_path: String): TableInfo = {
+    getTableInfo(LakeSoulCatalog.currentDefaultNamespace.head, table_path)
+  }
+
+  def getTableInfo(namespace: String, table_path: String): TableInfo = {
     val info = dbManager.getTableInfo(table_path)
     if (info == null) {
       return null
@@ -94,6 +116,7 @@ object MetaVersion {
       case _ => -1
     }
     TableInfo(
+      namespace,
       Some(table_path),
       info.getTableId,
       info.getTableSchema,

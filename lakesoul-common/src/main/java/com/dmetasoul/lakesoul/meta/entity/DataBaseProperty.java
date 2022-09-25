@@ -17,7 +17,9 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
-public class DataBaseProperty {
+import java.io.Serializable;
+
+public class DataBaseProperty implements Serializable {
     private String driver;
     private String url;
     private String username;

@@ -28,10 +28,7 @@ import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
-import java.util.UUID;
+import java.util.*;
 
 public class DBUtil {
 
@@ -142,6 +139,22 @@ public class DBUtil {
 
     public static JSONObject stringToJSON(String s) {
         return JSONObject.parseObject(s);
+    }
+
+    public static JSONObject stringMapToJson(Map<String, String> map) {
+        JSONObject object = new JSONObject();
+        for (Map.Entry<String, String> entry:map.entrySet()) {
+            object.put(entry.getKey(), entry.getValue());
+        }
+        return object;
+    }
+
+    public static Map<String, String> jsonToStringMap(JSONObject o) {
+        Map<String, String> map = new HashMap<>();
+        for (Map.Entry<String, Object> entry : o.entrySet()) {
+            map.put(entry.getKey(), entry.getValue().toString());
+        }
+        return map;
     }
 
     public static String jsonToString(JSONObject o) {

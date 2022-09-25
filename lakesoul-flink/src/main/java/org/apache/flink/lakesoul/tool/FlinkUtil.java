@@ -215,4 +215,9 @@ public class FlinkUtil {
     FileSystem fileSystem = p.getFileSystem();
     return p.makeQualified(fileSystem);
   }
+
+  public static String getDatabaseName(String fullDatabaseName) {
+    String[] splited = fullDatabaseName.split("\\.");
+    return splited[splited.length - 1];
+  }
 }

@@ -41,6 +41,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.stream.IntStream;
+import java.util.*;
 
 public class LakeSoulRecordConvert implements Serializable {
     private final ZoneId serverTimeZone = ZoneId.of("UTC");
@@ -160,7 +161,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case STRING:
                 return new VarCharType(Integer.MAX_VALUE);
             case BYTES:
-                return new BinaryType();
+                return new BinaryType(Integer.MAX_VALUE);
             default:
                 return null;
         }
@@ -173,11 +174,14 @@ public class LakeSoulRecordConvert implements Serializable {
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
-                return new TimestampType();
+                return new TimestampType(9);
             case Decimal.LOGICAL_NAME:
-                return  new DecimalType(20,3);
+                Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
+                return  new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
             case Date.SCHEMA_NAME:
-                return new DateType();//date
+                return new DateType();
+            case Year.SCHEMA_NAME:
+                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType();
@@ -320,6 +324,16 @@ public class LakeSoulRecordConvert implements Serializable {
                && !ZonedTimestamp.SCHEMA_NAME.equals(name);
     }
 
+    private Object convertSqlSchemaAndField(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone)
+            throws Exception {
+        if(isPrimitiveType(fieldSchema)){
+            return primitiveTypeConvert(fieldValue,fieldSchema,serverTimeZone);
+        }else{
+            return otherTypeConvert(fieldValue,fieldSchema,serverTimeZone);
+        }
+
+    }
+
     private Object primitiveTypeConvert(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
         switch (fieldSchema.type()) {
             case BOOLEAN:
@@ -356,6 +370,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 return convertToDecimal(fieldValue, fieldSchema);
             case Date.SCHEMA_NAME:
                 return convertToDate(fieldValue, fieldSchema);//date
+            case Year.SCHEMA_NAME:
+                return  convertToInt(fieldValue, fieldSchema);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return convertToZonedTimeStamp(fieldValue, fieldSchema, serverTimeZone);
@@ -391,14 +407,14 @@ public class LakeSoulRecordConvert implements Serializable {
             // decimal.handling.mode=double
             bigDecimal = BigDecimal.valueOf((Double) dbzObj);
         } else {
-            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
-                SpecialValueDecimal decimal =
-                        VariableScaleDecimal.toLogical((Struct) dbzObj);
-                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
-            } else {
+//            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
+//                SpecialValueDecimal decimal =
+//                        VariableScaleDecimal.toLogical((Struct) dbzObj);
+//                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
+//            } else {
                 // fallback to string
                 bigDecimal = new BigDecimal(dbzObj.toString());
-            }
+//            }
         }
         return DecimalData.fromBigDecimal(bigDecimal, 20, 3);
     }
@@ -440,16 +456,6 @@ public class LakeSoulRecordConvert implements Serializable {
         LocalDateTime localDateTime =
                 TemporalConversions.toLocalDateTime(dbzObj, serverTimeZone);
         return TimestampData.fromLocalDateTime(localDateTime);
-    }
-
-    private Object convertSqlSchemaAndField(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone)
-            throws Exception {
-        if(isPrimitiveType(fieldSchema)){
-            return primitiveTypeConvert(fieldValue,fieldSchema,serverTimeZone);
-        }else{
-            return otherTypeConvert(fieldValue,fieldSchema,serverTimeZone);
-        }
-
     }
 
     public Object convertToBoolean(Object dbzObj, Schema schema) {
