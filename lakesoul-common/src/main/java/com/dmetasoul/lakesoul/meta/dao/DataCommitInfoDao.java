@@ -195,4 +195,20 @@ public class DataCommitInfoDao {
         pstmt.setLong(6, dataCommitInfo.getTimestamp());
         pstmt.execute();
     }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "delete from data_commit_info;";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+    }
 }

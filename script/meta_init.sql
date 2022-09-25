@@ -1,5 +1,15 @@
+create table if not exists namespace (
+    namespace text,
+    properties json,
+    comment text,
+    primary key(namespace)
+);
+
+insert into namespace(namespace, properties) values ('default', '{}');
+
 create table if not exists table_info (
     table_id text,
+    table_namespace text,
     table_name text,
     table_path text,
     table_schema text,
@@ -17,6 +27,7 @@ create table if not exists table_name_id (
 create table if not exists table_path_id (
     table_path text,
     table_id text,
+    table_namespace text,
     primary key(table_path)
 );
 

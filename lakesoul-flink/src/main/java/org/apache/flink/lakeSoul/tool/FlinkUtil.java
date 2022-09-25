@@ -199,4 +199,9 @@ public class FlinkUtil {
     return Collections.emptyList();
   }
 
+  public static String getDatabaseName(String fullDatabaseName) {
+    String[] splited = fullDatabaseName.split("\\.");
+    return splited[splited.length - 1];
+  }
+
 }

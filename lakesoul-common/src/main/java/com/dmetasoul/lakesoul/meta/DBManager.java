@@ -25,6 +25,8 @@ import org.apache.commons.lang.StringUtils;
 import java.util.*;
 
 public class DBManager {
+
+    private NamespaceDao namespaceDao;
     private TableInfoDao tableInfoDao;
     private TableNameIdDao tableNameIdDao;
     private TablePathIdDao tablePathIdDao;
@@ -32,11 +34,21 @@ public class DBManager {
     private PartitionInfoDao partitionInfoDao;
 
     public DBManager() {
+        namespaceDao = DBFactory.getNamespaceDao();
         tableInfoDao = DBFactory.getTableInfoDao();
         tableNameIdDao = DBFactory.getTableNameIdDao();
         tablePathIdDao = DBFactory.getTablePathIdDao();
         dataCommitInfoDao = DBFactory.getDataCommitInfoDao();
         partitionInfoDao = DBFactory.getPartitionInfoDao();
+    }
+
+    public boolean isNamespaceExists(String table_namespace) {
+        Namespace namespace = namespaceDao.findByNamespace(table_namespace);
+        if (namespace == null) {
+            return false;
+        }
+
+        return true;
     }
 
     public boolean isTableExists(String tablePath) {
@@ -45,6 +57,18 @@ public class DBManager {
             return false;
         }
         TableInfo tableInfo = tableInfoDao.selectByTableId(tablePathId.getTableId());
+        if (tableInfo == null) {
+            return false;
+        }
+        return true;
+    }
+
+    public boolean isTableExistsByTableName(String tableName) {
+        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
+        if (tableNameId == null) {
+            return false;
+        }
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
         if (tableInfo == null) {
             return false;
         }
@@ -75,10 +99,12 @@ public class DBManager {
         return tableInfoDao.selectByTableName(tableName);
     }
 
-    public void createNewTable(String tableId, String tableName, String tablePath, String tableSchema,
+    public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
+
         TableInfo tableInfo = new TableInfo();
         tableInfo.setTableId(tableId);
+        tableInfo.setTableNamespace(namespace);
         tableInfo.setTableName(tableName);
         tableInfo.setTablePath(tablePath);
         tableInfo.setTableSchema(tableSchema);
@@ -94,7 +120,7 @@ public class DBManager {
         }
         boolean insertPathFlag = true;
         if (StringUtils.isNotBlank(tablePath)) {
-            insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId));
+            insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace));
             if (!insertPathFlag) {
                 tableNameIdDao.deleteByTableId(tableId);
                 throw new IllegalStateException("this table path already exists!");
@@ -110,8 +136,15 @@ public class DBManager {
         }
     }
 
+
+
     public List<String> listTables() {
         List<String> rsList = tablePathIdDao.listAllPath();
+        return rsList;
+    }
+
+    public List<String> listTablePathsByNamespace(String table_namespace) {
+        List<String> rsList = tablePathIdDao.listAllPathByNamespace(table_namespace);
         return rsList;
     }
 
@@ -551,6 +584,54 @@ public class DBManager {
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
         return partitionInfoDao.insert(partitionInfo);
+    }
+
+    //==============
+    //namespace
+    //==============
+    public List<String> listNamespaces() {
+        return namespaceDao.listNamespaces();
+    }
+
+    public void createNewNamespace(String name,
+                                   JSONObject properties,
+                                   String comment) {
+        Namespace namespace = new Namespace();
+        namespace.setNamespace(name);
+        namespace.setProperties(properties);
+        namespace.setComment(comment);
+
+        boolean insertNamespaceFlag = namespaceDao.insert(namespace);
+        if (!insertNamespaceFlag) {
+            throw new IllegalStateException(String.format("namespace %s already exists!", name));
+        }
+
+    }
+
+    public Namespace getNamespaceByNamespace(String namespace) {
+        Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
+        return namespaceEntity;
+    }
+
+    public void updateNamespaceProperties(String namespace, JSONObject properties) {
+        Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
+        namespaceEntity.setProperties(properties);
+        namespaceDao.updatePropertiesByNamespace(namespace, properties);
+    }
+
+    public void deleteNamespace(String namespace) {
+        namespaceDao.deleteByNamespace(namespace);
+    }
+
+    // just for test
+    public void cleanMeta() {
+
+        namespaceDao.clean();
+        dataCommitInfoDao.clean();
+        tableInfoDao.clean();
+        tablePathIdDao.clean();
+        tableNameIdDao.clean();
+        partitionInfoDao.clean();
     }
 
 }

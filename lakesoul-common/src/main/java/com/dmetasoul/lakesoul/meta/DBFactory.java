@@ -20,6 +20,8 @@ package com.dmetasoul.lakesoul.meta;
 import com.dmetasoul.lakesoul.meta.dao.*;
 
 public class DBFactory {
+
+    private static NamespaceDao namespaceDao;
     private static TableInfoDao tableInfoDao;
     private static TableNameIdDao TableNameIdDao;
     private static TablePathIdDao tablePathIdDao;
@@ -27,6 +29,13 @@ public class DBFactory {
     private static PartitionInfoDao partitionInfoDao;
 
     private DBFactory(){}
+
+    public static NamespaceDao getNamespaceDao() {
+        if (namespaceDao == null) {
+            namespaceDao = new NamespaceDao();
+        }
+        return namespaceDao;
+    }
 
     public static TableInfoDao getTableInfoDao() {
         if (tableInfoDao == null) {
