@@ -51,14 +51,19 @@ object MetaVersion {
   }
 
   //check whether short_table_name exists, and return table path if exists
-  def isShortTableNameExists(short_table_name: String): (Boolean, String) = {
-    val path = dbManager.getTablePathFromShortTableName(short_table_name)
+  def isShortTableNameExists(short_table_name: String): (Boolean, String) = isShortTableNameExists(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+
+  //check whether short_table_name exists, and return table path if exists
+  def isShortTableNameExists(short_table_name: String, table_namespace: String): (Boolean, String) = {
+    val path = dbManager.getTablePathFromShortTableName(short_table_name, table_namespace)
     if (path == null) (false, null) else (true, path)
   }
 
+  def getTablePathFromShortTableName(short_table_name: String): String = getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+
   //get table path, if not exists, return "not found"
-  def getTablePathFromShortTableName(short_table_name: String): String = {
-    dbManager.getTablePathFromShortTableName(short_table_name)
+  def getTablePathFromShortTableName(short_table_name: String, table_namespace: String): String = {
+    dbManager.getTablePathFromShortTableName(short_table_name, table_namespace)
   }
 
   def createNewTable(table_namespace: String,
@@ -203,9 +208,12 @@ object MetaVersion {
     dbManager.updateTableSchema(table_id, table_schema)
   }
 
-
   def deleteTableInfo(table_name: String, table_id: String): Unit = {
-    dbManager.deleteTableInfo(table_name, table_id)
+    deleteTableInfo(table_name, table_id, LakeSoulCatalog.currentDefaultNamespace.head)
+  }
+
+  def deleteTableInfo(table_name: String, table_id: String, table_namespace: String): Unit = {
+    dbManager.deleteTableInfo(table_name, table_id, table_namespace)
   }
 
   def deletePartitionInfoByTableId(table_id: String): Unit = {
@@ -225,7 +233,11 @@ object MetaVersion {
   }
 
   def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
-    dbManager.deleteShortTableName(short_table_name, table_name)
+    deleteShortTableName(short_table_name, table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+  }
+
+  def deleteShortTableName(short_table_name: String, table_name: String, table_namespace: String): Unit = {
+    dbManager.deleteShortTableName(short_table_name, table_name, table_namespace)
   }
 
   def addShortTableName(short_table_name: String,

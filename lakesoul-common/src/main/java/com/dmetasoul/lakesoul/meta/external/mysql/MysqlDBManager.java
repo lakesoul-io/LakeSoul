@@ -111,10 +111,10 @@ public class MysqlDBManager implements ExternalDBManager {
     public void importOrSyncLakeSoulTable(String tableName) {
         String mysqlDDL = showCreateTable(tableName);
 
-        boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName);
+        boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
         if (exists) {
             // sync lakesoul table schema
-            TableNameId tableId = lakesoulDBManager.shortTableName(tableName);
+            TableNameId tableId = lakesoulDBManager.shortTableName(tableName, dbName);
             String newTableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
 
             lakesoulDBManager.updateTableSchema(tableId.getTableId(), newTableSchema);
@@ -125,8 +125,7 @@ public class MysqlDBManager implements ExternalDBManager {
 
             String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');;
 
-            String ddl = showCreateTable(tableName);
-            String tableSchema = ddlToSparkSchema(tableName, ddl).json();
+            String tableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
 
             lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
                                              tableSchema,

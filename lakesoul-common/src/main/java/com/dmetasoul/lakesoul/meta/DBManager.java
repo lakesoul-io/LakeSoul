@@ -64,7 +64,11 @@ public class DBManager {
     }
 
     public boolean isTableExistsByTableName(String tableName) {
-        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
+        return isTableExistsByTableName(tableName, "default");
+    }
+
+    public boolean isTableExistsByTableName(String tableName, String tableNamespace) {
+        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName, tableNamespace);
         if (tableNameId == null) {
             return false;
         }
@@ -83,12 +87,12 @@ public class DBManager {
         return false;
     }
 
-    public TableNameId shortTableName(String tableName) {
-        return tableNameIdDao.findByTableName(tableName);
+    public TableNameId shortTableName(String tableName, String tableNamespace) {
+        return tableNameIdDao.findByTableName(tableName, tableNamespace);
     }
 
-    public String getTablePathFromShortTableName(String tableName) {
-        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName);
+    public String getTablePathFromShortTableName(String tableName, String tableNamespace) {
+        TableNameId tableNameId = tableNameIdDao.findByTableName(tableName, tableNamespace);
         if (tableNameId.getTableId() == null) return null;
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
@@ -113,7 +117,7 @@ public class DBManager {
 
         boolean insertNameFlag = true;
         if (StringUtils.isNotBlank(tableName)) {
-            insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId));
+            insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace));
             if (!insertNameFlag) {
                 throw new IllegalStateException("this table name already exists!");
             }
@@ -176,12 +180,12 @@ public class DBManager {
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
     }
 
-    public void deleteTableInfo(String tablePath, String tableId) {
+    public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         String tableName = tableInfo.getTableName();
         if (StringUtils.isNotBlank(tableName)) {
-            tableNameIdDao.delete(tableName);
+            tableNameIdDao.delete(tableName, tableNamespace);
         }
         tableInfoDao.deleteByIdAndPath(tableId, tablePath);
     }
@@ -237,8 +241,8 @@ public class DBManager {
         dataCommitInfoDao.deleteByTableId(tableId);
     }
 
-    public void deleteShortTableName(String tableName, String tablePath) {
-        tableNameIdDao.delete(tableName);
+    public void deleteShortTableName(String tableName, String tablePath, String tableNamespace) {
+        tableNameIdDao.delete(tableName, tableNamespace);
     }
 
     public void addShortTableName(String tableName, String tablePath) {
