@@ -89,8 +89,10 @@ public class FlinkCDCMultiTableTest {
         tEnvs.registerCatalog("lakesoul", lakesoulCatalog);
         tEnvs.useCatalog("lakesoul");
 
+        tEnvs.executeSql("CREATE DATABASE IF NOT EXISTS test_cdc");
+
         tEnvs.executeSql(
-                "CREATE TABLE IF NOT EXISTS mysql_test_1 ( id int," +
+                "CREATE TABLE IF NOT EXISTS test_cdc.mysql_test_1 ( id int," +
                 " name string," +
                 " dt int," +
                 " date1 date," +
@@ -103,7 +105,7 @@ public class FlinkCDCMultiTableTest {
                 "'hashBucketNum'='2')");
 
         tEnvs.executeSql(
-                "CREATE TABLE IF NOT EXISTS mysql_test_2 ( id int," +
+                "CREATE TABLE IF NOT EXISTS test_cdc.mysql_test_2 ( id int," +
                 " name string," +
                 " dt int," +
                 " new_col string, " +

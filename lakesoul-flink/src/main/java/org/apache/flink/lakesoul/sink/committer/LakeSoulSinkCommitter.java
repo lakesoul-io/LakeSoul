@@ -22,6 +22,7 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
@@ -102,10 +103,11 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 }
                 String partition = committable.getBucketId();
 
-                TableInfo tableInfo = lakeSoulDBManager.getTableInfoByName(identity.tableId.table());
+                TableNameId tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(),
+                                                                           identity.tableId.schema());
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
-                dataCommitInfo.setTableId(tableInfo.getTableId());
+                dataCommitInfo.setTableId(tableNameId.getTableId());
                 dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition);
                 dataCommitInfo.setFileOps(dataFileOpList);
                 dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
@@ -121,7 +123,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                                                      .collect(Collectors.joining("\n\t"));
                     LOG.info("Commit to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
                              "CommitOp={}, Timestamp={}, UUID={}",
-                             identity.tableId.identifier(), tableInfo.getTableId(), partition,
+                             identity.tableId.identifier(), tableNameId.getTableId(), partition,
                              fileOpStr, dataCommitInfo.getCommitOp(),
                              dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString()
                              );
