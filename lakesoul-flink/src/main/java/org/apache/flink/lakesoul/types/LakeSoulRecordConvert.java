@@ -22,6 +22,8 @@ package org.apache.flink.lakesoul.types;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Envelope;
+import io.debezium.data.SpecialValueDecimal;
+import io.debezium.data.VariableScaleDecimal;
 import io.debezium.time.Date;
 import io.debezium.time.Timestamp;
 import io.debezium.time.*;
@@ -120,7 +122,7 @@ public class LakeSoulRecordConvert implements Serializable {
         if (useCDC) ++arity;
         String[] colNames = new String[arity];
         LogicalType[] colTypes = new LogicalType[arity];
-        List<Field> fieldNames = schema.fields();
+        List<Field> fieldNames =  schema.fields();
         for (int i = 0; i < (useCDC ? arity - 1 : arity); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
@@ -133,15 +135,14 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-    public LogicalType convertToLogical(Schema fieldSchema) {
-        if (isPrimitiveType(fieldSchema)) {
+    public LogicalType convertToLogical(Schema fieldSchema){
+        if(isPrimitiveType(fieldSchema)){
             return primitiveLogicalType(fieldSchema);
-        } else {
+        }else{
             return otherLogicalType(fieldSchema);
         }
 
     }
-
     private LogicalType primitiveLogicalType(Schema fieldSchema) {
         switch (fieldSchema.type()) {
             case BOOLEAN:
@@ -164,8 +165,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 return null;
         }
     }
-
-    private LogicalType otherLogicalType(Schema fieldSchema) {
+    private LogicalType otherLogicalType(Schema fieldSchema){
         switch (fieldSchema.name()) {
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
@@ -175,9 +175,8 @@ public class LakeSoulRecordConvert implements Serializable {
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 return new TimestampType(9);
             case Decimal.LOGICAL_NAME:
-                Map<String, String> paras = fieldSchema.parameters();
-                return new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),
-                                       Integer.parseInt(paras.get("scale")));
+                Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
+                return  new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
             case Date.SCHEMA_NAME:
                 return new DateType();
             case Year.SCHEMA_NAME:
@@ -185,8 +184,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType();
-            default:
-                return null;
+            default: return null;
         }
 
     }
@@ -285,7 +283,7 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         int arity = schema.fields().size();
         if (useCDC) ++arity;
-        List<Field> fieldNames = schema.fields();
+        List<Field> fieldNames =  schema.fields();
         GenericRowData row = new GenericRowData(arity);
         for (int i = 0; i < (useCDC ? arity - 1 : arity); i++) {
             Field field = fieldNames.get(i);
@@ -327,10 +325,10 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private Object convertSqlSchemaAndField(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone)
             throws Exception {
-        if (isPrimitiveType(fieldSchema)) {
-            return primitiveTypeConvert(fieldValue, fieldSchema, serverTimeZone);
-        } else {
-            return otherTypeConvert(fieldValue, fieldSchema, serverTimeZone);
+        if(isPrimitiveType(fieldSchema)){
+            return primitiveTypeConvert(fieldValue,fieldSchema,serverTimeZone);
+        }else{
+            return otherTypeConvert(fieldValue,fieldSchema,serverTimeZone);
         }
 
     }
@@ -372,7 +370,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case Date.SCHEMA_NAME:
                 return convertToDate(fieldValue, fieldSchema);//date
             case Year.SCHEMA_NAME:
-                return convertToInt(fieldValue, fieldSchema);
+                return  convertToInt(fieldValue, fieldSchema);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return convertToZonedTimeStamp(fieldValue, fieldSchema, serverTimeZone);
@@ -408,16 +406,17 @@ public class LakeSoulRecordConvert implements Serializable {
             // decimal.handling.mode=double
             bigDecimal = BigDecimal.valueOf((Double) dbzObj);
         } else {
-//            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
-//                SpecialValueDecimal decimal =
-//                        VariableScaleDecimal.toLogical((Struct) dbzObj);
-//                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
-//            } else {
-            // fallback to string
-            bigDecimal = new BigDecimal(dbzObj.toString());
-//            }
+            if (VariableScaleDecimal.LOGICAL_NAME.equals(schema.name())) {
+                SpecialValueDecimal decimal =
+                        VariableScaleDecimal.toLogical((Struct) dbzObj);
+                bigDecimal = decimal.getDecimalValue().orElse(BigDecimal.ZERO);
+            } else {
+                // fallback to string
+                bigDecimal = new BigDecimal(dbzObj.toString());
+            }
         }
-        return DecimalData.fromBigDecimal(bigDecimal, 20, 3);
+        Map<String,String> paras= ((ConnectSchema) schema).parameters();
+        return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")),Integer.parseInt(paras.get("scale")));
     }
 
     public Object convertToDate(Object dbzObj, Schema schema) {
