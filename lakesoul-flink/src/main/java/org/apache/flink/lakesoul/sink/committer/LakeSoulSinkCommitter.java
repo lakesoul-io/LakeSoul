@@ -107,7 +107,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 dataCommitInfo.setTableId(tableInfo.getTableId());
                 dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition);
                 dataCommitInfo.setFileOps(dataFileOpList);
-                dataCommitInfo.setCommitOp(LakeSoulSinkOptions.MERGE_COMMIT_TYPE);
+                dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
                 assert committable.getCommitId() != null;
                 dataCommitInfo.setCommitId(UUID.fromString(committable.getCommitId()));
@@ -119,9 +119,10 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                                                 op.getSize(), op.getFileExistCols()))
                                                      .collect(Collectors.joining("\n\t"));
                     LOG.info("Commit to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
-                             "CommitOp=MergeCommit, Timestamp={}, UUID={}",
+                             "CommitOp={}, Timestamp={}, UUID={}",
                              identity.tableId.identifier(), tableInfo.getTableId(), partition,
-                             fileOpStr, dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString()
+                             fileOpStr, dataCommitInfo.getCommitOp(),
+                             dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString()
                              );
                 }
 

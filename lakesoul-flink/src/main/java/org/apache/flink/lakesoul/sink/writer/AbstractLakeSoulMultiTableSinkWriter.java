@@ -229,10 +229,10 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     }
 
     private LakeSoulWriterBucket getOrCreateBucketForBucketId(
-            TableSchemaIdentity tableId,
+            TableSchemaIdentity identity,
             String bucketId,
             TableSchemaWriterCreator creator) throws IOException {
-        LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(creator.identity.tableId, bucketId));
+        LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(identity, bucketId));
         if (bucket == null) {
             final Path bucketPath = assembleBucketPath(creator.tableLocation, bucketId);
             BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter();
@@ -241,7 +241,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                             subTaskId,
                             creator.identity,
                             bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, creator.comparator);
-            activeBuckets.put(Tuple2.of(tableId, bucketId), bucket);
+            activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
         }
         return bucket;
     }
@@ -254,7 +254,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     }
 
     private Path assembleBucketPath(Path basePath, String bucketId) {
-        System.out.println("assemble path: " + basePath);
         if ("".equals(bucketId)) {
             return basePath;
         }

@@ -33,6 +33,8 @@ public class LakeSoulSinkOptions {
 
   public static final String MERGE_COMMIT_TYPE = "MergeCommit";
 
+  public static final String APPEND_COMMIT_TYPE = "AppendCommit";
+
   public static final String FILE_OPTION_ADD = "add";
 
   public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";

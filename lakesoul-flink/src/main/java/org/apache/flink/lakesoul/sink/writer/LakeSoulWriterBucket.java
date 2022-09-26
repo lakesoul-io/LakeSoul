@@ -81,7 +81,7 @@ public class LakeSoulWriterBucket {
 
     private String inProgressPath;
 
-    private PriorityQueue<LakeSoulCDCElement> sortQueue;
+    private final PriorityQueue<LakeSoulCDCElement> sortQueue;
 
     private final TableSchemaIdentity tableId;
 
@@ -302,10 +302,11 @@ public class LakeSoulWriterBucket {
     private void closePartFile() throws IOException {
         if (inProgressPart != null) {
             long creationTime = inProgressPart.getCreationTime();
-            for (LakeSoulCDCElement element : sortQueue) {
+            System.out.println("SortQueue size: " + sortQueue.size());
+            while (!sortQueue.isEmpty()) {
+                LakeSoulCDCElement element = sortQueue.poll();
                 inProgressPart.write(element.element, element.timedata);
             }
-            sortQueue.clear();
             InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                     inProgressPart.closeForCommit();
             pendingFiles.add(new PendingFileAndCreateTime(pendingFileRecoverable, creationTime));
