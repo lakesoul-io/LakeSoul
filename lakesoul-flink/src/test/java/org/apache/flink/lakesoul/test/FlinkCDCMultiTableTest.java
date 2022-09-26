@@ -41,6 +41,7 @@ public class FlinkCDCMultiTableTest {
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration()
                 .set(LakeSoulSinkOptions.USE_CDC, true)
+                .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)
                 .set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 2);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.enableCheckpointing(3000);

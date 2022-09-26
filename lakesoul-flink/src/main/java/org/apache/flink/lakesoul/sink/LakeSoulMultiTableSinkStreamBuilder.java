@@ -82,7 +82,9 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
         SingleOutputStreamOperator<JsonSourceRecord> cdcStream = source.process(
                 new JsonSourceRecordSplitProcessFunction(
-                        outputTag, context.conf.getString(WAREHOUSE_PATH))).name("cdc-stream");
+                        outputTag, context.conf.getString(WAREHOUSE_PATH)))
+                                                                       .name("cdc-dml-stream")
+                .setParallelism(context.conf.getInteger(SOURCE_PARALLELISM));
 
         DataStream<JsonSourceRecord> ddlStream = cdcStream.getSideOutput(outputTag);
 
