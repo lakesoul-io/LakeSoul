@@ -21,7 +21,8 @@ create table if not exists table_info (
 create table if not exists table_name_id (
     table_name text,
     table_id text,
-    primary key(table_name)
+    table_namespace text,
+    primary key(table_name, table_namespace)
 );
 
 create table if not exists table_path_id (
