@@ -302,7 +302,6 @@ public class LakeSoulWriterBucket {
     private void closePartFile() throws IOException {
         if (inProgressPart != null) {
             long creationTime = inProgressPart.getCreationTime();
-            System.out.println("SortQueue size: " + sortQueue.size());
             while (!sortQueue.isEmpty()) {
                 LakeSoulCDCElement element = sortQueue.poll();
                 inProgressPart.write(element.element, element.timedata);

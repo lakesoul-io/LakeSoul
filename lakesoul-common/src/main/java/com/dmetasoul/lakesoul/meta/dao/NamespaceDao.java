@@ -121,7 +121,6 @@ public class NamespaceDao {
         sb.append("update namespace set ");
         sb.append(String.format("properties = '%s'", properties.toJSONString()));
         sb.append(String.format(" where namespace = '%s'", namespace));
-        System.out.println(sb.toString());
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sb.toString());

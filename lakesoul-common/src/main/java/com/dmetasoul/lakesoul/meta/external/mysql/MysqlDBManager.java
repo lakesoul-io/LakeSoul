@@ -121,7 +121,6 @@ public class MysqlDBManager implements ExternalDBManager {
         } else {
             // import lakesoul table
             String tableId = EXTERNAL_MYSQL_TABLE_PREFIX + UUID.randomUUID();
-            System.out.println(tableId);
 
             String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');;
 
@@ -137,7 +136,6 @@ public class MysqlDBManager implements ExternalDBManager {
     @Override
     public void importOrSyncLakeSoulNamespace(String namespace) {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
-            System.out.printf("Namespace %s already exists%n", namespace);
             return;
         }
         lakesoulDBManager.createNewNamespace(namespace, new JSONObject(), "");
@@ -175,8 +173,6 @@ public class MysqlDBManager implements ExternalDBManager {
                 if (datatype == null) {
                     throw new IllegalStateException("Unhandled data types");
                 }
-                System.out.println(col);
-                System.out.println(datatype.json());
                 stNew[0] = stNew[0].add(name, datatype, col.isOptional());
             });
 
