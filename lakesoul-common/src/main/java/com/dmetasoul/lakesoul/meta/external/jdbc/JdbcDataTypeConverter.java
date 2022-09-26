@@ -16,17 +16,15 @@
  *
  *
  */
+
 package com.dmetasoul.lakesoul.meta.external.jdbc;
 
 import io.debezium.config.CommonConnectorConfig;
-import io.debezium.data.Bits;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.Xml;
 import io.debezium.jdbc.JdbcValueConverters;
 import io.debezium.jdbc.TemporalPrecisionMode;
 import io.debezium.relational.Column;
-import io.debezium.time.*;
-
+import io.debezium.time.ZonedTime;
+import io.debezium.time.ZonedTimestamp;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DecimalType;
 import org.slf4j.Logger;
@@ -39,7 +37,6 @@ import java.time.temporal.TemporalAdjuster;
 import static org.apache.spark.sql.types.DataTypes.*;
 
 public class JdbcDataTypeConverter {
-
 
     protected final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -62,8 +59,10 @@ public class JdbcDataTypeConverter {
     protected final CommonConnectorConfig.BinaryHandlingMode binaryMode;
 
     /**
-     * Create a new instance that always uses UTC for the default time zone when converting values without timezone information
-     * to values that require timezones, and uses adapts time and timestamp values based upon the precision of the database
+     * Create a new instance that always uses UTC for the default time zone when converting values without timezone
+     * information
+     * to values that require timezones, and uses adapts time and timestamp values based upon the precision of the
+     * database
      * columns.
      */
     public JdbcDataTypeConverter() {
@@ -71,29 +70,37 @@ public class JdbcDataTypeConverter {
     }
 
     /**
-     * Create a new instance, and specify the time zone offset that should be used only when converting values without timezone
-     * information to values that require timezones. This default offset should not be needed when values are highly-correlated
+     * Create a new instance, and specify the time zone offset that should be used only when converting values
+     * without timezone
+     * information to values that require timezones. This default offset should not be needed when values are
+     * highly-correlated
      * with the expected SQL/JDBC types.
      *
-     * @param decimalMode how {@code DECIMAL} and {@code NUMERIC} values should be treated; may be null if
-     *            {@link JdbcValueConverters.DecimalMode#PRECISE} is to be used
+     * @param decimalMode           how {@code DECIMAL} and {@code NUMERIC} values should be treated; may be null if
+     *                              {@link JdbcValueConverters.DecimalMode#PRECISE} is to be used
      * @param temporalPrecisionMode temporal precision mode based on {@link io.debezium.jdbc.TemporalPrecisionMode}
-     * @param defaultOffset the zone offset that is to be used when converting non-timezone related values to values that do
-     *            have timezones; may be null if UTC is to be used
-     * @param adjuster the optional component that adjusts the local date value before obtaining the epoch day; may be null if no
-     *            adjustment is necessary
-     * @param bigIntUnsignedMode how {@code BIGINT UNSIGNED} values should be treated; may be null if
-     *            {@link JdbcValueConverters.BigIntUnsignedMode#PRECISE} is to be used
-     * @param binaryMode how binary columns should be represented
+     * @param defaultOffset         the zone offset that is to be used when converting non-timezone related values to
+     *                             values that do
+     *                              have timezones; may be null if UTC is to be used
+     * @param adjuster              the optional component that adjusts the local date value before obtaining the
+     *                              epoch day; may be null if no
+     *                              adjustment is necessary
+     * @param bigIntUnsignedMode    how {@code BIGINT UNSIGNED} values should be treated; may be null if
+     *                              {@link JdbcValueConverters.BigIntUnsignedMode#PRECISE} is to be used
+     * @param binaryMode            how binary columns should be represented
      */
-    public JdbcDataTypeConverter(JdbcValueConverters.DecimalMode decimalMode, TemporalPrecisionMode temporalPrecisionMode, ZoneOffset defaultOffset,
-                                 TemporalAdjuster adjuster, JdbcValueConverters.BigIntUnsignedMode bigIntUnsignedMode, CommonConnectorConfig.BinaryHandlingMode binaryMode) {
+    public JdbcDataTypeConverter(JdbcValueConverters.DecimalMode decimalMode,
+                                 TemporalPrecisionMode temporalPrecisionMode, ZoneOffset defaultOffset,
+                                 TemporalAdjuster adjuster, JdbcValueConverters.BigIntUnsignedMode bigIntUnsignedMode
+            , CommonConnectorConfig.BinaryHandlingMode binaryMode) {
         this.defaultOffset = defaultOffset != null ? defaultOffset : ZoneOffset.UTC;
         this.adaptiveTimePrecisionMode = temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE);
-        this.adaptiveTimeMicrosecondsPrecisionMode = temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE_TIME_MICROSECONDS);
+        this.adaptiveTimeMicrosecondsPrecisionMode =
+                temporalPrecisionMode.equals(TemporalPrecisionMode.ADAPTIVE_TIME_MICROSECONDS);
         this.decimalMode = decimalMode != null ? decimalMode : JdbcValueConverters.DecimalMode.PRECISE;
         this.adjuster = adjuster;
-        this.bigIntUnsignedMode = bigIntUnsignedMode != null ? bigIntUnsignedMode : JdbcValueConverters.BigIntUnsignedMode.PRECISE;
+        this.bigIntUnsignedMode = bigIntUnsignedMode != null ? bigIntUnsignedMode :
+                                  JdbcValueConverters.BigIntUnsignedMode.PRECISE;
         this.binaryMode = binaryMode != null ? binaryMode : CommonConnectorConfig.BinaryHandlingMode.BYTES;
 
         this.fallbackTimestampWithTimeZone = ZonedTimestamp.toIsoString(
@@ -167,7 +174,7 @@ public class JdbcDataTypeConverter {
                         throw new IllegalArgumentException("Unknown decimalMode");
                 }
 
-            // Fixed-length string values
+                // Fixed-length string values
             case Types.CHAR:
             case Types.NCHAR:
             case Types.NVARCHAR:
@@ -189,7 +196,6 @@ public class JdbcDataTypeConverter {
                     return DateType;
                 }
                 return IntegerType;
-//                return org.apache.kafka.connect.data.Date.builder();
             case Types.TIME:
                 if (adaptiveTimeMicrosecondsPrecisionMode) {
                     return CalendarIntervalType;
@@ -216,7 +222,6 @@ public class JdbcDataTypeConverter {
                 }
                 return TimestampType;
             case Types.TIME_WITH_TIMEZONE:
-                return TimestampType;
             case Types.TIMESTAMP_WITH_TIMEZONE:
                 return TimestampType;
 

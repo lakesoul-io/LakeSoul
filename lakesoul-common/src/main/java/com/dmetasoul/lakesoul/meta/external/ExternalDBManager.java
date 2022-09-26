@@ -17,9 +17,7 @@
 
 package com.dmetasoul.lakesoul.meta.external;
 
-import com.dmetasoul.lakesoul.meta.entity.Namespace;
-
-import java.util.*;
+import java.util.List;
 
 public interface ExternalDBManager {
 

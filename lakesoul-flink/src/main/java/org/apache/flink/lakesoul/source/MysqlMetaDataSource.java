@@ -55,7 +55,7 @@ public class MysqlMetaDataSource implements JdbcMetaDataSource {
 
     @Override
     public DatabaseSchemaedTables getDatabaseAndTablesWithSchema() {
-        Connection connection = null;
+        Connection connection;
         DatabaseSchemaedTables dct = new DatabaseSchemaedTables(this.databaseName);
         try {
             connection = ds.getConnection();
@@ -84,6 +84,4 @@ public class MysqlMetaDataSource implements JdbcMetaDataSource {
 
         return dct;
     }
-
-
 }

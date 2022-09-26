@@ -16,21 +16,19 @@
  *
  *
  */
-package com.dmetasoul.lakesoul.meta.external;
 
-import org.apache.logging.log4j.util.Strings;
+package com.dmetasoul.lakesoul.meta.external;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 public class DatabaseSchemaedTables {
-    private String DBName;
+    private final String dbName;
     HashMap<String, Table> tables = new HashMap<>(20);
 
-    public DatabaseSchemaedTables(String DBName) {
-        this.DBName = DBName;
+    public DatabaseSchemaedTables(String dbName) {
+        this.dbName = dbName;
     }
 
     public Table addTable(String tableName) {
@@ -119,8 +117,8 @@ public class DatabaseSchemaedTables {
     @Override
     public String toString() {
         return "DatabaseSchemaedTables{" +
-                "DBName='" + DBName + '\'' +
-                ", tables=" + tables +
-                '}';
+               "DBName='" + dbName + '\'' +
+               ", tables=" + tables +
+               '}';
     }
 }

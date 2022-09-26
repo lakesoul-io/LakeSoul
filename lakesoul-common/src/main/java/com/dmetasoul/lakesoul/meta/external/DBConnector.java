@@ -17,7 +17,6 @@
 
 package com.dmetasoul.lakesoul.meta.external;
 
-import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -30,9 +29,6 @@ import java.sql.Statement;
 public class DBConnector {
     private final HikariDataSource ds;
 
-    static {
-
-    }
     public DBConnector(DataBaseProperty dataBaseProperty) {
         HikariConfig config = new HikariConfig();
 
