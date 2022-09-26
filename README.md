@@ -24,6 +24,7 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [x] Concurrent write with auto conflict resolution
   - [x] MVCC with read isolation
   - [x] Write transaction through Postgres Transaction
+  - [x] Schema Evolution: Column add/delete supported
 * Table operations 
   - [x] LSM-Tree style upsert for hash partitioned table
   - [x] Merge on read for hash partition with upsert delta file
@@ -43,9 +44,9 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [x] Table API
   - [x] Flink CDC
     - [x] Exactly Once Sink
-    - [x] Auto Schema Sync
+    - [x] Auto Schema Change (DDL) Sync
     - [x] Auto Table Creation (depends on #78)
-    - [x] Support multiple source tables with different schemas
+    - [x] Support multiple source tables with different schemas (#84)
 * Hive Integration
   - [x] Export to Hive partition after compaction
 * Realtime Data Warehousing

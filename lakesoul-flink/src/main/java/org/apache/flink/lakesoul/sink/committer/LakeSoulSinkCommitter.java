@@ -66,6 +66,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
     @Override
     public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
             throws IOException {
+        LOG.info("Found {} committables for LakeSoul to commit", committables.size());
         // commit by file creation time in descending order
         committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
 

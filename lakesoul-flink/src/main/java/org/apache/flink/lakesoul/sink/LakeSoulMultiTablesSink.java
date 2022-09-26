@@ -102,7 +102,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
     @Override
     public Collection<String> getCompatibleStateNames() {
         // StreamingFileSink
-        return Collections.singleton("bucket-states");
+        return Collections.singleton("lakesoul-cdc-multitable-bucket-states");
     }
 
     public static DefaultOneTableBulkFormatBuilder forOneTableBulkFormat(

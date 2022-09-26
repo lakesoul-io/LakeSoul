@@ -21,10 +21,15 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.*;
 
 public class DBManager {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DBManager.class);
 
     private NamespaceDao namespaceDao;
     private TableInfoDao tableInfoDao;
@@ -588,13 +593,15 @@ public class DBManager {
         return partitionInfoDao.insert(partitionInfo);
     }
 
-    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
+    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) throws IOException {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc();
         UUID commitId = dataCommitInfo.getCommitId();
         String commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);
         if (metaCommitInfo != null && metaCommitInfo.isCommitted()) {
+            LOG.info("DataCommitInfo with tableId={}, commitId={} committed already",
+                     tableId, commitId.toString());
             return;
         } else if (metaCommitInfo == null) {
             dataCommitInfoDao.insert(dataCommitInfo);
