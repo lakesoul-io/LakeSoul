@@ -136,12 +136,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 JsonSourceRecord value,
                 ProcessFunction<JsonSourceRecord, JsonSourceRecord>.Context ctx,
                 Collector<JsonSourceRecord> out) {
-            // fill table location
-            value.setTableLocation(
-                    new Path(
-                            new Path(basePath,
-                                     value.getTableId().schema()),
-                            value.getTableId().table()).toString());
+
             SchemaAndValue key = value.getKey(SourceRecordJsonSerde.getInstance());
             Schema keySchema = key.schema();
             assert keySchema != null;
@@ -149,6 +144,12 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 // side output DDL records
                 ctx.output(outputTag, value);
             } else {
+                // fill table location
+                value.setTableLocation(
+                        new Path(
+                                new Path(basePath,
+                                        value.getTableId().schema()),
+                                value.getTableId().table()).toString());
                 // fill primary key
                 out.collect(value.fillPrimaryKeys(keySchema));
             }
