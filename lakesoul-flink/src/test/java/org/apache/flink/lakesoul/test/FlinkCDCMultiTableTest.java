@@ -98,9 +98,8 @@ public class FlinkCDCMultiTableTest {
 
         DataStream<JsonSourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
 
-        DataStreamSink<JsonSourceRecord> sink = builder.buildSink(stream);
-
-        builder.printStream(streams.f1, "Print DDL Stream");
+        DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
 
         env.execute("Print MySQL Snapshot + Binlog");
     }

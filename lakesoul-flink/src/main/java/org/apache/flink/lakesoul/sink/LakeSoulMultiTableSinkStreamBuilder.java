@@ -94,7 +94,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         return stream.partitionCustom(new HashPartitioner<>(), convert::computeJsonRecordPrimaryKeyHash);
     }
 
-    public DataStreamSink<JsonSourceRecord> buildSink(DataStream<JsonSourceRecord> stream) {
+    public DataStreamSink<JsonSourceRecord> buildLakeSoulDMLSink(DataStream<JsonSourceRecord> stream) {
         LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
@@ -105,7 +105,13 @@ public class LakeSoulMultiTableSinkStreamBuilder {
            .withRollingPolicy(rollingPolicy)
            .withOutputFileConfig(fileNameConfig)
            .build();
-        return stream.sinkTo(sink);
+        return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
+                     .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+    }
+
+    public DataStreamSink<JsonSourceRecord> buildLakeSoulDDLSink(DataStream<JsonSourceRecord> stream) {
+        return stream.addSink(new LakeSoulDDLSink()).name("LakeSoul MultiTable DDL Sink")
+                .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 
     public DataStreamSink<JsonSourceRecord> printStream(DataStream<JsonSourceRecord> stream, String name) {

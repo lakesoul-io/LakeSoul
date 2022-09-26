@@ -86,9 +86,8 @@ public class LakeSoulCatalog implements Catalog {
         } else {
 
             Map<String, String> properties = DBUtil.jsonToStringMap(namespaceEntity.getProperties());
-            CatalogDatabase catalogDatabase = new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
 
-            return catalogDatabase;
+            return new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
         }
     }
 
@@ -344,20 +343,23 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void alterTableColumnStatistics(ObjectPath tablePath, CatalogColumnStatistics catalogColumnStatistics, boolean b) throws CatalogException {
+    public void alterTableColumnStatistics(ObjectPath tablePath, CatalogColumnStatistics catalogColumnStatistics,
+                                           boolean b) throws CatalogException {
         throw new CatalogException("not supported now");
 
     }
 
     @Override
-    public void alterPartitionStatistics(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, CatalogTableStatistics catalogTableStatistics, boolean b)
+    public void alterPartitionStatistics(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
+                                         CatalogTableStatistics catalogTableStatistics, boolean b)
             throws CatalogException {
         throw new CatalogException("not supported now");
 
     }
 
     @Override
-    public void alterPartitionColumnStatistics(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, CatalogColumnStatistics catalogColumnStatistics, boolean b)
+    public void alterPartitionColumnStatistics(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
+                                               CatalogColumnStatistics catalogColumnStatistics, boolean b)
             throws CatalogException {
         throw new CatalogException("not supported now");
     }
