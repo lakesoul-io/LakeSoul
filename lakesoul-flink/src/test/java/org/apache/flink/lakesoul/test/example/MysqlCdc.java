@@ -28,11 +28,14 @@ import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakeSoulDDLSink;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
+import javax.xml.crypto.Data;
 import java.util.HashSet;
 
 
@@ -44,6 +47,10 @@ public class MysqlCdc {
         String passWrd = "mysql123";
         String host = "localhost";
         int port = 3306;
+        String databasePrefixPath = "file://lakesoul/sms/tabl";
+        int parallelism = 2;
+        int checkpointInterval = 5;     //second
+
 
         MysqlDBManager mysqlDBManager = new MysqlDBManager(DBName,
                                                            userName,
@@ -51,21 +58,29 @@ public class MysqlCdc {
                                                            host,
                                                            Integer.toString(port),
                                                            new HashSet<>(),
-                                                           MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
+                                                            databasePrefixPath);
         DBManager dbManager = new DBManager();
         dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(DBName);
+        //mysql tables sync to lakesoul
         mysqlDBManager.listTables().forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
-
         Configuration conf = new Configuration();
+
+        // parameters for mutil tables ddl sink
         conf.setString(LakeSoulDDLSink.ConfKey.DB_NAME, DBName);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_USER, userName);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_PASSWORD, passWrd);
         conf.setString(LakeSoulDDLSink.ConfKey.DB_HOST, host);
         conf.setInteger(LakeSoulDDLSink.ConfKey.DB_PORT, port);
         conf.setString(LakeSoulDDLSink.ConfKey.LAKESOUL_TABLE_PATH_PREFIX,
-                       MysqlDBManager.DEFAULT_LAKESOUL_TABLE_PATH_PREFIX);
+                databasePrefixPath);
+
+        // parameters for mutil tables dml sink
+        conf.set(LakeSoulSinkOptions.USE_CDC, true);
+        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, parallelism);
+        conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH,databasePrefixPath);
+        conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM,parallelism);
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -73,9 +88,7 @@ public class MysqlCdc {
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
 
-
-        env.setParallelism(1);
-        env.enableCheckpointing(5021);
+        env.enableCheckpointing(checkpointInterval*1000);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
 
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
@@ -89,15 +102,12 @@ public class MysqlCdc {
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.sourceBuilder = sourceBuilder;
-
         LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(context);
-
         DataStreamSource<JsonSourceRecord> source = builder.buildMultiTableSource();
-
         Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
-
-        builder.printStream(streams.f0, "Print CDC Stream");
-        streams.f1.addSink(new LakeSoulDDLSink()).setParallelism(1);
+        DataStream<JsonSourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
+        DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
         env.execute("Print MySQL Snapshot + Binlog");
     }
 }
