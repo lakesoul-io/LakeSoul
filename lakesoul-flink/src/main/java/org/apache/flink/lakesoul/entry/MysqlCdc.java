@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.test.example;
+package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
