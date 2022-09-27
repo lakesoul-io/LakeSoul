@@ -27,7 +27,7 @@ import java.time.Duration;
 
 public class LakeSoulSinkOptions {
 
-  public static final String FACTORY_IDENTIFIER = "lakesoul";
+  public static final String FACTORY_IDENTIFIER = "lakeSoul";
 
   public static final String RECORD_KEY_NAME = "recordKey";
 
@@ -50,19 +50,25 @@ public class LakeSoulSinkOptions {
       .withDescription("The path of a directory");
 
   public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions
-          .key("sourceParallelism")
+          .key("hash_bucket_num")
           .intType()
           .defaultValue(4)
           .withDescription("bucket number parallelism");
 
+  public static final ConfigOption<Integer> SINK_PARALLELISM = ConfigOptions
+          .key("sink.parallelism")
+          .intType()
+          .defaultValue(4)
+          .withDescription("lakesoul sink parallelism");
+
   public static final ConfigOption<String> WAREHOUSE_PATH = ConfigOptions
-          .key("warehousePath")
+          .key("warehouse_path")
           .stringType()
           .defaultValue(new Path(System.getProperty("java.io.tmpdir"), "lakesoul").toString())
           .withDescription("warehouse path for LakeSoul");
 
   public static final ConfigOption<Integer> BUCKET_PARALLELISM = ConfigOptions
-      .key("hashBucketNum")
+      .key("hash_bucket_num")
       .intType()
       .defaultValue(4)
       .withDescription("bucket number parallelism");
@@ -86,7 +92,7 @@ public class LakeSoulSinkOptions {
       .withDescription("file rolling time ");
 
   public static final ConfigOption<Boolean> USE_CDC = ConfigOptions
-      .key("useCDC")
+      .key("use_cdc")
       .booleanType()
       .defaultValue(true)
       .withDescription("use cdc column ");
