@@ -27,7 +27,7 @@ import java.time.Duration;
 
 public class LakeSoulSinkOptions {
 
-  public static final String FACTORY_IDENTIFIER = "lakeSoul";
+  public static final String FACTORY_IDENTIFIER = "lakesoul";
 
   public static final String RECORD_KEY_NAME = "recordKey";
 
@@ -50,7 +50,7 @@ public class LakeSoulSinkOptions {
       .withDescription("The path of a directory");
 
   public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions
-          .key("hashBucketNum")
+          .key("sourceParallelism")
           .intType()
           .defaultValue(4)
           .withDescription("bucket number parallelism");

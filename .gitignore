@@ -6,3 +6,4 @@
 /.metals/
 /.vscode/
 *.iml
+dependency-reduced-pom.xml

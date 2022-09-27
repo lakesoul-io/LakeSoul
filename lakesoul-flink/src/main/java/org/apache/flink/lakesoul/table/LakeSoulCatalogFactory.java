@@ -42,7 +42,7 @@ public class LakeSoulCatalogFactory implements TableFactory, CatalogFactory {
 
   @Override
   public String factoryIdentifier() {
-    return "lakeSoul";
+    return "lakesoul";
   }
 
   @Override

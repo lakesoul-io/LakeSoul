@@ -46,8 +46,6 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIF
 
 public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
 
-  private static final String TABLE_NAME = "table_name";
-
   @Override
   public DynamicTableSink createDynamicTableSink(Context context) {
     Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
@@ -64,7 +62,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory {
             context.getCatalogTable().getResolvedSchema()
     );
   }
-
 
   @Override
   public String factoryIdentifier() {
