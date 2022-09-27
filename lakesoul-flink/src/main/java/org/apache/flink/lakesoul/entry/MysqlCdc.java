@@ -34,6 +34,7 @@ import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import javax.xml.crypto.Data;
@@ -98,6 +99,7 @@ public class MysqlCdc {
         env.enableCheckpointing(checkpointInterval);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
+        conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
         MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
                                                                         .hostname(host)
