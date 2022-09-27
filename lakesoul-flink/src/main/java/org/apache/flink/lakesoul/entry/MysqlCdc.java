@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.test.example;
+package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
@@ -26,9 +26,7 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.sink.LakeSoulDDLSink;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
-import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -36,7 +34,6 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
-import javax.xml.crypto.Data;
 import java.util.HashSet;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
