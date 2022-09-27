@@ -216,7 +216,7 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
                 pendingFiles.stream().map(p -> p.pendingFile).collect(Collectors.toList()),
-                List.copyOf(filePaths), time, tableId));
+                new ArrayList<>(filePaths), time, tableId));
         pendingFiles.clear();
         filePaths.clear();
 

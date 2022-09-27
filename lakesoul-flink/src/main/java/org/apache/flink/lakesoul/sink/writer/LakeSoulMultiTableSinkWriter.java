@@ -31,6 +31,8 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
@@ -67,13 +69,14 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
     protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(JsonSourceRecord element) throws Exception {
         LakeSoulRowDataWrapper wrapper = converter.toLakeSoulDataType(element);
         if (wrapper.getOp().equals("insert")) {
-            return List.of(Tuple2.of(getIdentity(wrapper.getAfterType(), element), wrapper.getAfter()));
+            return Collections.singletonList(Tuple2.of(getIdentity(wrapper.getAfterType(), element),
+                                                       wrapper.getAfter()));
         } else if (wrapper.getOp().equals("delete")) {
-            return List.of(Tuple2.of(getIdentity(wrapper.getBeforeType(), element), wrapper.getBefore()));
+            return Collections.singletonList(Tuple2.of(getIdentity(wrapper.getBeforeType(), element),
+                                                       wrapper.getBefore()));
         } else {
-            return List.of(Tuple2.of(getIdentity(wrapper.getBeforeType(), element), wrapper.getBefore()),
-                           Tuple2.of(getIdentity(wrapper.getAfterType(), element), wrapper.getAfter()));
+            return Arrays.asList(Tuple2.of(getIdentity(wrapper.getBeforeType(), element), wrapper.getBefore()),
+                                 Tuple2.of(getIdentity(wrapper.getAfterType(), element), wrapper.getAfter()));
         }
     }
-
 }

@@ -31,12 +31,12 @@ public class DBManager {
 
     private static final Logger LOG = LoggerFactory.getLogger(DBManager.class);
 
-    private NamespaceDao namespaceDao;
-    private TableInfoDao tableInfoDao;
-    private TableNameIdDao tableNameIdDao;
-    private TablePathIdDao tablePathIdDao;
-    private DataCommitInfoDao dataCommitInfoDao;
-    private PartitionInfoDao partitionInfoDao;
+    private final NamespaceDao namespaceDao;
+    private final TableInfoDao tableInfoDao;
+    private final TableNameIdDao tableNameIdDao;
+    private final TablePathIdDao tablePathIdDao;
+    private final DataCommitInfoDao dataCommitInfoDao;
+    private final PartitionInfoDao partitionInfoDao;
 
     public DBManager() {
         namespaceDao = DBFactory.getNamespaceDao();
@@ -49,11 +49,7 @@ public class DBManager {
 
     public boolean isNamespaceExists(String table_namespace) {
         Namespace namespace = namespaceDao.findByNamespace(table_namespace);
-        if (namespace == null) {
-            return false;
-        }
-
-        return true;
+        return namespace != null;
     }
 
     public boolean isTableExists(String tablePath) {
@@ -62,10 +58,7 @@ public class DBManager {
             return false;
         }
         TableInfo tableInfo = tableInfoDao.selectByTableId(tablePathId.getTableId());
-        if (tableInfo == null) {
-            return false;
-        }
-        return true;
+        return tableInfo != null;
     }
 
     public boolean isTableExistsByTableName(String tableName) {
@@ -78,18 +71,12 @@ public class DBManager {
             return false;
         }
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
-        if (tableInfo == null) {
-            return false;
-        }
-        return true;
+        return tableInfo != null;
     }
 
     public boolean isTableIdExists(String tablePath, String tableId) {
         TableInfo tableInfo = tableInfoDao.selectByIdAndTablePath(tableId, tablePath);
-        if (tableInfo != null) {
-            return true;
-        }
-        return false;
+        return tableInfo != null;
     }
 
     public TableNameId shortTableName(String tableName, String tableNamespace) {
@@ -105,7 +92,11 @@ public class DBManager {
     }
 
     public TableInfo getTableInfoByName(String tableName) {
-        return tableInfoDao.selectByTableName(tableName);
+        return getTableInfoByNameAndNamespace(tableName, "default");
+    }
+
+    public TableInfo getTableInfoByNameAndNamespace(String tableName, String namespace) {
+        return tableInfoDao.selectByTableNameAndNameSpace(tableName, namespace);
     }
 
     public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
@@ -120,57 +111,45 @@ public class DBManager {
         tableInfo.setPartitions(partitions);
         tableInfo.setProperties(properties);
 
-        boolean insertNameFlag = true;
         if (StringUtils.isNotBlank(tableName)) {
-            insertNameFlag = tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace));
-            if (!insertNameFlag) {
+            if (!tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace))) {
                 throw new IllegalStateException("this table name already exists!");
             }
         }
-        boolean insertPathFlag = true;
         if (StringUtils.isNotBlank(tablePath)) {
-            insertPathFlag = tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace));
-            if (!insertPathFlag) {
+            if (!tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace))) {
                 tableNameIdDao.deleteByTableId(tableId);
                 throw new IllegalStateException("this table path already exists!");
             }
         }
-        if (insertNameFlag && insertPathFlag) {
-            boolean insertTableFlag = tableInfoDao.insert(tableInfo);
-            if (!insertTableFlag) {
-                tableNameIdDao.deleteByTableId(tableId);
-                tablePathIdDao.deleteByTableId(tableId);
-                throw new IllegalStateException("this table info already exists!");
-            }
+        if (!tableInfoDao.insert(tableInfo)) {
+            tableNameIdDao.deleteByTableId(tableId);
+            tablePathIdDao.deleteByTableId(tableId);
+            throw new IllegalStateException("this table info already exists!");
         }
     }
 
-
-
     public List<String> listTables() {
-        List<String> rsList = tablePathIdDao.listAllPath();
-        return rsList;
+        return tablePathIdDao.listAllPath();
     }
 
     public List<String> listTablePathsByNamespace(String table_namespace) {
-        List<String> rsList = tablePathIdDao.listAllPathByNamespace(table_namespace);
-        return rsList;
+        return tablePathIdDao.listAllPathByNamespace(table_namespace);
     }
 
-    public TableInfo getTableInfo(String tablePath) {
-        TableInfo tableInfo = tableInfoDao.selectByTablePath(tablePath);
-        return tableInfo;
+    public TableInfo getTableInfoByPath(String tablePath) {
+        return tableInfoDao.selectByTablePath(tablePath);
     }
 
     public PartitionInfo getSinglePartitionInfo(String tableId, String partitionDesc) {
-        PartitionInfo p = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
-        return p;
+        return partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
     }
+
     //for partition snapshot with some version
     public PartitionInfo getSinglePartitionInfo(String tableId, String partitionDesc,int version) {
-        PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        return partitionInfo;
+        return partitionInfoDao.findByKey(tableId, partitionDesc, version);
     }
+
     public List<PartitionInfo> getAllPartitionInfo(String tableId) {
         return partitionInfoDao.getPartitionDescByTableId(tableId);
     }
@@ -209,18 +188,18 @@ public class DBManager {
         for (PartitionInfo p : curPartitionInfoList) {
             int version = p.getVersion();
             p.setVersion(version + 1);
-            p.setSnapshot(Arrays.asList());
+            p.setSnapshot(Collections.emptyList());
             p.setCommitOp("DeleteCommit");
             p.setExpression("");
         }
-        partitionInfoDao.transactionInsert(curPartitionInfoList, Arrays.asList());
+        partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList());
     }
 
     public void logicDeletePartitionInfoByRangeId(String tableId, String partitionDesc) {
         PartitionInfo partitionInfo = getSinglePartitionInfo(tableId, partitionDesc);
         int version = partitionInfo.getVersion();
         partitionInfo.setVersion(version + 1);
-        partitionInfo.setSnapshot(Arrays.asList());
+        partitionInfo.setSnapshot(Collections.emptyList());
         partitionInfo.setCommitOp("DeleteCommit");
         partitionInfo.setExpression("");
         partitionInfoDao.insert(partitionInfo);
@@ -251,7 +230,7 @@ public class DBManager {
     }
 
     public void addShortTableName(String tableName, String tablePath) {
-        TableInfo tableInfo = getTableInfo(tablePath);
+        TableInfo tableInfo = getTableInfoByPath(tablePath);
 
         TableNameId tableNameId = new TableNameId();
         tableNameId.setTableId(tableInfo.getTableId());
@@ -307,11 +286,6 @@ public class DBManager {
 
         for (PartitionInfo partitionInfo : listPartitionInfo) {
             String partitionDesc = partitionInfo.getPartitionDesc();
-//            String dataCommitOp = partitionInfo.getCommitOp();
-//            if (!dataCommitOp.equals(commitOp)) {
-//                throw new IllegalStateException("partitionInfo's dataCommitOp: " + dataCommitOp + "is not equal commitOp:"
-//                        + commitOp);
-//            }
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
             snapshotList.addAll(partitionInfo.getSnapshot());
@@ -389,9 +363,6 @@ public class DBManager {
             }
         }
 
-//        if (notConflict && changeSchema) {
-//            updateTableSchema(tableId, tableInfo.getTableSchema());
-//        }
         return notConflict;
     }
 

@@ -35,7 +35,7 @@ public class JsonDebeziumDeserializationSchema implements DebeziumDeserializatio
     }
 
     public TypeInformation<JsonSourceRecord> getProducedType() {
-        return TypeInformation.of(new TypeHint<>() {
+        return TypeInformation.of(new TypeHint<JsonSourceRecord>() {
         });
     }
 }

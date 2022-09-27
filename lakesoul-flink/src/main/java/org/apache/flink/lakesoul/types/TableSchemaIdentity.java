@@ -64,4 +64,12 @@ public final class TableSchemaIdentity implements Serializable {
     public int hashCode() {
         return Objects.hash(tableId, rowType);
     }
+
+    @Override
+    public String toString() {
+        return "TableSchemaIdentity{" +
+               "tableId=" + tableId +
+               ", rowType=" + rowType +
+               '}';
+    }
 }

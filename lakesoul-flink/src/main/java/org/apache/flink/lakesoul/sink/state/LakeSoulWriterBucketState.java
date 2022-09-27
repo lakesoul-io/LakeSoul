@@ -93,7 +93,9 @@ public class LakeSoulWriterBucketState {
                 .append("BucketState for bucketId=")
                 .append(bucketId)
                 .append(" and bucketPath=")
-                .append(bucketPath);
+                .append(bucketPath)
+                .append(" and identity=")
+                .append(identity);
 
         if (hasInProgressFileRecoverable()) {
             strBuilder.append(", has open part file created @ ").append(inProgressFileCreationTime);

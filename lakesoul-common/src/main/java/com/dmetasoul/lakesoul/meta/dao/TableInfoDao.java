@@ -33,8 +33,9 @@ public class TableInfoDao {
         return getTableInfo(sql);
     }
 
-    public TableInfo selectByTableName(String tableName) {
-        String sql = String.format("select * from table_info where table_name = '%s'", tableName);
+    public TableInfo selectByTableNameAndNameSpace(String tableName, String namespace) {
+        String sql = String.format("select * from table_info where table_name = '%s'" +
+                                   " and table_namespace='%s'", tableName, namespace);
         return getTableInfo(sql);
     }
 

@@ -91,7 +91,7 @@ public class LakeSoulCatalogTest {
                          " NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name'," +
                          "'lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043')");
         tEnvs.executeSql("show tables").print();
-        TableInfo info = DbManage.getTableInfo("MetaCommon.DATA_BASE().user_behaviorgg");
+        TableInfo info = DbManage.getTableInfoByPath("MetaCommon.DATA_BASE().user_behaviorgg");
         System.out.println(info.getTableSchema());
     }
 

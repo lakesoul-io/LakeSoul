@@ -22,9 +22,8 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo}
 
 import java.util
-import scala.collection.JavaConverters.asScalaBufferConverter
-import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 
 object MetaVersion {
 
@@ -46,12 +45,13 @@ object MetaVersion {
     dbManager.isTableIdExists(table_name, table_id)
   }
 
-  def isNamespaceExists(table_namespace: String):Boolean ={
+  def isNamespaceExists(table_namespace: String): Boolean = {
     dbManager.isNamespaceExists(table_namespace)
   }
 
   //check whether short_table_name exists, and return table path if exists
-  def isShortTableNameExists(short_table_name: String): (Boolean, String) = isShortTableNameExists(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+  def isShortTableNameExists(short_table_name: String): (Boolean, String) =
+    isShortTableNameExists(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String, table_namespace: String): (Boolean, String) = {
@@ -59,7 +59,8 @@ object MetaVersion {
     if (path == null) (false, null) else (true, path)
   }
 
-  def getTablePathFromShortTableName(short_table_name: String): String = getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+  def getTablePathFromShortTableName(short_table_name: String): String =
+    getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
 
   //get table path, if not exists, return "not found"
   def getTablePathFromShortTableName(short_table_name: String, table_namespace: String): String = {
@@ -78,7 +79,7 @@ object MetaVersion {
 
     val partitions = range_column + ";" + hash_column
     val json = new JSONObject()
-    configuration.foreach(x => json.put(x._1,x._2))
+    configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
     dbManager.createNewTable(table_id, table_namespace, short_table_name, table_path, table_schema, json, partitions)
   }
@@ -96,7 +97,7 @@ object MetaVersion {
   }
 
   def getTableInfo(namespace: String, table_path: String): TableInfo = {
-    val info = dbManager.getTableInfo(table_path)
+    val info = dbManager.getTableInfoByPath(table_path)
     if (info == null) {
       return null
     }
@@ -143,9 +144,10 @@ object MetaVersion {
       expression = info.getExpression
     )
   }
-  def getSinglePartitionInfoForVersion(table_id: String, range_value: String, version: Int):  Array[PartitionInfo] = {
+
+  def getSinglePartitionInfoForVersion(table_id: String, range_value: String, version: Int): Array[PartitionInfo] = {
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
-    val info = dbManager.getSinglePartitionInfo(table_id, range_value,version)
+    val info = dbManager.getSinglePartitionInfo(table_id, range_value, version)
     partitionVersionBuffer += PartitionInfo(
       table_id = info.getTableId,
       range_value = range_value,
@@ -156,7 +158,8 @@ object MetaVersion {
     partitionVersionBuffer.toArray
 
   }
-  def getOnePartitionVersions(table_id: String, range_value: String):  Array[PartitionInfo] = {
+
+  def getOnePartitionVersions(table_id: String, range_value: String): Array[PartitionInfo] = {
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfo]()
     val res_itr = dbManager.getOnePartitionVersions(table_id, range_value).iterator()
     while (res_itr.hasNext) {
@@ -192,10 +195,10 @@ object MetaVersion {
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {
-    if(dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)){
-      println(range_value+" toVersion "+toVersion+" success")
-    }else{
-      println(range_value+" toVersion "+toVersion+" failed. Please check partition value or versionNum is right")
+    if (dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)) {
+      println(range_value + " toVersion " + toVersion + " success")
+    } else {
+      println(range_value + " toVersion " + toVersion + " failed. Please check partition value or versionNum is right")
     }
 
   }

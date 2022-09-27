@@ -148,6 +148,17 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         return filePaths;
     }
 
+    @Override
+    public String toString() {
+        return "LakeSoulMultiTableSinkCommittable{" +
+               "creationTime=" + creationTime +
+               ", bucketId='" + bucketId + '\'' +
+               ", identity=" + identity +
+               ", filePaths=" + filePaths +
+               ", commitId='" + commitId + '\'' +
+               '}';
+    }
+
     @Nullable
     public String getCommitId() {
         return commitId;

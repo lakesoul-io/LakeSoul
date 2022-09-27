@@ -120,13 +120,12 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     public void initializeState(List<LakeSoulWriterBucketState> bucketStates) throws IOException {
         checkNotNull(bucketStates, "The retrieved state was null.");
+        LOG.info("initializeState size {}", bucketStates.size());
 
         for (LakeSoulWriterBucketState state : bucketStates) {
             String bucketId = state.getBucketId();
 
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("Restoring: {}", state);
-            }
+            LOG.info("initializeState restoring state: {}", state);
 
             TableSchemaIdentity identity = state.getIdentity();
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
@@ -220,12 +219,15 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     @Override
     public List<LakeSoulWriterBucketState> snapshotState(long checkpointId) throws IOException {
 
-        List<LakeSoulWriterBucketState> state = new ArrayList<>();
+        List<LakeSoulWriterBucketState> states = new ArrayList<>();
         for (LakeSoulWriterBucket bucket : activeBuckets.values()) {
-            state.add(bucket.snapshotState());
+            LakeSoulWriterBucketState state = bucket.snapshotState();
+            LOG.info("snapshotState: {}", state);
+            states.add(state);
         }
 
-        return state;
+        LOG.info("snapshotState size: {}", states.size());
+        return states;
     }
 
     private LakeSoulWriterBucket getOrCreateBucketForBucketId(
@@ -242,6 +244,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                             creator.identity,
                             bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, creator.comparator);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
+            LOG.info("Create new bucket {}, {}, {}",
+                     identity, bucketId, bucketPath);
         }
         return bucket;
     }

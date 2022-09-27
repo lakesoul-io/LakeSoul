@@ -140,16 +140,18 @@ public class LakeSoulCatalog implements Catalog {
         if (!tableExists(tablePath)) {
             throw new TableNotExistException(CATALOG_NAME, tablePath);
         }
-        String tableName = tablePath.getObjectName();
-        TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+                tablePath.getObjectName(),
+                tablePath.getDatabaseName());
         return FlinkUtil.toFlinkCatalog(tableInfo);
     }
 
     @Override
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
-        String tableName = tablePath.getObjectName();
-        TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+                tablePath.getObjectName(),
+                tablePath.getDatabaseName());
 
         return null != tableInfo;
     }
@@ -158,21 +160,27 @@ public class LakeSoulCatalog implements Catalog {
     public void dropTable(ObjectPath tablePath, boolean b) throws TableNotExistException, CatalogException {
         checkNotNull(tablePath);
         String tableName = tablePath.getObjectName();
-        TableInfo tableInfo = dbManager.getTableInfoByName(tableName);
-        String tableId = tableInfo.getTableId();
-        dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId, tablePath.getDatabaseName());
-        dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
-        dbManager.deletePartitionInfoByTableId(tableId);
-
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+                tablePath.getObjectName(),
+                tablePath.getDatabaseName());
+        if (tableInfo != null) {
+            String tableId = tableInfo.getTableId();
+            dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId, tablePath.getDatabaseName());
+            dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
+            dbManager.deletePartitionInfoByTableId(tableId);
+        } else {
+            throw new TableNotExistException(CATALOG_NAME, tablePath);
+        }
     }
 
     @Override
     public void renameTable(ObjectPath tablePath, String s, boolean b) throws CatalogException {
-        throw new CatalogException("not supported now");
+        throw new CatalogException("Rename lakesoul table not supported now");
     }
 
     @Override
-    public void createTable(ObjectPath tablePath, CatalogBaseTable table, boolean ignoreIfExists) throws TableAlreadyExistException, DatabaseNotExistException, CatalogException {
+    public void createTable(ObjectPath tablePath, CatalogBaseTable table, boolean ignoreIfExists)
+            throws TableAlreadyExistException, DatabaseNotExistException, CatalogException {
         checkNotNull(tablePath);
         checkNotNull(table);
         TableSchema schema = table.getSchema();
@@ -217,7 +225,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void alterTable(ObjectPath tablePath, CatalogBaseTable catalogBaseTable, boolean b) throws TableNotExistException, CatalogException {
-        throw new CatalogException("not supported now");
+        throw new CatalogException("Alter lakesoul table not supported now");
     }
 
     @Override
@@ -258,20 +266,13 @@ public class LakeSoulCatalog implements Catalog {
     public void createPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
                                 CatalogPartition catalogPartition, boolean ignoreIfExists)
             throws PartitionAlreadyExistsException, CatalogException {
-        if (partitionExists(tablePath, catalogPartitionSpec)) {
-            throw new PartitionAlreadyExistsException(CATALOG_NAME, tablePath, catalogPartitionSpec);
-        }
+        throw new CatalogException("not supported now");
     }
 
     @Override
     public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
                               boolean ignoreIfExists) throws PartitionNotExistException, CatalogException {
-        if (!partitionExists(tablePath, catalogPartitionSpec)) {
-            throw new PartitionNotExistException(CATALOG_NAME, tablePath, catalogPartitionSpec);
-        }
-        String tableName = tablePath.getFullName();
-        String rangeValue = FlinkUtil.getRangeValue(catalogPartitionSpec);
-        TableInfo tableInfo = dbManager.getTableInfo(tableName);
+        throw new CatalogException("not supported now");
     }
 
     @Override

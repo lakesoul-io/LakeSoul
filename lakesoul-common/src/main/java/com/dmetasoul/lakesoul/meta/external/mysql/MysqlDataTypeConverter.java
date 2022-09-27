@@ -87,7 +87,7 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
                     return new DecimalType(column.length(),0);
             }
         }
-        if (matches(typeName, "FLOAT") && column.scale().isEmpty() && column.length() <= 24) {
+        if (matches(typeName, "FLOAT") && column.scale().isPresent() && column.length() <= 24) {
             return FloatType;
         }
         // Otherwise, let the base class handle it ...

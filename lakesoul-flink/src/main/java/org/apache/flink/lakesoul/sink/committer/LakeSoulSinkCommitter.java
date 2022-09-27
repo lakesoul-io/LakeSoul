@@ -73,6 +73,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
         DBManager lakeSoulDBManager = new DBManager();
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
+            LOG.info("Commtting {}", committable);
             if (committable.hasPendingFile()) {
                 assert committable.getPendingFiles() != null;
                 if (committable.getPendingFiles().isEmpty()) {

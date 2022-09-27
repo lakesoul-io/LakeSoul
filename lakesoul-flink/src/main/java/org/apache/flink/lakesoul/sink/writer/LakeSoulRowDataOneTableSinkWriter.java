@@ -28,6 +28,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -67,6 +68,6 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     @Override
     protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(RowData element) {
-        return List.of(Tuple2.of(identity, converter.addCDCKindField(element, this.fieldGetters)));
+        return Collections.singletonList(Tuple2.of(identity, converter.addCDCKindField(element, this.fieldGetters)));
     }
 }

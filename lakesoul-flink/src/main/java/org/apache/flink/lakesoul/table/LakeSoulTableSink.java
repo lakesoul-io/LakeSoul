@@ -133,7 +133,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
         flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME));
     //redistribution by partitionKey
-    dataStream = dataStream.partitionCustom(new HashPartitioner<>(), keyGen::getRePartitionHash);
+    dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
     //rowData sink fileSystem Task
     LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(
                path,

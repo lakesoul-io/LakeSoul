@@ -9,7 +9,7 @@ insert into namespace(namespace, properties) values ('default', '{}');
 
 create table if not exists table_info (
     table_id text,
-    table_namespace text,
+    table_namespace text default 'default',
     table_name text,
     table_path text,
     table_schema text,
@@ -21,14 +21,14 @@ create table if not exists table_info (
 create table if not exists table_name_id (
     table_name text,
     table_id text,
-    table_namespace text,
+    table_namespace text default 'default',
     primary key(table_name, table_namespace)
 );
 
 create table if not exists table_path_id (
     table_path text,
     table_id text,
-    table_namespace text,
+    table_namespace text default 'default',
     primary key(table_path)
 );
 
