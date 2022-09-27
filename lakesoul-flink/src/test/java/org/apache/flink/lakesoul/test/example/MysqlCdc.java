@@ -90,14 +90,12 @@ public class MysqlCdc {
         conf.set(LakeSoulSinkOptions.SINK_PARALLELISM,parallelism);
 
         StreamExecutionEnvironment env;
-//        env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+        env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
-//        env.getConfig().setGlobalJobParameters(parameter);
         env.getConfig().setGlobalJobParameters(pt);
 
-        env.enableCheckpointing(parameter.getInt(JOB_CHECKPOINT_INTERVAL.key()));
+        env.enableCheckpointing(checkpointInterval);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
 

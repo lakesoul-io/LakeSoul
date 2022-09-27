@@ -26,7 +26,9 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakesoul.sink.LakeSoulDDLSink;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -34,6 +36,7 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
+import javax.xml.crypto.Data;
 import java.util.HashSet;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
@@ -87,14 +90,12 @@ public class MysqlCdc {
         conf.set(LakeSoulSinkOptions.SINK_PARALLELISM,parallelism);
 
         StreamExecutionEnvironment env;
-//        env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+        env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
-//        env.getConfig().setGlobalJobParameters(parameter);
         env.getConfig().setGlobalJobParameters(pt);
 
-        env.enableCheckpointing(parameter.getInt(JOB_CHECKPOINT_INTERVAL.key()));
+        env.enableCheckpointing(checkpointInterval);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
 
