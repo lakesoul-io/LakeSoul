@@ -35,34 +35,30 @@ import java.util.*;
 public class DBUtil {
 
     public static DataBaseProperty getDBInfo() {
+
         String lakesoulhome = "lakesoul_home";
         String configFile = System.getenv(lakesoulhome);
-        if (null == configFile) {
+        if (null == configFile)
             configFile = System.getProperty(lakesoulhome);
-        }
         Properties properties = new Properties();
         if (configFile != null) {
             try {
-                properties.load(Files.newInputStream(Paths.get(configFile)));
+                properties.load(new FileInputStream(configFile));
             } catch (IOException e) {
                 e.printStackTrace();
             }
         } else {
-            properties.setProperty("lakesoul.pg.driver", System.getenv("lakesoul.pg.driver"));
-            properties.setProperty("lakesoul.pg.url", System.getenv("lakesoul.pg.url"));
-            properties.setProperty("lakesoul.pg.username", System.getenv("lakesoul.pg.username"));
-            properties.setProperty("lakesoul.pg.password", System.getenv("lakesoul.pg.password"));
+            properties.setProperty("lakesoul.pg.driver", System.getenv("LAKESOUL_PG_DRIVER"));
+            properties.setProperty("lakesoul.pg.url", System.getenv("LAKESOUL_PG_URL"));
+            properties.setProperty("lakesoul.pg.username", System.getenv("LAKESOUL_PG_USERNAME"));
+            properties.setProperty("lakesoul.pg.password", System.getenv("LAKESOUL_PG_PASSWORD"));
         }
-
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
         dataBaseProperty.setUrl(properties.getProperty(
                 "lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/lakesoul_test?stringtype=unspecified"));
         dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "lakesoul_test"));
         dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "lakesoul_test"));
-        for (Object key : properties.keySet()) {
-            System.out.println("property---" + key + ": " + properties.getProperty(key.toString()));
-        }
         return dataBaseProperty;
     }
 
