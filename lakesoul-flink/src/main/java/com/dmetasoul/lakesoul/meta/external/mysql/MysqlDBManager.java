@@ -28,6 +28,7 @@ import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
 import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
 import io.debezium.relational.Tables;
 import org.apache.commons.lang.StringUtils;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.StructType;
@@ -43,7 +44,6 @@ public class MysqlDBManager implements ExternalDBManager {
 
     public static final int DEFAULT_MYSQL_PORT = 3306;
 
-    public static final String DEFAULT_LAKESOUL_TABLE_PATH_PREFIX = "file://";
     private final DBConnector dbConnector;
 
     private final DBManager lakesoulDBManager;
@@ -125,9 +125,10 @@ public class MysqlDBManager implements ExternalDBManager {
             try {
                 String tableId = EXTERNAL_MYSQL_TABLE_PREFIX + UUID.randomUUID();
 
-    //            String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');
-
-                String qualifiedPath = FlinkUtil.makeQualifiedPath(StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/')).toString();
+                String qualifiedPath =
+                        FlinkUtil.makeQualifiedPath(new Path(new Path(
+                                lakesoulTablePathPrefix, dbName
+                        ), tableName)).toString();
 
                 String tableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
 
@@ -160,7 +161,7 @@ public class MysqlDBManager implements ExternalDBManager {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                result=rs.getString("Create Table");
+                result = rs.getString("Create Table");
             }
         } catch (SQLException e) {
             e.printStackTrace();
