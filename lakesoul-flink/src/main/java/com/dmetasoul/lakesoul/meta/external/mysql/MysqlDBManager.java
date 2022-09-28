@@ -28,9 +28,11 @@ import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
 import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
 import io.debezium.relational.Tables;
 import org.apache.commons.lang.StringUtils;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.StructType;
 
+import java.io.IOException;
 import java.sql.*;
 import java.util.*;
 
@@ -120,16 +122,22 @@ public class MysqlDBManager implements ExternalDBManager {
             lakesoulDBManager.updateTableSchema(tableId.getTableId(), newTableSchema);
         } else {
             // import lakesoul table
-            String tableId = EXTERNAL_MYSQL_TABLE_PREFIX + UUID.randomUUID();
+            try {
+                String tableId = EXTERNAL_MYSQL_TABLE_PREFIX + UUID.randomUUID();
 
-            String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');;
+    //            String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');
 
-            String tableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
+                String qualifiedPath = FlinkUtil.makeQualifiedPath(StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/')).toString();
 
-            lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
-                                             tableSchema,
-                                             new JSONObject(), ""
-            );
+                String tableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
+
+                lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
+                                                 tableSchema,
+                                                 new JSONObject(), ""
+                );
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 
