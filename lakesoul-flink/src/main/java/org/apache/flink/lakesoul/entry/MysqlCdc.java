@@ -53,10 +53,10 @@ public class MysqlCdc {
         String host = parameter.get(SOURCE_DB_HOST.key());
         int port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
-        int parallelism = parameter.getInt(SOURCE_PARALLELISM.key());
+        int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
+        int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                                                   JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
-
 
         MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
                                                            userName,
@@ -64,7 +64,9 @@ public class MysqlCdc {
                                                            host,
                                                            Integer.toString(port),
                                                            new HashSet<>(),
-                                                           databasePrefixPath,parallelism,true);
+                                                           databasePrefixPath,
+                                                           bucketParallelism,
+                                                           true);
         DBManager dbManager = new DBManager();
         dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
@@ -83,10 +85,9 @@ public class MysqlCdc {
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
-        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, parallelism);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
-        conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, parallelism);
-        conf.set(LakeSoulSinkOptions.SINK_PARALLELISM, parallelism);
+        conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
+        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();

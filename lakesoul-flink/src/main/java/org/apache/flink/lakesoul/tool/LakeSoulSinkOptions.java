@@ -55,12 +55,6 @@ public class LakeSoulSinkOptions {
           .defaultValue(4)
           .withDescription("bucket number parallelism");
 
-  public static final ConfigOption<Integer> SINK_PARALLELISM = ConfigOptions
-          .key("sink.parallelism")
-          .intType()
-          .defaultValue(4)
-          .withDescription("lakesoul sink parallelism");
-
   public static final ConfigOption<String> WAREHOUSE_PATH = ConfigOptions
           .key("warehouse_path")
           .stringType()

@@ -42,7 +42,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 
-
 public class MysqlDBManager implements ExternalDBManager {
 
     private static final String EXTERNAL_MYSQL_TABLE_PREFIX = "external_mysql_table_";
