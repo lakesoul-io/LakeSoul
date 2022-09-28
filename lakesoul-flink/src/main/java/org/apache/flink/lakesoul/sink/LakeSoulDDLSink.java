@@ -53,13 +53,15 @@ public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
         List<String> excludeTablesList = Arrays.asList(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(), LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.defaultValue()).split(","));
         HashSet<String> excludeTables = new HashSet<>(excludeTablesList);
         MysqlDBManager mysqlDbManager = new MysqlDBManager(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
-                                                           pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
-                                                           pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
-                                                           pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_HOST.key()),
-                                                           Integer.toString(pt.getInt(LakeSoulDDLSinkOptions.SOURCE_DB_PORT.key(),
-                                                                                      MysqlDBManager.DEFAULT_MYSQL_PORT)),
-                                                           excludeTables,
-                                                           pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()));
+                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
+                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
+                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_HOST.key()),
+                                            Integer.toString(pt.getInt(LakeSoulDDLSinkOptions.SOURCE_DB_PORT.key(),
+                                                    MysqlDBManager.DEFAULT_MYSQL_PORT)),
+                                            excludeTables,
+                                            pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
+                                            pt.getInt(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key()),
+                                            pt.getBoolean(LakeSoulDDLSinkOptions.USE_CDC.key()));
         if (ddlval.contains("alter") || ddlval.contains("create")) {
             mysqlDbManager.importOrSyncLakeSoulTable(tablename);
         }

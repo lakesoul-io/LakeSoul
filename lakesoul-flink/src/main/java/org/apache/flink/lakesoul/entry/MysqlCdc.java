@@ -64,7 +64,7 @@ public class MysqlCdc {
                                                            host,
                                                            Integer.toString(port),
                                                            new HashSet<>(),
-                                                           databasePrefixPath);
+                                                           databasePrefixPath,parallelism,true);
         DBManager dbManager = new DBManager();
         dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);

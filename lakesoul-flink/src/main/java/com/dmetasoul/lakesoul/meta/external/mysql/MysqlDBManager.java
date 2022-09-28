@@ -30,6 +30,7 @@ import io.debezium.relational.Tables;
 import org.apache.commons.lang.StringUtils;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 
 import java.io.IOException;
@@ -40,15 +41,15 @@ import java.util.*;
 public class MysqlDBManager implements ExternalDBManager {
 
     private static final String EXTERNAL_MYSQL_TABLE_PREFIX = "external_mysql_table_";
-
     public static final int DEFAULT_MYSQL_PORT = 3306;
-
     public static final String DEFAULT_LAKESOUL_TABLE_PATH_PREFIX = "file://";
     private final DBConnector dbConnector;
 
     private final DBManager lakesoulDBManager;
     private final String lakesoulTablePathPrefix;
     private final String dbName;
+    private final int hashBucketNum;
+    private final boolean useCdc;
     private HashSet<String> excludeTables;
     private String[] filterTables = new String[]{"sys_config"};
 
@@ -62,7 +63,7 @@ public class MysqlDBManager implements ExternalDBManager {
                           String host,
                           String port,
                           HashSet<String> excludeTables,
-                          String pathPrefix) {
+                          String pathPrefix, int hashBucketNum, boolean useCdc) {
         this.dbName = dbName;
         this.excludeTables = excludeTables;
         excludeTables.addAll(Arrays.asList(filterTables));
@@ -82,6 +83,8 @@ public class MysqlDBManager implements ExternalDBManager {
         parser = new MySqlAntlrDdlParser();
 
         lakesoulTablePathPrefix = pathPrefix;
+        this.hashBucketNum = hashBucketNum;
+        this.useCdc = useCdc;
     }
 
 
@@ -115,7 +118,7 @@ public class MysqlDBManager implements ExternalDBManager {
 
         boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
         if (exists) {
-            // sync lakesoul table schema
+            // sync lakesoul table schema except bucketnum lakesoulCdcColumns
             TableNameId tableId = lakesoulDBManager.shortTableName(tableName, dbName);
             String newTableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
 
@@ -124,16 +127,17 @@ public class MysqlDBManager implements ExternalDBManager {
             // import lakesoul table
             try {
                 String tableId = EXTERNAL_MYSQL_TABLE_PREFIX + UUID.randomUUID();
-
-    //            String qualifiedPath = StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/');
-
                 String qualifiedPath = FlinkUtil.makeQualifiedPath(StringUtils.join(new String[]{lakesoulTablePathPrefix, dbName, tableName}, '/')).toString();
-
                 String tableSchema = ddlToSparkSchema(tableName, mysqlDDL).json();
+                List<String> priKeys = ddlToPrimaryKeys(tableName, mysqlDDL);
+                String partitionsInTableInfo = ";" + String.join(",", priKeys);
+                JSONObject json = new JSONObject();
+                json.put("hashBucketNum", String.valueOf(hashBucketNum));
+                json.put("lakesoul_cdc_change_column", "rowKinds");
 
                 lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
-                                                 tableSchema,
-                                                 new JSONObject(), ""
+                        tableSchema,
+                        json, partitionsInTableInfo
                 );
             } catch (IOException e) {
                 throw new RuntimeException(e);
@@ -160,7 +164,7 @@ public class MysqlDBManager implements ExternalDBManager {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                result=rs.getString("Create Table");
+                result = rs.getString("Create Table");
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -175,15 +179,24 @@ public class MysqlDBManager implements ExternalDBManager {
 
         parser.parse(ddl, new Tables());
         parser.databaseTables().forTable(null, null, tableName).columns()
-            .forEach(col-> {
-                String name = col.name();
-                DataType datatype = converter.schemaBuilder(col);
-                if (datatype == null) {
-                    throw new IllegalStateException("Unhandled data types");
-                }
-                stNew[0] = stNew[0].add(name, datatype, col.isOptional());
-            });
-
+                .forEach(col -> {
+                    String name = col.name();
+                    DataType datatype = converter.schemaBuilder(col);
+                    if (datatype == null) {
+                        throw new IllegalStateException("Unhandled data types");
+                    }
+                    stNew[0] = stNew[0].add(name, datatype, col.isOptional());
+                });
+        //if uescdc add lakesoulcdccolumns
+        if (useCdc) {
+            stNew[0] = stNew[0].add("rowKinds", DataTypes.StringType, true);
+        }
         return stNew[0];
+    }
+
+
+    public List<String> ddlToPrimaryKeys(String tableName, String ddl) {
+        parser.parse(ddl, new Tables());
+        return parser.databaseTables().forTable(null, null, tableName).primaryKeyColumnNames();
     }
 }
