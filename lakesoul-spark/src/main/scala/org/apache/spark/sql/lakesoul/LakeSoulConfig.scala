@@ -163,7 +163,7 @@ object LakeSoulConfig extends Logging {
   /**
     * Whether this lakesoul table is append-only. Files can't be deleted, or values can't be updated.
     */
-  val IS_APPEND_ONLY = buildConfig[Boolean](
+  val IS_APPEND_ONLY: LakeSoulConfig[Boolean] = buildConfig[Boolean](
     "appendOnly",
     "false",
     _.toBoolean,

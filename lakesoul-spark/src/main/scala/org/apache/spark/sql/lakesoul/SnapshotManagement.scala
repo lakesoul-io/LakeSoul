@@ -19,29 +19,19 @@ package org.apache.spark.sql.lakesoul
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
-
-import java.util.UUID
-import java.util.concurrent.TimeUnit
-import java.lang
-import java.io.File
 import org.apache.hadoop.fs.Path
-import org.apache.spark.api.java
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
-import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
-import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
-import org.apache.spark.sql.sources.BaseRelation
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.{AnalysisException, SparkSession}
 
-import scala.collection.JavaConverters._
-
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 class SnapshotManagement(path: String) extends Logging {
 
@@ -135,23 +125,6 @@ class SnapshotManagement(path: String) extends Logging {
   }
 
   /**
-    * using with part merge.
-    *
-    * @note This uses thread-local variable to make the active transaction visible. So do not use
-    *       multi-threaded code in the provided thunk.
-    */
-  def withNewPartMergeTransaction[T](thunk: PartMergeTransactionCommit => T): T = {
-    try {
-      //      updateSnapshot()
-      val tc = new PartMergeTransactionCommit(this)
-      PartMergeTransactionCommit.setActive(tc)
-      thunk(tc)
-    } finally {
-      PartMergeTransactionCommit.clearActive()
-    }
-  }
-
-  /**
     * Checks whether this table only accepts appends. If so it will throw an error in operations that
     * can remove data such as DELETE/UPDATE/MERGE.
     */
@@ -179,8 +152,13 @@ object SnapshotManagement {
     * in reconstructing.
     */
   private val snapshotManagementCache = {
+    val expireMin = if (SparkSession.getActiveSession.isDefined) {
+      SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)
+    } else {
+      LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE.defaultValue.get
+    }
     val builder = CacheBuilder.newBuilder()
-      .expireAfterAccess(60, TimeUnit.MINUTES)
+      .expireAfterWrite(expireMin, TimeUnit.MINUTES)
       .removalListener((removalNotification: RemovalNotification[String, SnapshotManagement]) => {
         val snapshotManagement = removalNotification.getValue
         try snapshotManagement.snapshot catch {
@@ -189,7 +167,7 @@ object SnapshotManagement {
         }
       })
 
-    builder.maximumSize(5).build[String, SnapshotManagement]()
+    builder.maximumSize(64).build[String, SnapshotManagement]()
   }
 
   def forTable(spark: SparkSession, tableName: TableIdentifier): SnapshotManagement = {
@@ -217,6 +195,7 @@ object SnapshotManagement {
         throw e.getCause
     }
   }
+
   //no cache just for snapshot
   def apply(path: String, partitionDesc: String, partitionVersion: Int): SnapshotManagement = {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
@@ -226,20 +205,6 @@ object SnapshotManagement {
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
-    }
-  }
-
-  def getSM(path: String): SnapshotManagement = {
-    try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-      snapshotManagementCache.get(path, () => {
-        AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
-        }
-      })
-    } catch {
-      case e: com.google.common.util.concurrent.UncheckedExecutionException =>
-        throw e.getCause
     }
   }
 

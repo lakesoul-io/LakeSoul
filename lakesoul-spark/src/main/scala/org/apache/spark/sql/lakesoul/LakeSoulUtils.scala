@@ -245,27 +245,24 @@ object LakeSoulTableProperties {
 
   val lakeSoulCDCChangePropKey = "lakesoul_cdc_change_column"
 
-  val extraTblProps = Set(lakeSoulCDCChangePropKey)
+  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey)
 
   def isLakeSoulTableProperty(name: String): Boolean = {
     extraTblProps.contains(name)
   }
 }
-object LakeSoulTableForCdc{
-  def getLakeSoulTableFilterForCDC(tif:TableInfo):Filter={
-    val name=getLakeSoulTableCdcColumnName(tif)
-    Not(EqualTo(name.get,"delete"))
+
+object LakeSoulTableForCdc {
+  def getLakeSoulTableFilterForCDC(tif: TableInfo): Filter = {
+    val name = getLakeSoulTableCdcColumnName(tif)
+    Not(EqualTo(name.get, "delete"))
   }
-  def isLakeSoulCdcTable(tif:TableInfo):Boolean={
+
+  def isLakeSoulCdcTable(tif: TableInfo): Boolean = {
     tif.configuration.contains(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
-  def getLakeSoulTableCdcColumnName(tif:TableInfo):Option[String]={
-    tif.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
-  }
-}
 
-class MergeOpLong extends MergeOperator[Long] {
-  override def mergeData(input: Seq[Long]): Long = {
-    input.sum
+  def getLakeSoulTableCdcColumnName(tif: TableInfo): Option[String] = {
+    tif.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
 }

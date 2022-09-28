@@ -23,7 +23,7 @@ import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.shaded.guava18.com.google.common.base.Splitter;
+import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
@@ -36,6 +36,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
+import org.apache.flink.types.RowKind;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 
@@ -95,6 +96,22 @@ public class FlinkUtil {
       return StringData.fromString("update");
     }
     if ("-D".equals(rowKind)) {
+      return StringData.fromString("delete");
+    }
+    return null;
+  }
+
+  public static StringData rowKindToOperation(RowKind rowKind) {
+    if (RowKind.INSERT.equals(rowKind)) {
+      return StringData.fromString("insert");
+    }
+    if (RowKind.UPDATE_BEFORE.equals(rowKind)) {
+      return StringData.fromString("delete");
+    }
+    if (RowKind.UPDATE_AFTER.equals(rowKind)) {
+      return StringData.fromString("update");
+    }
+    if (RowKind.DELETE.equals(rowKind)) {
       return StringData.fromString("delete");
     }
     return null;

@@ -62,28 +62,14 @@ object SparkUtil {
     }
   }
 
-/*  def modifyTableString(tablePath: String): String = {
-    makeQualifiedTablePath(tablePath).toString
-  }
-
-  def modifyTablePath(tablePath: String): Path = {
-    makeQualifiedTablePath(tablePath)
-  }
-
-  private def makeQualifiedTablePath(tablePath: String): Path = {
-    val normalPath = tablePath.replace("s3://", "s3a://")
-    val path = new Path(normalPath)
-    path.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(path)
-  }*/
-
   def makeQualifiedTablePath(tablePath: Path): Path = {
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 
-  def TablePathExisted(fs:FileSystem ,tableAbsolutePath:Path):Boolean = {
+  def tablePathExisted(fs: FileSystem, tableAbsolutePath: Path): Boolean = {
     if (fs.exists(tableAbsolutePath) && fs.listStatus(tableAbsolutePath).nonEmpty) {
-        true
-    }else{
+      true
+    } else {
       false
     }
   }

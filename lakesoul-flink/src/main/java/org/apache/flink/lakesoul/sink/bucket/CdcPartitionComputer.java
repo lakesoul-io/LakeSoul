@@ -145,7 +145,7 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
       reuseRow.setField(i, nonPartitionFieldGetters[i].getFieldOrNull(in));
     }
     if (isCdc) {
-      reuseRow.setField(len - 1, FlinkUtil.rowKindToOperation(in.getRowKind().shortString()));
+      reuseRow.setField(len - 1, FlinkUtil.rowKindToOperation(in.getRowKind()));
     }
     reuseRow.setRowKind(in.getRowKind());
     return reuseRow;
