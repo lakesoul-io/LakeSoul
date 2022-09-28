@@ -197,18 +197,19 @@ public class JdbcDataTypeConverter {
                 }
                 return IntegerType;
             case Types.TIME:
-                if (adaptiveTimeMicrosecondsPrecisionMode) {
-                    return CalendarIntervalType;
-                }
-                if (adaptiveTimePrecisionMode) {
-                    if (getTimePrecision(column) <= 3) {
-                        return CalendarIntervalType;
-                    }
-                    if (getTimePrecision(column) <= 6) {
-                        return CalendarIntervalType;
-                    }
-                    return CalendarIntervalType;
-                }
+                // CalendarIntervalType is not supported by org.apache.spark.sql.execution.datasources.parquet.SparkToParquetSchemaConverter
+//                if (adaptiveTimeMicrosecondsPrecisionMode) {
+//                    return CalendarIntervalType;
+//                }
+//                if (adaptiveTimePrecisionMode) {
+//                    if (getTimePrecision(column) <= 3) {
+//                        return CalendarIntervalType;
+//                    }
+//                    if (getTimePrecision(column) <= 6) {
+//                        return CalendarIntervalType;
+//                    }
+//                    return CalendarIntervalType;
+//                }
                 return IntegerType;
             case Types.TIMESTAMP:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {
