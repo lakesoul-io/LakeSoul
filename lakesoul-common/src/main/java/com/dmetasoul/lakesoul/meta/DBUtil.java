@@ -22,6 +22,7 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import org.apache.commons.lang.SystemUtils;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -34,31 +35,69 @@ import java.util.*;
 
 public class DBUtil {
 
+    private static final String driverNameDefault = "org.postgresql.Driver";
+    private static final String urlDefault = "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
+    private static final String usernameDefault = "lakesoul_test";
+    private static final String passwordDefault = "lakesoul_test";
+
+    private static final String driverNameKey = "lakesoul.pg.driver";
+    private static final String urlKey = "lakesoul.pg.url";
+    private static final String usernameKey = "lakesoul.pg.username";
+    private static final String passwordKey = "lakeosul.pg.password";
+
+    private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
+    private static final String urlEnv = "LAKESOUL_PG_URL";
+    private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
+    private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
+
+    private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
+
+    private static String getEnv(String key, String defaultValue) {
+        String value = System.getenv(key);
+        if (value == null) {
+            return defaultValue;
+        } else {
+            return value;
+        }
+    }
+
+    /**
+     *  PG connection config retrieved in the following order:
+     *  1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
+     *  2. A system property "lakesoul_home" (in lower case) point to a property file;
+     *      Following config keys are used to read the property file:
+     *          lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
+     *  3. Any of the following env var exist:
+     *      LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
+     *  4. Otherwise, resolved to each's config's default
+     */
     public static DataBaseProperty getDBInfo() {
 
-        String lakesoulhome = "lakesoul_home";
-        String configFile = System.getenv(lakesoulhome);
-        if (null == configFile)
-            configFile = System.getProperty(lakesoulhome);
+        String configFile = System.getenv(lakeSoulHomeEnv);
+        if (null == configFile) {
+            configFile = System.getenv(lakeSoulHomeEnv.toLowerCase());
+            if (null == configFile) {
+                configFile = System.getProperty(lakeSoulHomeEnv.toLowerCase());
+            }
+        }
         Properties properties = new Properties();
         if (configFile != null) {
             try {
-                properties.load(new FileInputStream(configFile));
+                properties.load(Files.newInputStream(Paths.get(configFile)));
             } catch (IOException e) {
                 e.printStackTrace();
             }
         } else {
-            properties.setProperty("lakesoul.pg.driver", System.getenv("LAKESOUL_PG_DRIVER"));
-            properties.setProperty("lakesoul.pg.url", System.getenv("LAKESOUL_PG_URL"));
-            properties.setProperty("lakesoul.pg.username", System.getenv("LAKESOUL_PG_USERNAME"));
-            properties.setProperty("lakesoul.pg.password", System.getenv("LAKESOUL_PG_PASSWORD"));
+            properties.setProperty(driverNameKey, getEnv(driverNameEnv, driverNameDefault));
+            properties.setProperty(urlKey, getEnv(urlEnv, urlDefault));
+            properties.setProperty(usernameKey, getEnv(usernameEnv, usernameDefault));
+            properties.setProperty(passwordKey, getEnv(passwordEnv, passwordDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
-        dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
-        dataBaseProperty.setUrl(properties.getProperty(
-                "lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/lakesoul_test?stringtype=unspecified"));
-        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "lakesoul_test"));
-        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "lakesoul_test"));
+        dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));
+        dataBaseProperty.setUrl(properties.getProperty(urlKey, urlDefault));
+        dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
+        dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         return dataBaseProperty;
     }
 

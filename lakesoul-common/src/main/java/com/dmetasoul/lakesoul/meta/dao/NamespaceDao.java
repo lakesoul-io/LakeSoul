@@ -95,7 +95,7 @@ public class NamespaceDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select namespace from namespace");
+        String sql = "select namespace from namespace";
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
