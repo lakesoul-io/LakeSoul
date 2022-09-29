@@ -123,7 +123,7 @@ public class JdbcDataTypeConverter {
             // Single- and multi-bit values ...
             case Types.BIT:
                 if (column.length() > 1) {
-                    return ByteType;
+                    return BinaryType;
                 }
                 // otherwise, it is just one bit so use a boolean ...
             case Types.BOOLEAN:
