@@ -18,13 +18,11 @@ package org.apache.spark.sql.lakesoul.catalog
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.util
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{NoSuchDatabaseException, NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog._
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, QualifiedColType}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
@@ -33,18 +31,18 @@ import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1WriteBuilder, W
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.sources.InsertableRelation
+import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.{LakeSoulConfig, LakeSoulUtils}
+import org.apache.spark.sql.sources.InsertableRelation
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SparkSession}
 
+import java.util
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.collection.immutable.Map
 
 /**
   * A Catalog extension which can properly handle the interaction between the HiveMetaStore and
@@ -83,7 +81,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                                   operation: TableCreationModes.CreationMode): Table = {
     // These two keys are properties in data source v2 but not in v1, so we have to filter
     // them out. Otherwise property consistency checks will fail.
-    if (!LakeSoulCatalog.namespaceExists(ident.namespace()(1))) {
+    if (!LakeSoulCatalog.namespaceExists(ident.namespace()(0))) {
       throw new NoSuchNamespaceException(ident.toString)
     }
     val tableProperties = properties.asScala.filterKeys {
@@ -97,10 +95,12 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     // START: This entire block until END is a copy-paste from V2SessionCatalog
     val (partitionColumns, maybeBucketSpec) = convertTransforms(partitions)
     val isByPath = isPathIdentifier(ident)
-    val location = if (isByPath) {
-      Option(ident.name())
+    val (location, existingLocation) = if (isByPath) {
+      (Option(ident.name()),
+        if (LakeSoulSourceUtils.isLakeSoulTableExists(ident.name())) Some(ident.name()) else None)
     } else {
-      Option(properties.get("location"))
+      (Option(properties.get("location")),
+        Option(MetaVersion.isShortTableNameExists(ident.name(), ident.namespace()(0))._2))
     }
     val storage = DataSource.buildStorageFormatFromOptions(tableProperties.toMap)
       .copy(locationUri = location.map(CatalogUtils.stringToURI))
@@ -121,14 +121,16 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     val withDb = verifyTableAndSolidify(tableDesc, None)
 
+
     ParquetSchemaConverter.checkFieldNames(tableDesc.schema.fieldNames)
     CreateTableCommand(
       withDb,
-      getExistingTableIfExists(tableDesc),
+      existingLocation,
       operation.mode,
       sourceQuery,
       operation,
-      tableByPath = isByPath).run(spark)
+      tableByPath = isByPath,
+      this).run(spark)
 
     loadTable(ident)
   }
@@ -155,6 +157,15 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       )
     } else {
       throw new NoSuchTableException(ident)
+    }
+  }
+
+  def getTableLocation(ident: Identifier): Option[String] = {
+    try {
+      val table = loadTable(ident)
+      Option(table.properties().get("location"))
+    } catch {
+      case _: NoSuchNamespaceException | _: NoSuchTableException => None
     }
   }
 
@@ -276,7 +287,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     val validatedConfigurations = LakeSoulConfig.validateConfigurations(tableDesc.properties)
 
-    val db = tableDesc.identifier.database.getOrElse(catalog.getCurrentDatabase)
+    val db = tableDesc.identifier.database.getOrElse(spark.sessionState.catalogManager.currentNamespace(0))
     val tableIdentWithDB = tableDesc.identifier.copy(database = Some(db))
     tableDesc.copy(
       identifier = tableIdentWithDB,
@@ -284,33 +295,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       properties = validatedConfigurations)
   }
 
-  /** Checks if a table already exists for the provided identifier. */
-  private def getExistingTableIfExists(table: CatalogTable): Option[CatalogTable] = {
-    // If this is a path identifier, we cannot return an existing CatalogTable. The Create command
-    // will check the file system itself
-    if (isPathIdentifier(table)) return None
-    val tableExists = catalog.tableExists(table.identifier)
-
-    if (tableExists) {
-      val oldTable = catalog.getTableMetadata(table.identifier)
-      if (oldTable.tableType == CatalogTableType.VIEW) {
-        throw new AnalysisException(s"${table.identifier} is a view. You may not write data into a view.")
-      }
-      if (!LakeSoulSourceUtils.isLakeSoulTable(oldTable.provider)) {
-        throw new AnalysisException(s"${table.identifier} is not a LakeSoul table. Please drop this " +
-          "table first if you would like to create it with LakeSoul.")
-      }
-      Some(oldTable)
-    } else {
-      None
-    }
-  }
-
-  /**
-    * A staged lakesoul table, which creates a HiveMetaStore entry and appends data if this was a
-    * CTAS/RTAS command. We have a ugly way of using this API right now, but it's the best way to
-    * maintain old behavior compatibility between Databricks Runtime and OSS LakeSoul Lake.
-    */
   private class StagedLakeSoulTableV2(
                                        ident: Identifier,
                                        override val schema: StructType,
@@ -529,7 +513,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     namespace match {
       case Array() =>
         listNamespaces()
-      case Array(db) if catalog.databaseExists(db) =>
+      case Array(db) if LakeSoulCatalog.namespaceExists(db) =>
         Array(Array(db))
       case _ =>
         throw new NoSuchNamespaceException(namespace)
@@ -569,8 +553,6 @@ trait SupportsPathIdentifier extends TableCatalog {
 
   private def supportSQLOnFile: Boolean = spark.sessionState.conf.runSQLonFile
 
-  protected lazy val catalog: SessionCatalog = spark.sessionState.catalog
-
   private def hasLakeSoulNamespace(ident: Identifier): Boolean = {
     ident.namespace().length == 1 && LakeSoulCatalog.namespaceExists(ident.namespace()(0))
   }
@@ -585,7 +567,12 @@ trait SupportsPathIdentifier extends TableCatalog {
   }
 
   protected def isNameIdentifier(ident: Identifier): Boolean = {
-    MetaVersion.isShortTableNameExists(ident.name(), ident.namespace()(0))._1
+    ident.namespace() match {
+      case Array() =>
+        MetaVersion.isShortTableNameExists(ident.name())._1
+      case Array(ns) =>
+        MetaVersion.isShortTableNameExists(ident.name(), ns)._1
+    }
   }
 
   protected def isPathIdentifier(table: CatalogTable): Boolean = {

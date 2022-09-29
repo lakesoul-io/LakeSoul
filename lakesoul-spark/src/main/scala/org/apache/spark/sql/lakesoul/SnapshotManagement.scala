@@ -171,9 +171,8 @@ object SnapshotManagement {
   }
 
   def forTable(spark: SparkSession, tableName: TableIdentifier): SnapshotManagement = {
-    val catalog = spark.sessionState.catalog
-    val catalogTable = catalog.getTableMetadata(tableName).location
-    apply(new Path(catalogTable))
+    val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(tableName)
+    apply(new Path(path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toString)))
   }
 
   def forTable(dataPath: File): SnapshotManagement = {

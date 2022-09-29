@@ -23,7 +23,10 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
+import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
@@ -31,9 +34,9 @@ import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.util.Utils
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
+
 import java.io.File
 import java.util.Locale
-
 import scala.language.implicitConversions
 
 trait TableCreationTests
@@ -67,28 +70,31 @@ trait TableCreationTests
     spark.sessionState.sqlParser.parseTableIdentifier(tableName)
   }
 
+  private implicit def toIdentifier(tableName: String): Identifier = {
+    Identifier.of(Array("default"), tableName)
+  }
+
   protected def getTablePath(tableName: String): String = {
-    new Path(spark.sessionState.catalog.getTableMetadata(tableName).location).toString
+    LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier(tableName, Some("default"))).get
   }
 
   protected def getDefaultTablePath(tableName: String): String = {
-    new Path(spark.sessionState.catalog.defaultTablePath(tableName)).toString
+    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toString
   }
 
   protected def getPartitioningColumns(tableName: String): Seq[String] = {
-    spark.sessionState.catalog.getTableMetadata(tableName).partitionColumnNames
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+      .loadTable(Identifier.of(Array("default"), tableName)).partitioning()
+      .map(_.asInstanceOf[IdentityTransform].ref.asInstanceOf[FieldReference].fieldNames()(0))
   }
 
   protected def getSchema(tableName: String): StructType = {
-    spark.sessionState.catalog.getTableMetadata(tableName).schema
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+      .loadTable(Identifier.of(Array("default"), tableName)).schema()
   }
 
   private def getSnapshotManagement(table: CatalogTable): SnapshotManagement = {
     getSnapshotManagement(new Path(table.storage.locationUri.get))
-  }
-
-  private def getSnapshotManagement(tableName: String): SnapshotManagement = {
-    getSnapshotManagement(spark.sessionState.catalog.getTableMetadata(tableName))
   }
 
   protected def getSnapshotManagement(path: Path): SnapshotManagement = {
@@ -364,7 +370,7 @@ trait TableCreationTests
     val tableName = "lakesoul_test"
     withTable(tableName) {
       val tableLoc =
-        new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier(tableName)))
+        new File(getDefaultTablePath(tableName))
       Utils.deleteRecursively(tableLoc)
       val ex = intercept[AnalysisException] {
         Seq(1, 2, 3).toDF("a column name with spaces")
@@ -625,15 +631,14 @@ trait TableCreationTests
   }
 
   test("create and drop lakesoul table - managed") {
-    val catalog = spark.sessionState.catalog
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
     withTable("lakesoul_test") {
       sql("CREATE TABLE lakesoul_test(a LONG, b String) USING lakesoul")
-      val table = catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-      assert(table.tableType == CatalogTableType.MANAGED)
-      assert(table.provider.contains("lakesoul"))
+      val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("lakesoul_test", Some("default")))
+      assert(path.isDefined)
 
       // Query the data and the metadata directly via the LakeSoul
-      val snapshotManagement = getSnapshotManagement(table)
+      val snapshotManagement = getSnapshotManagement(new Path(path.get))
 
       assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
         .add("a", "long").add("b", "string"))
@@ -644,38 +649,33 @@ trait TableCreationTests
       assert(getSchema("lakesoul_test") == new StructType()
         .add("a", "long").add("b", "string"))
 
-      // External catalog does not contain the schema and partition column names.
-      val externalTable = catalog.externalCatalog.getTable("default", "lakesoul_test")
-      assert(externalTable.schema == new StructType())
-      assert(externalTable.partitionColumnNames.isEmpty)
-
       sql("INSERT INTO lakesoul_test SELECT 1, 'a'")
       checkDatasetUnorderly(
         sql("SELECT * FROM lakesoul_test").as[(Long, String)],
         1L -> "a")
 
-      val location = spark.sessionState.catalog.getTableMetadata(TableIdentifier("lakesoul_test")).location
+      val ident = toIdentifier("lakesoul_test")
+      val location = catalog.getTableLocation(ident)
+      assert(location.isDefined)
+      assert(location.get == path.get)
 
       sql("DROP TABLE lakesoul_test")
-      intercept[NoSuchTableException](catalog.getTableMetadata(TableIdentifier("lakesoul_test")))
+      intercept[NoSuchTableException](catalog.loadTable(ident))
       // Verify that the underlying location is deleted for a managed table
-      assert(!new File(table.location).exists())
-
-      LakeSoulTable.forPath(location.toString).dropTable()
+      assert(!new File(path.get).exists())
     }
   }
 
   test("create table using - with partitioned by") {
-    val catalog = spark.sessionState.catalog
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
     withTable("lakesoul_test") {
       sql("CREATE TABLE lakesoul_test(a LONG, b String) USING lakesoul PARTITIONED BY (a)")
-      val table = catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-      assert(table.tableType == CatalogTableType.MANAGED)
-      assert(table.provider.contains("lakesoul"))
 
+      val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("lakesoul_test", Some("default")))
+      assert(path.isDefined)
 
       // Query the data and the metadata directly via the LakeSoul
-      val snapshotManagement = getSnapshotManagement(table)
+      val snapshotManagement = getSnapshotManagement(new Path(path.get))
 
       assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
         .add("a", "long", false).add("b", "string"))
@@ -688,15 +688,14 @@ trait TableCreationTests
       assert(getSchema("lakesoul_test") == new StructType()
         .add("b", "string").add("a", "long", false))
 
-      // External catalog does not contain the schema and partition column names.
-      val externalTable = catalog.externalCatalog.getTable("default", "lakesoul_test")
-      assert(externalTable.schema == new StructType())
-      assert(externalTable.partitionColumnNames.isEmpty)
-
       sql("INSERT INTO lakesoul_test SELECT 'a', 1")
 
-      val path = new File(new File(table.storage.locationUri.get), "a=1")
-      assert(path.listFiles().nonEmpty)
+      val ident = toIdentifier("lakesoul_test")
+      val location = catalog.getTableLocation(ident)
+      assert(location.isDefined)
+      assert(location.get == path.get)
+      val partDir = new File(new File(location.get), "a=1")
+      assert(partDir.listFiles().nonEmpty)
 
       checkDatasetUnorderly(
         sql("SELECT a,b FROM lakesoul_test").as[(Long, String)],
@@ -705,7 +704,7 @@ trait TableCreationTests
   }
 
   test("CTAS a managed table with the existing empty directory") {
-    val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+    val tableLoc = new File(getDefaultTablePath("tab1"))
     try {
       tableLoc.mkdir()
       withTable("tab1") {
@@ -719,7 +718,7 @@ trait TableCreationTests
   }
 
   test("create a managed table with the existing empty directory") {
-    val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+    val tableLoc = new File(getDefaultTablePath("tab1"))
     try {
       tableLoc.mkdir()
       withTable("tab1") {
@@ -735,7 +734,7 @@ trait TableCreationTests
 
   test("create a managed table with the existing non-empty directory") {
     withTable("tab1") {
-      val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+      val tableLoc = new File(getDefaultTablePath("tab1"))
       try {
         // create an empty hidden file
         tableLoc.mkdir()
@@ -758,7 +757,6 @@ trait TableCreationTests
   }
 
   test("create table on an existing table location") {
-    val catalog = spark.sessionState.catalog
     withTempDir { tempDir =>
       withTable("lakesoul_test") {
         val snapshotManagement = getSnapshotManagement(new Path(tempDir.getCanonicalPath))
@@ -775,12 +773,12 @@ trait TableCreationTests
             range_column = "b"))
         sql("CREATE TABLE lakesoul_test(a LONG, b String) USING lakesoul " +
           s"OPTIONS (path '${tempDir.getCanonicalPath}') PARTITIONED BY(b)")
-        val table = catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-        assert(table.tableType == CatalogTableType.EXTERNAL)
-        assert(table.provider.contains("lakesoul"))
 
-        // Query the data and the metadata directly via the SnapshotManagement
-        val snapshotManagement2 = getSnapshotManagement(table)
+        val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("lakesoul_test", Some("default")))
+        assert(path.isDefined)
+
+        // Query the data and the metadata directly via the LakeSoul
+        val snapshotManagement2 = getSnapshotManagement(new Path(path.get))
 
         assert(snapshotManagement2.snapshot.getTableInfo.schema == new StructType()
           .add("a", "long").add("b", "string", false))
@@ -789,12 +787,6 @@ trait TableCreationTests
 
         assert(getSchema("lakesoul_test") === snapshotManagement2.snapshot.getTableInfo.schema)
         assert(getPartitioningColumns("lakesoul_test") === Seq("b"))
-
-        // External catalog does not contain the schema and partition column names.
-        val externalTable = spark.sessionState.catalog.externalCatalog
-          .getTable("default", "lakesoul_test")
-        assert(externalTable.schema == new StructType())
-        assert(externalTable.partitionColumnNames.isEmpty)
       }
     }
   }
@@ -804,8 +796,15 @@ trait TableCreationTests
       withTable("t") {
         spark.sql(s"CREATE TABLE t(a int, b int) USING lakesoul LOCATION '${dir.toURI}'")
 
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t"))
-        assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+        val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("t", Some("default")))
+        assert(path.isDefined)
+        assert(path.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val ident = toIdentifier("t")
+        val location = catalog.getTableLocation(ident)
+        assert(location.isDefined)
+        assert(location.get == path.get)
 
         spark.sql("INSERT INTO TABLE t SELECT 1, 2")
         assert(dir.exists())
@@ -822,12 +821,15 @@ trait TableCreationTests
         spark.sql(
           s"CREATE TABLE t1(a int, b int) USING lakesoul PARTITIONED BY(a) LOCATION '${dir.toURI}'")
 
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t1"))
-        assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val ident = toIdentifier("t1")
+        val location = catalog.getTableLocation(ident)
+        assert(location.isDefined)
+        assert(location.get == dir.getAbsolutePath)
 
         Seq((1, 2)).toDF("a", "b")
-          .write.format("lakesoul").mode("append").save(table.location.toString)
-        val read = spark.read.format("lakesoul").load(table.location.toString)
+          .write.format("lakesoul").mode("append").save(location.get)
+        val read = spark.read.format("lakesoul").load(location.get)
         checkAnswer(read.select("a", "b"), Seq(Row(1, 2)))
 
         val partDir = new File(dir, "a=1")
@@ -839,7 +841,6 @@ trait TableCreationTests
   Seq(true, false).foreach { shouldDelete =>
     val tcName = if (shouldDelete) "non-existing" else "existing"
     test(s"CTAS for external data source table with $tcName location") {
-      val catalog = spark.sessionState.catalog
       withTable("t", "t1") {
         withTempDir { dir =>
           if (shouldDelete) dir.delete()
@@ -850,13 +851,14 @@ trait TableCreationTests
                |LOCATION '${dir.toURI}'
                |AS SELECT 3 as a, 4 as b, 1 as c, 2 as d
              """.stripMargin)
-          val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t"))
-          assert(table.tableType == CatalogTableType.EXTERNAL)
-          assert(table.provider.contains("lakesoul"))
-          assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+          val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+          val ident = toIdentifier("t")
+          val location = catalog.getTableLocation(ident)
+          assert(location.isDefined)
+          assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
-          val snapshotManagement = getSnapshotManagement(table)
+          val snapshotManagement = getSnapshotManagement(new Path(location.get))
 
           assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
             .add("a", "integer").add("b", "integer")
@@ -866,17 +868,12 @@ trait TableCreationTests
           assert(getSchema("t") == snapshotManagement.snapshot.getTableInfo.schema)
           assert(getPartitioningColumns("t").isEmpty)
 
-          // External catalog does not contain the schema and partition column names.
-          val externalTable = catalog.externalCatalog.getTable("default", "t")
-          assert(externalTable.schema == new StructType())
-          assert(externalTable.partitionColumnNames.isEmpty)
-
           // Query the table
           checkAnswer(spark.table("t"), Row(3, 4, 1, 2))
 
           // Directly query the reservoir
           checkAnswer(spark.read.format("lakesoul")
-            .load(new Path(table.storage.locationUri.get).toString), Seq(Row(3, 4, 1, 2)))
+            .load(new Path(location.get).toString), Seq(Row(3, 4, 1, 2)))
         }
         // partition table
         withTempDir { dir =>
@@ -889,13 +886,14 @@ trait TableCreationTests
                |LOCATION '${dir.toURI}'
                |AS SELECT 3 as a, 4 as b, 1 as c, 2 as d
              """.stripMargin)
-          val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t1"))
-          assert(table.tableType == CatalogTableType.EXTERNAL)
-          assert(table.provider.contains("lakesoul"))
-          assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+          val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+          val ident = toIdentifier("t1")
+          val location = catalog.getTableLocation(ident)
+          assert(location.isDefined)
+          assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
-          val snapshotManagement = getSnapshotManagement(table)
+          val snapshotManagement = getSnapshotManagement(new Path(location.get))
 
           assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
             .add("a", "integer", false).add("b", "integer", false)
@@ -907,17 +905,12 @@ trait TableCreationTests
             ++ snapshotManagement.snapshot.getTableInfo.range_partition_schema))
           assert(getPartitioningColumns("t1") == Seq("a", "b"))
 
-          // External catalog does not contain the schema and partition column names.
-          val externalTable = catalog.externalCatalog.getTable("default", "t1")
-          assert(externalTable.schema == new StructType())
-          assert(externalTable.partitionColumnNames.isEmpty)
-
           // Query the table
           checkAnswer(spark.table("t1").select("a", "b", "c", "d"), Row(3, 4, 1, 2))
 
           // Directly query the reservoir
           checkAnswer(spark.read.format("lakesoul")
-            .load(new Path(table.storage.locationUri.get).toString).select("a", "b", "c", "d"), Seq(Row(3, 4, 1, 2)))
+            .load(location.get).select("a", "b", "c", "d"), Seq(Row(3, 4, 1, 2)))
         }
       }
     }
@@ -962,7 +955,7 @@ trait TableCreationTests
 
   test("the qualified path of a lakesoul table is stored in the catalog") {
     withTempDir { dir =>
-      withTable("t", "t1") {
+      withTable("t") {
         assert(!dir.getAbsolutePath.startsWith("file:/"))
         // The parser does not recognize the backslashes on Windows as they are.
         // These currently should be escaped.
@@ -973,13 +966,16 @@ trait TableCreationTests
              |USING lakesoul
              |LOCATION '$escapedDir'
            """.stripMargin)
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t"))
-        assert(table.location.toString.startsWith("file:/"))
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val ident = toIdentifier("t")
+        val location = catalog.getTableLocation(ident)
+        assert(location.isDefined)
+        assert(location.get.startsWith("file:/"))
       }
     }
 
     withTempDir { dir =>
-      withTable("t", "t1") {
+      withTable("t1") {
         assert(!dir.getAbsolutePath.startsWith("file:/"))
         // The parser does not recognize the backslashes on Windows as they are.
         // These currently should be escaped.
@@ -991,8 +987,11 @@ trait TableCreationTests
              |PARTITIONED BY(b)
              |LOCATION '$escapedDir'
            """.stripMargin)
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t1"))
-        assert(table.location.toString.startsWith("file:/"))
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val ident = toIdentifier("t1")
+        val location = catalog.getTableLocation(ident)
+        assert(location.isDefined)
+        assert(location.get.startsWith("file:/"))
       }
     }
   }
@@ -1071,8 +1070,6 @@ trait TableCreationTests
         checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
         checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
           Seq((1, "a"), (2, "b")).toDF("i", "p"))
-
-
       })
     }
   }
@@ -1134,7 +1131,7 @@ trait TableCreationTests
           checkAnswer(spark.table("tt").select("i", "p"),
             Seq((1, "a"), (2, "b")).toDF("i", "p"))
         }
-        assert(e.getMessage().contains("Table or view not found: tt"))
+        assert(e.getMessage.contains("Table or view not found: tt"))
       })
     }
   }
@@ -1240,7 +1237,8 @@ trait TableCreationTests
         spark.sql(s"CREATE TABLE $tableName(a int, change_kind string) USING lakesoul LOCATION '${dir.toURI}'" +
           s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind')")
 
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val table = catalog.loadTable(toIdentifier("test_table"))
         table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
       }
     }
@@ -1258,7 +1256,8 @@ trait TableCreationTests
           s" 'hashBucketNum'='2')")
 
         val path = dir.getCanonicalPath
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier(s"$tableName"))
+        val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        val table = catalog.loadTable(toIdentifier("test_table"))
         table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals(tableName))
@@ -1291,7 +1290,7 @@ trait TableCreationTests
     withTable("tt") {
       withTempDir(dir => {
         val path = dir.getCanonicalPath
-        val data = Seq((1, "a"), (2, "insert")).toDF("id", "change_kind")
+        Seq((1, "a"), (2, "insert")).toDF("id", "change_kind")
           .write
           .mode("overwrite")
           .format("lakesoul")

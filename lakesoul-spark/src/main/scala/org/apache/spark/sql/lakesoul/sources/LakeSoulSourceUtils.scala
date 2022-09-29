@@ -22,7 +22,7 @@ import java.util.Locale
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions
+import org.apache.spark.sql.catalyst.{TableIdentifier, expressions}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
@@ -53,6 +53,13 @@ object LakeSoulSourceUtils {
   /** Check whether this table is a lakesoul table based on information from the Catalog. */
   def isLakeSoulTable(provider: Option[String]): Boolean = {
     provider.exists(isLakeSoulDataSourceName)
+  }
+
+  def getLakeSoulPathByTableIdentifier(table: TableIdentifier): Option[String] = {
+    MetaVersion.isShortTableNameExists(table.table, table.database.getOrElse("default")) match {
+      case (true, path) => Some(path)
+      case _ => None
+    }
   }
 
   /** Creates Spark literals from a value exposed by the public Spark API. */

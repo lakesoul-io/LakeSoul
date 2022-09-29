@@ -420,13 +420,4 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
       }
     }
   }
-
-  test("SHOW DATABASES") {
-    sql(s"CREATE DATABASE IF NOT EXISTS test_database")
-    sql(s"SHOW DATABASES").show()
-    sql(s"SHOW TABLES in test_cdc").show()
-    sql(s"DESC test_cdc.mysql_test_1").show()
-
-  }
-
 }

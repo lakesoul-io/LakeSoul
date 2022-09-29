@@ -22,9 +22,7 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
-import org.apache.commons.lang.SystemUtils;
 
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -107,6 +105,7 @@ public class DBUtil {
         String tablePathId = "truncate table table_path_id";
         String dataCommitInfo = "truncate table data_commit_info";
         String partitionInfo = "truncate table partition_info";
+        String namespace = "truncate table namespace";
         Connection conn;
         Statement stmt;
         try {
@@ -117,6 +116,7 @@ public class DBUtil {
             stmt.addBatch(tablePathId);
             stmt.addBatch(dataCommitInfo);
             stmt.addBatch(partitionInfo);
+            stmt.addBatch(namespace);
             stmt.executeBatch();
         } catch (SQLException e) {
             e.printStackTrace();

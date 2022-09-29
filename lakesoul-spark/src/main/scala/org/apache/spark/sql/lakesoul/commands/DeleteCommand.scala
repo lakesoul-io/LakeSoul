@@ -51,15 +51,6 @@ case class DeleteCommand(snapshotManagement: SnapshotManagement,
     snapshotManagement.withNewTransaction { tc =>
       performDelete(sparkSession, tc)
     }
-    // Re-cache all cached plans(including this relation itself, if it's cached) that refer to
-    // this data source relation.
-
-    //    val transPlan = EliminateSubqueryAliases(target) match {
-    //      case r @ DataSourceV2Relation(_: LakeSoulTableV2,_,_, ident,_) =>
-    //        r.copy(catalog = None,
-    //          identifier = None,
-    //          options = new CaseInsensitiveStringMap(Map("path" -> ident.get.name())))
-    //    }
 
     sparkSession.sharedState.cacheManager.recacheByPlan(sparkSession, target)
 

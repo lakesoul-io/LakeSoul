@@ -40,6 +40,7 @@ object MetaCommit extends Logging {
     val tableInfo = new com.dmetasoul.lakesoul.meta.entity.TableInfo()
 
     tableInfo.setTableId(table_info.table_id)
+    tableInfo.setTableNamespace(table_info.namespace)
     tableInfo.setTablePath(table_info.table_path.toString)
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
