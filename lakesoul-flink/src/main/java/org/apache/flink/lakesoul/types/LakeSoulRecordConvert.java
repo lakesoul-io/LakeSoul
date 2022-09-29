@@ -153,7 +153,7 @@ public class LakeSoulRecordConvert implements Serializable {
     private LogicalType primitiveLogicalType(Schema fieldSchema) {
         switch (fieldSchema.type()) {
             case BOOLEAN:
-                return new BinaryType();
+                return new BooleanType();
             case INT8:
             case INT16:
             case INT32:
@@ -167,7 +167,13 @@ public class LakeSoulRecordConvert implements Serializable {
             case STRING:
                 return new VarCharType(Integer.MAX_VALUE);
             case BYTES:
-                return new BinaryType(Integer.MAX_VALUE);
+                Map<String,String> paras= ((ConnectSchema) fieldSchema).parameters();
+                int byteLen=Integer.MAX_VALUE;
+                if(null!=paras) {
+                    int len = Integer.parseInt(paras.get("length"));
+                    byteLen = len / 8 + (len % 8 == 0 ? 0 : 1);
+                }
+                return new BinaryType(byteLen);
             default:
                 return null;
         }
