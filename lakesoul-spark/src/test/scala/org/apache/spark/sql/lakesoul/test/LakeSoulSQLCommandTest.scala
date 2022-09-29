@@ -109,7 +109,8 @@ trait LakeSoulSQLCommandTest extends LakeSoulTestUtils {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[LakeSoulCatalog].getName)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set("spark.sql.defaultCatalog", "lakesoul")
     session.sparkContext.setLogLevel("ERROR")
 
     session

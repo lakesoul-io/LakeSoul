@@ -46,7 +46,6 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public class LakeSoulCatalog implements Catalog {
 
     public static final String CATALOG_NAME = "lakesoul";
-    private static final String LAKE_SOUL_DATA_BASE_NAME = "test_lakesoul_meta";
     private static final String TABLE_PATH = "path";
     private static final String TABLE_ID_PREFIX = "table_";
     private final DBManager dbManager;
