@@ -48,17 +48,17 @@ public class MysqlDBManager implements ExternalDBManager {
     public static final int DEFAULT_MYSQL_PORT = 3306;
     private final DBConnector dbConnector;
 
-    private final DBManager lakesoulDBManager;
+    private final DBManager lakesoulDBManager = new DBManager();
     private final String lakesoulTablePathPrefix;
     private final String dbName;
     private final int hashBucketNum;
     private final boolean useCdc;
     private HashSet<String> excludeTables;
+    private HashSet<String> includeTables;
     private String[] filterTables = new String[]{"sys_config"};
 
-    MysqlDataTypeConverter converter;
-
-    MySqlAntlrDdlParser parser;
+    MysqlDataTypeConverter converter = new MysqlDataTypeConverter();
+    MySqlAntlrDdlParser parser = new MySqlAntlrDdlParser();
 
     public MysqlDBManager(String dbName,
                           String user,
@@ -66,9 +66,34 @@ public class MysqlDBManager implements ExternalDBManager {
                           String host,
                           String port,
                           HashSet<String> excludeTables,
+                          String pathPrefix,
+                          int hashBucketNum,
+                          boolean useCdc
+                          ) {
+        this(
+                dbName,
+                user,
+                passwd,
+                host,
+                port,
+                excludeTables,
+                null,
+                pathPrefix,
+                hashBucketNum,
+                useCdc);
+    }
+
+    public MysqlDBManager(String dbName,
+                          String user,
+                          String passwd,
+                          String host,
+                          String port,
+                          HashSet<String> excludeTables,
+                          HashSet<String> includeTables,
                           String pathPrefix, int hashBucketNum, boolean useCdc) {
         this.dbName = dbName;
         this.excludeTables = excludeTables;
+        this.includeTables = includeTables;
         excludeTables.addAll(Arrays.asList(filterTables));
 
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
@@ -78,12 +103,6 @@ public class MysqlDBManager implements ExternalDBManager {
         dataBaseProperty.setUsername(user);
         dataBaseProperty.setPassword(passwd);
         dbConnector = new DBConnector(dataBaseProperty);
-
-        lakesoulDBManager = new DBManager();
-
-        converter = new MysqlDataTypeConverter();
-
-        parser = new MySqlAntlrDdlParser();
 
         lakesoulTablePathPrefix = pathPrefix;
         this.hashBucketNum = hashBucketNum;
@@ -104,7 +123,9 @@ public class MysqlDBManager implements ExternalDBManager {
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 String tableName = rs.getString(String.format("Tables_in_%s", dbName));
-                list.add(tableName);
+                if (includeTables.contains(tableName) | !excludeTables.contains(tableName)) {
+                    list.add(tableName);
+                }
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -117,6 +138,10 @@ public class MysqlDBManager implements ExternalDBManager {
 
     @Override
     public void importOrSyncLakeSoulTable(String tableName) {
+        if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
+            System.out.println(String.format("Table %s is excluded", tableName));
+            return;
+        }
         String mysqlDDL = showCreateTable(tableName);
 
         boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
