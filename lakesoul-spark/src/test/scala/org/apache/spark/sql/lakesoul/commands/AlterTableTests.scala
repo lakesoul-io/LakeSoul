@@ -24,6 +24,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
@@ -1139,9 +1140,12 @@ trait AlterTableByNameTests extends AlterTableTests {
   }
 
   override protected def dropTable(identifier: String): Unit = {
-    val location = spark.sessionState.catalog.getTableMetadata(TableIdentifier(identifier)).location
-    sql(s"DROP TABLE IF EXISTS $identifier")
-    LakeSoulTable.forPath(location.toString).dropTable()
+    val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+      TableIdentifier(identifier, Some("default"))
+    )
+    if (location.isDefined) {
+      LakeSoulTable.forPath(location.get).dropTable()
+    }
   }
 
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {

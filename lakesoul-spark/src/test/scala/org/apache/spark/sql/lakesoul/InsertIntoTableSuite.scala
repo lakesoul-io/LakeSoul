@@ -17,15 +17,13 @@
 package org.apache.spark.sql.lakesoul
 
 // scalastyle:off import.ordering.noEmptyLine
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
@@ -53,8 +51,8 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
       insert.createOrReplaceTempView(tmpView)
       val overwrite = if (mode == SaveMode.Overwrite) "OVERWRITE" else "INTO"
       val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
-      val catalogTable = spark.sessionState.catalog.getTableMetadata(ident)
-      sql(s"INSERT $overwrite TABLE lakesoul.`${catalogTable.location}` SELECT * FROM $tmpView")
+      val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
+      sql(s"INSERT $overwrite TABLE lakesoul.`$location` SELECT * FROM $tmpView")
     }
   }
 
@@ -101,8 +99,8 @@ class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
       dfw.mode(mode)
     }
     val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
-    val catalogTable = spark.sessionState.catalog.getTableMetadata(ident)
-    dfw.insertInto(s"lakesoul.`${catalogTable.location}`")
+    val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
+    dfw.insertInto(s"lakesoul.`$location`")
   }
 
   test("insertInto: cannot insert into a table that doesn't exist") {

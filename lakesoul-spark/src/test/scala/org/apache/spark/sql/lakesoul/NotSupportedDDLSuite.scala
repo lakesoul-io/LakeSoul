@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 
 import java.util.Locale
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest}
@@ -70,9 +71,11 @@ abstract class NotSupportedDDLBase extends QueryTest
     try {
       val location = Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
         try {
-          Option(spark.sessionState.catalog.getTableMetadata(TableIdentifier(tbl)).location)
+          LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+            TableIdentifier(tbl, Some("default"))
+          )
         } catch {
-          case e: Exception => None
+          case _: Exception => None
         }
       })
 
@@ -81,9 +84,9 @@ abstract class NotSupportedDDLBase extends QueryTest
       location.foreach(loc => {
         if (loc.isDefined) {
           try {
-            LakeSoulTable.forPath(loc.get.toString).dropTable()
+            LakeSoulTable.forPath(loc.get).dropTable()
           } catch {
-            case e: Exception =>
+            case _: Exception =>
           }
         }
       })
