@@ -47,21 +47,10 @@ trait DataFrameWriterV2Tests
   }
 
   after {
-    spark.sessionState.catalog.listTables("default").foreach { ti =>
-      val location = try {
-        Option(spark.sessionState.catalog.getTableMetadata(ti).location)
-      } catch {
-        case e: Exception => None
-      }
-      spark.sessionState.catalog.dropTable(ti, ignoreIfNotExists = false, purge = true)
-      if (location.isDefined) {
-        try {
-          LakeSoulTable.forPath(location.get.toString).dropTable()
-        } catch {
-          case e: Exception =>
-        }
-      }
-    }
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    catalog
+      .listTables(Array("default"))
+      .foreach { ti => catalog.dropTable(ti)}
   }
 
   def catalog: TableCatalog = {

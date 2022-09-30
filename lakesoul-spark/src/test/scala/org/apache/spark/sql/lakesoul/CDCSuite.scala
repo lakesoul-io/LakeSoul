@@ -20,7 +20,10 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
@@ -42,19 +45,23 @@ class CDCSuite
   }
 
   protected def getTablePath(tableName: String): String = {
-    new Path(spark.sessionState.catalog.getTableMetadata(tableName).location).toString
+    LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+      TableIdentifier(tableName, Some("default"))).get
   }
 
   protected def getDefaultTablePath(tableName: String): String = {
-    new Path(spark.sessionState.catalog.defaultTablePath(tableName)).toString
+    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toString
   }
 
   protected def getPartitioningColumns(tableName: String): Seq[String] = {
-    spark.sessionState.catalog.getTableMetadata(tableName).partitionColumnNames
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+      .loadTable(Identifier.of(Array("default"), tableName)).partitioning()
+      .map(_.asInstanceOf[IdentityTransform].ref.asInstanceOf[FieldReference].fieldNames()(0))
   }
 
   protected def getSchema(tableName: String): StructType = {
-    spark.sessionState.catalog.getTableMetadata(tableName).schema
+    spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+      .loadTable(Identifier.of(Array("default"), tableName)).schema()
   }
 
   protected def getSnapshotManagement(path: Path): SnapshotManagement = {

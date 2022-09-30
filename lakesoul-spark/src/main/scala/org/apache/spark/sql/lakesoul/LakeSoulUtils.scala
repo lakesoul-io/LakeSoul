@@ -18,15 +18,16 @@ package org.apache.spark.sql.lakesoul
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
+import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, NoSuchNamespaceException}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
@@ -66,12 +67,13 @@ object LakeSoulUtils extends PredicateHelper {
     * Check whether the provided table name is a lakesoul table based on information from the Catalog.
     */
   def isLakeSoulTable(spark: SparkSession, tableName: TableIdentifier): Boolean = {
-    val catalog = spark.sessionState.catalog
-    val tableIsNotTemporaryTable = !catalog.isTemporaryTable(tableName)
-    val tableExists =
-      (tableName.database.isEmpty || catalog.databaseExists(tableName.database.get)) &&
-        catalog.tableExists(tableName)
-    tableIsNotTemporaryTable && tableExists && isLakeSoulTable(catalog.getTableMetadata(tableName))
+    if (spark.sessionState.catalog.isTemporaryTable(tableName)) {
+      false
+    } else {
+      spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+        .getTableLocation(Identifier.of(Array(tableName.database.getOrElse("default")), tableName.table))
+        .isDefined
+    }
   }
 
   /** Check if the provided path is the root or the children of a lakesoul table. */
