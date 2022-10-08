@@ -77,7 +77,7 @@ public class MysqlDBManager implements ExternalDBManager {
                 host,
                 port,
                 excludeTables,
-                null,
+                new HashSet<>(),
                 pathPrefix,
                 hashBucketNum,
                 useCdc);
@@ -139,16 +139,20 @@ public class MysqlDBManager implements ExternalDBManager {
     @Override
     public void importOrSyncLakeSoulTable(String tableName) {
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
-            System.out.println(String.format("Table %s is excluded", tableName));
+            System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
             return;
         }
         String mysqlDDL = showCreateTable(tableName);
+        Tuple2<StructType, List<String>> schemaAndPK = ddlToSparkSchema(tableName, mysqlDDL);
+        if (schemaAndPK.f1.isEmpty()) {
+            throw new IllegalStateException(String.format("Table %s has no primary key, table with no Primary Keys is not supported", tableName));
+        }
 
         boolean exists = lakesoulDBManager.isTableExistsByTableName(tableName, dbName);
         if (exists) {
             // sync lakesoul table schema only
             TableNameId tableId = lakesoulDBManager.shortTableName(tableName, dbName);
-            String newTableSchema = ddlToSparkSchema(tableName, mysqlDDL).f0.json();
+            String newTableSchema = schemaAndPK.f0.json();
 
             lakesoulDBManager.updateTableSchema(tableId.getTableId(), newTableSchema);
         } else {
@@ -161,7 +165,7 @@ public class MysqlDBManager implements ExternalDBManager {
                                 lakesoulTablePathPrefix, dbName
                         ), tableName)).toString();
 
-                Tuple2<StructType, List<String>> schemaAndPK = ddlToSparkSchema(tableName, mysqlDDL);
+
                 String tableSchema = schemaAndPK.f0.json();
                 List<String> priKeys = schemaAndPK.f1;
                 String partitionsInTableInfo = ";" + String.join(",", priKeys);
@@ -195,6 +199,7 @@ public class MysqlDBManager implements ExternalDBManager {
         String result = null;
         try {
             conn = dbConnector.getConn();
+            System.out.println(sql);
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {

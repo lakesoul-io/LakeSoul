@@ -36,6 +36,7 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.HashSet;
+import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
@@ -71,7 +72,12 @@ public class MysqlCdc {
         dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         //syncing mysql tables to lakesoul
-        mysqlDBManager.listTables().forEach(mysqlDBManager::importOrSyncLakeSoulTable);
+
+        List<String> tableList = mysqlDBManager.listTables();
+        if (tableList.isEmpty()) {
+            throw new IllegalStateException("Failed to discover captured tables");
+        }
+        tableList.forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
         Configuration conf = new Configuration();
 
@@ -107,8 +113,6 @@ public class MysqlCdc {
                                                                         .tableList(dbName + ".*") // set captured table
                                                                         .username(userName)
                                                                         .password(passWord);
-        System.out.println(dbName); // set captured database
-        System.out.println(dbName + ".*");
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
