@@ -50,10 +50,10 @@ public class LakeSoulSinkOptions {
       .withDescription("The path of a directory");
 
   public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions
-          .key("hash_bucket_num")
+          .key("source.parallelism")
           .intType()
           .defaultValue(4)
-          .withDescription("bucket number parallelism");
+          .withDescription("source number parallelism");
 
   public static final ConfigOption<String> WAREHOUSE_PATH = ConfigOptions
           .key("warehouse_path")
@@ -62,7 +62,7 @@ public class LakeSoulSinkOptions {
           .withDescription("warehouse path for LakeSoul");
 
   public static final ConfigOption<Integer> BUCKET_PARALLELISM = ConfigOptions
-      .key("hash_bucket_num")
+      .key("sink.parallelism")
       .intType()
       .defaultValue(4)
       .withDescription("bucket number parallelism");
