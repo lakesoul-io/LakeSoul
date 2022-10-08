@@ -90,8 +90,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 List<DataFileOp> dataFileOpList = new ArrayList<>();
                 List<String> files = committable.getFilePaths();
                 assert files != null;
-                String fileExistCols = String.format("%s", String.join(",",
-                                                                         identity.rowType.getFieldNames()));
+                String fileExistCols = String.join(",",
+                                                   identity.rowType.getFieldNames());
                 for (String file : files) {
                     DataFileOp dataFileOp = new DataFileOp();
                     dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);

@@ -30,6 +30,8 @@ import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableProperties, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.StructType
 
+import java.net.URI
+
 /**
   * Single entry point for all write or declaration operations for LakeSoul tables accessed through
   * the table name.
@@ -72,6 +74,7 @@ case class CreateTableCommand(var table: CatalogTable,
     }
 
     val tableWithLocation = if (tableExists) {
+      assert(existingTablePath.isDefined)
       val existingPath = existingTablePath.get
       table.storage.locationUri match {
         case Some(location) if location.getPath != existingPath =>
@@ -80,9 +83,8 @@ case class CreateTableCommand(var table: CatalogTable,
             s"The location of the existing table $tableName is " +
               s"`$existingPath`. It doesn't match the specified location " +
               s"`${table.location}`.")
-        case _ =>
+        case _ => table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
       }
-      table
     } else if (table.storage.locationUri.isEmpty) {
       // We are defining a new managed table
       assert(table.tableType == CatalogTableType.MANAGED)

@@ -31,7 +31,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Wrapper class for both type of committables in {@link LakeSoulMultiTablesSink}. One committable might be either
- * one pending files to commit, or one in-progress file to clean up.
+ * one or more pending files to commit, or one in-progress file to clean up.
  */
 public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparable<LakeSoulMultiTableSinkCommittable> {
 

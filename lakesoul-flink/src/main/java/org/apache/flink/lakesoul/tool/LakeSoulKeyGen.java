@@ -24,7 +24,6 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
 import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
 import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
-import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
@@ -41,7 +40,6 @@ public class LakeSoulKeyGen implements Serializable {
 
   public static final String DEFAULT_PARTITION_PATH = "default";
   private final GeneratedRecordComparator comparator;
-  private RecordComparator compareFunction;
   private boolean simpleRecordKey = false;
   private final int[] hashKeyIndex;
   private final LogicalType[] hashKeyType;
@@ -123,11 +121,4 @@ public class LakeSoulKeyGen implements Serializable {
     return comparator;
   }
 
-  public RecordComparator getCompareFunction() {
-    return compareFunction;
-  }
-
-  public void setCompareFunction(RecordComparator compareFunction) {
-    this.compareFunction = compareFunction;
-  }
 }

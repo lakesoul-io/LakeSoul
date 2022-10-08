@@ -209,7 +209,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                                      partitions: Array[Transform],
                                      properties: util.Map[String, String]): StagedTable = {
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
-
       new StagedLakeSoulTableV2(
         ident, schema, partitions, properties, TableCreationModes.CreateOrReplace)
     } else {

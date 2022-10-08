@@ -411,10 +411,10 @@ class DataFrameWriterV2Suite
     val location = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
       .asInstanceOf[LakeSoulTableV2].path
 
-    spark.table("source").writeTo(s"lakesoul.`$location`").append()
+    spark.table("source").writeTo(s"`$location`").append()
 
     checkAnswer(
-      spark.table(s"lakesoul.`$location`").select("id", "data"),
+      spark.table(s"`$location`").select("id", "data"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
   }
 
