@@ -21,7 +21,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, QueryTest}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.Tag
 
 trait DDLUsingPathTests extends QueryTest
@@ -88,19 +88,31 @@ trait DDLUsingPathTests extends QueryTest
 
   testUsingPath("SELECT") { (ns, table, path) =>
     Seq(s"`lakesoul`.`$ns`.`$table`", s"`lakesoul`.`$ns`.`$path`").foreach { tableOrPath =>
-      logInfo(sql(s"SELECT * FROM $tableOrPath").schema.fieldNames.mkString(","))
       checkDatasetUnorderly(
         sql(s"SELECT * FROM $tableOrPath").as[(Int, String, (Int, String))],
         (1, "a", (10, "aa")), (2, "b", (20, "bb")))
       checkDatasetUnorderly(
         spark.table(tableOrPath).as[(Int, String, (Int, String))],
         (1, "a", (10, "aa")), (2, "b", (20, "bb")))
+      checkDatasetUnorderly(
+        spark.table(tableOrPath).filter("v1==1").as[(Int, String, (Int, String))],
+        (1, "a", (10, "aa")))
     }
+    checkDatasetUnorderly(
+      spark.read.format("lakesoul").load(s"$path").filter("v1==1")
+        .as[(Int, String, (Int, String))],
+      (1, "a", (10, "aa")))
 
     val ex = intercept[AnalysisException] {
       spark.table(s"lakesoul.`$ns`.`/path/to/lakesoul`")
     }
     assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns./path/to/lakesoul"))
+    if (ns == "default") {
+      val ex2 = intercept[AnalysisException] {
+        spark.read.format("lakesoul").load("/path/to/lakesoul")
+      }
+      assert(ex2.getMessage.contains(s"doesn't exist"))
+    }
 
     withSQLConf(SQLConf.RUN_SQL_ON_FILES.key -> "false") {
       val ex = intercept[AnalysisException] {
@@ -128,6 +140,31 @@ trait DDLUsingPathTests extends QueryTest
     }
   }
 
+  test("Append with path and read with data and partition filter") {
+    withTempDir { tempDir =>
+      withTable("lakesoul_test") {
+        val tblPath = tempDir.getCanonicalPath
+        Seq((0, "a"), (1, "b"), (2, "c")).toDF("id", "data")
+          .write
+          .format("lakesoul")
+          .partitionBy("id")
+          .save(tblPath)
+        checkAnswer(spark.read.format("lakesoul").load(tblPath).filter("id <= 1")
+          .select("id", "data"),
+          Seq(Row(0, "a"), Row(1, "b")))
+        checkAnswer(spark.read.format("lakesoul").load(tblPath).filter("data = 'a'")
+          .select("id", "data"),
+          Seq(Row(0, "a")))
+        checkAnswer(spark.read.format("lakesoul").load(tblPath).filter("id = 2 and data = 'c'")
+          .select("id", "data"),
+          Seq(Row(2, "c")))
+        checkAnswer(spark.read.format("lakesoul").load(tblPath).filter("id = 3"),
+          Seq.empty)
+        checkAnswer(spark.read.format("lakesoul").load(tblPath).filter("data = 'd'"),
+          Seq.empty)
+      }
+    }
+  }
 }
 
 class DDLUsingPathSuite extends DDLUsingPathTests with LakeSoulSQLCommandTest {

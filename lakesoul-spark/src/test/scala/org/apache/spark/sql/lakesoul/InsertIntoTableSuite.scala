@@ -52,7 +52,8 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
       val overwrite = if (mode == SaveMode.Overwrite) "OVERWRITE" else "INTO"
       val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
       val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
-      sql(s"INSERT $overwrite TABLE lakesoul.`$location` SELECT * FROM $tmpView")
+      assert(location.isDefined)
+      sql(s"INSERT $overwrite TABLE lakesoul.default.`${location.get}` SELECT * FROM $tmpView")
     }
   }
 
@@ -100,7 +101,8 @@ class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
     }
     val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
     val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
-    dfw.insertInto(s"lakesoul.`$location`")
+    assert(location.isDefined)
+    dfw.insertInto(s"lakesoul.default.`${location.get}`")
   }
 
   test("insertInto: cannot insert into a table that doesn't exist") {
@@ -188,6 +190,28 @@ abstract class InsertIntoTests(
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
       doInsert(t1, df)
       verifyTable(t1, df, Seq("data", "id"))
+    }
+  }
+
+  test("insertInto: append non partitioned table and read with filter") {
+    val t1 = "default.tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      doInsert(t1, df)
+      val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
+      checkAnswer(spark.table(t1).filter("id <= 2"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition filter") {
+    val t1 = "default.tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+      doInsert(t1, df)
+      val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
+      checkAnswer(spark.table(t1).filter("id <= 2").select("id", "data"), expected)
     }
   }
 

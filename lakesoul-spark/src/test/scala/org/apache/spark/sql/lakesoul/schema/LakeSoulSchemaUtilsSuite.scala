@@ -24,7 +24,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.GivenWhenThen
 
-class SchemaSoulUtilsSuite extends QueryTest
+class LakeSoulSchemaUtilsSuite extends QueryTest
   with SharedSparkSession
   with GivenWhenThen
   with SQLTestUtils with LakeSoulTestUtils {

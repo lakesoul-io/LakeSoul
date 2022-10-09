@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.catalyst.analysis.TableAlreadyExistsException
 import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
 import org.apache.spark.sql.connector.expressions._

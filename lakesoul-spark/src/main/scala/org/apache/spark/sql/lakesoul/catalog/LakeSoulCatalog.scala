@@ -135,9 +135,13 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     loadTable(ident)
   }
 
-  override def loadTable(ident: Identifier): Table = {
+  override def loadTable(identifier: Identifier): Table = {
+    val ident = identifier.namespace() match {
+      case Array(ns) => identifier
+      case Array() => Identifier.of(Array("default"), identifier.name())
+    }
     if (isPathIdentifier(ident)) {
-      val tableInfo = MetaVersion.getTableInfo(ident.name())
+      val tableInfo = MetaVersion.getTableInfo(ident.namespace()(0), ident.name())
       if (tableInfo == null) {
         throw new NoSuchTableException(ident)
       }
