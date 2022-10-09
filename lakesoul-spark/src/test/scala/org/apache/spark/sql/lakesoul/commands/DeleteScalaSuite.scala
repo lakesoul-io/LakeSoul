@@ -31,7 +31,7 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
       .write.mode("overwrite").format("lakesoul").save(tempPath)
     spark.read.format("lakesoul").load(tempPath).cache()
     spark.read.format("lakesoul").load(tempPath).collect()
-    executeDelete(s"lakesoul.`$tempPath`", where = "key = 2")
+    executeDelete(s"lakesoul.default.`$tempPath`", where = "key = 2")
     checkAnswer(spark.read.format("lakesoul").load(tempPath), Row(1, 4) :: Nil)
   }
 
@@ -77,7 +77,7 @@ class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
       val (tableNameOrPath, optionalAlias) = parse(target)
       val isPath: Boolean = tableNameOrPath.startsWith("lakesoul.")
       val table = if (isPath) {
-        val path = tableNameOrPath.stripPrefix("lakesoul.`").stripSuffix("`")
+        val path = tableNameOrPath.stripPrefix("lakesoul.default.`").stripSuffix("`")
         lakesoul.tables.LakeSoulTable.forPath(spark, path)
       } else {
         LakeSoulTableTestUtils.createTable(spark.table(tableNameOrPath),

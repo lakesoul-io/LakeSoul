@@ -55,8 +55,6 @@ class DropTableSuite extends QueryTest
         .format("lakesoul")
         .save(tmpPath)
 
-      val tableInfo = MetaVersion.getTableInfo(tmpPath)
-
       val e1 = intercept[AnalysisException] {
         LakeSoulTable.forPath(tmpPath).dropPartition("key=1 or key=2")
       }

@@ -40,22 +40,22 @@ trait AlterTableLakeSoulTestBase
   extends QueryTest
     with SharedSparkSession with LakeSoulTestUtils {
 
-  protected def createTable(schema: String, tblProperties: Map[String, String]): String
+  protected def createTable(schema: String, ns: String, tblProperties: Map[String, String]): String
 
-  protected def createTable(df: DataFrame, partitionedBy: Seq[String]): String
+  protected def createTable(df: DataFrame, ns: String, partitionedBy: Seq[String]): String
 
   protected def dropTable(identifier: String): Unit
 
   protected def getSnapshotManagement(identifier: String): SnapshotManagement
 
-  final protected def withLakeSoulTable(schema: String)(f: String => Unit): Unit = {
-    withLakeSoulTable(schema, Map.empty[String, String])(i => f(i))
+  final protected def withLakeSoulTable(schema: String, ns: String)(f: String => Unit): Unit = {
+    withLakeSoulTable(schema, ns: String, Map.empty[String, String])(i => f(i))
   }
 
-  final protected def withLakeSoulTable(
-                                         schema: String,
-                                         tblProperties: Map[String, String])(f: String => Unit): Unit = {
-    val identifier = createTable(schema, tblProperties)
+  final protected def withLakeSoulTable(schema: String,
+                                        ns: String,
+                                        tblProperties: Map[String, String])(f: String => Unit): Unit = {
+    val identifier = createTable(schema, ns, tblProperties)
     try {
       f(identifier)
     } finally {
@@ -63,13 +63,14 @@ trait AlterTableLakeSoulTestBase
     }
   }
 
-  final protected def withLakeSoulTable(df: DataFrame)(f: String => Unit): Unit = {
-    withLakeSoulTable(df, Seq.empty[String])(i => f(i))
+  final protected def withLakeSoulTable(df: DataFrame, ns: String)(f: String => Unit): Unit = {
+    withLakeSoulTable(df, ns, Seq.empty[String])(i => f(i))
   }
 
   final protected def withLakeSoulTable(df: DataFrame,
+                                        ns: String,
                                         partitionedBy: Seq[String])(f: String => Unit): Unit = {
-    val identifier = createTable(df, partitionedBy)
+    val identifier = createTable(df, ns, partitionedBy)
     try {
       f(identifier)
     } finally {
@@ -77,8 +78,8 @@ trait AlterTableLakeSoulTestBase
     }
   }
 
-  protected def ddlTest(testName: String)(f: => Unit): Unit = {
-    test(testName)(f)
+  protected def ddlTest(testName: String)(f: String => Unit): Unit = {
+    test(testName)(f("default"))
   }
 
   protected def assertNotSupported(command: String, messages: String*): Unit = {
@@ -98,8 +99,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   // ADD COLUMNS
   ///////////////////////////////
 
-  ddlTest("ADD COLUMNS - simple") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - simple") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
       checkDatasetUnorderly(
         spark.table(tableName).as[(Int, String)],
         (1, "a"), (2, "b"))
@@ -117,9 +118,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into complex types - Array") {
+  ddlTest("ADD COLUMNS into complex types - Array") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("a", array(struct("v1")))) { tableName =>
+      .withColumn("a", array(struct("v1"))), ns) { tableName =>
       sql(
         s"""
            |ALTER TABLE $tableName ADD COLUMNS (a.element.v3 long)
@@ -160,9 +161,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into complex types - Map with simple key") {
+  ddlTest("ADD COLUMNS into complex types - Map with simple key") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map('v1, struct("v2")))) { tableName =>
+      .withColumn("m", map('v1, struct("v2"))), ns) { tableName =>
 
       sql(
         s"""
@@ -179,9 +180,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into complex types - Map with simple value") {
+  ddlTest("ADD COLUMNS into complex types - Map with simple value") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map(struct("v1"), 'v2))) { tableName =>
+      .withColumn("m", map(struct("v1"), 'v2)), ns) { tableName =>
 
       sql(
         s"""
@@ -200,9 +201,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   }
 
   ddlTest("ADD COLUMNS should not be able to add column to basic type key/value of " +
-    "MapType") {
+    "MapType") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map('v1, 'v2))) { tableName =>
+      .withColumn("m", map('v1, 'v2)), ns) { tableName =>
       var ex = intercept[AnalysisException] {
         sql(
           s"""
@@ -221,9 +222,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into complex types - Map") {
+  ddlTest("ADD COLUMNS into complex types - Map") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map(struct("v1"), struct("v2")))) { tableName =>
+      .withColumn("m", map(struct("v1"), struct("v2"))), ns) { tableName =>
 
       sql(
         s"""
@@ -243,9 +244,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into complex types - Map (nested)") {
+  ddlTest("ADD COLUMNS into complex types - Map (nested)") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map(struct("v1"), struct("v2")))) { tableName =>
+      .withColumn("m", map(struct("v1"), struct("v2"))), ns) { tableName =>
 
       sql(
         s"""
@@ -289,9 +290,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into Map should fail if key or value not specified") {
+  ddlTest("ADD COLUMNS into Map should fail if key or value not specified") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map(struct("v1"), struct("v2")))) { tableName =>
+      .withColumn("m", map(struct("v1"), struct("v2"))), ns) { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(
@@ -303,10 +304,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS into Array should fail if element is not specified") {
+  ddlTest("ADD COLUMNS into Array should fail if element is not specified") { ns =>
     withLakeSoulTable(
       Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-        .withColumn("a", array(struct("v1")))) { tableName =>
+        .withColumn("a", array(struct("v1"))), ns) { tableName =>
 
       intercept[AnalysisException] {
         sql(
@@ -317,8 +318,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - a partitioned table") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), Seq("v2")) { tableName =>
+  ddlTest("ADD COLUMNS - a partitioned table") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns, Seq("v2")) { tableName =>
 
       checkDatasetUnorderly(
         spark.table(tableName).as[(Int, String)],
@@ -337,8 +338,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - with a comment") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - with a comment") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       checkDatasetUnorderly(
         spark.table(tableName).as[(Int, String)],
@@ -357,8 +358,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - adding to a non-struct column") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - adding to a non-struct column") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (v2.x long)")
@@ -368,26 +369,26 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - a duplicate name") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - a duplicate name") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
       intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (v2 long)")
       }
     }
   }
 
-  ddlTest("ADD COLUMNS - a duplicate name (nested)") {
+  ddlTest("ADD COLUMNS - a duplicate name (nested)") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
       intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (struct.v2 long)")
       }
     }
   }
 
-  ddlTest("ADD COLUMNS - an invalid column name") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - an invalid column name") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (`a column name with spaces` long)")
       }
@@ -395,10 +396,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - an invalid column name (nested)") {
+  ddlTest("ADD COLUMNS - an invalid column name (nested)") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (struct.`a column name with spaces` long)")
@@ -433,7 +434,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("ADD COLUMNS - with positions") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       checkDatasetUnorderly(
         spark.table(tableName).as[(Int, String)],
@@ -455,7 +456,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("ADD COLUMNS - with positions using an added column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       checkDatasetUnorderly(
         spark.table("lakesoul_test").as[(Int, String)],
@@ -477,7 +478,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("ADD COLUMNS - nested columns") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       checkDatasetUnorderly(
         spark.table("lakesoul_test").as[(Int, String, (Int, String))],
@@ -526,7 +527,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("ADD COLUMNS - adding after an unknown column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (v3 long AFTER unknown)")
@@ -538,7 +539,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("ADD COLUMNS - case insensitive") {
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
       val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      withLakeSoulTable(df) { tableName =>
+      withLakeSoulTable(df, "default") { tableName =>
 
         sql(s"ALTER TABLE $tableName ADD COLUMNS (v3 long AFTER V1)")
 
@@ -552,7 +553,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("ADD COLUMNS - case sensitive") {
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
       val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      withLakeSoulTable(df) { tableName =>
+      withLakeSoulTable(df, "default") { tableName =>
 
         val ex = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName ADD COLUMNS (v3 long AFTER V1)")
@@ -566,8 +567,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   // CHANGE COLUMN
   ///////////////////////////////
 
-  ddlTest("CHANGE COLUMN - add a comment") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("CHANGE COLUMN - add a comment") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer COMMENT 'a comment'")
 
@@ -577,8 +578,8 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment to a partitioned table") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), Seq("v2")) { tableName =>
+  ddlTest("CHANGE COLUMN - add a comment to a partitioned table") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns, Seq("v2")) { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v2 v2 string COMMENT 'a comment'")
 
@@ -588,10 +589,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment to a MapType (nested)") {
+  ddlTest("CHANGE COLUMN - add a comment to a MapType (nested)") { ns =>
     val table = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("a", array(struct(array(struct(map(struct("v1"), struct("v2")))))))
-    withLakeSoulTable(table) { tableName =>
+    withLakeSoulTable(table, ns) { tableName =>
       sql(
         s"""
            |ALTER TABLE $tableName CHANGE COLUMN
@@ -612,9 +613,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment to an ArrayType (nested)") {
+  ddlTest("CHANGE COLUMN - add a comment to an ArrayType (nested)") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("m", map(struct("v1"), struct(array(struct(struct("v1"))))))) { tableName =>
+      .withColumn("m", map(struct("v1"), struct(array(struct(struct("v1")))))), ns) { tableName =>
 
       sql(
         s"""
@@ -635,9 +636,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment to an ArrayType") {
+  ddlTest("CHANGE COLUMN - add a comment to an ArrayType") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("a", array('v1))) { tableName =>
+      .withColumn("a", array('v1)), ns) { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN a a ARRAY<int> COMMENT 'a comment'")
 
@@ -648,9 +649,9 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment to a MapType") {
+  ddlTest("CHANGE COLUMN - add a comment to a MapType") { ns =>
     withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("a", map('v1, 'v2))) { tableName =>
+      .withColumn("a", map('v1, 'v2)), ns) { tableName =>
 
       sql(
         s"""
@@ -665,15 +666,15 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - change name") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("CHANGE COLUMN - change name") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       assertNotSupported(s"ALTER TABLE $tableName CHANGE COLUMN v2 v3 string")
     }
   }
 
-  ddlTest("CHANGE COLUMN - incompatible") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("CHANGE COLUMN - incompatible") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       assertNotSupported(
         s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 long",
@@ -682,10 +683,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - incompatible (nested)") {
+  ddlTest("CHANGE COLUMN - incompatible (nested)") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
 
       assertNotSupported(
         s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 long",
@@ -696,7 +697,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move to first") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v2 v2 string FIRST")
 
@@ -713,7 +714,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("CHANGE COLUMN - move to first (nested)") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v2 v2 string FIRST")
 
@@ -762,7 +763,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move to after some column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER v2")
 
@@ -779,7 +780,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("CHANGE COLUMN - move to after some column (nested)") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 integer AFTER v2")
 
@@ -810,7 +811,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move to after the same column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER v1")
 
@@ -827,7 +828,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("CHANGE COLUMN - move to after the same column (nested)") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 integer AFTER v1")
 
@@ -861,7 +862,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move to after the last column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER v2")
 
@@ -907,7 +908,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move to after an unknown column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER unknown")
@@ -920,7 +921,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("CHANGE COLUMN - move to after an unknown column (nested)") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 integer AFTER unknown")
@@ -935,7 +936,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       .withColumn("s", struct("v1", "v2"))
       .withColumn("a", array("s"))
       .withColumn("m", map(col("s"), col("s")))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
       // not supported to tighten nullabilities.
       assertNotSupported(
         s"ALTER TABLE $tableName CHANGE COLUMN s s STRUCT<v1:int, v2:string NOT NULL>")
@@ -967,10 +968,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - change name (nested)") {
+  ddlTest("CHANGE COLUMN - change name (nested)") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
 
       assertNotSupported(
         s"ALTER TABLE $tableName CHANGE COLUMN struct.v2 v3 string")
@@ -980,10 +981,10 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment (nested)") {
+  ddlTest("CHANGE COLUMN - add a comment (nested)") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
       sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 integer COMMENT 'a comment'")
 
       val snapshotManagement = getSnapshotManagement(tableName)
@@ -997,12 +998,12 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - complex types not supported because behavior is ambiguous") {
+  ddlTest("CHANGE COLUMN - complex types not supported because behavior is ambiguous") { ns =>
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("s", struct("v1", "v2"))
       .withColumn("a", array("s"))
       .withColumn("m", map(col("s"), col("s")))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, ns) { tableName =>
       // not supported to add columns
       assertNotSupported(
         s"ALTER TABLE $tableName CHANGE COLUMN s s STRUCT<v1:int, v2:string, sv3:long>")
@@ -1028,7 +1029,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
   test("CHANGE COLUMN - move unknown column") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN unknown unknown string FIRST")
@@ -1040,7 +1041,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
   test("CHANGE COLUMN - move unknown column (nested)") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
       .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df) { tableName =>
+    withLakeSoulTable(df, "default") { tableName =>
 
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.unknown unknown string FIRST")
@@ -1053,7 +1054,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
       val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
         .withColumn("s", struct("v1", "v2"))
-      withLakeSoulTable(df) { tableName =>
+      withLakeSoulTable(df, "default") { tableName =>
 
         val snapshotManagement = getSnapshotManagement(tableName)
 
@@ -1094,7 +1095,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
       val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
         .withColumn("s", struct("v1", "v2"))
-      withLakeSoulTable(df) { tableName =>
+      withLakeSoulTable(df, "default") { tableName =>
 
         val ex1 = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName CHANGE COLUMN V1 V1 integer")
@@ -1124,32 +1125,54 @@ trait AlterTableByNameTests extends AlterTableTests {
 
   import testImplicits._
 
-  override protected def createTable(schema: String, tblProperties: Map[String, String]): String = {
+  override protected def ddlTest(testName: String)(f: String => Unit): Unit = {
+    super.ddlTest(testName)(f)
+
+    test(testName + " with lakesoul_db database") {
+      withDatabase("lakesoul_db") {
+        spark.sql("CREATE DATABASE IF NOT EXISTS lakesoul_db")
+        f("lakesoul_db")
+      }
+    }
+  }
+
+  override protected def createTable(schema: String, ns: String, tblProperties: Map[String, String]): String = {
     val props = tblProperties.map { case (key, value) =>
       s"'$key' = '$value'"
     }.mkString(", ")
     val propsString = if (tblProperties.isEmpty) "" else s" TBLPROPERTIES ($props)"
-    sql(s"CREATE TABLE lakesoul_test ($schema) USING lakesoul$propsString")
-    "lakesoul_test"
+    sql(s"CREATE TABLE $ns.lakesoul_test ($schema) USING lakesoul$propsString")
+    s"$ns.lakesoul_test"
   }
 
-  override protected def createTable(df: DataFrame, partitionedBy: Seq[String]): String = {
+  override protected def createTable(df: DataFrame, ns: String, partitionedBy: Seq[String]): String = {
     df.write.option("rangePartitions", partitionedBy.mkString(","))
-      .format("lakesoul").saveAsTable("lakesoul_test")
-    "lakesoul_test"
+      .format("lakesoul").saveAsTable(s"$ns.lakesoul_test")
+    s"$ns.lakesoul_test"
   }
 
   override protected def dropTable(identifier: String): Unit = {
-    val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
-      TableIdentifier(identifier, Some("default"))
-    )
+    val parts = identifier.split("\\.")
+
+    val location = if (parts.length == 1) {
+      LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+        TableIdentifier(identifier, Some("default")))
+    } else {
+      LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+        TableIdentifier(parts(1), Some(parts(0))))
+    }
     if (location.isDefined) {
       LakeSoulTable.forPath(location.get).dropTable()
     }
   }
 
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {
-    SnapshotManagement.forTable(spark, TableIdentifier(identifier))
+    val parts = identifier.split("\\.")
+    if (parts.length == 1) {
+      SnapshotManagement.forTable(spark, TableIdentifier(identifier))
+    } else {
+      SnapshotManagement.forTable(spark, TableIdentifier(parts(1), Some(parts(0))))
+    }
   }
 
   test("ADD COLUMNS - external table") {
@@ -1216,40 +1239,37 @@ trait AlterTableByNameTests extends AlterTableTests {
   * resolution.
   */
 trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
-  override protected def createTable(schema: String, tblProperties: Map[String, String]): String = {
+  override protected def createTable(schema: String, ns: String, tblProperties: Map[String, String]): String = {
     val tmpDir = Utils.createTempDir().getCanonicalPath
     val snapshotManagement = getSnapshotManagement(tmpDir)
     val tc = snapshotManagement.startTransaction()
-    //      val metadata = Metadata(
-    //        schemaString = StructType.fromDDL(schema).json,
-    //        configuration = tblProperties)
     val newTableInfo = tc.tableInfo.copy(table_schema = StructType.fromDDL(schema).json)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
-    s"lakesoul.`$tmpDir`"
+    s"$ns.$tmpDir"
   }
 
-  override protected def createTable(df: DataFrame, partitionedBy: Seq[String]): String = {
+  override protected def createTable(df: DataFrame, ns: String, partitionedBy: Seq[String]): String = {
     val tmpDir = Utils.createTempDir().getCanonicalPath
     df.write.format("lakesoul")
       .option("rangePartitions", partitionedBy.mkString(",")).save(tmpDir)
-    s"lakesoul.`$tmpDir`"
+    s"$ns.$tmpDir"
   }
 
   override protected def dropTable(identifier: String): Unit = {
-    LakeSoulTable.forPath(identifier.stripPrefix("lakesoul.`").stripSuffix("`")).dropTable()
+    LakeSoulTable.forPath(identifier.split("\\.").last).dropTable()
   }
 
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {
-    SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(identifier.stripPrefix("lakesoul.`").stripSuffix("`"))).toString)
+    SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(identifier.split("\\.").last)).toString)
   }
 
-  override protected def ddlTest(testName: String)(f: => Unit): Unit = {
+  override protected def ddlTest(testName: String)(f: String => Unit): Unit = {
     super.ddlTest(testName)(f)
 
-    test(testName + " with lakesoul database") {
-      withDatabase("lakesoul") {
-        spark.sql("CREATE DATABASE lakesoul")
-        f
+    test(testName + " with lakesoul_db database") {
+      withDatabase("lakesoul_db") {
+        spark.sql("CREATE DATABASE IF NOT EXISTS lakesoul_db")
+        f("lakesoul_db")
       }
     }
   }
@@ -1257,8 +1277,8 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
   import testImplicits._
 
 
-  ddlTest("ADD COLUMNS - simple") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("ADD COLUMNS - simple") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
       checkDatasetUnorderly(
         spark.table(tableName).as[(Int, String)],
         (1, "a"), (2, "b"))
@@ -1276,8 +1296,8 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("CHANGE COLUMN - add a comment") {
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2")) { tableName =>
+  ddlTest("CHANGE COLUMN - add a comment") { ns =>
+    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
 
       sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer COMMENT 'a comment'")
 
@@ -1289,7 +1309,7 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
 
   test("SET LOCATION is not supported for path based tables") {
     val df = spark.range(1).toDF()
-    withLakeSoulTable(df) { identifier =>
+    withLakeSoulTable(df, "default") { identifier =>
       withTempDir { dir =>
         val path = dir.getCanonicalPath
         val e = intercept[AnalysisException] {

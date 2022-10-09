@@ -70,6 +70,10 @@ object SparkUtil {
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 
+  def makeQualifiedPath(tablePath: String): Path = {
+    makeQualifiedTablePath(new Path(tablePath))
+  }
+
   def getDefaultTablePath(table: Identifier): Path = {
     val namespace = table.namespace() match {
       case Array(ns) => ns

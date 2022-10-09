@@ -30,7 +30,7 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
     test(s"$op on hash keys without shuffle and sort - same table") {
       withTempDir(dir => {
         val tableName = dir.getCanonicalPath
-        val data = TestUtils.getData1(200, false).toDF("hash", "value", "range").persist()
+        val data = TestUtils.getData1(200, onlyOne = false).toDF("hash", "value", "range").persist()
         data.write.mode("overwrite")
           .format("lakesoul")
           .option("rangePartitions", "range")
@@ -172,7 +172,7 @@ class LakeSoulPostHocAnalysisSuiteSoul extends QueryTest with SharedSparkSession
       withTempDir(dir => {
         val op = "except"
         val tableName = dir.getCanonicalPath
-        val data = TestUtils.getData1(200, false).toDF("hash", "value", "range").persist()
+        val data = TestUtils.getData1(200, onlyOne = false).toDF("hash", "value", "range").persist()
         data.write.mode("overwrite")
           .format("lakesoul")
           .option("rangePartitions", "range")

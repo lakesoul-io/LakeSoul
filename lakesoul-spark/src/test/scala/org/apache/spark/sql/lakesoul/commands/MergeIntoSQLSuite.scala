@@ -46,7 +46,7 @@ class MergeIntoSQLSuite extends QueryTest
   test("merge into table with hash partition -- supported case") {
     initHashTable()
     withViewNamed(Seq((20201102, 4, 5)).toDF("range", "hash", "value"), "source_table") {
-      sql(s"MERGE INTO lakesoul.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
+      sql(s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
         s" ON t.hash = s.hash" +
         s" WHEN MATCHED THEN UPDATE SET *" +
         s" WHEN NOT MATCHED THEN INSERT *")
@@ -59,7 +59,7 @@ class MergeIntoSQLSuite extends QueryTest
     initHashTable()
     withViewNamed(Seq((20201102, 4, 5)).toDF("range", "hash", "value"), "source_table") {
       val e = intercept[AnalysisException] {
-        sql(s"MERGE INTO lakesoul.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
+        sql(s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
           s" ON t.value = s.value" +
           s" WHEN MATCHED THEN UPDATE SET *" +
           s" WHEN NOT MATCHED THEN INSERT *")
@@ -72,7 +72,7 @@ class MergeIntoSQLSuite extends QueryTest
     initHashTable()
     withViewNamed(Seq((20201102, 4, 5)).toDF("range", "hash", "value"), "source_table") {
       val e = intercept[AnalysisException] {
-        sql(s"MERGE INTO lakesoul.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
+        sql(s"MERGE INTO lakesoul.default.`${snapshotManagement.table_path}` AS t USING source_table AS s" +
           s" ON t.hash = s.hash" +
           s" WHEN MATCHED AND t.VALUE=5 THEN UPDATE SET *" +
           s" WHEN NOT MATCHED THEN INSERT *")

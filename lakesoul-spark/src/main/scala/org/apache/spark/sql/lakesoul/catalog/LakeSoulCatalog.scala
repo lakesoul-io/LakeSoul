@@ -138,6 +138,9 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   override def loadTable(ident: Identifier): Table = {
     if (isPathIdentifier(ident)) {
       val tableInfo = MetaVersion.getTableInfo(ident.name())
+      if (tableInfo == null) {
+        throw new NoSuchTableException(ident)
+      }
       LakeSoulTableV2(
         spark,
         new Path(ident.name()),
@@ -208,16 +211,20 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                                      schema: StructType,
                                      partitions: Array[Transform],
                                      properties: util.Map[String, String]): StagedTable = {
+    val iden = ident.namespace() match {
+      case Array(_) => ident
+      case Array() => Identifier.of(Array("default"), ident.name())
+    }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
       new StagedLakeSoulTableV2(
-        ident, schema, partitions, properties, TableCreationModes.CreateOrReplace)
+        iden, schema, partitions, properties, TableCreationModes.CreateOrReplace)
     } else {
-      try dropTable(ident) catch {
+      try dropTable(iden) catch {
         case _: NoSuchTableException => // this is fine
       }
       BestEffortStagedTable(
-        ident,
-        createTable(ident, schema, partitions, properties),
+        iden,
+        createTable(iden, schema, partitions, properties),
         this)
     }
   }
@@ -227,12 +234,16 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                             schema: StructType,
                             partitions: Array[Transform],
                             properties: util.Map[String, String]): StagedTable = {
+    val iden = ident.namespace() match {
+      case Array(_) => ident
+      case Array() => Identifier.of(Array("default"), ident.name())
+    }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
-      new StagedLakeSoulTableV2(ident, schema, partitions, properties, TableCreationModes.Create)
+      new StagedLakeSoulTableV2(iden, schema, partitions, properties, TableCreationModes.Create)
     } else {
       BestEffortStagedTable(
-        ident,
-        createTable(ident, schema, partitions, properties),
+        iden,
+        createTable(iden, schema, partitions, properties),
         this)
     }
   }

@@ -19,7 +19,7 @@ package com.dmetasoul.lakesoul.meta
 import com.alibaba.fastjson.JSONObject
 import com.google.common.base.Splitter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
 
 import java.util
 import scala.collection.JavaConverters._
@@ -97,7 +97,8 @@ object MetaVersion {
   }
 
   def getTableInfo(namespace: String, table_path: String): TableInfo = {
-    val info = dbManager.getTableInfoByPath(table_path)
+    val path = SparkUtil.makeQualifiedPath(table_path).toString
+    val info = dbManager.getTableInfoByPath(path)
     if (info == null) {
       return null
     }

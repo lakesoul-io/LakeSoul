@@ -22,6 +22,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
@@ -71,7 +72,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
           TableIdentifier("lakesoul_test", Some("default")))
         assert(location.isDefined)
-        assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
         Seq((1L, "a")).toDF("a", "b")
           .write.format("lakesoul").mode("append").save(location.get)
@@ -223,7 +224,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
           TableIdentifier("lakesoul_test", Some("default")))
         assert(location.isDefined)
-        assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
         val schema = new StructType()
           .add("x",
@@ -400,10 +401,10 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
            """.stripMargin)
 
 
-      val e = intercept[AnalysisException] {
+      val e = intercept[UnsupportedOperationException] {
         sql(s"ALTER TABLE tbl RENAME TO newTbl")
       }
-      assert(e.getMessage().contains("`RENAME TO` is not supported for lakesoul tables"))
+      assert(e.getMessage.contains("LakeSoul currently doesn't support rename table"))
     }
   }
 
