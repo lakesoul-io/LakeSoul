@@ -376,7 +376,7 @@ trait TableCreationTests
     val tableName = "lakesoul_test"
     withTable(tableName) {
       val tableLoc =
-        new File(getDefaultTablePath(tableName))
+        new File(getDefaultTablePath(tableName).stripPrefix("file:"))
       Utils.deleteRecursively(tableLoc)
       val ex = intercept[AnalysisException] {
         Seq(1, 2, 3).toDF("a column name with spaces")
@@ -547,12 +547,13 @@ trait TableCreationTests
     }
   }
 
+  /*
   test("saveAsTable into a view throws exception around view definition") {
     withTempDir { dir =>
       val viewName = "lakesoul_test"
       withView(viewName) {
         Seq((1, "key")).toDF("a", "b").write.format(format).save(dir.getCanonicalPath)
-        sql(s"create view $viewName as select * from lakesoul.`${dir.getCanonicalPath}`")
+        sql(s"create temporary view $viewName as select * from lakesoul.`${dir.getCanonicalPath}`")
         val e = intercept[AnalysisException] {
           Seq((2, "key")).toDF("a", "b").write.format(format).mode("append").saveAsTable(viewName)
         }
@@ -566,13 +567,15 @@ trait TableCreationTests
       val tabName = "lakesoul_test"
       withTable(tabName) {
         Seq((1, "key")).toDF("a", "b").write.format("parquet")
-          .option("path", dir.getCanonicalPath).saveAsTable(tabName)
+          .option("path", dir.getCanonicalPath).saveAsTable(s"spark_catalog.default.$tabName")
         intercept[AnalysisException] {
-          Seq((2, "key")).toDF("a", "b").write.format("lakesoul").mode("append").saveAsTable(tabName)
+          Seq((2, "key")).toDF("a", "b").write.format("lakesoul").mode("append")
+            .saveAsTable(s"spark_catalog.default.$tabName")
         }
       }
     }
   }
+  */
 
   test("create table with schema and path") {
     withTempDir { dir =>
@@ -710,7 +713,7 @@ trait TableCreationTests
   }
 
   test("CTAS a managed table with the existing empty directory") {
-    val tableLoc = new File(getDefaultTablePath("tab1"))
+    val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
     try {
       tableLoc.mkdirs()
       withTable("tab1") {
@@ -724,7 +727,7 @@ trait TableCreationTests
   }
 
   test("create a managed table with the existing empty directory") {
-    val tableLoc = new File(getDefaultTablePath("tab1"))
+    val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
     try {
       tableLoc.mkdirs()
       withTable("tab1") {
@@ -740,7 +743,7 @@ trait TableCreationTests
 
   test("create a managed table with the existing non-empty directory") {
     withTable("tab1") {
-      val tableLoc = new File(getDefaultTablePath("tab1"))
+      val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
       try {
         // create an empty hidden file
         tableLoc.mkdirs()
@@ -1006,7 +1009,7 @@ trait TableCreationTests
     withDatabase(testDatabase) {
       withTable("src") {
         withTempPath { path =>
-          withTable("src", "t1", "t2", "t3", "t4", "t5", "t6") {
+          withTable("t1") {
             sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
             sql(s"USE $testDatabase")
             sql("CREATE TABLE src(i int, p string) USING lakesoul PARTITIONED BY (p) " +
@@ -1046,19 +1049,6 @@ trait TableCreationTests
             assert(e2.getMessage.contains("already has a short name `src`, you can't change it to `t1`"))
           }
         }
-      }
-    }
-  }
-
-  test("CREATE TABLE on existing data should not commit metadata") {
-    withTable("table") {
-      withTempDir { tempDir =>
-        val path = tempDir.getCanonicalPath
-        val df = Seq(1, 2, 3, 4, 5).toDF()
-        df.write.format("lakesoul").save(path)
-        val snapshotManagement = getSnapshotManagement(new Path(path))
-
-        sql(s"CREATE TABLE table USING lakesoul LOCATION '$path'")
       }
     }
   }
