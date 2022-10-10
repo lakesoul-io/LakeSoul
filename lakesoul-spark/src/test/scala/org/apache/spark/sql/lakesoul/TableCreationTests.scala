@@ -20,15 +20,14 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException}
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
-import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.SparkUtil.spark
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
@@ -106,10 +105,6 @@ trait TableCreationTests
 
   before {
     LakeSoulCatalog.cleanMeta()
-
-//    sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
-//    sql(s"USE $testDatabase")
-//    sql(s"SHOW NAMESPACES").show()
   }
 
   Seq("partitioned" -> Seq("v2"), "non-partitioned" -> Nil).foreach { case (isPartitioned, cols) =>
@@ -748,7 +743,7 @@ trait TableCreationTests
       val tableLoc = new File(getDefaultTablePath("tab1"))
       try {
         // create an empty hidden file
-        println(tableLoc.mkdirs())
+        tableLoc.mkdirs()
         val hiddenGarbageFile = new File(tableLoc.getCanonicalPath, ".garbage")
         hiddenGarbageFile.createNewFile()
         var ex = intercept[Exception] {
@@ -836,7 +831,7 @@ trait TableCreationTests
         val ident = toIdentifier("t1")
         val location = catalog.getTableLocation(ident)
         assert(location.isDefined)
-        assert(location.get == dir.getAbsolutePath)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
         Seq((1, 2)).toDF("a", "b")
           .write.format("lakesoul").mode("append").save(location.get)
@@ -866,7 +861,7 @@ trait TableCreationTests
           val ident = toIdentifier("t")
           val location = catalog.getTableLocation(ident)
           assert(location.isDefined)
-          assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
           val snapshotManagement = getSnapshotManagement(new Path(location.get))
@@ -901,7 +896,7 @@ trait TableCreationTests
           val ident = toIdentifier("t1")
           val location = catalog.getTableLocation(ident)
           assert(location.isDefined)
-          assert(location.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
           val snapshotManagement = getSnapshotManagement(new Path(location.get))
@@ -1137,57 +1132,6 @@ trait TableCreationTests
       }
     }
   }
-
-  test("drop spark catalog table will not drop lakesoul table") {
-    withDatabase(testDatabase) {
-      withTable("tt") {
-        withTempDir(dir => {
-          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
-          val path = dir.getCanonicalPath
-          Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
-          sql(s"create table $testDatabase.tt using lakesoul location '$path' as select i,p from tmp")
-
-          sql("drop table tt")
-          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-            Seq((1, "a"), (2, "b")).toDF("i", "p"))
-          val e = intercept[Exception] {
-            checkAnswer(spark.table("tt").select("i", "p"),
-              Seq((1, "a"), (2, "b")).toDF("i", "p"))
-          }
-          assert(e.getMessage.contains("Table or view not found: tt"))
-        })
-      }
-    }
-  }
-
-  test("drop lakesoul table will drop spark table") {
-    withDatabase(testDatabase) {
-      withTable("tt") {
-        withTempDir(dir => {
-          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
-          sql(s"USE $testDatabase")
-          val path = dir.getCanonicalPath
-          Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
-          sql(s"create table $testDatabase.tt using lakesoul location '$path' as select i,p from tmp")
-          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-
-          sql(s"drop table $testDatabase.tt")
-          val e1 = intercept[AnalysisException] {
-            checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-              Seq((1, "a"), (2, "b")).toDF("i", "p"))
-          }
-          assert(e1.getMessage().contains("is not an LakeSoul table"))
-
-          val e2 = intercept[Exception] {
-            checkAnswer(spark.table("tt").select("i", "p"),
-              Seq((1, "a"), (2, "b")).toDF("i", "p"))
-          }
-        })
-      }
-    }
-  }
-
 
   test("create table without short name and then set by option") {
     withDatabase(testDatabase) {

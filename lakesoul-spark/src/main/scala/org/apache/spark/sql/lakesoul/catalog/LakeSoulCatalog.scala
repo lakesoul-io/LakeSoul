@@ -36,6 +36,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.currentDefaultNames
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.sources.InsertableRelation
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -127,7 +128,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     ParquetSchemaConverter.checkFieldNames(tableDesc.schema.fieldNames)
     CreateTableCommand(
       withDb,
-      existingLocation,
+      existingLocation.map(SparkUtil.makeQualifiedPath(_).toString),
       operation.mode,
       sourceQuery,
       operation,
@@ -192,7 +193,8 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       createLakeSoulTable(
         ident, schema, partitions, properties, sourceQuery = None, TableCreationModes.Create)
     } else {
-      throw new NoSuchNamespaceException(ident.toString)
+      throw LakeSoulErrors.analysisException(
+        s"Not a lakesoul table: ${getProvider(properties)}", plan = None)
     }
   }
 
@@ -489,7 +491,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   }
 
   override def dropTable(ident: Identifier): Boolean = {
-    println("org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog.dropTable: " + ident)
     if (isPathIdentifier(ident)) {
       LakeSoulTable.forPath(ident.name()).dropTable()
     } else if (isNameIdentifier(ident)) {
@@ -591,7 +592,6 @@ trait SupportsPathIdentifier extends TableCatalog {
   }
 
   protected def isNameIdentifier(ident: Identifier): Boolean = {
-//    println("org.apache.spark.sql.lakesoul.catalog.SupportsPathIdentifier.isNameIdentifier" + ident)
     ident.namespace() match {
       case Array() =>
         MetaVersion.isShortTableNameExists(ident.name())._1
@@ -605,7 +605,6 @@ trait SupportsPathIdentifier extends TableCatalog {
   }
 
   override def tableExists(ident: Identifier): Boolean = {
-//    println("org.apache.spark.sql.lakesoul.catalog.SupportsPathIdentifier.tableExists:" + ident)
     if (isPathIdentifier(ident)) {
       LakeSoulSourceUtils.isLakeSoulTableExists(ident.name())
     } else if (isNameIdentifier(ident)) {

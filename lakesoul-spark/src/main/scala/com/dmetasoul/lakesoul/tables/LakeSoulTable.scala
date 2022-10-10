@@ -340,16 +340,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   def rollbackPartition(partitionValue:String,toVersionNum:Int):Unit = {
     MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
   }
-
-
-  def partitionVersions(partitionDesc:String=""): Unit ={
-    if("".equals(partitionDesc)){
-      println("Please set partition value such as RangeCoulmnName = Value")
-    }else{
-      //println(partitionDesc+"-"+"versions")
-      MetaVersion.getOnePartitionVersions(snapshotManagement.snapshot.getTableInfo.table_id,partitionDesc).foreach(p=> println("-----"+p.version+"------"))
-    }
-  }
 }
 
 object LakeSoulTable {

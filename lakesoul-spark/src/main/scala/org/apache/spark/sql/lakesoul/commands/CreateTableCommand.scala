@@ -77,12 +77,12 @@ case class CreateTableCommand(var table: CatalogTable,
       assert(existingTablePath.isDefined)
       val existingPath = existingTablePath.get
       table.storage.locationUri match {
-        case Some(location) if location.getPath != existingPath =>
+        case Some(location) if SparkUtil.makeQualifiedPath(location.getPath).toString != existingPath =>
           val tableName = table.identifier.quotedString
           throw new AnalysisException(
             s"The location of the existing table $tableName is " +
               s"`$existingPath`. It doesn't match the specified location " +
-              s"`${table.location}`.")
+              s"`${SparkUtil.makeQualifiedPath(location.getPath).toString}`.")
         case _ =>
           table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
       }
@@ -124,7 +124,6 @@ case class CreateTableCommand(var table: CatalogTable,
     val tc = snapshotManagement.startTransaction()
 
     val shortTableName = table.identifier.table
-    println(table.identifier)
     if (MetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
       throw LakeSoulErrors.tableExistsException(shortTableName)
     } else {
