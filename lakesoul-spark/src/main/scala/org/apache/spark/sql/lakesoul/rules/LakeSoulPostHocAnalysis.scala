@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 
 case class LakeSoulPostHocAnalysis(spark: SparkSession) extends Rule[LogicalPlan] {
 
@@ -76,7 +76,7 @@ case class LakeSoulPostHocAnalysis(spark: SparkSession) extends Rule[LogicalPlan
   def findLakeSoulRelation(plan: LogicalPlan, outCols: Set[String]): (Boolean, Int) = {
     plan match {
       case DataSourceV2Relation(LakeSoulTableV2(_, path, _, _, _, _), _, _, _, _) =>
-        val tableInfo = SnapshotManagement(path).getTableInfoOnly
+        val tableInfo = SnapshotManagement(path, LakeSoulCatalog.showCurrentNamespace().mkString(".")).getTableInfoOnly
         val hashCols = tableInfo.hash_partition_columns.toSet
         if (hashCols.equals(outCols) && tableInfo.bucket_num != -1) {
           (true, tableInfo.bucket_num)

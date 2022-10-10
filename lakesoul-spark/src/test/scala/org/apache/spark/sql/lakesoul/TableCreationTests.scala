@@ -740,7 +740,7 @@ trait TableCreationTests
 
   test("create a managed table with the existing non-empty directory") {
     withTable("tab1") {
-      val tableLoc = new File(getDefaultTablePath("tab1"))
+      val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
       try {
         // create an empty hidden file
         tableLoc.mkdirs()

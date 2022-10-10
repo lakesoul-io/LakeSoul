@@ -33,12 +33,13 @@ object DropTableCommand {
   }
   def dropTable(snapshot: Snapshot): Unit = {
     val tableInfo = snapshot.getTableInfo
+    val table_namespace = tableInfo.namespace
     val table_id = tableInfo.table_id
     val table_path = tableInfo.table_path_s
     val short_table_name = tableInfo.short_table_name
-    MetaVersion.deleteTableInfo(table_path.get, table_id)
+    MetaVersion.deleteTableInfo(table_path.get, table_id, table_namespace)
     if (short_table_name.isDefined) {
-      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get)
+      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get, table_namespace)
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
     MetaVersion.dropPartitionInfoByTableId(table_id)

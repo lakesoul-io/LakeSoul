@@ -565,7 +565,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
   override def initialize(name: String, options: CaseInsensitiveStringMap): Unit = {
     catalogName = name
-    LakeSoulCatalog.spark = Some(spark)
   }
 }
 
@@ -622,9 +621,6 @@ object LakeSoulCatalog {
 
   var currentDefaultNamespace: Array[String] = Array("default")
 
-  var spark: Option[SparkSession] = None
-
-
   def listTables(): Array[Identifier] = {
     listTables(currentDefaultNamespace)
   }
@@ -646,10 +642,7 @@ object LakeSoulCatalog {
   }
 
   def showCurrentNamespace(): Array[String] = {
-    currentDefaultNamespace = spark match {
-      case None => currentDefaultNamespace
-      case Some(spark) => spark.sessionState.catalogManager.currentNamespace
-    }
+    currentDefaultNamespace = SparkSession.active.sessionState.catalogManager.currentNamespace
     currentDefaultNamespace
   }
 
