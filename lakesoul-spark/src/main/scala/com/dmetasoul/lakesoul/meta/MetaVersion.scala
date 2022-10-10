@@ -85,7 +85,7 @@ object MetaVersion {
   }
 
   def listTables(): util.List[String] = {
-    listTables(Array("default"))
+    listTables(LakeSoulCatalog.showCurrentNamespace())
   }
 
   def listTables(namespace: Array[String]): util.List[String] = {

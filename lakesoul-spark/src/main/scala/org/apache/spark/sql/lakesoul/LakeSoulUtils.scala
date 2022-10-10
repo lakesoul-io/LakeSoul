@@ -71,7 +71,10 @@ object LakeSoulUtils extends PredicateHelper {
       false
     } else {
       spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
-        .getTableLocation(Identifier.of(Array(tableName.database.getOrElse("default")), tableName.table))
+        .getTableLocation(
+          Identifier.of(Array(
+            tableName.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))),
+            tableName.table))
         .isDefined
     }
   }

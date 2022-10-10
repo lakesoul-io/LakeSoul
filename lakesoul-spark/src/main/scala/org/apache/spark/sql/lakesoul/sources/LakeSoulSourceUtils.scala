@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.{TableIdentifier, expressions}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
@@ -60,7 +61,8 @@ object LakeSoulSourceUtils {
   }
 
   def getLakeSoulPathByTableIdentifier(table: TableIdentifier): Option[String] = {
-    MetaVersion.isShortTableNameExists(table.table, table.database.getOrElse("default")) match {
+    MetaVersion.isShortTableNameExists(table.table,
+      table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))) match {
       case (true, path) => Some(path)
       case _ => None
     }

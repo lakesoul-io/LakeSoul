@@ -1252,15 +1252,17 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
     val tmpDir = Utils.createTempDir().getCanonicalPath
     df.write.format("lakesoul")
       .option("rangePartitions", partitionedBy.mkString(",")).save(tmpDir)
-    s"$ns.$tmpDir"
+    s"lakesoul.$ns.`$tmpDir`"
   }
 
   override protected def dropTable(identifier: String): Unit = {
-    LakeSoulTable.forPath(identifier.split("\\.").last).dropTable()
+    LakeSoulTable.forPath(identifier.split("\\.").last.stripPrefix("`").stripSuffix("`")).dropTable()
   }
 
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {
-    SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(identifier.split("\\.").last)).toString)
+    SnapshotManagement(
+      SparkUtil.makeQualifiedTablePath(new Path(identifier.split("\\.")
+      .last.stripPrefix("`").stripSuffix("`"))).toString)
   }
 
   override protected def ddlTest(testName: String)(f: String => Unit): Unit = {

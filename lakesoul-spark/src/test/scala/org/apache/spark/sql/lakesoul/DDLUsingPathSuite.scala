@@ -50,7 +50,7 @@ trait DDLUsingPathTests extends QueryTest
         val path = tempDir.getCanonicalPath
 
         withDatabase("lakesoul_db") {
-          sql("CREATE DATABASE lakesoul_db")
+          sql("CREATE DATABASE IF NOT EXISTS lakesoul_db")
 
           withTable("lakesoul_db.lakesoul_test") {
             Seq((1, "a"), (2, "b")).toDF("v1", "v2")

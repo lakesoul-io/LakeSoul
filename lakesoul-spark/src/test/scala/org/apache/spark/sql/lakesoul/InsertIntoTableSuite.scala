@@ -301,10 +301,6 @@ abstract class InsertIntoTests(
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
       val df = Seq(("a", 1L)).toDF("id", "data") // reverse order
 
-      def getDF(rows: Row*): DataFrame = {
-        spark.createDataFrame(spark.sparkContext.parallelize(rows), spark.table(t1).schema)
-      }
-
       withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict") {
         intercept[AnalysisException] {
           doInsert(t1, df, SaveMode.Overwrite)

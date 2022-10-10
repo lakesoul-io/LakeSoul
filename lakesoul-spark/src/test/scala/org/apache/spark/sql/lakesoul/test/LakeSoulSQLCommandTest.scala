@@ -47,8 +47,10 @@ trait LakeSoulTestUtils extends Logging {
     Utils.tryWithSafeFinally(f) {
       tableNames.foreach { name =>
         spark.sql(s"DROP TABLE IF EXISTS $name")
-        val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
-        spark.sql(s"DROP TABLE IF EXISTS $databaseName")
+        if (name.split("\\.").length == 1) {
+          val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
+          spark.sql(s"DROP TABLE IF EXISTS $databaseName")
+        }
       }
     }
   }

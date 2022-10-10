@@ -140,8 +140,8 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
   override def loadTable(identifier: Identifier): Table = {
     val ident = identifier.namespace() match {
-      case Array(ns) => identifier
-      case Array() => Identifier.of(Array("default"), identifier.name())
+      case Array(_) => identifier
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), identifier.name())
     }
     if (isPathIdentifier(ident)) {
       val tableInfo = MetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
@@ -221,7 +221,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                                      properties: util.Map[String, String]): StagedTable = {
     val iden = ident.namespace() match {
       case Array(_) => ident
-      case Array() => Identifier.of(Array("default"), ident.name())
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), ident.name())
     }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
       new StagedLakeSoulTableV2(
@@ -244,7 +244,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
                             properties: util.Map[String, String]): StagedTable = {
     val iden = ident.namespace() match {
       case Array(_) => ident
-      case Array() => Identifier.of(Array("default"), ident.name())
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), ident.name())
     }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
       new StagedLakeSoulTableV2(iden, schema, partitions, properties, TableCreationModes.Create)

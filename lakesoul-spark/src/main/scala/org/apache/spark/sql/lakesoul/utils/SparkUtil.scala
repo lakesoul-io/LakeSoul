@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter, SnapshotManagement}
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.lakesoul.Snapshot
@@ -77,14 +77,14 @@ object SparkUtil {
   def getDefaultTablePath(table: Identifier): Path = {
     val namespace = table.namespace() match {
       case Array(ns) => ns
-      case _ => "default"
+      case _ => LakeSoulCatalog.showCurrentNamespace()(0)
     }
     val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
     makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.name()))
   }
 
   def getDefaultTablePath(table: TableIdentifier): Path = {
-    val namespace = table.database.getOrElse("default")
+    val namespace = table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))
     val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
     makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.table))
   }

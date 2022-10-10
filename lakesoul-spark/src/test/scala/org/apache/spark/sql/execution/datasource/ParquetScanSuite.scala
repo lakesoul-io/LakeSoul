@@ -228,7 +228,7 @@ class ParquetScanSuite extends QueryTest
   }
 
 
-  test("join on multi partitions should has no shuffle when enable bucket scan") {
+  test("join on multi partitions should have no shuffle when enable bucket scan") {
     withSQLConf(
       "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {

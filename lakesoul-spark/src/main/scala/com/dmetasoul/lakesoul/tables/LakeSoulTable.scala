@@ -402,7 +402,7 @@ object LakeSoulTable {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
     } else {
-      throw LakeSoulErrors.tableNotExistsException(path)
+      throw LakeSoulErrors.tableNotExistsException(p)
     }
   }
   def forPath(sparkSession: SparkSession, path: String, partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
