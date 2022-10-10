@@ -140,8 +140,8 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
   override def loadTable(identifier: Identifier): Table = {
     val ident = identifier.namespace() match {
-      case Array(ns) => identifier
-      case Array() => Identifier.of(Array("default"), identifier.name())
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), identifier.name())
+      case _ => identifier
     }
     if (isPathIdentifier(ident)) {
       val tableInfo = MetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
@@ -594,8 +594,8 @@ trait SupportsPathIdentifier extends TableCatalog {
     ident.namespace() match {
       case Array() =>
         MetaVersion.isShortTableNameExists(ident.name())._1
-      case Array(ns) =>
-        MetaVersion.isShortTableNameExists(ident.name(), ns)._1
+      case _ =>
+        MetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._1
     }
   }
 
