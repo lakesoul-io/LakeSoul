@@ -34,6 +34,8 @@ import java.io.File
 trait LakeSoulTestUtils extends Logging {
   self: SharedSparkSession =>
 
+  val testDatabase = "test_database"
+
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
@@ -45,8 +47,8 @@ trait LakeSoulTestUtils extends Logging {
     Utils.tryWithSafeFinally(f) {
       tableNames.foreach { name =>
         spark.sql(s"DROP TABLE IF EXISTS $name")
-        val lakeSoulName = if (name.startsWith("lakesoul.")) name else s"lakesoul.$name"
-        spark.sql(s"DROP TABLE IF EXISTS $lakeSoulName")
+        val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
+        spark.sql(s"DROP TABLE IF EXISTS $databaseName")
       }
     }
   }
@@ -109,8 +111,9 @@ trait LakeSoulSQLCommandTest extends LakeSoulTestUtils {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
+    //    session.conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[LakeSoulCatalog].getName)
     session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
-    session.conf.set("spark.sql.defaultCatalog", "lakesoul")
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
     session.sparkContext.setLogLevel("ERROR")
 
     session

@@ -23,6 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
@@ -431,21 +432,28 @@ object LakeSoulTable {
     * `SparkSession.getActiveSession()` is empty.
     */
   def forName(tableOrViewName: String): LakeSoulTable = {
+    forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  }
+
+  def forName(tableOrViewName: String, namespace:String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
-    forName(sparkSession, tableOrViewName)
+    forName(sparkSession, tableOrViewName, namespace)
   }
 
   /**
     * Create a LakeSoulTableRel using the given table or view name using the given SparkSession.
     */
   def forName(sparkSession: SparkSession, tableName: String): LakeSoulTable = {
-    val (exists, tablePath) = MetaVersion.isShortTableNameExists(tableName)
+    forName(sparkSession, tableName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  }
+
+  def forName(sparkSession: SparkSession, tableName: String, namespace:String): LakeSoulTable = {
+    val (exists, tablePath) = MetaVersion.isShortTableNameExists(tableName, namespace)
     if (exists) {
-      val lakeSoulName = if (tableName.startsWith("lakesoul.")) tableName else s"lakesoul.$tableName"
-      new LakeSoulTable(sparkSession.table(lakeSoulName),
-        SnapshotManagement(tablePath))
+      new LakeSoulTable(sparkSession.table(s"$namespace.$tableName"),
+        SnapshotManagement(tablePath, namespace))
     } else {
       throw LakeSoulErrors.notALakeSoulTableException(tableName)
     }

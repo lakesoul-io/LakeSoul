@@ -244,7 +244,7 @@ public class DBManager {
         tableInfoDao.updatePropertiesById(tableId, properties);
     }
 
-    public void updateTableShortName(String tablePath, String tableId, String tableName) {
+    public void updateTableShortName(String tablePath, String tableId, String tableName, String tableNamespace) {
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         if (tableInfo.getTableName() != null && !Objects.equals(tableInfo.getTableName(), "")) {
@@ -256,11 +256,13 @@ public class DBManager {
         }
         tableInfo.setTableName(tableName);
         tableInfo.setTablePath(tablePath);
+        tableInfo.setTableNamespace(tableNamespace);
         tableInfoDao.updateByTableId(tableId, tableName, tablePath, "");
 
         TableNameId tableNameId = new TableNameId();
         tableNameId.setTableName(tableName);
         tableNameId.setTableId(tableId);
+        tableNameId.setTableNamespace(tableNamespace);
         tableNameIdDao.insert(tableNameId);
     }
 
@@ -274,7 +276,7 @@ public class DBManager {
         String tableId = tableInfo.getTableId();
 
         if (tableInfo.getTableName() != null && !"".equals(tableInfo.getTableName())) {
-            updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName());
+            updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName(), tableInfo.getTableNamespace());
         }
        updateTableProperties(tableId, tableInfo.getProperties());
 
@@ -642,6 +644,7 @@ public class DBManager {
     public void cleanMeta() {
 
         namespaceDao.clean();
+        namespaceDao.insert(new Namespace("default"));
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();

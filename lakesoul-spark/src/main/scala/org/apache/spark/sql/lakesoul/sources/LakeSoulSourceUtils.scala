@@ -50,6 +50,10 @@ object LakeSoulSourceUtils {
     MetaVersion.isShortTableNameExists(shortName)._1
   }
 
+  def isLakeSoulShortTableNameExists(shortName: String, namespace: String): Boolean = {
+    MetaVersion.isShortTableNameExists(shortName, namespace)._1
+  }
+
   /** Check whether this table is a lakesoul table based on information from the Catalog. */
   def isLakeSoulTable(provider: Option[String]): Boolean = {
     provider.exists(isLakeSoulDataSourceName)

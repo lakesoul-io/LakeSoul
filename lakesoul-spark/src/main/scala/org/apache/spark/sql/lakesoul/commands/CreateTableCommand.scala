@@ -83,7 +83,8 @@ case class CreateTableCommand(var table: CatalogTable,
             s"The location of the existing table $tableName is " +
               s"`$existingPath`. It doesn't match the specified location " +
               s"`${table.location}`.")
-        case _ => table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
+        case _ =>
+          table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
       }
     } else if (table.storage.locationUri.isEmpty) {
       // We are defining a new managed table
@@ -110,7 +111,7 @@ case class CreateTableCommand(var table: CatalogTable,
       table.storage.properties ++ externalOptions,
       sparkSession.sessionState.conf)
 
-    val snapshotManagement = SnapshotManagement(modifiedPath.toString)
+    val snapshotManagement = SnapshotManagement(modifiedPath.toString, table.database)
 
     // don't support replace table
     operation match {
@@ -123,7 +124,8 @@ case class CreateTableCommand(var table: CatalogTable,
     val tc = snapshotManagement.startTransaction()
 
     val shortTableName = table.identifier.table
-    if (MetaVersion.isShortTableNameExists(shortTableName)._1) {
+    println(table.identifier)
+    if (MetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
       throw LakeSoulErrors.tableExistsException(shortTableName)
     } else {
       tc.setShortTableName(shortTableName)

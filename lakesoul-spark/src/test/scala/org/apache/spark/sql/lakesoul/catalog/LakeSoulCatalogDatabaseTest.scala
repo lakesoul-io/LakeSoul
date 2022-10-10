@@ -1,6 +1,6 @@
 package org.apache.spark.sql.lakesoul.catalog
 
-import org.apache.spark.sql.{QueryTest, SparkSession}
+import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession, TestSparkSession}
@@ -39,9 +39,9 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
 
   test("CREATE DATABASE") {
     val testDatabase = "test_database"
-    withNamespace(testDatabase){
+    withDatabase(testDatabase){
       assert(sql(s"SHOW NAMESPACES").count() == 1)
-      sql(s"CREATE DATABASE IF NOT EXISTS %s".format(testDatabase))
+      sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
       sql(s"SHOW NAMESPACES").show()
       assert(sql(s"SHOW NAMESPACES").count() == 2)
     }
@@ -50,12 +50,13 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
 
   test("USE database") {
     val testDatabase = "test_database"
-    withNamespace(testDatabase) {
+    withDatabase(testDatabase) {
 //      assert(sql(s"SHOW CURRENT NAMESPACE").count() == 1 & sql(s"SHOW CURRENT NAMESPACE").first().toSeq.equals(Seq(LakeSoulCatalog.CATALOG_NAME, "default")))
       assert(sql(s"SHOW NAMESPACES").count() == 1)
-      sql(s"CREATE DATABASE IF NOT EXISTS %s".format(testDatabase))
+      sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
       assert(sql(s"SHOW NAMESPACES").count() == 2)
-      sql(s"USE %s".format(testDatabase)).show()
+
+      sql(s"USE $testDatabase")
       sql(s"SHOW CURRENT NAMESPACE").show()
 //      assert(sql(s"SHOW CURRENT NAMESPACE").count() == 1 & sql(s"SHOW CURRENT NAMESPACE").first().toSeq.equals(Seq(LakeSoulCatalog.CATALOG_NAME, testDatabase)))
     }
@@ -64,13 +65,13 @@ class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
   test("CREATE TABLE") {
     val testDatabase = "test_database"
     val testTable = "test_table"
-    withNamespace(testDatabase) {
+    withDatabase(testDatabase) {
       withTable(testTable) {
-        sql("CREATE TABLE IF NOT EXISTS %s  (id bigint, data string)".format(testTable))
-        sql(s"CREATE DATABASE IF NOT EXISTS %s".format(testDatabase))
-        sql("SHOW TABLES FROM %s".format(testDatabase)).show()
-        sql("CREATE TABLE IF NOT EXISTS %s.%s  (id bigint, data string)".format(testDatabase, testTable))
-        sql("SHOW TABLES FROM %s".format(testDatabase)).show()
+        sql(s"CREATE TABLE IF NOT EXISTS $testTable (id bigint, data string) USING lakesoul")
+        sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+        sql(s"SHOW TABLES FROM $testDatabase").show()
+        sql(s"CREATE TABLE IF NOT EXISTS $testDatabase.$testTable  (id bigint, data string) USING lakesoul")
+        sql(s"SHOW TABLES FROM $testDatabase").show()
       }
     }
 

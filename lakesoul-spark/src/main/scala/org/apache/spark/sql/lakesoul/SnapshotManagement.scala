@@ -33,9 +33,11 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-class SnapshotManagement(path: String) extends Logging {
+class SnapshotManagement(path: String, namespace: String) extends Logging {
 
   val table_path: String = path
+
+  val table_namespace: String = namespace
 
   lazy private val lock = new ReentrantLock()
 
@@ -55,7 +57,7 @@ class SnapshotManagement(path: String) extends Logging {
 
   private def initSnapshot: Snapshot = {
     val table_id = "table_" + UUID.randomUUID().toString
-    val table_info = TableInfo(LakeSoulCatalog.currentDefaultNamespace.head, Some(table_path), table_id)
+    val table_info = TableInfo(table_namespace, Some(table_path), table_id)
     val partition_arr = Array(
       PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
     )
@@ -96,8 +98,7 @@ class SnapshotManagement(path: String) extends Logging {
       MetaVersion.getTableInfo(table_path)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
-      // TODO: unwrap namespaces: array[string] here
-      TableInfo(LakeSoulCatalog.currentDefaultNamespace.head, Some(table_path), table_id)
+      TableInfo(table_namespace, Some(table_path), table_id)
     }
   }
 
@@ -181,12 +182,16 @@ object SnapshotManagement {
 
   def apply(path: Path): SnapshotManagement = apply(path.toString)
 
-  def apply(path: String): SnapshotManagement = {
+  def apply(path: Path, namespace: String): SnapshotManagement = apply(path.toString, namespace)
+
+  def apply(path: String): SnapshotManagement = apply(path, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+
+  def apply(path: String, namespace: String): SnapshotManagement = {
     try {
       val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
       snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
+          new SnapshotManagement(qualifiedPath, namespace)
         }
       })
     } catch {

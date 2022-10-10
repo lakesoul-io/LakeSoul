@@ -51,7 +51,7 @@ object MetaVersion {
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String): (Boolean, String) =
-    isShortTableNameExists(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+    isShortTableNameExists(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String, table_namespace: String): (Boolean, String) = {
@@ -60,7 +60,7 @@ object MetaVersion {
   }
 
   def getTablePathFromShortTableName(short_table_name: String): String =
-    getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+    getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
   //get table path, if not exists, return "not found"
   def getTablePathFromShortTableName(short_table_name: String, table_namespace: String): String = {
@@ -88,12 +88,12 @@ object MetaVersion {
     listTables(Array("default"))
   }
 
-  def listTables(namespaces: Array[String]): util.List[String] = {
-    dbManager.listTablePathsByNamespace(namespaces.head)
+  def listTables(namespace: Array[String]): util.List[String] = {
+    dbManager.listTablePathsByNamespace(namespace.mkString("."))
   }
 
   def getTableInfo(table_path: String): TableInfo = {
-    getTableInfo(LakeSoulCatalog.currentDefaultNamespace.head, table_path)
+    getTableInfo(LakeSoulCatalog.showCurrentNamespace().mkString("."), table_path)
   }
 
   def getTableInfo(namespace: String, table_path: String): TableInfo = {
@@ -213,7 +213,7 @@ object MetaVersion {
   }
 
   def deleteTableInfo(table_name: String, table_id: String): Unit = {
-    deleteTableInfo(table_name, table_id, LakeSoulCatalog.currentDefaultNamespace.head)
+    deleteTableInfo(table_name, table_id, LakeSoulCatalog.showCurrentNamespace().mkString("."))
   }
 
   def deleteTableInfo(table_name: String, table_id: String, table_namespace: String): Unit = {
@@ -228,6 +228,10 @@ object MetaVersion {
     dbManager.logicDeletePartitionInfoByRangeId(table_id, range_value)
   }
 
+  def dropNamespaceByNamespace(namespace: String): Unit = {
+    dbManager.deleteNamespace(namespace)
+  }
+
   def dropPartitionInfoByTableId(table_id: String): Unit = {
     dbManager.deletePartitionInfoByTableId(table_id)
   }
@@ -237,7 +241,7 @@ object MetaVersion {
   }
 
   def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
-    deleteShortTableName(short_table_name, table_name, LakeSoulCatalog.currentDefaultNamespace.head)
+    deleteShortTableName(short_table_name, table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
   }
 
   def deleteShortTableName(short_table_name: String, table_name: String, table_namespace: String): Unit = {
@@ -251,8 +255,13 @@ object MetaVersion {
 
   def updateTableShortName(table_name: String,
                            table_id: String,
-                           short_table_name: String): Unit = {
-    dbManager.updateTableShortName(table_name, table_id, short_table_name)
+                           short_table_name: String,
+                           table_namespace: String): Unit = {
+    dbManager.updateTableShortName(table_name, table_id, short_table_name, table_namespace)
+  }
+
+  def cleanMeta():Unit = {
+    dbManager.cleanMeta()
   }
 
 }

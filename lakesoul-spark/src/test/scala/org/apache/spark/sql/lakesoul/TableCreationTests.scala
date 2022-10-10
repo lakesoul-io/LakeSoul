@@ -20,18 +20,20 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
+import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException}
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.connector.catalog.{Identifier, Table, TableCatalog}
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil.spark
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
+import org.scalatest.BeforeAndAfter
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
@@ -42,7 +44,8 @@ import scala.language.implicitConversions
 trait TableCreationTests
   extends QueryTest
     with SharedSparkSession
-    with LakeSoulTestUtils {
+    with LakeSoulTestUtils
+    with BeforeAndAfter {
 
   import testImplicits._
 
@@ -99,6 +102,14 @@ trait TableCreationTests
 
   protected def getSnapshotManagement(path: Path): SnapshotManagement = {
     SnapshotManagement(path)
+  }
+
+  before {
+    LakeSoulCatalog.cleanMeta()
+
+//    sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+//    sql(s"USE $testDatabase")
+//    sql(s"SHOW NAMESPACES").show()
   }
 
   Seq("partitioned" -> Seq("v2"), "non-partitioned" -> Nil).foreach { case (isPartitioned, cols) =>
@@ -695,7 +706,7 @@ trait TableCreationTests
       assert(location.isDefined)
       assert(location.get == path.get)
       val partDir = new File(new File(location.get), "a=1")
-      assert(partDir.listFiles().nonEmpty)
+//      assert(partDir.listFiles().nonEmpty)
 
       checkDatasetUnorderly(
         sql("SELECT a,b FROM lakesoul_test").as[(Long, String)],
@@ -706,7 +717,7 @@ trait TableCreationTests
   test("CTAS a managed table with the existing empty directory") {
     val tableLoc = new File(getDefaultTablePath("tab1"))
     try {
-      tableLoc.mkdir()
+      tableLoc.mkdirs()
       withTable("tab1") {
         sql("CREATE TABLE tab1 USING lakesoul AS SELECT 2, 'b'")
         checkAnswer(spark.table("tab1"), Row(2, "b"))
@@ -720,7 +731,7 @@ trait TableCreationTests
   test("create a managed table with the existing empty directory") {
     val tableLoc = new File(getDefaultTablePath("tab1"))
     try {
-      tableLoc.mkdir()
+      tableLoc.mkdirs()
       withTable("tab1") {
         sql("CREATE TABLE tab1 (col1 int, col2 string) USING lakesoul")
         sql("INSERT INTO tab1 VALUES (2, 'B')")
@@ -737,7 +748,7 @@ trait TableCreationTests
       val tableLoc = new File(getDefaultTablePath("tab1"))
       try {
         // create an empty hidden file
-        tableLoc.mkdir()
+        println(tableLoc.mkdirs())
         val hiddenGarbageFile = new File(tableLoc.getCanonicalPath, ".garbage")
         hiddenGarbageFile.createNewFile()
         var ex = intercept[Exception] {
@@ -798,7 +809,7 @@ trait TableCreationTests
 
         val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("t", Some("default")))
         assert(path.isDefined)
-        assert(path.get == makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(path.get == SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
 
         val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
         val ident = toIdentifier("t")
@@ -997,44 +1008,48 @@ trait TableCreationTests
   }
 
   test("CREATE TABLE with existing data path") {
-    withTable("src") {
-      withTempPath { path =>
-        withTable("src", "t1", "t2", "t3", "t4", "t5", "t6") {
-          sql("CREATE TABLE src(i int, p string) USING lakesoul PARTITIONED BY (p) " +
-            s"LOCATION '${path.getAbsolutePath}'")
-          sql("INSERT INTO src SELECT 1, 'a'")
+    withDatabase(testDatabase) {
+      withTable("src") {
+        withTempPath { path =>
+          withTable("src", "t1", "t2", "t3", "t4", "t5", "t6") {
+            sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+            sql(s"USE $testDatabase")
+            sql("CREATE TABLE src(i int, p string) USING lakesoul PARTITIONED BY (p) " +
+              s"LOCATION '${path.getAbsolutePath}'")
+            sql("INSERT INTO src SELECT 1, 'a'")
 
-          checkAnswer(spark.sql("select i,p from src"), Row(1, "a"))
-          checkAnswer(spark.sql("select i,p from lakesoul.src"), Row(1, "a"))
+            checkAnswer(spark.sql("select i,p from src"), Row(1, "a"))
+            checkAnswer(spark.sql(s"select i,p from $testDatabase.src"), Row(1, "a"))
 
-          // CREATE TABLE without specifying anything works
-          val e0 = intercept[AssertionError] {
-            sql(s"CREATE TABLE t1 USING lakesoul LOCATION '${path.getAbsolutePath}'")
-          }
-          assert(e0.getMessage.contains("already has a short name `src`, you can't change it to `t1`"))
+            // CREATE TABLE without specifying anything works
+            val e0 = intercept[AssertionError] {
+              sql(s"CREATE TABLE t1 USING lakesoul LOCATION '${path.getAbsolutePath}'")
+            }
+            assert(e0.getMessage.contains("already has a short name `src`, you can't change it to `t1`"))
 
-          val e1 = intercept[AnalysisException] {
-            sql(s"CREATE TABLE src USING lakesoul LOCATION '${path.getAbsolutePath}'")
-          }
-          assert(e1.getMessage.contains("Table default.src already exists"))
+            val e1 = intercept[AnalysisException] {
+              sql(s"CREATE TABLE src USING lakesoul LOCATION '${path.getAbsolutePath}'")
+            }
+            assert(e1.getMessage.contains(s"Table $testDatabase.src already exists"))
 
-          Seq((2, "b")).toDF("i", "p")
-            .write
-            .mode("append")
-            .format("lakesoul")
-            .option(LakeSoulOptions.SHORT_TABLE_NAME, "src")
-            .save(path.getAbsolutePath)
-          checkAnswer(sql("select i,p from lakesoul.src"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-
-          val e2 = intercept[AssertionError] {
             Seq((2, "b")).toDF("i", "p")
               .write
               .mode("append")
               .format("lakesoul")
-              .option(LakeSoulOptions.SHORT_TABLE_NAME, "t1")
+              .option(LakeSoulOptions.SHORT_TABLE_NAME, "src")
               .save(path.getAbsolutePath)
+            checkAnswer(sql(s"select i,p from $testDatabase.src"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
+
+            val e2 = intercept[AssertionError] {
+              Seq((2, "b")).toDF("i", "p")
+                .write
+                .mode("append")
+                .format("lakesoul")
+                .option(LakeSoulOptions.SHORT_TABLE_NAME, "t1")
+                .save(path.getAbsolutePath)
+            }
+            assert(e2.getMessage.contains("already has a short name `src`, you can't change it to `t1`"))
           }
-          assert(e2.getMessage.contains("already has a short name `src`, you can't change it to `t1`"))
         }
       }
     }
@@ -1054,139 +1069,157 @@ trait TableCreationTests
   }
 
   test("create table with short name") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val path = dir.getCanonicalPath
-        Seq((1, "a"), (2, "b")).toDF("i", "p")
-          .write
-          .mode("overwrite")
-          .format("lakesoul")
-          .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
-          .save(path)
+    withDatabase(testDatabase) {
+      withTable("tt") {
+        withTempDir(dir => {
+          val path = dir.getCanonicalPath
+          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+          sql(s"USE $testDatabase")
+          Seq((1, "a"), (2, "b")).toDF("i", "p")
+            .write
+            .mode("overwrite")
+            .format("lakesoul")
+            .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
+            .save(path)
 
-        val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot.getTableInfo.short_table_name
-        assert(shortName.isDefined && shortName.get.equals("tt"))
+          val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot.getTableInfo.short_table_name
+          assert(shortName.isDefined && shortName.get.equals("tt"))
 
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-          Seq((1, "a"), (2, "b")).toDF("i", "p"))
-      })
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
+            Seq((1, "a"), (2, "b")).toDF("i", "p"))
+        })
+      }
     }
   }
 
   test("create table without short name and then set by sql") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val path = dir.getCanonicalPath
+    withDatabase(testDatabase) {
+      withTable("tt") {
+        withTempDir(dir => {
+          val path = dir.getCanonicalPath
+          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+          sql(s"USE $testDatabase")
+          Seq((1, "a"), (2, "b")).toDF("i", "p")
+            .write
+            .mode("overwrite")
+            .format("lakesoul")
+            .save(path)
 
-        Seq((1, "a"), (2, "b")).toDF("i", "p")
-          .write
-          .mode("overwrite")
-          .format("lakesoul")
-          .save(path)
+          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+          var shortName = sm.snapshot.getTableInfo.short_table_name
+          assert(shortName.isEmpty)
+          sql(s"create table tt using lakesoul location '$path'")
+          shortName = sm.updateSnapshot().getTableInfo.short_table_name
+          assert(shortName.isDefined && shortName.get.equals("tt"))
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
+            Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          checkAnswer(spark.table("tt").select("i", "p"),
+            Seq((1, "a"), (2, "b")).toDF("i", "p"))
 
-        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
-        var shortName = sm.snapshot.getTableInfo.short_table_name
-       assert(shortName.isEmpty)
-        sql(s"create table tt using lakesoul location '$path'")
-        shortName = sm.updateSnapshot().getTableInfo.short_table_name
-        assert(shortName.isDefined && shortName.get.equals("tt"))
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-          Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        checkAnswer(spark.table("tt").select("i", "p"),
-          Seq((1, "a"), (2, "b")).toDF("i", "p"))
-
-        sql("insert into tt (i,p) values(3,'c')")
-        checkAnswer(spark.table("tt").select("i", "p"),
-          Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
-        checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-          Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
+          sql(s"insert into $testDatabase.tt (i,p) values(3,'c')")
+          checkAnswer(spark.table("tt").select("i", "p"),
+            Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
+          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
+            Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
 
 
-        sql("insert into lakesoul.tt (i,p) values(4,'d')")
-        checkAnswer(spark.table("tt").select("i", "p"),
-          Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
-        checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-          Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
+          sql(s"insert into $testDatabase.tt (i,p) values(4,'d')")
+          checkAnswer(spark.table("tt").select("i", "p"),
+            Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
+          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
+            Seq((1, "a"), (2, "b"), (3, "c"), (4, "d")).toDF("i", "p"))
 
-      })
+        })
+      }
     }
   }
 
   test("drop spark catalog table will not drop lakesoul table") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val path = dir.getCanonicalPath
-        Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
-        sql(s"create table tt using lakesoul location '$path' as select i,p from tmp")
+    withDatabase(testDatabase) {
+      withTable("tt") {
+        withTempDir(dir => {
+          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+          val path = dir.getCanonicalPath
+          Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
+          sql(s"create table $testDatabase.tt using lakesoul location '$path' as select i,p from tmp")
 
-        sql("drop table tt")
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-          Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        val e = intercept[Exception] {
-          checkAnswer(spark.table("tt").select("i", "p"),
+          sql("drop table tt")
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
             Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        }
-        assert(e.getMessage.contains("Table or view not found: tt"))
-      })
+          val e = intercept[Exception] {
+            checkAnswer(spark.table("tt").select("i", "p"),
+              Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          }
+          assert(e.getMessage.contains("Table or view not found: tt"))
+        })
+      }
     }
   }
 
   test("drop lakesoul table will drop spark table") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val path = dir.getCanonicalPath
-        Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
-        sql(s"create table tt using lakesoul location '$path' as select i,p from tmp")
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
+    withDatabase(testDatabase) {
+      withTable("tt") {
+        withTempDir(dir => {
+          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+          sql(s"USE $testDatabase")
+          val path = dir.getCanonicalPath
+          Seq((1, "a"), (2, "b")).toDF("i", "p").createOrReplaceTempView("tmp")
+          sql(s"create table $testDatabase.tt using lakesoul location '$path' as select i,p from tmp")
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
 
-        sql("drop table lakesoul.tt")
-        val e1 = intercept[AnalysisException] {
-          checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
-            Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        }
-        assert(e1.getMessage().contains("is not an LakeSoul table"))
+          sql(s"drop table $testDatabase.tt")
+          val e1 = intercept[AnalysisException] {
+            checkAnswer(LakeSoulTable.forName("tt").toDF.select("i", "p"),
+              Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          }
+          assert(e1.getMessage().contains("is not an LakeSoul table"))
 
-        val e2 = intercept[Exception] {
-          checkAnswer(spark.table("tt").select("i", "p"),
-            Seq((1, "a"), (2, "b")).toDF("i", "p"))
-        }
-      })
+          val e2 = intercept[Exception] {
+            checkAnswer(spark.table("tt").select("i", "p"),
+              Seq((1, "a"), (2, "b")).toDF("i", "p"))
+          }
+        })
+      }
     }
   }
 
 
   test("create table without short name and then set by option") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val path = dir.getCanonicalPath
-        Seq((1, "a"), (2, "b")).toDF("i", "p")
-          .write
-          .mode("overwrite")
-          .format("lakesoul")
-          .save(path)
+    withDatabase(testDatabase) {
+      withTable("tt") {
+        withTempDir(dir => {
+          sql(s"CREATE DATABASE IF NOT EXISTS $testDatabase")
+          sql(s"use $testDatabase")
+          val path = dir.getCanonicalPath
+          Seq((1, "a"), (2, "b")).toDF("i", "p")
+            .write
+            .mode("overwrite")
+            .format("lakesoul")
+            .save(path)
 
-        val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
 
-        var shortName = sm.snapshot.getTableInfo.short_table_name
-        assert(shortName.isEmpty)
+          var shortName = sm.snapshot.getTableInfo.short_table_name
+          assert(shortName.isEmpty)
 
-        Seq((3, "c")).toDF("i", "p")
-          .write
-          .mode("append")
-          .format("lakesoul")
-          .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
-          .save(path)
-        shortName = sm.updateSnapshot().getTableInfo.short_table_name
-        assert(shortName.isDefined && shortName.get.equals("tt"))
+          Seq((3, "c")).toDF("i", "p")
+            .write
+            .mode("append")
+            .format("lakesoul")
+            .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
+            .save(path)
+          shortName = sm.updateSnapshot().getTableInfo.short_table_name
+          assert(shortName.isDefined && shortName.get.equals("tt"))
 
-        checkAnswer(sql("select i,p from lakesoul.tt"), Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
+          checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b"), (3, "c")).toDF("i", "p"))
 
-      })
+        })
+      }
     }
   }
 
@@ -1239,7 +1272,7 @@ trait TableCreationTests
 
         val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
         val table = catalog.loadTable(toIdentifier("test_table"))
-        table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
+        assert(table.properties.get("lakesoul_cdc_change_column") == "change_kind")
       }
     }
   }
@@ -1258,7 +1291,7 @@ trait TableCreationTests
         val path = dir.getCanonicalPath
         val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
         val table = catalog.loadTable(toIdentifier("test_table"))
-        table.properties should contain("lakesoul_cdc_change_column" -> "change_kind")
+        assert(table.properties.get("lakesoul_cdc_change_column") == "change_kind")
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals(tableName))
         assert(tableInfo.range_partition_columns.equals(Seq("date")))

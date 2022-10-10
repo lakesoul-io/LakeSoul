@@ -71,6 +71,7 @@ public class TableInfoDao {
                 tableInfo.setTableSchema(rs.getString("table_schema"));
                 tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
                 tableInfo.setPartitions(rs.getString("partitions"));
+                tableInfo.setTableNamespace(rs.getString("table_namespace"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
