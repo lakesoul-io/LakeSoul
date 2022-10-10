@@ -19,15 +19,21 @@ package org.apache.spark.sql.lakesoul
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
-import org.scalatest.Tag
+import org.scalatest.{BeforeAndAfter, Tag}
 
 trait DDLUsingPathTests extends QueryTest
-  with SharedSparkSession {
+  with SharedSparkSession
+  with BeforeAndAfter {
 
   import testImplicits._
+
+  before {
+    LakeSoulCatalog.cleanMeta()
+  }
 
   protected def testUsingPath(command: String, tags: Tag*)(f: (String, String, String) => Unit): Unit = {
     test(s"$command - using path", tags: _*) {

@@ -46,8 +46,17 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   val path = SparkUtil.makeQualifiedTablePath(path_orig)
 
-  val namespace: String = catalogTable.map(_.identifier.database.get)
-    .getOrElse(LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  val namespace: String =
+    tableIdentifier match {
+      case None => LakeSoulCatalog.showCurrentNamespace().mkString(".")
+      case Some(tableIdentifier) =>
+        val idx = tableIdentifier.lastIndexOf('.')
+        if (idx == -1) {
+          LakeSoulCatalog.showCurrentNamespace().mkString(".")
+        } else {
+          tableIdentifier.substring(0, idx)
+        }
+    }
 
 
   private lazy val (rootPath, partitionFilters) =
