@@ -144,7 +144,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case Array() => Identifier.of(Array("default"), identifier.name())
     }
     if (isPathIdentifier(ident)) {
-      val tableInfo = MetaVersion.getTableInfo(ident.namespace()(0), ident.name())
+      val tableInfo = MetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
       if (tableInfo == null) {
         throw new NoSuchTableException(ident)
       }
@@ -647,7 +647,7 @@ object LakeSoulCatalog {
 
   def showCurrentNamespace(): Array[String] = {
     currentDefaultNamespace = spark match {
-      case None => throw new AnalysisException("Spark Session has not be initialized")
+      case None => currentDefaultNamespace
       case Some(spark) => spark.sessionState.catalogManager.currentNamespace
     }
     currentDefaultNamespace
