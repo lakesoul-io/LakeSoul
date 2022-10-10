@@ -46,6 +46,10 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   val path = SparkUtil.makeQualifiedTablePath(path_orig)
 
+  val namespace: String = catalogTable.map(_.identifier.database.get)
+    .getOrElse(LakeSoulCatalog.showCurrentNamespace().mkString("."))
+
+
   private lazy val (rootPath, partitionFilters) =
     if (catalogTable.isDefined) {
       // Fast path for reducing path munging overhead
@@ -56,7 +60,7 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   // The loading of the SnapshotManagement is lazy in order to reduce the amount of FileSystem calls,
   // in cases where we will fallback to the V1 behavior.
-  lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath)
+  lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath, namespace)
 
   //  def getTableIdentifierIfExists: Option[TableIdentifier] = tableIdentifier.map(
   //    spark.sessionState.sqlParser.parseTableIdentifier)

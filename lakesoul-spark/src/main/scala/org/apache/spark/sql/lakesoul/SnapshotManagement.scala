@@ -46,7 +46,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   def snapshot: Snapshot = currentSnapshot
 
   private def createSnapshot: Snapshot = {
-    val table_info = MetaVersion.getTableInfo(table_path)
+    val table_info = MetaVersion.getTableInfo(table_namespace, table_path)
     val partition_info_arr = MetaVersion.getAllPartitionInfo(table_info.table_id)
 
     if (table_info.table_schema.isEmpty) {
