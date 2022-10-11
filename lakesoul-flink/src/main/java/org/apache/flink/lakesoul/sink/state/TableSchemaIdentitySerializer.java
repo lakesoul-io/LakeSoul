@@ -35,6 +35,7 @@ public class TableSchemaIdentitySerializer
     private final Kryo kryo = new Kryo();
 
     public TableSchemaIdentitySerializer() {
+        kryo.setClassLoader(this.getClass().getClassLoader());
         kryo.register(TableSchemaIdentity.class, new JavaSerializer<TableSchemaIdentity>());
     }
 
