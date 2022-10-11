@@ -35,6 +35,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<JsonSourceRecord> {
@@ -52,7 +53,7 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                                         Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,
               bucketCheckInterval, userClassLoader, conf);
-        this.converter = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC));
+        this.converter = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC), conf.getString(SERVER_TIME_ZONE));
     }
 
     private TableSchemaIdentity getIdentity(RowType rowType, JsonSourceRecord element) {

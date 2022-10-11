@@ -199,7 +199,6 @@ public class MysqlDBManager implements ExternalDBManager {
         String result = null;
         try {
             conn = dbConnector.getConn();
-            System.out.println(sql);
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {

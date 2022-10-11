@@ -91,6 +91,12 @@ public class LakeSoulSinkOptions {
       .defaultValue(true)
       .withDescription("use cdc column ");
 
+  public static final ConfigOption<String> SERVER_TIME_ZONE = ConfigOptions
+          .key("server_time_zone")
+          .stringType()
+          .defaultValue("Asia/Shanghai")
+          .withDescription("server time zone");
+
 }
 
 
