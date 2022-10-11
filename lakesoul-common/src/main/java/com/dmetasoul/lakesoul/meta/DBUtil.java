@@ -41,7 +41,7 @@ public class DBUtil {
     private static final String driverNameKey = "lakesoul.pg.driver";
     private static final String urlKey = "lakesoul.pg.url";
     private static final String usernameKey = "lakesoul.pg.username";
-    private static final String passwordKey = "lakeosul.pg.password";
+    private static final String passwordKey = "lakesoul.pg.password";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
