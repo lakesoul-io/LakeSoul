@@ -103,7 +103,7 @@ public class JsonRecordForLakeSoulTest {
                                                      "\"thread\":null,\"query\":null},\"op\":\"c\"," +
                                                      "\"ts_ms\":1663661643078,\"transaction\":null}}"
         );
-        LakeSoulRecordConvert lsrc = new LakeSoulRecordConvert(true);
+        LakeSoulRecordConvert lsrc = new LakeSoulRecordConvert(true, "Asia/Shanghai");
         LakeSoulRowDataWrapper lsdt = null;
         lsdt = lsrc.toLakeSoulDataType(item);
         System.out.println(lsdt);
