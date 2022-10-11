@@ -1,7 +1,8 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.{QueryTest, SparkSession}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
 
@@ -15,7 +16,8 @@ class MysqlCdcSuite
   val format = "lakesoul"
 
   test("test reading mysql cdc result") {
-    val localTablePath = "file:///Users/ceng/lakesoul/test_cdc_new/base_5"
+    spark.sessionState.conf.setConf(SQLConf.SESSION_LOCAL_TIMEZONE, "Asia/Shanghai")
+    val localTablePath = "file:///Users/ceng/lakesoul/test_cdc_new/test_ddf"
     val table = LakeSoulTable.forPath(localTablePath)
     table.toDF.show
   }

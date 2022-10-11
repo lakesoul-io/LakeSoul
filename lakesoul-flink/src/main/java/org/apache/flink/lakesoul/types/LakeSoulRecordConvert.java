@@ -43,12 +43,13 @@ import java.util.List;
 import java.util.Map;
 
 public class LakeSoulRecordConvert implements Serializable {
-    private final ZoneId serverTimeZone = ZoneId.of("UTC");
+    private final ZoneId serverTimeZone;
 
     boolean useCDC;
 
-    public LakeSoulRecordConvert(boolean useCDC) {
+    public LakeSoulRecordConvert(boolean useCDC, String serverTimeZone) {
         this.useCDC = useCDC;
+        this.serverTimeZone = ZoneId.of(serverTimeZone);
     }
 
 
@@ -57,6 +58,7 @@ public class LakeSoulRecordConvert implements Serializable {
         SchemaAndValue valueAndschema = item.getValue(srj);
         Struct value = (Struct) valueAndschema.value();
         Schema sch = valueAndschema.schema();
+        sch.field("after").schema().fields().forEach(System.out::println);
         Envelope.Operation op = getOperation(sch, value);
         Schema valueSchema = value.schema();
         LakeSoulRowDataWrapper.Build build = LakeSoulRowDataWrapper.newBuild().setTableId(item.getTableId());

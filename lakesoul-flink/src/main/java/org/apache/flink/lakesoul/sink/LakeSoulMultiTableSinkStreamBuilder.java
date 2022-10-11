@@ -92,7 +92,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStream<JsonSourceRecord> buildHashPartitionedCDCStream(DataStream<JsonSourceRecord> stream) {
-        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC));
+        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC), context.conf.getString(SERVER_TIME_ZONE));
         return stream.partitionCustom(new HashPartitioner(), convert::computeJsonRecordPrimaryKeyHash);
     }
 
