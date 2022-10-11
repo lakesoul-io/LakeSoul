@@ -69,13 +69,15 @@ object LakeSoulUtils extends PredicateHelper {
   def isLakeSoulTable(spark: SparkSession, tableName: TableIdentifier): Boolean = {
     if (spark.sessionState.catalog.isTemporaryTable(tableName)) {
       false
-    } else {
-      spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
-        .getTableLocation(
-          Identifier.of(Array(
-            tableName.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))),
-            tableName.table))
-        .isDefined
+    } else spark.sessionState.catalogManager.currentCatalog match {
+      case catalog: LakeSoulCatalog =>
+        catalog
+          .getTableLocation(
+            Identifier.of(Array(
+              tableName.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))),
+              tableName.table))
+          .isDefined
+      case _ => false
     }
   }
 
