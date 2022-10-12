@@ -5,3 +5,6 @@
 /derby.log
 /.metals/
 /.vscode/
+*.iml
+dependency-reduced-pom.xml
+/lakesoul-spark/spark-warehouse/

@@ -1,0 +1,3 @@
+org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory
+
+org.apache.flink.lakesoul.table.LakeSoulCatalogFactory
