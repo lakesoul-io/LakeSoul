@@ -24,6 +24,7 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
   - [x] Concurrent write with auto conflict resolution
   - [x] MVCC with read isolation
   - [x] Write transaction through Postgres Transaction
+  - [x] Schema Evolution: Column add/delete supported
 * Table operations 
   - [x] LSM-Tree style upsert for hash partitioned table
   - [x] Merge on read for hash partition with upsert delta file
@@ -41,10 +42,11 @@ Checkout the [CDC Ingestion with Debezium and Kafka](examples/cdc_ingestion_debe
     - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
 * Flink Integration ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
-  - [ ] Flink CDC
-    - [ ] Exactly Once Sink
-    - [ ] Auto Schema Sync
-    - [ ] Auto Table Creation (depends on #78)
+  - [x] Flink CDC
+    - [x] Exactly Once Sink
+    - [x] Auto Schema Change (DDL) Sync
+    - [x] Auto Table Creation (depends on #78)
+    - [x] Support multiple source tables with different schemas (#84)
 * Hive Integration
   - [x] Export to Hive partition after compaction
 * Realtime Data Warehousing

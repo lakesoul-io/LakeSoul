@@ -17,15 +17,13 @@
 package org.apache.spark.sql.lakesoul
 
 // scalastyle:off import.ordering.noEmptyLine
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PARTITION_OVERWRITE_MODE, PartitionOverwriteMode}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
@@ -53,8 +51,9 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
       insert.createOrReplaceTempView(tmpView)
       val overwrite = if (mode == SaveMode.Overwrite) "OVERWRITE" else "INTO"
       val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
-      val catalogTable = spark.sessionState.catalog.getTableMetadata(ident)
-      sql(s"INSERT $overwrite TABLE lakesoul.`${catalogTable.location}` SELECT * FROM $tmpView")
+      val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
+      assert(location.isDefined)
+      sql(s"INSERT $overwrite TABLE lakesoul.default.`${location.get}` SELECT * FROM $tmpView")
     }
   }
 
@@ -101,8 +100,9 @@ class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
       dfw.mode(mode)
     }
     val ident = spark.sessionState.sqlParser.parseTableIdentifier(tableName)
-    val catalogTable = spark.sessionState.catalog.getTableMetadata(ident)
-    dfw.insertInto(s"lakesoul.`${catalogTable.location}`")
+    val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(ident)
+    assert(location.isDefined)
+    dfw.insertInto(s"lakesoul.default.`${location.get}`")
   }
 
   test("insertInto: cannot insert into a table that doesn't exist") {
@@ -193,6 +193,28 @@ abstract class InsertIntoTests(
     }
   }
 
+  test("insertInto: append non partitioned table and read with filter") {
+    val t1 = "default.tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
+      doInsert(t1, df)
+      val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
+      checkAnswer(spark.table(t1).filter("id <= 2"), expected)
+    }
+  }
+
+  test("insertInto: append partitioned table and read with partition filter") {
+    val t1 = "default.tbl"
+    withTable(t1) {
+      sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)")
+      val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
+      doInsert(t1, df)
+      val expected = Seq((1L, "a"), (2L, "b")).toDF("id", "data")
+      checkAnswer(spark.table(t1).filter("id <= 2").select("id", "data"), expected)
+    }
+  }
+
   test("insertInto: overwrite non-partitioned table") {
     val t1 = "tbl"
     withTable(t1) {
@@ -278,10 +300,6 @@ abstract class InsertIntoTests(
     withTable(t1) {
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
       val df = Seq(("a", 1L)).toDF("id", "data") // reverse order
-
-      def getDF(rows: Row*): DataFrame = {
-        spark.createDataFrame(spark.sparkContext.parallelize(rows), spark.table(t1).schema)
-      }
 
       withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> "strict") {
         intercept[AnalysisException] {

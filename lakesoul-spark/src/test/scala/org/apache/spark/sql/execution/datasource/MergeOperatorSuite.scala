@@ -29,11 +29,12 @@ class MergeOperatorSuite extends QueryTest
   import testImplicits._
 
   test("read by defined merge operator - long type") {
-    LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.lakesoul.MergeOpLong", "longMOp")
+    LakeSoulTable.registerMergeOperator(spark,
+      "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpLong",
+      "longMOp")
 
     withTempDir(dir => {
-      //val tableName = dir.getCanonicalPath
-      val tableName = "file:/test1"
+      val tableName = dir.getCanonicalPath
       Seq(("a", 1L), ("b", 2L), ("c", 3L)).toDF("hash", "value")
         .write
         .mode("overwrite")

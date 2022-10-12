@@ -33,8 +33,9 @@ public class TableInfoDao {
         return getTableInfo(sql);
     }
 
-    public TableInfo selectByTableName(String tableName) {
-        String sql = String.format("select * from table_info where table_name = '%s'", tableName);
+    public TableInfo selectByTableNameAndNameSpace(String tableName, String namespace) {
+        String sql = String.format("select * from table_info where table_name = '%s'" +
+                                   " and table_namespace='%s'", tableName, namespace);
         return getTableInfo(sql);
     }
 
@@ -70,6 +71,7 @@ public class TableInfoDao {
                 tableInfo.setTableSchema(rs.getString("table_schema"));
                 tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
                 tableInfo.setPartitions(rs.getString("partitions"));
+                tableInfo.setTableNamespace(rs.getString("table_namespace"));
             }
         } catch (SQLException e) {
             e.printStackTrace();

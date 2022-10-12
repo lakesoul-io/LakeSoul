@@ -17,17 +17,17 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.{LakeSoulTestUtils, MergeOpInt, MergeOpString}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, MergeOpInt}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, QueryTest}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfterEach
-import org.apache.hadoop.fs.Path
 
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
-  with LakeSoulTestUtils {
+  with LakeSoulSQLCommandTest {
 
   import testImplicits._
 
@@ -265,6 +265,36 @@ class CompactionSuite extends QueryTest
       assert(e2.getMessage.contains("a"))
 
     })
+  }
+
+  test("Compaction and add partition to external catalog") {
+    withTable("spark_catalog.default.external_table", "default.lakesoul_test_table") {
+      spark.sql("CREATE TABLE IF NOT EXISTS " +
+        "spark_catalog.default.external_table" +
+        " (id int, name string, date string)" +
+        " using parquet" +
+        " PARTITIONED BY(date)")
+      checkAnswer(spark.sql("show tables in spark_catalog.default"),
+        Seq(Row("default", "external_table", false)))
+      val df = Seq(("2021-01-01", 1, "rice"), ("2021-01-01", 2, "bread")).toDF("date", "id", "name")
+      df.write
+        .mode("append")
+        .format("lakesoul")
+        .option("rangePartitions", "date")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "2")
+        .saveAsTable("lakesoul_test_table")
+      checkAnswer(spark.sql("show tables in spark_catalog.default"),
+        Seq(Row("default", "external_table", false)))
+      checkAnswer(spark.sql("show tables in default"),
+        Seq(Row("default", "lakesoul_test_table")))
+      val lakeSoulTable = LakeSoulTable.forName("lakesoul_test_table")
+      lakeSoulTable.compaction("date='2021-01-01'", "spark_catalog.default.external_table")
+      checkAnswer(spark.sql("show partitions spark_catalog.default.external_table"),
+        Seq(Row("date=2021-01-01")))
+      checkAnswer(spark.sql("select * from spark_catalog.default.external_table order by id"),
+        Seq(Row(1, "rice", "2021-01-01"), Row(2, "bread", "2021-01-01")))
+    }
   }
 
 

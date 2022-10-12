@@ -888,7 +888,7 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
 }
 
 class SchemaEnforcementWithPathSuite extends AppendSaveModeTests with OverwriteSaveModeTests {
-  override val saveOperation = SaveWithPath()
+  override val saveOperation: SaveWithPath = SaveWithPath()
 }
 
 class SchemaEnforcementStreamingSuite

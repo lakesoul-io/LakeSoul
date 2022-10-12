@@ -57,7 +57,7 @@ abstract class DeleteSuiteBase extends QueryTest
                             expectedResults: Seq[Row],
                             colNames: Seq[String],
                             tableName: Option[String] = None): Unit = {
-    executeDelete(target = tableName.getOrElse(s"lakesoul.`$tempPath`"), where = condition.orNull)
+    executeDelete(target = tableName.getOrElse(s"lakesoul.default.`$tempPath`"), where = condition.orNull)
     checkAnswer(readLakeSoulTable(tempPath).select(colNames.map(col): _*), expectedResults)
   }
 
@@ -301,15 +301,15 @@ abstract class DeleteSuiteBase extends QueryTest
     Seq((1, 1), (0, 3), (1, 5)).toDF("key1", "value")
       .write.format("parquet").mode("append").save(tempPath)
     val e = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`")
+      executeDelete(target = s"lakesoul.default.`$tempPath`")
     }.getMessage
-    assert(e.contains("doesn't exist"))
+    assert(e.contains("Table or view not found") || e.contains("doesn't exist"))
   }
 
   test("Negative case - non-deterministic condition") {
     append(Seq((2, 2), (1, 4), (1, 1), (0, 3)).toDF("key", "value"))
     val e = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", where = "rand() > 0.5")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", where = "rand() > 0.5")
     }.getMessage
     assert(e.contains("nondeterministic expressions are only allowed in"))
   }
@@ -404,31 +404,31 @@ abstract class DeleteSuiteBase extends QueryTest
 
     // basic subquery
     val e0 = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", "key < (SELECT max(c) FROM source)")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", "key < (SELECT max(c) FROM source)")
     }.getMessage
     assert(e0.contains("Subqueries are not supported"))
 
     // subquery with EXISTS
     val e1 = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", "EXISTS (SELECT max(c) FROM source)")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", "EXISTS (SELECT max(c) FROM source)")
     }.getMessage
     assert(e1.contains("Subqueries are not supported"))
 
     // subquery with NOT EXISTS
     val e2 = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", "NOT EXISTS (SELECT max(c) FROM source)")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", "NOT EXISTS (SELECT max(c) FROM source)")
     }.getMessage
     assert(e2.contains("Subqueries are not supported"))
 
     // subquery with IN
     val e3 = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", "key IN (SELECT max(c) FROM source)")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", "key IN (SELECT max(c) FROM source)")
     }.getMessage
     assert(e3.contains("Subqueries are not supported"))
 
     // subquery with NOT IN
     val e4 = intercept[AnalysisException] {
-      executeDelete(target = s"lakesoul.`$tempPath`", "key NOT IN (SELECT max(c) FROM source)")
+      executeDelete(target = s"lakesoul.default.`$tempPath`", "key NOT IN (SELECT max(c) FROM source)")
     }.getMessage
     assert(e4.contains("Subqueries are not supported"))
   }

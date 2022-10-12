@@ -95,7 +95,7 @@ public class NamespaceDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select namespace from namespace");
+        String sql = "select namespace from namespace";
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -121,7 +121,6 @@ public class NamespaceDao {
         sb.append("update namespace set ");
         sb.append(String.format("properties = '%s'", properties.toJSONString()));
         sb.append(String.format(" where namespace = '%s'", namespace));
-        System.out.println(sb.toString());
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sb.toString());

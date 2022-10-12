@@ -21,16 +21,20 @@ package org.apache.spark.sql.lakesoul.utils
 import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.FileSystem
+import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter, SnapshotManagement}
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+
 import scala.collection.JavaConverters._
 
 
@@ -62,28 +66,33 @@ object SparkUtil {
     }
   }
 
-/*  def modifyTableString(tablePath: String): String = {
-    makeQualifiedTablePath(tablePath).toString
-  }
-
-  def modifyTablePath(tablePath: String): Path = {
-    makeQualifiedTablePath(tablePath)
-  }
-
-  private def makeQualifiedTablePath(tablePath: String): Path = {
-    val normalPath = tablePath.replace("s3://", "s3a://")
-    val path = new Path(normalPath)
-    path.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(path)
-  }*/
-
   def makeQualifiedTablePath(tablePath: Path): Path = {
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 
-  def TablePathExisted(fs:FileSystem ,tableAbsolutePath:Path):Boolean = {
+  def makeQualifiedPath(tablePath: String): Path = {
+    makeQualifiedTablePath(new Path(tablePath))
+  }
+
+  def getDefaultTablePath(table: Identifier): Path = {
+    val namespace = table.namespace() match {
+      case Array(ns) => ns
+      case _ => LakeSoulCatalog.showCurrentNamespace()(0)
+    }
+    val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
+    makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.name()))
+  }
+
+  def getDefaultTablePath(table: TableIdentifier): Path = {
+    val namespace = table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))
+    val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
+    makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.table))
+  }
+
+  def tablePathExisted(fs: FileSystem, tableAbsolutePath: Path): Boolean = {
     if (fs.exists(tableAbsolutePath) && fs.listStatus(tableAbsolutePath).nonEmpty) {
-        true
-    }else{
+      true
+    } else {
       false
     }
   }

@@ -183,7 +183,7 @@ class ParquetScanSuite extends QueryTest
   }
 
 
-  test("scan one partition should has no shuffle") {
+  test("scan one partition should have no shuffle") {
     withSQLConf("spark.sql.autoBroadcastJoinThreshold" -> "-1") {
       withTempDir(dir1 => {
         withTempDir(dir2 => {
@@ -228,7 +228,7 @@ class ParquetScanSuite extends QueryTest
   }
 
 
-  test("join on multi partitions should has no shuffle when enable bucket scan") {
+  test("join on multi partitions should have no shuffle when enable bucket scan") {
     withSQLConf(
       "spark.sql.autoBroadcastJoinThreshold" -> "-1",
       LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
@@ -274,7 +274,7 @@ class ParquetScanSuite extends QueryTest
             s"""
                |select t1.value,t2.value
                |from t1 join
-               |(select * from lakesoul.`$table2` where range>20201100 and range<20201105) t2
+               |(select * from lakesoul.default.`$table2` where range>20201100 and range<20201105) t2
                |on t1.hash=t2.hash
             """.stripMargin)
             .queryExecution
@@ -290,7 +290,7 @@ class ParquetScanSuite extends QueryTest
   }
 
 
-  test("hash key in single partition scan should distinct") {
+  test("hash key in single partition scan should be unique") {
     validateScanResult(9000, 20)
     validateScanResult(15000, 10)
   }
