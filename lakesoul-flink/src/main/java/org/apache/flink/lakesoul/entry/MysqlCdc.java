@@ -54,6 +54,7 @@ public class MysqlCdc {
         String host = parameter.get(SOURCE_DB_HOST.key());
         int port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
+        String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
@@ -88,6 +89,7 @@ public class MysqlCdc {
         conf.set(SOURCE_DB_HOST, host);
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
+        conf.set(SERVER_TIME_ZONE, serverTimezone);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
@@ -97,6 +99,7 @@ public class MysqlCdc {
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
+//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
@@ -111,6 +114,7 @@ public class MysqlCdc {
                                                                         .port(port)
                                                                         .databaseList(dbName) // set captured database
                                                                         .tableList(dbName + ".*") // set captured table
+                                                                        .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
                                                                         .username(userName)
                                                                         .password(passWord);
 
