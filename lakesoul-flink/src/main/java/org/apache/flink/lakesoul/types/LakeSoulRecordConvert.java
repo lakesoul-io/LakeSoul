@@ -21,9 +21,8 @@ package org.apache.flink.lakesoul.types;
 
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
-import io.debezium.data.Envelope;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.VariableScaleDecimal;
+import io.debezium.data.*;
+import io.debezium.data.Enum;
 import io.debezium.time.Date;
 import io.debezium.time.Timestamp;
 import io.debezium.time.*;
@@ -183,6 +182,10 @@ public class LakeSoulRecordConvert implements Serializable {
     }
     private LogicalType otherLogicalType(Schema fieldSchema){
         switch (fieldSchema.name()) {
+            case Enum.LOGICAL_NAME:
+            case Json.LOGICAL_NAME:
+            case EnumSet.LOGICAL_NAME:
+                return new VarCharType(Integer.MAX_VALUE);
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return new TimeType(9);//time
@@ -196,7 +199,8 @@ public class LakeSoulRecordConvert implements Serializable {
             case Date.SCHEMA_NAME:
                 return new DateType();
             case Year.SCHEMA_NAME:
-                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
+                return new IntType();
+//                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType();
@@ -337,20 +341,7 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private boolean isPrimitiveType(Schema fieldSchema) {
-        switch (fieldSchema.type()) {
-            case BOOLEAN:
-            case INT8:
-            case INT16:
-            case INT32:
-            case INT64:
-            case FLOAT32:
-            case FLOAT64:
-            case STRING:
-            case BYTES:
-                return true;
-            default:
-                return false;
-        }
+        return fieldSchema.name()==null;
     }
 
     private Object convertSqlSchemaAndField(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone)
@@ -388,6 +379,10 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private Object otherTypeConvert(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
         switch (fieldSchema.name()) {
+            case Enum.LOGICAL_NAME:
+            case Json.LOGICAL_NAME:
+            case EnumSet.LOGICAL_NAME:
+                return convertToString(fieldValue, fieldSchema);
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return convertToTime(fieldValue, fieldSchema);//time
