@@ -44,7 +44,7 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
             return StringType;
         }
         if (matches(typeName, "POINT")) {
-            return StringType;
+            return BinaryType;
         }
         if (matches(typeName, "GEOMETRY")
                 || matches(typeName, "LINESTRING")
