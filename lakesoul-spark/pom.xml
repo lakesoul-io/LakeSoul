@@ -86,12 +86,6 @@
             <scope>${local.scope}</scope>
         </dependency>
 
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>1.32</version>
-        </dependency>
-
         <!--      test deps        -->
         <dependency>
             <groupId>org.scalatest</groupId>
