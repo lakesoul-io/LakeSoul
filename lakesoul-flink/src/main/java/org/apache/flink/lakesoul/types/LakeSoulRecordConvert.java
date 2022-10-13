@@ -21,12 +21,13 @@ package org.apache.flink.lakesoul.types;
 
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
-import io.debezium.data.Envelope;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.VariableScaleDecimal;
+import io.debezium.data.*;
+import io.debezium.data.Enum;
 import io.debezium.time.Date;
 import io.debezium.time.Timestamp;
 import io.debezium.time.*;
+import io.debezium.data.geometry.Geometry;
+import io.debezium.data.geometry.Point;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
@@ -181,6 +182,10 @@ public class LakeSoulRecordConvert implements Serializable {
     }
     private LogicalType otherLogicalType(Schema fieldSchema){
         switch (fieldSchema.name()) {
+            case Enum.LOGICAL_NAME:
+            case Json.LOGICAL_NAME:
+            case EnumSet.LOGICAL_NAME:
+                return new VarCharType(Integer.MAX_VALUE);
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return new TimeType(9);//time
@@ -194,11 +199,22 @@ public class LakeSoulRecordConvert implements Serializable {
             case Date.SCHEMA_NAME:
                 return new DateType();
             case Year.SCHEMA_NAME:
-                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
+                return new IntType();
+//                return new YearMonthIntervalType(YearMonthIntervalType.YearMonthResolution.YEAR);//date
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType();
-            default: return null;
+            case Geometry.LOGICAL_NAME:
+            case Point.LOGICAL_NAME:
+                paras= ((ConnectSchema) fieldSchema.field("wkb").schema()).parameters();
+                int byteLen=Integer.MAX_VALUE;
+                if(null!=paras) {
+                    int len = Integer.parseInt(paras.get("length"));
+                    byteLen = len / 8 + (len % 8 == 0 ? 0 : 1);
+                }
+                return new BinaryType(byteLen);
+            default:
+                return null;
         }
 
     }
@@ -325,16 +341,7 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private boolean isPrimitiveType(Schema fieldSchema) {
-        String name = fieldSchema.name();
-        return !MicroTime.SCHEMA_NAME.equals(name)
-               && !NanoTime.SCHEMA_NAME.equals(name)
-               && !Timestamp.SCHEMA_NAME.equals(name)
-               && !MicroTimestamp.SCHEMA_NAME.equals(name)
-               && !NanoTimestamp.SCHEMA_NAME.equals(name)
-               && !Decimal.LOGICAL_NAME.equals(name)
-               && !Date.SCHEMA_NAME.equals(name)
-               && !ZonedTime.SCHEMA_NAME.equals(name)
-               && !ZonedTimestamp.SCHEMA_NAME.equals(name);
+        return fieldSchema.name()==null;
     }
 
     private Object convertSqlSchemaAndField(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone)
@@ -372,6 +379,10 @@ public class LakeSoulRecordConvert implements Serializable {
 
     private Object otherTypeConvert(Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
         switch (fieldSchema.name()) {
+            case Enum.LOGICAL_NAME:
+            case Json.LOGICAL_NAME:
+            case EnumSet.LOGICAL_NAME:
+                return convertToString(fieldValue, fieldSchema);
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 return convertToTime(fieldValue, fieldSchema);//time
@@ -388,6 +399,10 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 return convertToZonedTimeStamp(fieldValue, fieldSchema, serverTimeZone);
+            case Geometry.LOGICAL_NAME:
+                return convertToGeometry(fieldValue, fieldSchema);
+            case Point.LOGICAL_NAME:
+                return convertToPoint(fieldValue, fieldSchema);
             default:
                 return null;
         }
@@ -539,6 +554,24 @@ public class LakeSoulRecordConvert implements Serializable {
         } else {
             throw new UnsupportedOperationException(
                     "Unsupported BYTES value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+
+    public Object convertToGeometry(Object dbzObj, Schema schema) {
+        if (dbzObj instanceof Struct) {
+            return ((Struct) dbzObj).getBytes("wkb");
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+
+    private Object convertToPoint(Object dbzObj, Schema schema) {
+        if (dbzObj instanceof Struct) {
+            return ((Struct) dbzObj).getBytes("wkb");
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
         }
     }
 }
