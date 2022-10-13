@@ -7,13 +7,13 @@ public class JobOptions {
     public static final ConfigOption<String> JOB_CHECKPOINT_MODE = ConfigOptions
             .key("job.checkpoint_mode")
             .stringType()
-            .defaultValue("")
+            .defaultValue("EXACTLY_ONCE")
             .withDescription("job checkpoint mode");
 
     public static final ConfigOption<Integer> JOB_CHECKPOINT_INTERVAL = ConfigOptions
             .key("job.checkpoint_interval")
             .intType()
-            .defaultValue(5000)
+            .defaultValue(10 * 60 * 1000)
             .withDescription("job checkpoint interval");
 
     public static final ConfigOption<String> FLINK_CHECKPOINT = ConfigOptions
