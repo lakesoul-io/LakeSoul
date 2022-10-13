@@ -26,5 +26,5 @@ public class JobOptions {
             .key("flink.savepoint")
             .stringType()
             .noDefaultValue()
-            .withDescription("flink savepoint save path");
+            .withDescription("Flink savepoint save path. \n Invalid config option for the reason: https://issues.apache.org/jira/browse/FLINK-23515");
 }
