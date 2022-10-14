@@ -99,10 +99,10 @@ object LakeSoulSQLConf {
       .createWithDefault(5)
 
   val SNAPSHOT_CACHE_EXPIRE: ConfigEntry[Int] =
-    buildConf("snapshot.cache.expire.minutes")
+    buildConf("snapshot.cache.expire.seconds")
       .doc(
         """
-          |Expire snapshot cache in minutes
+          |Expire snapshot cache in seconds
         """.stripMargin)
       .intConf
       .createWithDefault(10)
