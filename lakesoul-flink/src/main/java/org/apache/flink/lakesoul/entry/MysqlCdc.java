@@ -69,8 +69,6 @@ public class MysqlCdc {
                                                            databasePrefixPath,
                                                            bucketParallelism,
                                                            true);
-        DBManager dbManager = new DBManager();
-        dbManager.cleanMeta();
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         //syncing mysql tables to lakesoul
 
@@ -99,7 +97,6 @@ public class MysqlCdc {
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
-//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
