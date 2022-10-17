@@ -84,7 +84,7 @@
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
-            <version>2.3-SNAPSHOT</version>
+            <version>2.2.0</version>
         </dependency>
 
         <dependency>

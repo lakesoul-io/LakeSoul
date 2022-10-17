@@ -44,7 +44,7 @@ import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.log4j.PropertyConfigurator;
+//import org.apache.log4j.PropertyConfigurator;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -59,7 +59,7 @@ public class FlinkCDCMultiTableTest {
 
     @Before
     public void before() throws Exception {
-        PropertyConfigurator.configure(FlinkCDCMultiTableTest.class.getResourceAsStream("/log4j.properties"));
+//        PropertyConfigurator.configure(FlinkCDCMultiTableTest.class.getResourceAsStream("/log4j.properties"));
 
         conf.set(LakeSoulSinkOptions.USE_CDC, true)
             .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)

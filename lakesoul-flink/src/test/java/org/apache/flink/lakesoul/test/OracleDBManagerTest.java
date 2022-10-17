@@ -1,5 +1,7 @@
 package org.apache.flink.lakesoul.test;
 
+import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
 import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
@@ -36,25 +38,51 @@ public class OracleDBManagerTest {
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
 
-        OracleDBManager dbManager = new OracleDBManager(dbName, userName, passWord, host, Integer.toString(port));
-        dbManager.listTables();
-        System.out.println(dbManager.isOpen());
+        OracleDBManager dbManager = new OracleDBManager(dbName,
+                                                        userName,
+                                                        passWord,
+                                                        host,
+                                                        Integer.toString(port),
+                                                        new HashSet<>(),
+                                                        new HashSet<>(),
+                                                        databasePrefixPath,
+                                                        bucketParallelism,
+                                                        true);
+        System.out.println(dbManager.checkOpenStatus());
+        dbManager.listNamespace().forEach(System.out::println);
+        dbManager.listTables().forEach(System.out::println);
+        dbManager.importOrSyncLakeSoulTable("employees_demo");
     }
 }
 
 class OracleDBManager implements ExternalDBManager {
-    private final String dbName;
 
     public static final int DEFAULT_ORACLE_PORT = 1521;
     private final DBConnector dbConnector;
 
+
+    private final DBManager lakesoulDBManager = new DBManager();
+    private final String lakesoulTablePathPrefix;
+    private final String dbName;
+    private final int hashBucketNum;
+    private final boolean useCdc;
+    private HashSet<String> excludeTables;
+    private HashSet<String> includeTables;
+
+    private String[] filterTables = new String[]{};
+
     OracleDBManager(String dbName,
-              String user,
-              String passwd,
-              String host,
-              String port
+                    String user,
+                    String passwd,
+                    String host,
+                    String port, HashSet<String> excludeTables,
+                    HashSet<String> includeTables,
+                    String pathPrefix, int hashBucketNum, boolean useCdc
               ) {
         this.dbName = dbName;
+        this.excludeTables = excludeTables;
+        this.includeTables = includeTables;
+        excludeTables.addAll(Arrays.asList(filterTables));
 
 
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
@@ -65,9 +93,12 @@ class OracleDBManager implements ExternalDBManager {
         dataBaseProperty.setPassword(passwd);
         dbConnector = new DBConnector(dataBaseProperty);
 
+        lakesoulTablePathPrefix = pathPrefix;
+        this.hashBucketNum = hashBucketNum;
+        this.useCdc = useCdc;
     }
 
-    public boolean isOpen() {
+    public boolean checkOpenStatus() {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -93,14 +124,15 @@ class OracleDBManager implements ExternalDBManager {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = "SELECT table_name FROM user_tables ORDER BY table_name";
+        String sql = "SELECT table_name FROM user_tables";
         List<String> list = new ArrayList<>();
         try {
             conn = dbConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                String tableName = rs.getString(String.format("Tables_in_%s", dbName));
+                String tableName = rs.getString("table_name");
+                list.add(tableName);
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -110,9 +142,58 @@ class OracleDBManager implements ExternalDBManager {
         return list;
     }
 
+    public List<String> listNamespace() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "select NAME from v$database";
+        List<String> list = new ArrayList<>();
+        try {
+            conn = dbConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String database = rs.getString("NAME");
+                list.add(database);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            dbConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
+    public String showCreateTable(String tableName) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select table_name,dbms_metadata.get_ddl('TABLE','%s') as DDL from dual,user_tables where table_name='%s'", tableName.toUpperCase(), tableName.toUpperCase());
+        String result = null;
+        try {
+            conn = dbConnector.getConn();
+            System.out.println(sql);
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                result = rs.getString("DDL");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            dbConnector.closeConn(rs, pstmt, conn);
+        }
+        return result;
+    }
+
     @Override
     public void importOrSyncLakeSoulTable(String tableName) {
-
+        if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
+            System.out.println(String.format("Table %s is excluded by exclude table list", tableName));
+            return;
+        }
+        String ddl = showCreateTable(tableName);
+        System.out.println(ddl);
     }
 
     @Override
