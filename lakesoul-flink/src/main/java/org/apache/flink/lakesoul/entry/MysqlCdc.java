@@ -29,6 +29,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
+import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -38,8 +39,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.util.HashSet;
 import java.util.List;
 
-import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
-import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
 
 
@@ -69,8 +69,7 @@ public class MysqlCdc {
                                                            databasePrefixPath,
                                                            bucketParallelism,
                                                            true);
-        DBManager dbManager = new DBManager();
-        dbManager.cleanMeta();
+
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         //syncing mysql tables to lakesoul
 
@@ -99,13 +98,19 @@ public class MysqlCdc {
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
-//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
 
         env.enableCheckpointing(checkpointInterval);
         env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+
+        CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
+        if (parameter.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue()).equals("AT_LEAST_ONCE")) {
+            checkpointingMode = CheckpointingMode.AT_LEAST_ONCE;
+        }
+        env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
+
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 

@@ -44,7 +44,7 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
             return StringType;
         }
         if (matches(typeName, "POINT")) {
-            return StringType;
+            return BinaryType;
         }
         if (matches(typeName, "GEOMETRY")
                 || matches(typeName, "LINESTRING")
@@ -53,7 +53,7 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
                 || matches(typeName, "MULTILINESTRING")
                 || matches(typeName, "MULTIPOLYGON")
                 || isGeometryCollection(typeName)) {
-            return StringType;
+            return BinaryType;
         }
         if (matches(typeName, "YEAR")) {
             return IntegerType;
