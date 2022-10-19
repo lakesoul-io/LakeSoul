@@ -30,6 +30,9 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
 
     steps:
     - uses: actions/checkout@v3
@@ -42,8 +45,6 @@ jobs:
     - name: Install psql
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
-      run: PGPASSWORD=lakesoul_test psql -h postgres -p 5432 -U lakesoul_test -f script/meta_init.sql
+      run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
     - name: Build with Maven
-      env:
-        LAKESOUL_PG_URL: jdbc:postgresql://postgres:5432/lakesoul_test?stringtype=unspecified
       run: mvn clean test --file pom.xml -pl lakesoul-spark -am
