@@ -21,7 +21,7 @@ import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
+import org.apache.spark.sql.test.SharedSparkSession
 
 import java.util.Locale
 import scala.util.control.NonFatal
@@ -29,12 +29,11 @@ import scala.util.control.NonFatal
 
 class NotSupportedDDLSuite
   extends NotSupportedDDLBase
-    with SharedSparkSession
     with LakeSoulSQLCommandTest
 
 
 abstract class NotSupportedDDLBase extends QueryTest
-  with SQLTestUtils {
+  with SharedSparkSession {
 
   val format = "lakesoul"
 

@@ -18,6 +18,7 @@ package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
@@ -547,35 +548,37 @@ trait TableCreationTests
     }
   }
 
-  /*
   test("saveAsTable into a view throws exception around view definition") {
+    spark.sessionState.catalogManager.setCurrentCatalog("spark_catalog")
     withTempDir { dir =>
       val viewName = "lakesoul_test"
       withView(viewName) {
         Seq((1, "key")).toDF("a", "b").write.format(format).save(dir.getCanonicalPath)
         sql(s"create temporary view $viewName as select * from lakesoul.`${dir.getCanonicalPath}`")
-        val e = intercept[AnalysisException] {
+        val e = intercept[SparkException] {
           Seq((2, "key")).toDF("a", "b").write.format(format).mode("append").saveAsTable(viewName)
         }
-        assert(e.getMessage.contains("a view"))
+        assert(e.getMessage.contains("Table implementation does not support writes"))
       }
     }
+    spark.sessionState.catalogManager.setCurrentCatalog("lakesoul")
   }
 
   test("saveAsTable into a parquet table throws exception around format") {
+    spark.sessionState.catalogManager.setCurrentCatalog("spark_catalog")
     withTempPath { dir =>
       val tabName = "lakesoul_test"
       withTable(tabName) {
         Seq((1, "key")).toDF("a", "b").write.format("parquet")
-          .option("path", dir.getCanonicalPath).saveAsTable(s"spark_catalog.default.$tabName")
+          .option("path", dir.getCanonicalPath).saveAsTable(s"default.$tabName")
         intercept[AnalysisException] {
           Seq((2, "key")).toDF("a", "b").write.format("lakesoul").mode("append")
-            .saveAsTable(s"spark_catalog.default.$tabName")
+            .saveAsTable(s"default.$tabName")
         }
       }
     }
+    spark.sessionState.catalogManager.setCurrentCatalog("lakesoul")
   }
-  */
 
   test("create table with schema and path") {
     withTempDir { dir =>
