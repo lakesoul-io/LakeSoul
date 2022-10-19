@@ -6,8 +6,6 @@ name: CI with Maven Test
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   build:
@@ -48,3 +46,10 @@ jobs:
       run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
     - name: Build with Maven
       run: mvn -B clean test --file pom.xml -pl lakesoul-spark -am
+    - name: Upload Artifact
+    - uses: actions/upload-artifact@v3
+      with:
+        name: maven-test-report-artifact
+        path: lakesoul-spark/target/html/scalatest/
+        retention-days: 5
+        if-no-files-found: error
