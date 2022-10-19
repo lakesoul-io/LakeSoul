@@ -1,0 +1,49 @@
+# This workflow will build a Java project with Maven, and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-maven
+
+name: CI with Maven Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up JDK 8
+      uses: actions/setup-java@v3
+      with:
+        java-version: '8'
+        distribution: 'temurin'
+        cache: maven
+    - name: Install psql
+      run: sudo apt-get install -y postgresql-client-14
+    - name: Init PG
+      run: PGPASSWORD=lakesoul_test psql -h postgres -p 5432 -U lakesoul_test -f script/meta_init.sql
+    - name: Build with Maven
+      env:
+        LAKESOUL_PG_URL: jdbc:postgresql://postgres:5432/lakesoul_test?stringtype=unspecified
+      run: mvn clean test --file pom.xml -pl lakesoul-spark -am
