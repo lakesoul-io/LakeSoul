@@ -201,8 +201,9 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // TODO: Push this to Apache Spark
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer
         // to this data source relation. This is the behavior for InsertInto
+        val spark = SparkSession.active
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
+          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, spark)))
       }
     }
   }

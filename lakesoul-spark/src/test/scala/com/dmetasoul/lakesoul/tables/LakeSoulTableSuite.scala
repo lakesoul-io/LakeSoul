@@ -69,6 +69,7 @@ class LakeSoulTableSuite extends QueryTest
   }
 
   test("forName - with non-LakeSoul table name") {
+    spark.sessionState.catalogManager.setCurrentCatalog("spark_catalog")
     withTempDir { dir =>
       withTable("notAnLakeSoulTable") {
         testData.write.format("parquet").mode("overwrite")
@@ -76,6 +77,7 @@ class LakeSoulTableSuite extends QueryTest
         testForNameOnNonLakeSoulName("notAnLakeSoulTable")
       }
     }
+    spark.sessionState.catalogManager.setCurrentCatalog("lakesoul")
   }
 
   test("forName - with temp view name") {
