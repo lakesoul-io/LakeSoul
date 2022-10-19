@@ -101,7 +101,8 @@ class LakeSoulDataSource
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
-    SparkUtil.createRelation(Nil, snapshot_manage, SparkUtil.spark)
+    val spark = SparkSession.active
+    SparkUtil.createRelation(Nil, snapshot_manage, spark)
   }
 
 

@@ -93,11 +93,12 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.commit(newFiles, newReadFiles)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
+      val spark = SparkSession.active
       val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
       Utils.tryWithSafeFinally({
         spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
-        SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
-        SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+        spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
+        spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
       }) {
         spark.sessionState.catalogManager.setCurrentCatalog(currentCatalog)
       }
