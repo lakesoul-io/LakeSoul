@@ -4,8 +4,8 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-datafusion = { version = "10.0.0", features = ["simd"] }
-object_store = { version = "0.3", features = ["aws"] }
+datafusion = { version = "13.0.0", features = ["simd"] }
+object_store = { version = "0.5", features = ["aws"] }
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 derivative = "2.2.0"
