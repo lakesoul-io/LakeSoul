@@ -41,7 +41,7 @@ class DropTableSuite extends QueryTest
       val e1 = intercept[AnalysisException] {
         LakeSoulTable.forPath(tmpPath)
       }
-      assert(e1.getMessage().contains(s"Table $tmpPath doesn't exist."))
+      assert(e1.getMessage().contains(s"Table ${SparkUtil.makeQualifiedPath(tmpPath).toString} doesn't exist."))
     })
   }
 
@@ -54,8 +54,6 @@ class DropTableSuite extends QueryTest
         .partitionBy("key")
         .format("lakesoul")
         .save(tmpPath)
-
-      val tableInfo = MetaVersion.getTableInfo(tmpPath)
 
       val e1 = intercept[AnalysisException] {
         LakeSoulTable.forPath(tmpPath).dropPartition("key=1 or key=2")

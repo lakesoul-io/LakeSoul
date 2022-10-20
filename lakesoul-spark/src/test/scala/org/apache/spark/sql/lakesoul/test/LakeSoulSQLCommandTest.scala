@@ -23,10 +23,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession, SparkSessionExtensions}
 import org.apache.spark.util.Utils
 
 import java.io.File
@@ -34,10 +33,11 @@ import java.io.File
 trait LakeSoulTestUtils extends Logging {
   self: SharedSparkSession =>
 
+  val testDatabase = "test_database"
+
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "test_lakesoul_meta")
     session.sparkContext.setLogLevel("ERROR")
     session
   }
@@ -46,8 +46,10 @@ trait LakeSoulTestUtils extends Logging {
     Utils.tryWithSafeFinally(f) {
       tableNames.foreach { name =>
         spark.sql(s"DROP TABLE IF EXISTS $name")
-        val lakeSoulName = if (name.startsWith("lakesoul.")) name else s"lakesoul.$name"
-        spark.sql(s"DROP TABLE IF EXISTS $lakeSoulName")
+        if (name.split("\\.").length == 1) {
+          val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
+          spark.sql(s"DROP TABLE IF EXISTS $databaseName")
+        }
       }
     }
   }
@@ -110,8 +112,8 @@ trait LakeSoulSQLCommandTest extends LakeSoulTestUtils {
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set(LakeSoulSQLConf.META_DATABASE_NAME.key, "test_lakesoul_meta")
-    session.conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[LakeSoulCatalog].getName)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
     session.sparkContext.setLogLevel("ERROR")
 
     session

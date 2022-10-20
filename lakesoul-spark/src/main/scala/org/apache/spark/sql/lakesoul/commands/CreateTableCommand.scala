@@ -16,27 +16,28 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.analysis.CannotReplaceMissingTableException
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableProperties, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.StructType
 
+import java.net.URI
+
 /**
   * Single entry point for all write or declaration operations for LakeSoul tables accessed through
   * the table name.
   *
   * @param table            The table identifier for the LakeSoul table
-  * @param existingTableOpt The existing table for the same identifier if exists
+  * @param existingTablePath The existing table for the same identifier if exists
   * @param mode             The save mode when writing data. Relevant when the query is empty or set to Ignore
   *                         with `CREATE TABLE IF NOT EXISTS`.
   * @param query            The query to commit into the lakesoul table if it exist. This can come from
@@ -44,11 +45,12 @@ import org.apache.spark.sql.types.StructType
   *                - saveAsTable
   */
 case class CreateTableCommand(var table: CatalogTable,
-                              existingTableOpt: Option[CatalogTable],
+                              existingTablePath: Option[String],
                               mode: SaveMode,
                               query: Option[LogicalPlan],
                               operation: TableCreationModes.CreationMode = TableCreationModes.Create,
-                              tableByPath: Boolean = false)
+                              tableByPath: Boolean = false,
+                              lakeSoulCatalog: LakeSoulCatalog)
   extends RunnableCommand
     with Logging {
 
@@ -57,7 +59,7 @@ case class CreateTableCommand(var table: CatalogTable,
     assert(table.identifier.database.isDefined, "Database should've been fixed at analysis")
     // There is a subtle race condition here, where the table can be created by someone else
     // while this command is running. Nothing we can do about that though :(
-    val tableExists = existingTableOpt.isDefined
+    val tableExists = existingTablePath.isDefined
     if (mode == SaveMode.Ignore && tableExists) {
       // Early exit on ignore
       return Nil
@@ -72,23 +74,22 @@ case class CreateTableCommand(var table: CatalogTable,
     }
 
     val tableWithLocation = if (tableExists) {
-      val existingTable = existingTableOpt.get
+      assert(existingTablePath.isDefined)
+      val existingPath = existingTablePath.get
       table.storage.locationUri match {
-        case Some(location) if location.getPath != existingTable.location.getPath =>
+        case Some(location) if SparkUtil.makeQualifiedPath(location.getPath).toString != existingPath =>
           val tableName = table.identifier.quotedString
           throw new AnalysisException(
             s"The location of the existing table $tableName is " +
-              s"`${existingTable.location}`. It doesn't match the specified location " +
-              s"`${table.location}`.")
+              s"`$existingPath`. It doesn't match the specified location " +
+              s"`${SparkUtil.makeQualifiedPath(location.getPath).toString}`.")
         case _ =>
+          table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
       }
-      table.copy(
-        storage = existingTable.storage,
-        tableType = existingTable.tableType)
     } else if (table.storage.locationUri.isEmpty) {
       // We are defining a new managed table
       assert(table.tableType == CatalogTableType.MANAGED)
-      val loc = sparkSession.sessionState.catalog.defaultTablePath(table.identifier)
+      val loc = SparkUtil.getDefaultTablePath(table.identifier).toUri
       table.copy(storage = table.storage.copy(locationUri = Some(loc)))
     } else {
       // We are defining a new external table
@@ -98,12 +99,8 @@ case class CreateTableCommand(var table: CatalogTable,
 
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
-    val fs = tableLocation.getFileSystem(sparkSession.sessionState.newHadoopConf())
     val modifiedPath = SparkUtil.makeQualifiedTablePath(tableLocation)
 
-//    if(SparkUtil.TablePathExisted(fs, modifiedPath)){
-//      throw LakeSoulErrors.failedCreateTableException(table.identifier.table)
-//    }
     // external options to store replace and partition properties
     var externalOptions = Map.empty[String, String]
     if (table.partitionColumnNames.nonEmpty) {
@@ -114,7 +111,7 @@ case class CreateTableCommand(var table: CatalogTable,
       table.storage.properties ++ externalOptions,
       sparkSession.sessionState.conf)
 
-    val snapshotManagement = SnapshotManagement(modifiedPath.toString)
+    val snapshotManagement = SnapshotManagement(modifiedPath.toString, table.database)
 
     // don't support replace table
     operation match {
@@ -127,7 +124,7 @@ case class CreateTableCommand(var table: CatalogTable,
     val tc = snapshotManagement.startTransaction()
 
     val shortTableName = table.identifier.table
-    if (MetaVersion.isShortTableNameExists(shortTableName)._1) {
+    if (MetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
       throw LakeSoulErrors.tableExistsException(shortTableName)
     } else {
       tc.setShortTableName(shortTableName)
@@ -216,18 +213,13 @@ case class CreateTableCommand(var table: CatalogTable,
       }
     }
 
-    // We would have failed earlier on if we couldn't ignore the existence of the table
-    // In addition, we just might using saveAsTable to append to the table, so ignore the creation
-    // if it already exists.
-    // Note that someone may have dropped and recreated the table in a separate location in the
-    // meantime... Unfortunately we can't do anything there at the moment, because Hive sucks.
-    val tableWithDefaultOptions = tableWithLocation.copy(
-      schema = new StructType(),
-      partitionColumnNames = Nil,
-      tracksPartitionsInCatalog = true
-    )
+//    val tableWithDefaultOptions = tableWithLocation.copy(
+//      schema = new StructType(),
+//      partitionColumnNames = Nil,
+//      tracksPartitionsInCatalog = true
+//    )
 
-    updateCatalog(sparkSession, tableWithDefaultOptions)
+//    updateCatalog(sparkSession, tableWithDefaultOptions)
 
     Nil
 
@@ -238,7 +230,8 @@ case class CreateTableCommand(var table: CatalogTable,
                                    schemaString: String): TableInfo = {
     val hashParitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
     val hashBucketNum = table.properties.getOrElse(LakeSoulOptions.HASH_BUCKET_NUM, "-1").toInt
-    TableInfo(table_path_s = tc.tableInfo.table_path_s,
+    TableInfo(tc.tableInfo.namespace,
+      table_path_s = tc.tableInfo.table_path_s,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
       range_column = table.partitionColumnNames.mkString(","),
@@ -312,32 +305,6 @@ case class CreateTableCommand(var table: CatalogTable,
           path, tableDesc.properties, existingTableInfo.configuration)
       }
     }
-  }
-
-  /**
-    * Similar to getOperation, here we disambiguate the catalog alterations we need to do based
-    * on the table operation, and whether we have reached here through legacy code or DataSourceV2
-    * code paths.
-    */
-  private def updateCatalog(spark: SparkSession, table: CatalogTable): Unit = operation match {
-    case _ if tableByPath => // do nothing with the metastore if this is by path
-    case TableCreationModes.Create =>
-      spark.sessionState.catalog.createTable(
-        table,
-        ignoreIfExists = existingTableOpt.isDefined,
-        validateLocation = false)
-    case TableCreationModes.Replace if existingTableOpt.isDefined =>
-      spark.sessionState.catalog.alterTable(table)
-    case TableCreationModes.Replace =>
-      val ident = Identifier.of(table.identifier.database.toArray, table.identifier.table)
-      throw new CannotReplaceMissingTableException(ident)
-    case TableCreationModes.CreateOrReplace if existingTableOpt.isDefined =>
-      spark.sessionState.catalog.alterTable(table)
-    case TableCreationModes.CreateOrReplace =>
-      spark.sessionState.catalog.createTable(
-        table,
-        ignoreIfExists = false,
-        validateLocation = false)
   }
 
   /**

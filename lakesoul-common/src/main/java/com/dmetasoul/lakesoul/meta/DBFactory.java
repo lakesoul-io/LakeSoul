@@ -20,45 +20,78 @@ package com.dmetasoul.lakesoul.meta;
 import com.dmetasoul.lakesoul.meta.dao.*;
 
 public class DBFactory {
-    private static TableInfoDao tableInfoDao;
-    private static TableNameIdDao TableNameIdDao;
-    private static TablePathIdDao tablePathIdDao;
-    private static DataCommitInfoDao dataCommitInfoDao;
-    private static PartitionInfoDao partitionInfoDao;
+
+    private static volatile NamespaceDao namespaceDao;
+    private static volatile TableInfoDao tableInfoDao;
+    private static volatile TableNameIdDao TableNameIdDao;
+    private static volatile TablePathIdDao tablePathIdDao;
+    private static volatile DataCommitInfoDao dataCommitInfoDao;
+    private static volatile PartitionInfoDao partitionInfoDao;
 
     private DBFactory(){}
 
+    public static NamespaceDao getNamespaceDao() {
+        if (namespaceDao == null) {
+            synchronized (NamespaceDao.class) {
+                if (namespaceDao == null) {
+                    namespaceDao = new NamespaceDao();
+                }
+            }
+        }
+        return namespaceDao;
+    }
+
     public static TableInfoDao getTableInfoDao() {
         if (tableInfoDao == null) {
-            tableInfoDao = new TableInfoDao();
+            synchronized (TableInfoDao.class) {
+                if (tableInfoDao == null) {
+                    tableInfoDao = new TableInfoDao();
+                }
+            }
         }
         return tableInfoDao;
     }
 
     public static com.dmetasoul.lakesoul.meta.dao.TableNameIdDao getTableNameIdDao() {
         if (TableNameIdDao == null) {
-            TableNameIdDao = new TableNameIdDao();
+            synchronized (TableNameIdDao.class) {
+                if (TableNameIdDao == null) {
+                    TableNameIdDao = new TableNameIdDao();
+                }
+            }
         }
         return TableNameIdDao;
     }
 
     public static TablePathIdDao getTablePathIdDao() {
         if (tablePathIdDao == null) {
-            tablePathIdDao = new TablePathIdDao();
+            synchronized (TablePathIdDao.class) {
+                if (tablePathIdDao == null) {
+                    tablePathIdDao = new TablePathIdDao();
+                }
+            }
         }
         return tablePathIdDao;
     }
 
     public static DataCommitInfoDao getDataCommitInfoDao() {
         if (dataCommitInfoDao == null) {
-            dataCommitInfoDao = new DataCommitInfoDao();
+            synchronized (DataCommitInfoDao.class) {
+                if (dataCommitInfoDao == null) {
+                    dataCommitInfoDao = new DataCommitInfoDao();
+                }
+            }
         }
         return dataCommitInfoDao;
     }
 
     public static PartitionInfoDao getPartitionInfoDao() {
         if (partitionInfoDao == null) {
-            partitionInfoDao = new PartitionInfoDao();
+            synchronized (PartitionInfoDao.class) {
+                if (partitionInfoDao == null) {
+                    partitionInfoDao = new PartitionInfoDao();
+                }
+            }
         }
         return partitionInfoDao;
     }

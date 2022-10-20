@@ -21,19 +21,20 @@ import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo, SparkUtil}
 import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.sql.{Column, DataFrame, Dataset}
+import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 
 object PartitionFilter {
 
   def partitionsForScan(snapshot: Snapshot, filters: Seq[Expression]): Seq[PartitionFilterInfo] = {
     val table_info = snapshot.getTableInfo
 
+    val spark = SparkSession.active
     val partitionFilters = filters.flatMap { filter =>
-      LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, SparkUtil.spark)._1
+      LakeSoulUtils.splitMetadataAndDataPredicates(filter, table_info.range_partition_columns, spark)._1
     }
     val allPartitions = SparkUtil.allPartitionFilterInfoDF(snapshot)
 
-    import SparkUtil.spark.implicits._
+    import spark.implicits._
 
     filterFileList(
       table_info.range_partition_schema,
@@ -52,7 +53,8 @@ object PartitionFilter {
   def filterFileList(partitionSchema: StructType,
                      files: Seq[DataFileInfo],
                      partitionFilters: Seq[Expression]): Seq[DataFileInfo] = {
-    import SparkUtil.spark.implicits._
+    val spark = SparkSession.active
+    import spark.implicits._
     val partitionsMatched = filterFileList(partitionSchema,
       files.map(f => PartitionFilterInfo(
         f.range_partitions,

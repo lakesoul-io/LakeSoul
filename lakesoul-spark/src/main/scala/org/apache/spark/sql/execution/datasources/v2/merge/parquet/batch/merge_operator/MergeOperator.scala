@@ -47,8 +47,6 @@ trait MergeOperator[T] extends Serializable {
     val udf = SparkUserDefinedFunction(f, dataType, inputEncoders, None, Option(s"${LakeSoulUtils.MERGE_OP}$name"))
     if (nullable) udf else udf.asNonNullable()
   }
-
-
 }
 
 class DefaultMergeOp[T] extends MergeOperator[T] {
@@ -57,16 +55,27 @@ class DefaultMergeOp[T] extends MergeOperator[T] {
   }
 }
 
-
 class MergeOpInt extends MergeOperator[Int] {
   override def mergeData(input: Seq[Int]): Int = {
     input.sum
   }
 }
 
+class MergeNonNullOp[T] extends MergeOperator[T] {
+  override def mergeData(input: Seq[T]): T = {
+    val output=input.filter(_!=null)
+    output.filter(!_.equals("null")).last
+  }
+}
 
 class MergeOpString extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
     input.mkString(",")
+  }
+}
+
+class MergeOpLong extends MergeOperator[Long] {
+  override def mergeData(input: Seq[Long]): Long = {
+    input.sum
   }
 }

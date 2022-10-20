@@ -1,0 +1,31 @@
+version: '3'
+
+services:
+  lakesoul-meta-db:
+    image: postgres:14.5
+    ports:
+      - "5432:5432"
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: lakesoul_test
+      POSTGRES_USER: lakesoul_test
+      POSTGRES_DB: lakesoul_test
+    volumes:
+      - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
+      - ./meta_cleanup.sql:/meta_cleanup.sql
+
+  minio:
+    image: bitnami/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
+      MINIO_ROOT_USER: minioadmin1
+      MINIO_ROOT_PASSWORD: minioadmin1
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    hostname: minio

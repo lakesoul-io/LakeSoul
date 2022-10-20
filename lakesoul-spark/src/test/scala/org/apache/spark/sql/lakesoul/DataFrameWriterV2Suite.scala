@@ -16,14 +16,13 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.catalyst.analysis.TableAlreadyExistsException
 import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Identifier, Table, TableCatalog}
 import org.apache.spark.sql.connector.expressions._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfter
@@ -35,6 +34,7 @@ import scala.collection.JavaConverters._
 trait DataFrameWriterV2Tests
   extends QueryTest
     with SharedSparkSession
+    with LakeSoulSQLCommandTest
     with BeforeAndAfter {
 
   import testImplicits._
@@ -47,21 +47,10 @@ trait DataFrameWriterV2Tests
   }
 
   after {
-    spark.sessionState.catalog.listTables("default").foreach { ti =>
-      val location = try {
-        Option(spark.sessionState.catalog.getTableMetadata(ti).location)
-      } catch {
-        case e: Exception => None
-      }
-      spark.sessionState.catalog.dropTable(ti, ignoreIfNotExists = false, purge = true)
-      if (location.isDefined) {
-        try {
-          LakeSoulTable.forPath(location.get.toString).dropTable()
-        } catch {
-          case e: Exception =>
-        }
-      }
-    }
+    val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
+    catalog
+      .listTables(Array("default"))
+      .foreach { ti => catalog.dropTable(ti)}
   }
 
   def catalog: TableCatalog = {
@@ -422,10 +411,10 @@ class DataFrameWriterV2Suite
     val location = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
       .asInstanceOf[LakeSoulTableV2].path
 
-    spark.table("source").writeTo(s"lakesoul.`$location`").append()
+    spark.table("source").writeTo(s"`$location`").append()
 
     checkAnswer(
-      spark.table(s"lakesoul.`$location`").select("id", "data"),
+      spark.table(s"`$location`").select("id", "data"),
       Seq(Row(1L, "a"), Row(2L, "b"), Row(3L, "c")))
   }
 

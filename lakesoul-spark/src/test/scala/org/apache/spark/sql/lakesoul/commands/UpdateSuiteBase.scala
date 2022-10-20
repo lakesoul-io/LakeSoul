@@ -73,7 +73,7 @@ abstract class UpdateSuiteBase
                             expectedResults: Seq[Row],
                             colNames: Seq[String],
                             tableName: Option[String] = None): Unit = {
-    executeUpdate(tableName.getOrElse(s"lakesoul.`$tempPath`"), setClauses, where = condition.orNull)
+    executeUpdate(tableName.getOrElse(s"lakesoul.default.`$tempPath`"), setClauses, where = condition.orNull)
     checkAnswer(readLakeSoulTable(tempPath).select(colNames.map(col): _*), expectedResults)
   }
 
@@ -95,7 +95,7 @@ abstract class UpdateSuiteBase
           setClauses = "value = key + value, key = key + 1",
           expectedResults = Row(0, 3) :: Row(2, 5) :: Row(2, 2) :: Row(3, 4) :: Nil,
           Seq("key", "value"),
-          tableName = Some(s"lakesoul.`$tempPath`"))
+          tableName = Some(s"lakesoul.default.`$tempPath`"))
       }
     }
   }
@@ -112,7 +112,7 @@ abstract class UpdateSuiteBase
           setClauses = "value = key + value, key = key + 1",
           expectedResults = Row(0, 3, 3) :: Row(2, 4, 5) :: Row(2, 1, 2) :: Row(3, 2, 4) :: Nil,
           Seq("key", "hash", "value"),
-          tableName = Some(s"lakesoul.`$tempPath`"))
+          tableName = Some(s"lakesoul.default.`$tempPath`"))
       }
     }
   }
@@ -405,9 +405,9 @@ abstract class UpdateSuiteBase
     Seq((1, 1), (0, 3), (1, 5)).toDF("key1", "value")
       .write.mode("overwrite").format("parquet").save(tempPath)
     val e = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`", set = "key1 = 3")
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`", set = "key1 = 3")
     }.getMessage
-    assert(e.contains("doesn't exist"))
+    assert(e.contains("doesn't exist") || e.contains("Table or view not found"))
   }
 
   test("Negative case - check lakeSoulTable columns during analysis") {
@@ -453,7 +453,7 @@ abstract class UpdateSuiteBase
 
     // basic subquery
     val e0 = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`",
         set = "key = 1",
         where = "key < (SELECT max(c) FROM source)")
     }.getMessage
@@ -461,7 +461,7 @@ abstract class UpdateSuiteBase
 
     // subquery with EXISTS
     val e1 = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`",
         set = "key = 1",
         where = "EXISTS (SELECT max(c) FROM source)")
     }.getMessage
@@ -469,7 +469,7 @@ abstract class UpdateSuiteBase
 
     // subquery with NOT EXISTS
     val e2 = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`",
         set = "key = 1",
         where = "NOT EXISTS (SELECT max(c) FROM source)")
     }.getMessage
@@ -477,7 +477,7 @@ abstract class UpdateSuiteBase
 
     // subquery with IN
     val e3 = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`",
         set = "key = 1",
         where = "key IN (SELECT max(c) FROM source)")
     }.getMessage
@@ -485,7 +485,7 @@ abstract class UpdateSuiteBase
 
     // subquery with NOT IN
     val e4 = intercept[AnalysisException] {
-      executeUpdate(lakeSoulTable = s"lakesoul.`$tempPath`",
+      executeUpdate(lakeSoulTable = s"lakesoul.default.`$tempPath`",
         set = "key = 1",
         where = "key NOT IN (SELECT max(c) FROM source)")
     }.getMessage
@@ -680,7 +680,7 @@ abstract class UpdateSuiteBase
         if (source.nonEmpty) {
           toDF(source).createOrReplaceTempView("source")
         }
-        executeUpdate(s"lakesoul.`$dir`", set, updateWhere)
+        executeUpdate(s"lakesoul.default.`$dir`", set, updateWhere)
         checkAnswer(readLakeSoulTable(dir.toString), toDF(expected))
       }
     }
@@ -694,7 +694,7 @@ abstract class UpdateSuiteBase
     withTempDir { dir =>
       targetDF.write.format("lakesoul").save(dir.toString)
       val e = intercept[AnalysisException] {
-        executeUpdate(lakeSoulTable = s"lakesoul.`$dir`", set, where)
+        executeUpdate(lakeSoulTable = s"lakesoul.default.`$dir`", set, where)
       }
       errMsgs.foreach { msg =>
         assert(e.getMessage.toLowerCase(Locale.ROOT).contains(msg.toLowerCase(Locale.ROOT)))

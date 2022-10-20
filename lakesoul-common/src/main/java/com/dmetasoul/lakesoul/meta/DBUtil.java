@@ -23,95 +23,79 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
-import java.util.UUID;
+import java.util.*;
 
 public class DBUtil {
 
-    public static void init() {
-        String tableInfo = "create table if not exists table_info (" +
-                "table_id text," +
-                "table_name text," +
-                "table_path text," +
-                "table_schema text," +
-                "properties json," +
-                "partitions text," +
-                "primary key(table_id)" +
-                ")";
-        String tableNameId = "create table if not exists table_name_id (" +
-                "table_name text," +
-                "table_id text," +
-                "primary key(table_name)" +
-                ")";
-        String tablePathId = "create table if not exists table_path_id (" +
-                "table_path text," +
-                "table_id text," +
-                "primary key(table_path)" +
-                ")";
-        String dataFileOp = "create type data_file_op as (" +
-                "path text," +
-                "file_op text," +
-                "size bigint," +
-                "file_exist_cols text" +
-                ")";
-        String dataCommitInfo = "create table if not exists data_commit_info (" +
-                "table_id text," +
-                "partition_desc text," +
-                "commit_id UUID," +
-                "file_ops data_file_op[]," +
-                "commit_op text," +
-                "timestamp bigint," +
-                "primary key(table_id, partition_desc, commit_id)" +
-                ")";
-        String partitionInfo = "create table if not exists partition_info (" +
-                "table_id text," +
-                "partition_desc text," +
-                "version int," +
-                "commit_op text," +
-                "snapshot UUID[]," +
-                "expression text," +
-                "primary key(table_id, partition_desc, version)" +
-                ")";
-        Connection conn = null;
-        Statement stmt = null;
-        try {
-            conn = DBConnector.getConn();
-            stmt = conn.createStatement();
-            stmt.execute(tableInfo);
-            stmt.execute(tableNameId);
-            stmt.execute(tablePathId);
-            stmt.execute(dataFileOp);
-            stmt.execute(dataCommitInfo);
-            stmt.execute(partitionInfo);
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            DBConnector.closeConn();
+    private static final String driverNameDefault = "org.postgresql.Driver";
+    private static final String urlDefault = "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
+    private static final String usernameDefault = "lakesoul_test";
+    private static final String passwordDefault = "lakesoul_test";
+
+    private static final String driverNameKey = "lakesoul.pg.driver";
+    private static final String urlKey = "lakesoul.pg.url";
+    private static final String usernameKey = "lakesoul.pg.username";
+    private static final String passwordKey = "lakesoul.pg.password";
+
+    private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
+    private static final String urlEnv = "LAKESOUL_PG_URL";
+    private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
+    private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
+
+    private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
+
+    private static String getEnv(String key, String defaultValue) {
+        String value = System.getenv(key);
+        if (value == null) {
+            return defaultValue;
+        } else {
+            return value;
         }
     }
 
+    /**
+     *  PG connection config retrieved in the following order:
+     *  1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
+     *  2. A system property "lakesoul_home" (in lower case) point to a property file;
+     *      Following config keys are used to read the property file:
+     *          lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
+     *  3. Any of the following env var exist:
+     *      LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
+     *  4. Otherwise, resolved to each's config's default
+     */
     public static DataBaseProperty getDBInfo() {
-        String configFile = System.getenv("lakesoul_home");
+
+        String configFile = System.getenv(lakeSoulHomeEnv);
+        if (null == configFile) {
+            configFile = System.getenv(lakeSoulHomeEnv.toLowerCase());
+            if (null == configFile) {
+                configFile = System.getProperty(lakeSoulHomeEnv.toLowerCase());
+            }
+        }
         Properties properties = new Properties();
-        if (configFile != null ) {
+        if (configFile != null) {
             try {
-                properties.load(new FileInputStream(configFile));
+                properties.load(Files.newInputStream(Paths.get(configFile)));
             } catch (IOException e) {
                 e.printStackTrace();
             }
+        } else {
+            properties.setProperty(driverNameKey, getEnv(driverNameEnv, driverNameDefault));
+            properties.setProperty(urlKey, getEnv(urlEnv, urlDefault));
+            properties.setProperty(usernameKey, getEnv(usernameEnv, usernameDefault));
+            properties.setProperty(passwordKey, getEnv(passwordEnv, passwordDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
-        dataBaseProperty.setDriver(properties.getProperty("lakesoul.pg.driver", "org.postgresql.Driver"));
-        dataBaseProperty.setUrl(properties.getProperty("lakesoul.pg.url", "jdbc:postgresql://127.0.0.1:5433/test_lakesoul_meta?stringtype=unspecified"));
-        dataBaseProperty.setUsername(properties.getProperty("lakesoul.pg.username", "yugabyte"));
-        dataBaseProperty.setPassword(properties.getProperty("lakesoul.pg.password", "yugabyte"));
+        dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));
+        dataBaseProperty.setUrl(properties.getProperty(urlKey, urlDefault));
+        dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
+        dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         return dataBaseProperty;
     }
 
@@ -121,8 +105,9 @@ public class DBUtil {
         String tablePathId = "truncate table table_path_id";
         String dataCommitInfo = "truncate table data_commit_info";
         String partitionInfo = "truncate table partition_info";
-        Connection conn = null;
-        Statement stmt = null;
+        String namespace = "truncate table namespace";
+        Connection conn;
+        Statement stmt;
         try {
             conn = DBConnector.getConn();
             stmt = conn.createStatement();
@@ -131,6 +116,7 @@ public class DBUtil {
             stmt.addBatch(tablePathId);
             stmt.addBatch(dataCommitInfo);
             stmt.addBatch(partitionInfo);
+            stmt.addBatch(namespace);
             stmt.executeBatch();
         } catch (SQLException e) {
             e.printStackTrace();
@@ -141,6 +127,20 @@ public class DBUtil {
 
     public static JSONObject stringToJSON(String s) {
         return JSONObject.parseObject(s);
+    }
+
+    public static JSONObject stringMapToJson(Map<String, String> map) {
+        JSONObject object = new JSONObject();
+        object.putAll(map);
+        return object;
+    }
+
+    public static Map<String, String> jsonToStringMap(JSONObject o) {
+        Map<String, String> map = new HashMap<>();
+        for (Map.Entry<String, Object> entry : o.entrySet()) {
+            map.put(entry.getKey(), entry.getValue().toString());
+        }
+        return map;
     }
 
     public static String jsonToString(JSONObject o) {
@@ -164,7 +164,7 @@ public class DBUtil {
             String fileExistCols = dataFileOp.getFileExistCols();
             sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
         }
-        sb = new StringBuilder(sb.substring(0, sb.length()-1));
+        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
         sb.append("}");
         return sb.toString();
     }
@@ -175,21 +175,18 @@ public class DBUtil {
             // todo 这里应该报错
             return rsList;
         }
-        String[] fileOpTmp = s.substring(1, s.length()-1).split("\",\"");
-        for (int i=0;i<fileOpTmp.length;i++) {
-            String tmpElem = fileOpTmp[i].replace("\"","").replace("\\","");
+        String[] fileOpTmp = s.substring(1, s.length() - 1).split("\",\"");
+        for (String value : fileOpTmp) {
+            String tmpElem = value.replace("\"", "").replace("\\", "");
             if (!tmpElem.startsWith("(") || !tmpElem.endsWith(")")) {
                 // todo 报错
                 continue;
             }
-            tmpElem = tmpElem.substring(1, tmpElem.length()-1);
+            tmpElem = tmpElem.substring(1, tmpElem.length() - 1);
             DataFileOp dataFileOp = new DataFileOp();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
-//            if (fileOp.equals("del")) {
-//                continue;
-//            }
             dataFileOp.setFileOp(fileOp);
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
@@ -208,7 +205,7 @@ public class DBUtil {
         for (UUID uuid : uuidList) {
             sb.append(String.format("'%s',", uuid.toString()));
         }
-        sb = new StringBuilder(sb.substring(0, sb.length()-1));
+        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
         return sb.toString();
     }
 
@@ -220,7 +217,7 @@ public class DBUtil {
         for (UUID uuid : uuidList) {
             sb.append(String.format("%s,", uuid.toString()));
         }
-        sb = new StringBuilder(sb.substring(0, sb.length()-1));
+        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
         return sb.toString();
     }
 
@@ -246,7 +243,7 @@ public class DBUtil {
         for (String s : partitionDescList) {
             sb.append(String.format("'%s',", s));
         }
-        return sb.substring(0, sb.length()-1);
+        return sb.substring(0, sb.length() - 1);
     }
 
 }

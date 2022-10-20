@@ -499,7 +499,6 @@ object LakeSoulErrors {
     new AnalysisException(s"Unknown UpsertMode was specified: $mode, please use `upsert` or `update` instead")
   }
 
-
   def partitionColumnNotFoundException(column: String, sourceCols: String): Throwable = {
     throw new AnalysisException(
       s"Couldn't find all the partition columns `$column` while upsert, the sourceDF columns are `$sourceCols`.")
@@ -513,7 +512,6 @@ object LakeSoulErrors {
         s"Couldn't execute compaction because of your condition `${condition.toString()}` refer to $size partitions, " +
           s"but we only allow one partition.")
     }
-
   }
 
   def tableNotFoundException(table_name: String, table_id: String): Throwable = {
@@ -587,14 +585,6 @@ object LakeSoulErrors {
       """.stripMargin)
   }
 
-
-  def readVersionIllegalException(currentVersion: Long, beforeVersion: Long): MetaException = {
-    new MetaException(
-      s"""
-         |Error: Current read version $currentVersion shouldn't less than before version $beforeVersion, read version is incremental.
-       """.stripMargin.trim)
-  }
-
   def useMergeOperatorForNonLakeSoulTableField(fieldName: String): Throwable = {
     new AnalysisException(s"Field `$fieldName` is not in LakeSoulTableRel, you can't perform merge operator on it")
   }
@@ -609,11 +599,6 @@ object LakeSoulErrors {
 
   def compactionFailedWithPartMergeException(): Throwable = {
     new MetaException("Compaction with part merging commit failed, another job may had compacted this partition.")
-  }
-
-  def failedLockShortTableName(table: String): Throwable = {
-    new MetaException(
-      s"""Table `$table` is created by another user.""")
   }
 
   def unsupportedLogicalPlanWhileRewriteQueryException(plan: String): Throwable = {

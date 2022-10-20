@@ -12,3 +12,5 @@
 *.iml
 /native-io/lakesoul-io-java/target/
 /native-io/lakesoul-io-java/.idea/
+dependency-reduced-pom.xml
+/lakesoul-spark/spark-warehouse/

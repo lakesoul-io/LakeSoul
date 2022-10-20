@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.streaming.Sink
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil}
@@ -59,7 +59,8 @@ class LakeSoulDataSource
       throw LakeSoulErrors.pathNotSpecifiedException
     })
 
-    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
     val tableInfo = snapshot.getTableInfo
 
     //update mode can only be used with hash partition
@@ -91,7 +92,8 @@ class LakeSoulDataSource
     val path = parameters.getOrElse("path", {
       throw LakeSoulErrors.pathNotSpecifiedException
     })
-    val snapshot_manage = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+    val snapshot_manage = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
     WriteIntoTable(
       snapshot_manage,
@@ -99,7 +101,8 @@ class LakeSoulDataSource
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
-    SparkUtil.createRelation(Nil, snapshot_manage, SparkUtil.spark)
+    val spark = SparkSession.active
+    SparkUtil.createRelation(Nil, snapshot_manage, spark)
   }
 
 

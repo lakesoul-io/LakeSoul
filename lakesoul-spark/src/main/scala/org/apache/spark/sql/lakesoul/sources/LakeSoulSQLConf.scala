@@ -23,9 +23,6 @@ object LakeSoulSQLConf {
 
   def buildConf(key: String): ConfigBuilder = SQLConf.buildConf(s"spark.dmetasoul.lakesoul.$key")
 
-  def buildStaticConf(key: String): ConfigBuilder =
-    SQLConf.buildStaticConf(s"spark.dmetasoul.lakesoul.$key")
-
   val SCHEMA_AUTO_MIGRATE: ConfigEntry[Boolean] =
     buildConf("schema.autoMerge.enabled")
       .doc("If true, enables schema merging on appends and on overwrites.")
@@ -38,84 +35,7 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(true)
 
-  val MAX_DELTA_FILE_NUM: ConfigEntry[Int] =
-    buildConf("deltaFile.max.num")
-      .doc("Maximum delta files allowed, default is 5.")
-      .intConf
-      .createWithDefault(5)
-
-  val COMPACTION_TIME: ConfigEntry[Long] =
-    buildConf("compaction.interval")
-      .doc("If the last update time exceeds the set interval, compaction will be triggered, default is 12 hours.")
-      .longConf
-      .createWithDefault(12 * 60 * 60 * 1000L)
-
-  //default meta database name
-  val META_DATABASE_NAME: ConfigEntry[String] =
-    buildConf("meta.database.name")
-      .doc(
-        """
-          |Default database of meta tables in PG DB.
-          |User should not change it unless you know what you are going to do.
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("lakesoul_meta")
-
-
-  val META_HOST: ConfigEntry[String] =
-    buildConf("meta.host")
-      .doc(
-        """
-          |Contact point to connect to the PG DB.
-          |A comma separated list may also be used.("127.0.0.1,192.168.0.1")
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("localhost")
-
-  val META_PORT: ConfigEntry[Int] =
-    buildConf("meta.port")
-      .doc("PG DB native connection port.")
-      .intConf
-      .createWithDefault(5433)
-
-  val META_USERNAME: ConfigEntry[String] =
-    buildConf("meta.username")
-      .doc(
-        """
-          |PG DB username, default is `yugabyte`.
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("yugabyte")
-
-  val META_PASSWORD: ConfigEntry[String] =
-    buildConf("meta.password")
-      .doc(
-        """
-          |PG DB password, default is `yugabyte`.
-        """.stripMargin)
-      .stringConf
-      .createWithDefault("yugabyte")
-
-  val META_STREAMING_INFO_TIMEOUT: ConfigEntry[Long] =
-    buildConf("meta.streaming_info.timeout")
-      .doc(
-        """
-          |The maximum timeout for streaming info.
-          |This parameter will only be used in Cleanup operation.
-        """.stripMargin)
-      .longConf
-      .createWithDefault(12 * 60 * 60 * 1000L)
-
-  val META_MAX_COMMIT_ATTEMPTS: ConfigEntry[Int] =
-    buildConf("meta.commit.max.attempts")
-      .doc(
-        """
-          |The maximum times for a job attempts to commit.
-        """.stripMargin)
-      .intConf
-      .createWithDefault(5)
-
-  //dorp table await time
+  // drop table await time
   val DROP_TABLE_WAIT_SECONDS: ConfigEntry[Int] =
     buildConf("drop.table.wait.seconds")
       .doc(
@@ -130,13 +50,6 @@ object LakeSoulSQLConf {
       .doc("If true, enables full table scan when upsert.")
       .booleanConf
       .createWithDefault(false)
-
-  val PARQUET_BLOCK_SIZE: ConfigEntry[Long] =
-    buildConf("parquet.block.size")
-      .doc("Parquet block size.")
-      .longConf
-      .createWithDefault(32 * 1024 * 1024L)
-
 
   val PARQUET_COMPRESSION: ConfigEntry[String] =
     buildConf("parquet.compression")
@@ -176,17 +89,6 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
-  val PART_MERGE_COMPACTION_COMMIT_ENABLE: ConfigEntry[Boolean] =
-    buildConf("part.merge.compaction.commit.enable")
-      .doc(
-        """
-          |If true, it will commit the compacted files into meta store, and the later reader can read faster.
-          |Note that if you read a column by self-defined merge operator, the compacted result should also use
-          |this merge operator, make sure that the result is expected or disable compaction commit.
-        """.stripMargin)
-      .booleanConf
-      .createWithDefault(true)
-
   val PART_MERGE_FILE_MINIMUM_NUM: ConfigEntry[Int] =
     buildConf("part.merge.file.minimum.num")
       .doc(
@@ -196,14 +98,12 @@ object LakeSoulSQLConf {
       .intConf
       .createWithDefault(5)
 
-
-  val PART_MERGE_FILE_SIZE_FACTOR: ConfigEntry[Double] =
-    buildConf("part.merge.file.size.factor")
+  val SNAPSHOT_CACHE_EXPIRE: ConfigEntry[Int] =
+    buildConf("snapshot.cache.expire.seconds")
       .doc(
         """
-          |File size factor to calculate part merge max size.
-          |Expression: PART_MERGE_FILE_MINIMUM_NUM * PART_MERGE_FILE_SIZE_FACTOR * 128M
+          |Expire snapshot cache in seconds
         """.stripMargin)
-      .doubleConf
-      .createWithDefault(0.1)
+      .intConf
+      .createWithDefault(10)
 }

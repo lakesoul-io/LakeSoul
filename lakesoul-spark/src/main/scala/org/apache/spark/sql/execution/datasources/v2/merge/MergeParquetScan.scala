@@ -407,15 +407,17 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
       val files = fileWithBucketId.getOrElse(bucketId, Map.empty[String, Seq[MergePartitionedFile]])
         .map(_._2.toArray).toArray
 
+      var allPartitionIsSingleFile = true
       var isSingleFile = false
       for (index <- 0 to files.size - 1) {
         isSingleFile = files(index).size == 1
         if (!isSingleFile) {
           val versionFiles = for (elem <- 0 to files(index).size - 1) yield files(index)(elem).copy(writeVersion = elem)
           files(index) = versionFiles.toArray
+          allPartitionIsSingleFile = false
         }
       }
-      MergeFilePartition(bucketId, files, isSingleFile)
+      MergeFilePartition(bucketId, files, allPartitionIsSingleFile)
     }
   }
 

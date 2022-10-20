@@ -25,11 +25,11 @@ import java.sql.*;
 
 public class TableNameIdDao {
 
-    public TableNameId findByTableName(String tableName) {
+    public TableNameId findByTableName(String tableName, String tableNamespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from table_name_id where table_name = '%s'", tableName);
+        String sql = String.format("select * from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName, tableNamespace);
         TableNameId tableNameId = null;
         try {
             conn = DBConnector.getConn();
@@ -39,6 +39,7 @@ public class TableNameIdDao {
             while (rs.next()) {
                 tableNameId.setTableName(rs.getString("table_name"));
                 tableNameId.setTableId(rs.getString("table_id"));
+                tableNameId.setTableNamespace(rs.getString("table_namespace"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -54,9 +55,10 @@ public class TableNameIdDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_name_id (table_name, table_id) values (?, ?)");
+            pstmt = conn.prepareStatement("insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
+            pstmt.setString(3, tableNameId.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
             result = false;
@@ -67,10 +69,10 @@ public class TableNameIdDao {
         return result;
     }
 
-    public void delete(String tableName) {
+    public void delete(String tableName, String tableNamespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from table_name_id where table_name = '%s' ", tableName);
+        String sql = String.format("delete from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName, tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -97,14 +99,14 @@ public class TableNameIdDao {
         }
     }
 
-    public int updateTableId(String tableName, String table_id) {
+    public int updateTableId(String tableName, String table_id, String tableNamespace) {
         int result = 0;
         if (StringUtils.isBlank(table_id)) {
             return result;
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("update table_name_id set table_id = '%s' where table_name = '%s' ", table_id, tableName);
+        String sql = String.format("update table_name_id set table_id = '%s' where table_name = '%s' and table_namespace = '%s'", table_id, tableName, tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -116,5 +118,21 @@ public class TableNameIdDao {
         }
         return result;
 
+    }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "delete from table_name_id;";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
     }
 }

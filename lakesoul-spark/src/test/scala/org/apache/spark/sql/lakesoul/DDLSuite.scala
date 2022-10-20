@@ -20,7 +20,9 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
@@ -67,17 +69,19 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           .add("b", StringType, nullable = false)
         assert(spark.table("lakesoul_test").schema === expectedSchema)
 
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-        assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+        val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+          TableIdentifier("lakesoul_test", Some("default")))
+        assert(location.isDefined)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
         Seq((1L, "a")).toDF("a", "b")
-          .write.format("lakesoul").mode("append").save(table.location.toString)
-        val read = spark.read.format("lakesoul").load(table.location.toString)
+          .write.format("lakesoul").mode("append").save(location.get)
+        val read = spark.read.format("lakesoul").load(location.get)
         checkAnswer(read, Seq(Row(1L, "a")))
 
         intercept[SparkException] {
           Seq((2L, null)).toDF("a", "b")
-            .write.format("lakesoul").mode("append").save(table.location.toString)
+            .write.format("lakesoul").mode("append").save(location.get)
         }
       }
     }
@@ -217,8 +221,10 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           sql("SELECT * FROM lakesoul_test"),
           Seq(Row(Row(1L, "a"), 1)))
 
-        val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("lakesoul_test"))
-        assert(table.location == makeQualifiedPath(dir.getAbsolutePath))
+        val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+          TableIdentifier("lakesoul_test", Some("default")))
+        assert(location.isDefined)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
 
         val schema = new StructType()
           .add("x",
@@ -230,7 +236,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           spark.createDataFrame(
             Seq(Row(Row(2L, null), 2L)).asJava,
             schema
-          ).write.format("lakesoul").mode("append").save(table.location.toString)
+          ).write.format("lakesoul").mode("append").save(location.get)
         }
         verifyInvariantViolationException(e)
       }
@@ -395,10 +401,10 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
            """.stripMargin)
 
 
-      val e = intercept[AnalysisException] {
+      val e = intercept[UnsupportedOperationException] {
         sql(s"ALTER TABLE tbl RENAME TO newTbl")
       }
-      assert(e.getMessage().contains("`RENAME TO` is not supported for lakesoul tables"))
+      assert(e.getMessage.contains("LakeSoul currently doesn't support rename table"))
     }
   }
 
@@ -420,5 +426,4 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
       }
     }
   }
-
 }

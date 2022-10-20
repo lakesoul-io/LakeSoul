@@ -37,8 +37,8 @@ public class TablePathIdDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
-            tablePathId = new TablePathId();
             while (rs.next()) {
+                tablePathId = new TablePathId();
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
             }
@@ -64,6 +64,32 @@ public class TablePathIdDao {
                 TablePathId tablePathId = new TablePathId();
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
+                tablePathId.setTableNamespace(rs.getString("table_namespace"));
+                list.add(tablePathId);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
+    public List<TablePathId> listAllByNamespace(String table_namespace) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select * from table_path_id where table_namespace = '%s'", table_namespace);
+        List<TablePathId> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                TablePathId tablePathId = new TablePathId();
+                tablePathId.setTablePath(rs.getString("table_path"));
+                tablePathId.setTableId(rs.getString("table_id"));
+                tablePathId.setTableNamespace(rs.getString("table_namespace"));
                 list.add(tablePathId);
             }
         } catch (SQLException e) {
@@ -96,15 +122,38 @@ public class TablePathIdDao {
         return list;
     }
 
+    public List<String> listAllPathByNamespace(String table_namespace) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", table_namespace);
+        List<String> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String tablePath = rs.getString("table_path");
+                list.add(tablePath);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
+    }
+
     public boolean insert(TablePathId tablePathId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id) values (?, ?)");
+            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace) values (?, ?, ?)");
             pstmt.setString(1, tablePathId.getTablePath());
             pstmt.setString(2, tablePathId.getTableId());
+            pstmt.setString(3, tablePathId.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
             result = false;
@@ -164,5 +213,21 @@ public class TablePathIdDao {
         }
         return result;
 
+    }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "delete from table_path_id;";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
     }
 }

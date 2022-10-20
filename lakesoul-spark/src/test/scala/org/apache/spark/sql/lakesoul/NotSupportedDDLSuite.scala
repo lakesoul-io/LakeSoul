@@ -17,24 +17,23 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
+import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.test.SharedSparkSession
 
 import java.util.Locale
-import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
-import org.apache.spark.sql.{AnalysisException, QueryTest}
-
 import scala.util.control.NonFatal
 
 
 class NotSupportedDDLSuite
   extends NotSupportedDDLBase
-    with SharedSparkSession
     with LakeSoulSQLCommandTest
 
 
 abstract class NotSupportedDDLBase extends QueryTest
-  with SQLTestUtils {
+  with SharedSparkSession {
 
   val format = "lakesoul"
 
@@ -70,9 +69,11 @@ abstract class NotSupportedDDLBase extends QueryTest
     try {
       val location = Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
         try {
-          Option(spark.sessionState.catalog.getTableMetadata(TableIdentifier(tbl)).location)
+          LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
+            TableIdentifier(tbl, Some("default"))
+          )
         } catch {
-          case e: Exception => None
+          case _: Exception => None
         }
       })
 
@@ -81,9 +82,9 @@ abstract class NotSupportedDDLBase extends QueryTest
       location.foreach(loc => {
         if (loc.isDefined) {
           try {
-            LakeSoulTable.forPath(loc.get.toString).dropTable()
+            LakeSoulTable.forPath(loc.get).dropTable()
           } catch {
-            case e: Exception =>
+            case _: Exception =>
           }
         }
       })
@@ -94,19 +95,12 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   private def assertUnsupported(query: String, messages: String*): Unit = {
-    val allErrMessages = "operation not allowed" +: messages
-    val e = intercept[AnalysisException] {
+    val allErrMessages = "operation not allowed" +: "is only supported with v1 tables" +: messages
+    val e = intercept[Exception] {
       sql(query)
     }
-    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
-  }
-
-  private def assertIgnored(query: String): Unit = {
-    val outputStream = new java.io.ByteArrayOutputStream()
-    Console.withOut(outputStream) {
-      sql(query)
-    }
-    assert(outputStream.toString.contains("The request is ignored"))
+    println(e.getMessage)
+    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err.toLowerCase())))
   }
 
   test("bucketing is not supported for lakesoul tables") {
@@ -151,7 +145,8 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   test("ALTER TABLE RENAME TO") {
-    assertUnsupported(s"ALTER TABLE $nonPartitionedTableName RENAME TO newTbl")
+    assertUnsupported(s"ALTER TABLE $nonPartitionedTableName RENAME TO newTbl",
+      "LakeSoul currently doesn't support rename table")
   }
 
 

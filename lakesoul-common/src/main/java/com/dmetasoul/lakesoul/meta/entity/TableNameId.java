@@ -22,11 +22,14 @@ public class TableNameId {
 
     private String tableId;
 
+    private String tableNamespace;
+
     public TableNameId() {}
 
-    public TableNameId(String tableName, String tableId) {
+    public TableNameId(String tableName, String tableId, String tableNamespace) {
         this.tableName = tableName;
         this.tableId = tableId;
+        this.tableNamespace = tableNamespace;
     }
 
     public String getTableName() {
@@ -43,5 +46,13 @@ public class TableNameId {
 
     public void setTableId(String tableId) {
         this.tableId = tableId == null ? null : tableId.trim();
+    }
+
+    public void setTableNamespace(String tableNamespace) {
+        this.tableNamespace = tableNamespace;
+    }
+
+    public String getTableNamespace() {
+        return tableNamespace;
     }
 }

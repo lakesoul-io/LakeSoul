@@ -11,11 +11,25 @@
 
     <artifactId>lakesoul-common</artifactId>
     <version>2.1.0-SNAPSHOT</version>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>8</source>
+                    <target>8</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 
     <properties>
-        <postgresql.version>42.3.3</postgresql.version>
-        <spark.version>3.1.1</spark.version>
+        <postgresql.version>42.5.0</postgresql.version>
+        <spark.version>3.1.2</spark.version>
+        <debezium.version>1.5.4.Final</debezium.version>
         <scala.binary.version>2.12</scala.binary.version>
+        <mysql.version>8.0.30</mysql.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -35,19 +49,18 @@
             <artifactId>commons-lang</artifactId>
             <version>2.6</version>
         </dependency>
-
         <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-sql_${scala.binary.version}</artifactId>
-            <version>${spark.version}</version>
-            <scope>test</scope>
-            <classifier>tests</classifier>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
-            <version>${spark.version}</version>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>14.0.1</version>
             <scope>${local.scope}</scope>
+        </dependency>
+
+        <!--fastjson-->
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>fastjson</artifactId>
+            <version>1.2.83</version>
         </dependency>
     </dependencies>
 

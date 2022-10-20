@@ -44,7 +44,7 @@ public class PartitionInfoDao {
         return flag;
     }
 
-    public boolean transactionInsert(List<PartitionInfo> partitionInfoList) {
+    public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<UUID> snapshotList) {
         boolean flag = true;
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -55,6 +55,11 @@ public class PartitionInfoDao {
             conn.setAutoCommit(false);
             for (PartitionInfo partitionInfo : partitionInfoList) {
                 insertSinglePartitionInfo(conn, pstmt, partitionInfo);
+            }
+            pstmt = conn.prepareStatement("update data_commit_info set committed = 'true' where commit_id = ?");
+            for (UUID uuid : snapshotList) {
+                pstmt.setString(1, uuid.toString());
+                pstmt.execute();
             }
             conn.commit();
         } catch (SQLException e) {
@@ -233,13 +238,14 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        PartitionInfo partitionInfo = new PartitionInfo();
+        PartitionInfo partitionInfo = null;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
 
             while (rs.next()) {
+                partitionInfo = new PartitionInfo();
                 partitionInfo.setTableId(rs.getString("table_id"));
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
@@ -256,5 +262,21 @@ public class PartitionInfoDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return partitionInfo;
+    }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "delete from partition_info;";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
     }
 }

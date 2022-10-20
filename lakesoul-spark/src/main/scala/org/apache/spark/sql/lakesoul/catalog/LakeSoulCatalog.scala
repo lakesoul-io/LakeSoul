@@ -18,13 +18,11 @@ package org.apache.spark.sql.lakesoul.catalog
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-
-import java.util
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{NoSuchDatabaseException, NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, NoSuchTableException, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.catalog._
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, QualifiedColType}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
@@ -33,28 +31,37 @@ import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1WriteBuilder, W
 import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
 import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.sources.InsertableRelation
+import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.{LakeSoulConfig, LakeSoulUtils}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.sources.InsertableRelation
 import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SparkSession}
 
+import java.util
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.language.postfixOps
 
 /**
   * A Catalog extension which can properly handle the interaction between the HiveMetaStore and
   * lakesoul tables. It delegates all operations DataSources other than lakesoul to the SparkCatalog.
   */
-class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtension
+class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   with StagingTableCatalog
-  with SupportsPathIdentifier {
+  with SupportsPathIdentifier
+  with SupportsNamespaces {
 
   def this() = {
     this(SparkSession.active)
   }
+
+  var catalogName = ""
+
+  override def name(): String = catalogName
 
   /**
     * Creates a lakesoul table
@@ -76,6 +83,9 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
                                   operation: TableCreationModes.CreationMode): Table = {
     // These two keys are properties in data source v2 but not in v1, so we have to filter
     // them out. Otherwise property consistency checks will fail.
+    if (!LakeSoulCatalog.namespaceExists(ident.namespace())) {
+      throw new NoSuchNamespaceException(ident.toString)
+    }
     val tableProperties = properties.asScala.filterKeys {
       case TableCatalog.PROP_LOCATION => false
       case TableCatalog.PROP_PROVIDER => false
@@ -87,10 +97,12 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     // START: This entire block until END is a copy-paste from V2SessionCatalog
     val (partitionColumns, maybeBucketSpec) = convertTransforms(partitions)
     val isByPath = isPathIdentifier(ident)
-    val location = if (isByPath) {
-      Option(ident.name())
+    val (location, existingLocation) = if (isByPath) {
+      (Option(ident.name()),
+        if (LakeSoulSourceUtils.isLakeSoulTableExists(ident.name())) Some(ident.name()) else None)
     } else {
-      Option(properties.get("location"))
+      (Option(properties.get("location")),
+        Option(MetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._2))
     }
     val storage = DataSource.buildStorageFormatFromOptions(tableProperties.toMap)
       .copy(locationUri = location.map(CatalogUtils.stringToURI))
@@ -111,42 +123,58 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
     val withDb = verifyTableAndSolidify(tableDesc, None)
 
+
     ParquetSchemaConverter.checkFieldNames(tableDesc.schema.fieldNames)
     CreateTableCommand(
       withDb,
-      getExistingTableIfExists(tableDesc),
+      existingLocation.map(SparkUtil.makeQualifiedPath(_).toString),
       operation.mode,
       sourceQuery,
       operation,
-      tableByPath = isByPath).run(spark)
+      tableByPath = isByPath,
+      this).run(spark)
 
     loadTable(ident)
   }
 
-  override def loadTable(ident: Identifier): Table = {
-    try {
-      super.loadTable(ident) match {
-        case v1: V1Table if LakeSoulUtils.isLakeSoulTable(v1.catalogTable) =>
-          LakeSoulTableV2(
-            spark,
-            new Path(v1.catalogTable.location),
-            catalogTable = Some(v1.catalogTable),
-            tableIdentifier = Some(ident.toString))
-
-        case o => o
+  override def loadTable(identifier: Identifier): Table = {
+    val ident = identifier.namespace() match {
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), identifier.name())
+      case _ => identifier
+    }
+    if (isPathIdentifier(ident)) {
+      val tableInfo = MetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
+      if (tableInfo == null) {
+        throw new NoSuchTableException(ident)
       }
+      LakeSoulTableV2(
+        spark,
+        new Path(ident.name()),
+        None,
+        Some(Identifier.of(ident.namespace(), tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString)).toString)
+      )
+    } else if (isNameIdentifier(ident)) {
+      val tablePath = MetaVersion.getTablePathFromShortTableName(ident.name, ident.namespace().mkString("."))
+      if (tablePath == null) {
+        throw new NoSuchTableException(ident)
+      }
+      LakeSoulTableV2(
+        spark,
+        new Path(tablePath),
+        None,
+        Some(ident.toString)
+      )
+    } else {
+      throw new NoSuchTableException(ident)
+    }
+  }
+
+  def getTableLocation(ident: Identifier): Option[String] = {
+    try {
+      val table = loadTable(ident)
+      Option(table.properties().get("location"))
     } catch {
-      case _: NoSuchDatabaseException | _: NoSuchNamespaceException | _: NoSuchTableException
-        if isPathIdentifier(ident) =>
-        LakeSoulTableV2(
-          spark,
-          new Path(ident.name()))
-      case _: NoSuchDatabaseException | _: NoSuchNamespaceException | _: NoSuchTableException
-        if isNameIdentifier(ident) =>
-        val tableName = MetaVersion.getTablePathFromShortTableName(ident.name)
-        LakeSoulTableV2(
-          spark,
-          new Path(tableName))
+      case _: NoSuchNamespaceException | _: NoSuchTableException => None
     }
   }
 
@@ -164,7 +192,8 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
       createLakeSoulTable(
         ident, schema, partitions, properties, sourceQuery = None, TableCreationModes.Create)
     } else {
-      super.createTable(ident, schema, partitions, properties)
+      throw LakeSoulErrors.analysisException(
+        s"Not a lakesoul table: ${getProvider(properties)}", plan = None)
     }
   }
 
@@ -176,10 +205,10 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
       throw LakeSoulErrors.operationNotSupportedException("replaceTable")
     } else {
-      super.dropTable(ident)
+      dropTable(ident)
       BestEffortStagedTable(
         ident,
-        super.createTable(ident, schema, partitions, properties),
+        createTable(ident, schema, partitions, properties),
         this)
     }
   }
@@ -189,17 +218,20 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
                                      schema: StructType,
                                      partitions: Array[Transform],
                                      properties: util.Map[String, String]): StagedTable = {
+    val iden = ident.namespace() match {
+      case Array(_) => ident
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), ident.name())
+    }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
-
       new StagedLakeSoulTableV2(
-        ident, schema, partitions, properties, TableCreationModes.CreateOrReplace)
+        iden, schema, partitions, properties, TableCreationModes.CreateOrReplace)
     } else {
-      try super.dropTable(ident) catch {
+      try dropTable(iden) catch {
         case _: NoSuchTableException => // this is fine
       }
       BestEffortStagedTable(
-        ident,
-        super.createTable(ident, schema, partitions, properties),
+        iden,
+        createTable(iden, schema, partitions, properties),
         this)
     }
   }
@@ -209,12 +241,16 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
                             schema: StructType,
                             partitions: Array[Transform],
                             properties: util.Map[String, String]): StagedTable = {
+    val iden = ident.namespace() match {
+      case Array(_) => ident
+      case Array() => Identifier.of(LakeSoulCatalog.showCurrentNamespace(), ident.name())
+    }
     if (LakeSoulSourceUtils.isLakeSoulDataSourceName(getProvider(properties))) {
-      new StagedLakeSoulTableV2(ident, schema, partitions, properties, TableCreationModes.Create)
+      new StagedLakeSoulTableV2(iden, schema, partitions, properties, TableCreationModes.Create)
     } else {
       BestEffortStagedTable(
-        ident,
-        super.createTable(ident, schema, partitions, properties),
+        iden,
+        createTable(iden, schema, partitions, properties),
         this)
     }
   }
@@ -268,7 +304,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
 
     val validatedConfigurations = LakeSoulConfig.validateConfigurations(tableDesc.properties)
 
-    val db = tableDesc.identifier.database.getOrElse(catalog.getCurrentDatabase)
+    val db = tableDesc.identifier.database.getOrElse(spark.sessionState.catalogManager.currentNamespace(0))
     val tableIdentWithDB = tableDesc.identifier.copy(database = Some(db))
     tableDesc.copy(
       identifier = tableIdentWithDB,
@@ -276,33 +312,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
       properties = validatedConfigurations)
   }
 
-  /** Checks if a table already exists for the provided identifier. */
-  private def getExistingTableIfExists(table: CatalogTable): Option[CatalogTable] = {
-    // If this is a path identifier, we cannot return an existing CatalogTable. The Create command
-    // will check the file system itself
-    if (isPathIdentifier(table)) return None
-    val tableExists = catalog.tableExists(table.identifier)
-
-    if (tableExists) {
-      val oldTable = catalog.getTableMetadata(table.identifier)
-      if (oldTable.tableType == CatalogTableType.VIEW) {
-        throw new AnalysisException(s"${table.identifier} is a view. You may not write data into a view.")
-      }
-      if (!LakeSoulSourceUtils.isLakeSoulTable(oldTable.provider)) {
-        throw new AnalysisException(s"${table.identifier} is not a LakeSoul table. Please drop this " +
-          "table first if you would like to create it with LakeSoul.")
-      }
-      Some(oldTable)
-    } else {
-      None
-    }
-  }
-
-  /**
-    * A staged lakesoul table, which creates a HiveMetaStore entry and appends data if this was a
-    * CTAS/RTAS command. We have a ugly way of using this API right now, but it's the best way to
-    * maintain old behavior compatibility between Databricks Runtime and OSS LakeSoul Lake.
-    */
   private class StagedLakeSoulTableV2(
                                        ident: Identifier,
                                        override val schema: StructType,
@@ -354,7 +363,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
   override def alterTable(ident: Identifier, changes: TableChange*): Table = {
     val table = loadTable(ident) match {
       case lakeSoulTable: LakeSoulTableV2 => lakeSoulTable
-      case _ => return super.alterTable(ident, changes: _*)
+      case _ => throw new NoSuchTableException(ident)
     }
 
     // We group the table changes by their type, since lakesoul applies each in a separate action.
@@ -484,18 +493,78 @@ class LakeSoulCatalog(val spark: SparkSession) extends DelegatingCatalogExtensio
     if (isPathIdentifier(ident)) {
       LakeSoulTable.forPath(ident.name()).dropTable()
     } else if (isNameIdentifier(ident)) {
-      LakeSoulTable.forName(ident.name()).dropTable()
+      LakeSoulTable.forName(ident.name(), ident.namespace().mkString(".")).dropTable()
     } else {
-      super.dropTable(ident)
+      false
     }
   }
 
-  override def listTables(namespace: Array[String]): Array[Identifier] = {
-    MetaVersion.listTables().asScala.map(table => {
-      Identifier.of(Array("default"), table)
-    }).toArray
+  // todo: invalid on spark v3.1.2
+  override def listTables(namespaces: Array[String]): Array[Identifier] = {
+    LakeSoulCatalog.listTables(namespaces)
   }
 
+  //=============
+  // Namespace
+  //=============
+
+  // todo: invalid on spark v3.1.2
+  override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
+    LakeSoulCatalog.createNamespace(namespaces)
+  }
+
+  override def listNamespaces(): Array[Array[String]] = {
+    LakeSoulCatalog.listNamespaces()
+  }
+
+  override def defaultNamespace(): Array[String] = {
+    LakeSoulCatalog.currentDefaultNamespace
+  }
+
+
+  override def namespaceExists(namespace: Array[String]): Boolean = {
+    LakeSoulCatalog.namespaceExists(namespace)
+  }
+
+  override def dropNamespace(namespace: Array[String]): Boolean = {
+    LakeSoulCatalog.dropNamespace(namespace)
+  }
+
+
+  override def renameTable(oldIdent: Identifier, newIdent: Identifier): Unit = {
+    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename table")
+  }
+
+  override def listNamespaces(namespace: Array[String]): Array[Array[String]] = {
+    namespace match {
+      case Array() =>
+        listNamespaces()
+      case Array(db) if LakeSoulCatalog.namespaceExists(Array(db)) =>
+        Array(Array(db))
+      case _ =>
+        throw new NoSuchNamespaceException(namespace)
+    }
+  }
+
+  override def loadNamespaceMetadata(namespace: Array[String]): util.Map[String, String] = {
+    namespace match {
+      case Array(db) =>
+        if (!LakeSoulCatalog.namespaceExists(namespace)) throw new NoSuchNamespaceException(db)
+        mutable.HashMap[String, String]().asJava
+
+      case _ =>
+        throw new NoSuchNamespaceException(namespace)
+    }
+  }
+
+  override def alterNamespace(namespace: Array[String], changes: NamespaceChange*): Unit = {
+    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename namespace")
+  }
+
+
+  override def initialize(name: String, options: CaseInsensitiveStringMap): Unit = {
+    catalogName = name
+  }
 }
 
 /**
@@ -507,10 +576,8 @@ trait SupportsPathIdentifier extends TableCatalog {
 
   private def supportSQLOnFile: Boolean = spark.sessionState.conf.runSQLonFile
 
-  protected lazy val catalog: SessionCatalog = spark.sessionState.catalog
-
   private def hasLakeSoulNamespace(ident: Identifier): Boolean = {
-    ident.namespace().length == 1 && LakeSoulSourceUtils.isLakeSoulDataSourceName(ident.namespace().head)
+    ident.namespace().length == 1 && LakeSoulCatalog.namespaceExists(ident.namespace())
   }
 
   protected def isPathIdentifier(ident: Identifier): Boolean = {
@@ -523,7 +590,12 @@ trait SupportsPathIdentifier extends TableCatalog {
   }
 
   protected def isNameIdentifier(ident: Identifier): Boolean = {
-    hasLakeSoulNamespace(ident) && MetaVersion.isShortTableNameExists(ident.name())._1
+    ident.namespace() match {
+      case Array() =>
+        MetaVersion.isShortTableNameExists(ident.name())._1
+      case _ =>
+        MetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._1
+    }
   }
 
   protected def isPathIdentifier(table: CatalogTable): Boolean = {
@@ -534,9 +606,69 @@ trait SupportsPathIdentifier extends TableCatalog {
     if (isPathIdentifier(ident)) {
       LakeSoulSourceUtils.isLakeSoulTableExists(ident.name())
     } else if (isNameIdentifier(ident)) {
-      LakeSoulSourceUtils.isLakeSoulShortTableNameExists(ident.name())
+      LakeSoulSourceUtils.isLakeSoulShortTableNameExists(ident.name(), ident.namespace().mkString("."))
     } else {
-      super.tableExists(ident)
+      false
     }
   }
+}
+
+object LakeSoulCatalog {
+  //===========
+  // namespaces
+  //===========
+
+  var currentDefaultNamespace: Array[String] = Array("default")
+
+  def listTables(): Array[Identifier] = {
+    listTables(currentDefaultNamespace)
+  }
+
+  def listTables(namespaces: Array[String]): Array[Identifier] = {
+    MetaVersion.listTables(namespaces).asScala.map(tablePath => {
+      val tableInfo = MetaVersion.getTableInfo(tablePath)
+      Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString))
+    }).toArray
+  }
+
+  def createNamespace(namespace: Array[String]): Unit = {
+    MetaVersion.createNamespace(namespace.mkString("."))
+  }
+
+
+  def useNamespace(namespace: Array[String]): Unit = {
+    currentDefaultNamespace = namespace
+  }
+
+  def showCurrentNamespace(): Array[String] = {
+    currentDefaultNamespace = SparkSession.active.sessionState.catalogManager.currentNamespace
+    currentDefaultNamespace
+  }
+
+  def isCurrentNamespace(namespace: Array[String]): Boolean = {
+    currentDefaultNamespace.mkString(".") == namespace.mkString(".")
+  }
+
+  def listNamespaces(): Array[Array[String]] = {
+    MetaVersion.listNamespaces().map(namespace=>namespace.split("\\."))
+  }
+
+  def namespaceExists(namespace: Array[String]): Boolean = {
+    MetaVersion.isNamespaceExists(namespace.mkString("."))
+  }
+
+  def dropNamespace(namespace: Array[String]): Boolean = {
+    MetaVersion.dropNamespaceByNamespace(namespace.mkString("."))
+    if (isCurrentNamespace(namespace)) {
+      useNamespace(Array("default"))
+    }
+    true
+  }
+
+//  just for test
+  def cleanMeta():Unit ={
+    MetaVersion.cleanMeta()
+  }
+
+  final val CATALOG_NAME:String = "lakesoul"
 }

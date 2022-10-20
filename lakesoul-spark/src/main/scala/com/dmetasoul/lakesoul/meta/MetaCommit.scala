@@ -40,6 +40,7 @@ object MetaCommit extends Logging {
     val tableInfo = new com.dmetasoul.lakesoul.meta.entity.TableInfo()
 
     tableInfo.setTableId(table_info.table_id)
+    tableInfo.setTableNamespace(table_info.namespace)
     tableInfo.setTablePath(table_info.table_path.toString)
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
@@ -81,28 +82,6 @@ object MetaCommit extends Logging {
   }
 
 
-  //add commit type undo log, generate commit id
-  def generateCommitIdToAddUndoLog(table_name: String,
-                                   table_id: String,
-                                   queryId: String,
-                                   batchId: Long): String = {
-    val commit_id = "commit_" + java.util.UUID.randomUUID().toString
-    commit_id
-  }
-
-  def isCommitTimeout(timestamp: Long): Boolean = {
-    val timeout = System.currentTimeMillis() - timestamp
-    if (timeout > MetaUtils.COMMIT_TIMEOUT) {
-      true
-    } else {
-      false
-    }
-  }
-
-  def takePartitionsWriteLock(meta_info: MetaInfo, commit_id: String, times: Int = 0): MetaInfo = {
-    meta_info
-  }
-
   def addDataInfo(meta_info: MetaInfo): Boolean = {
     val table_id = meta_info.table_info.table_id
     val dataCommitInfoArray = meta_info.dataCommitInfo
@@ -131,7 +110,4 @@ object MetaCommit extends Logging {
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
   }
 
-  def updatePartitionInfoAndGetNewMetaInfo(meta_info: MetaInfo): MetaInfo = {
-    meta_info
-  }
 }

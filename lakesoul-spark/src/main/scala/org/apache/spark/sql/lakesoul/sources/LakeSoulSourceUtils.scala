@@ -22,9 +22,10 @@ import java.util.Locale
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions
+import org.apache.spark.sql.catalyst.{TableIdentifier, expressions}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
@@ -50,9 +51,21 @@ object LakeSoulSourceUtils {
     MetaVersion.isShortTableNameExists(shortName)._1
   }
 
+  def isLakeSoulShortTableNameExists(shortName: String, namespace: String): Boolean = {
+    MetaVersion.isShortTableNameExists(shortName, namespace)._1
+  }
+
   /** Check whether this table is a lakesoul table based on information from the Catalog. */
   def isLakeSoulTable(provider: Option[String]): Boolean = {
     provider.exists(isLakeSoulDataSourceName)
+  }
+
+  def getLakeSoulPathByTableIdentifier(table: TableIdentifier): Option[String] = {
+    MetaVersion.isShortTableNameExists(table.table,
+      table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))) match {
+      case (true, path) => Some(path)
+      case _ => None
+    }
   }
 
   /** Creates Spark literals from a value exposed by the public Spark API. */

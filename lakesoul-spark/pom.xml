@@ -10,14 +10,13 @@
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>lakesoul-spark</artifactId>
-    <version>2.1.0-lakesoul-spark-3.1.2-SNAPSHOT</version>
+    <version>2.1.0-spark-3.1.2-SNAPSHOT</version>
 
     <properties>
-        <spark.version>3.1.1</spark.version>
+        <spark.version>3.1.2</spark.version>
         <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <scalatest.version>3.1.0</scalatest.version>
-        <mysql.version>8.0.29</mysql.version>
+        <scalatest.version>3.2.14</scalatest.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -32,13 +31,6 @@
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-io-java</artifactId>
             <version>2.1.1-alpha-SNAPSHOT</version>
-        </dependency>
-
-        <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
-            <version>${mysql.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
 
         <!-- scala deps -->
@@ -100,13 +92,6 @@
             <scope>${local.scope}</scope>
         </dependency>
 
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>1.30</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-
         <!--      test deps        -->
         <dependency>
             <groupId>org.scalatest</groupId>
@@ -151,18 +136,35 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M7</version>
+                <configuration>
+                    <skipTests>true</skipTests>
+                    <forkCount>0</forkCount>
+                    <reuseForks>false</reuseForks>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.8.1</version>
-               <configuration>
-                   <source>1.8</source>
-                   <target>1.8</target>
-                   <encoding>UTF-8</encoding>
-               </configuration>
+                <version>3.10.1</version>
+                <configuration>
+                    <source>1.8</source>
+                    <target>1.8</target>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
-                <version>4.6.3</version>
+                <version>4.7.2</version>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
@@ -186,29 +188,15 @@
                 </configuration>
             </plugin>
             <plugin>
-                <groupId>org.scala-tools</groupId>
-                <artifactId>maven-scala-plugin</artifactId>
-                <version>2.15.2</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>compile</goal>
-                            <goal>testCompile</goal>
-                        </goals>
-                        <configuration>
-                            <includes>**/*.scala</includes>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
                 <groupId>org.scalatest</groupId>
                 <artifactId>scalatest-maven-plugin</artifactId>
-                <version>2.0.2</version>
+                <version>2.1.0</version>
                 <configuration>
-                    <testFailureIgnore>true</testFailureIgnore>
+                    <testFailureIgnore>false</testFailureIgnore>
                     <runpath>target/scala-2.12/classes,target/scala-2.12/test-classes</runpath>
                     <htmlreporters>${project.build.directory}/html/scalatest</htmlreporters>
+                    <parallel>false</parallel>
+                    <forkMode>once</forkMode>
                 </configuration>
                 <executions>
                     <execution>
@@ -219,8 +207,45 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.2.4</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <artifactSet>
+                        <includes>
+                            <include>com.dmetasoul:lakesoul-spark</include>
+                            <include>com.dmetasoul:lakesoul-common</include>
+                            <include>com.zaxxer:HikariCP</include>
+                            <include>org.postgresql:postgresql</include>
+                            <include>com.alibaba:fastjson</include>
+                            <include>mysql:mysql-connector-java</include>
+                        </includes>
+                    </artifactSet>
+                    <relocations>
+                        <relocation>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.postgresql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.alibaba.fastjson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
+            </plugin>
         </plugins>
-
     </build>
-
 </project>

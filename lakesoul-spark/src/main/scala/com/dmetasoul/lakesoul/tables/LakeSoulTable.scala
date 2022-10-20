@@ -23,6 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
@@ -298,11 +299,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     compaction(condition, force, mergeOperatorInfo.asScala.toMap, "")
   }
 
-  /**
-    * If `force` set to true, it will ignore delta file num, compaction interval,
-    * and base file(first write), compaction will execute if is_compacted is not true.
-    *
-    */
   def compaction(condition: String,
                  force: Boolean,
                  mergeOperatorInfo: Map[String, Any],
@@ -342,16 +338,6 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   def rollbackPartition(partitionValue:String,toVersionNum:Int):Unit = {
     MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
-  }
-
-
-  def partitionVersions(partitionDesc:String=""): Unit ={
-    if("".equals(partitionDesc)){
-      println("Please set partition value such as RangeCoulmnName = Value")
-    }else{
-      //println(partitionDesc+"-"+"versions")
-      MetaVersion.getOnePartitionVersions(snapshotManagement.snapshot.getTableInfo.table_id,partitionDesc).foreach(p=> println("-----"+p.version+"------"))
-    }
   }
 }
 
@@ -415,7 +401,7 @@ object LakeSoulTable {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
     } else {
-      throw LakeSoulErrors.tableNotExistsException(path)
+      throw LakeSoulErrors.tableNotExistsException(p)
     }
   }
   def forPath(sparkSession: SparkSession, path: String, partitionDesc:String,partitionVersion:Int): LakeSoulTable = {
@@ -435,21 +421,28 @@ object LakeSoulTable {
     * `SparkSession.getActiveSession()` is empty.
     */
   def forName(tableOrViewName: String): LakeSoulTable = {
+    forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  }
+
+  def forName(tableOrViewName: String, namespace:String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
-    forName(sparkSession, tableOrViewName)
+    forName(sparkSession, tableOrViewName, namespace)
   }
 
   /**
     * Create a LakeSoulTableRel using the given table or view name using the given SparkSession.
     */
   def forName(sparkSession: SparkSession, tableName: String): LakeSoulTable = {
-    val (exists, tablePath) = MetaVersion.isShortTableNameExists(tableName)
+    forName(sparkSession, tableName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  }
+
+  def forName(sparkSession: SparkSession, tableName: String, namespace:String): LakeSoulTable = {
+    val (exists, tablePath) = MetaVersion.isShortTableNameExists(tableName, namespace)
     if (exists) {
-      val lakeSoulName = if (tableName.startsWith("lakesoul.")) tableName else s"lakesoul.$tableName"
-      new LakeSoulTable(sparkSession.table(lakeSoulName),
-        SnapshotManagement(tablePath))
+      new LakeSoulTable(sparkSession.table(s"$namespace.$tableName"),
+        SnapshotManagement(tablePath, namespace))
     } else {
       throw LakeSoulErrors.notALakeSoulTableException(tableName)
     }

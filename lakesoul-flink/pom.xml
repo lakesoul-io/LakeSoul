@@ -10,10 +10,10 @@
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>2.1.0-lakesoul-flink-1.14-SNAPSHOT</version>
+    <version>2.1.0-flink-1.14-SNAPSHOT</version>
     <properties>
-        <flink.version>1.14.3</flink.version>
-        <spark.version>3.1.1</spark.version>
+        <flink.version>1.14.5</flink.version>
+        <spark.version>3.1.2</spark.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
@@ -44,13 +44,19 @@
             <artifactId>flink-streaming-java_2.12</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-clients_2.12</artifactId>
             <version>${flink.version}</version>
-            <!--            <scope>${local.scope}</scope>-->
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -60,16 +66,31 @@
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
+            <artifactId>flink-formats</artifactId>
+            <version>${flink.version}</version>
+            <type>pom</type>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-parquet_2.12</artifactId>
             <version>${flink.version}</version>
-            <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.parquet</groupId>
+                    <artifactId>parquet-hadoop</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-hadoop-bundle</artifactId>
+            <version>1.11.1</version>
         </dependency>
 
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
-            <version>2.2.0</version>
-            <scope>${local.scope}</scope>
+            <version>2.3-SNAPSHOT</version>
         </dependency>
 
         <dependency>
@@ -84,10 +105,28 @@
             <artifactId>flink-table-api-scala_2.12</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-planner_2.12</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-runtime-web_2.12</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
@@ -97,23 +136,57 @@
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-test-utils_2.12</artifactId>
+            <version>${flink.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.23.1</version>
+            <scope>test</scope>
+        </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-log4j12</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>log4j</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
@@ -136,8 +209,78 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.2.4</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <artifactSet>
+                        <includes>
+                            <include>com.dmetasoul:lakesoul-flink</include>
+                            <include>org.apache.flink:flink-formats</include>
+                            <include>org.apache.flink:flink-parquet_2.12</include>
+                            <include>org.apache.parquet:parquet-hadoop-bundle</include>
+                            <include>com.ververica:flink-sql-connector-mysql-cdc</include>
+                            <include>com.dmetasoul:lakesoul-common</include>
+                            <include>com.zaxxer:HikariCP</include>
+                            <include>org.postgresql:postgresql</include>
+                            <include>com.alibaba:fastjson</include>
+                            <include>org.apache.spark:spark-core_${scala.binary.version}</include>
+                            <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>
+                            <include>org.apache.spark:spark-tags_${scala.binary.version}</include>
+                            <include>org.apache.spark:spark-unsafe_${scala.binary.version}</include>
+                            <include>com.google.guava:guava</include>
+                            <include>org.json4s:json4s-jackson_2.12</include>
+                            <include>org.json4s:json4s-core_2.12</include>
+                            <include>org.json4s:json4s-ast_2.12</include>
+                            <include>org.json4s:json4s-scalap_2.12</include>
+                            <include>com.fasterxml.jackson.core:jackson-core</include>
+                            <include>com.fasterxml.jackson.core:jackson-databind</include>
+                            <include>com.fasterxml.jackson.core:jackson-annotations</include>
+                            <include>com.fasterxml.jackson.module:jackson-module-scala_2.12</include>
+                            <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
+                            <include>commons-lang:commons-lang</include>
+                        </includes>
+                        <excludes>
+                            <exclude>org/slf4j/impl/**</exclude>
+                            <exclude>org/apache/log4j/**</exclude>
+                        </excludes>
+                    </artifactSet>
+                    <relocations>
+                        <relocation>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.postgresql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.alibaba.fastjson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.common</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.common</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.spark</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
+                        </relocation>
+                    </relocations>
+                    <transformers>
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                    </transformers>
+                </configuration>
+            </plugin>
         </plugins>
-
     </build>
-
 </project>
