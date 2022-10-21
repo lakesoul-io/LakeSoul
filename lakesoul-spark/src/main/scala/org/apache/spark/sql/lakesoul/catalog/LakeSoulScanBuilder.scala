@@ -95,7 +95,8 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
   override def build(): Scan = {
-    logInfo("[Debug][huazeng]on org.apache.spark.sql.lakesoul.catalog.LakeSoulScanBuilder.build")
+    //check and redo commit before read
+    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
     var files: Seq[DataFileInfo] = Seq.empty
 
