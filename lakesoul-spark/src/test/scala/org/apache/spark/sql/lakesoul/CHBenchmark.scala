@@ -64,7 +64,7 @@ object CHBenchmark {
 
     //    queryTest(spark, query_18, "query_18")
 
-    if (args.length > 1 && args(0) == "--verifyQuery") {
+    if (args.length >= 1 && args(0) == "--verifyQuery") {
       verifyQuery1(spark, query_1, "query_1")
       verifyQuery(spark, query_2, "query_2")
       verifyQuery(spark, query_3, "query_3")
