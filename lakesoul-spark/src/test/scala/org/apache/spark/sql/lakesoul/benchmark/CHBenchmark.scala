@@ -1,4 +1,4 @@
-package org.apache.spark.sql.lakesoul
+package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.col
