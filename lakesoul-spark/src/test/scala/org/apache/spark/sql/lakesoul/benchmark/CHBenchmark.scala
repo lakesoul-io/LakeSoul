@@ -58,34 +58,24 @@ object CHBenchmark {
     spark.sparkContext.setLogLevel("ERROR")
     spark.sql("use " + dbName)
 
+//    queryTest(spark, query_18, "query_18")
+
     println(splitLine)
     queryMap.foreach(k => queryTest(spark, k._2, k._1))
     println(splitLine)
 
-    //    queryTest(spark, query_18, "query_18")
-
+//    verifyQuery(spark, query_2, "query_2")
     if (args.length >= 1 && args(0) == "--verifyQuery") {
-      verifyQuery1(spark, query_1, "query_1")
-      verifyQuery(spark, query_2, "query_2")
-      verifyQuery(spark, query_3, "query_3")
-      verifyQuery(spark, query_4, "query_4")
-      verifyQuery(spark, query_5, "query_5")
-      verifyQuery(spark, query_6, "query_6")
-      verifyQuery(spark, query_7, "query_7")
-      verifyQuery8(spark, query_8, "query_8")
-      verifyQuery(spark, query_9, "query_9")
-      verifyQuery(spark, query_10, "query_10")
-      verifyQuery11(spark, query_11, "query_11")
-      verifyQuery12(spark, query_12, "query_12")
-      verifyQuery(spark, query_13, "query_13")
-      verifyQuery14(spark, query_14, "query_14")
-      verifyQuery(spark, query_16, "query_16")
-      verifyQuery(spark, query_17, "query_17")
-      verifyQuery(spark, query_18, "query_18")
-      verifyQuery(spark, query_19, "query_19")
-      verifyQuery(spark, query_20, "query_20")
-      verifyQuery(spark, query_21, "query_21")
-      verifyQuery(spark, query_22, "query_22")
+      queryMap.foreach(
+        k => k._1 match {
+          case "query_1" => verifyQuery1(spark, k._2, k._1)
+          case "query_8" => verifyQuery8(spark, k._2, k._1)
+          case "query_11" => verifyQuery11(spark, k._2, k._1)
+          case "query_12" => verifyQuery12(spark, k._2, k._1)
+          case "query_14" => verifyQuery14(spark, k._2, k._1)
+          case _ => verifyQuery(spark, k._2, k._1)
+        }
+      )
     }
   }
 

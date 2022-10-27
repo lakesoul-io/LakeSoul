@@ -1,0 +1,13 @@
+# table_num 生成表数据量
+table_num=50
+# host mysql域名
+host=5bfe414e935c4a6a8e5f5d4696f33940in01.internal.cn-southwest-2.mysql.rds.myhuaweicloud.com
+# user: mysql账号; password: mysql密码; port: mysql端口号; db: mysql数据库名;
+user=root
+password=@Dmetasoul_1#23
+port=3306
+db=sms
+# row_num随机向表中插入多少条数据
+row_num=10000
+# delete_num随机删除多少条数据
+delete_num=1000
