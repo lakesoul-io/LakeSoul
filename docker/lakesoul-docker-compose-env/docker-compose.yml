@@ -14,6 +14,20 @@ services:
       - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
       - ./meta_cleanup.sql:/meta_cleanup.sql
 
+  mysql:
+    image: mysql:8
+    ports:
+      - "3306:3306"
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: test_cdc
+    volumes:
+      - ./mysql_init.sql:/docker-entrypoint-initdb.d/mysql_init.sql
+      - ./mysql_random_data_insert:/mysql_random_data_insert
+      - ../../script/benchmark/2_insert_table_data.sh:/2_insert_table_data.sh
+      - ../../script/benchmark/properties:/properties
+
   minio:
     image: bitnami/minio:latest
     ports:
@@ -29,3 +43,49 @@ services:
       timeout: 20s
       retries: 3
     hostname: minio
+  jobmanager:
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:lakesoul-flink-cdc-2.1.1
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin1
+        s3.secret-key: minioadmin1
+        s3.path.style.access: true
+      - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+      - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
+      - LAKESOUL_PG_USERNAME=lakesoul_test
+      - LAKESOUL_PG_PASSWORD=lakesoul_test
+
+  taskmanager:
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:lakesoul-flink-cdc-2.1.1
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    scale: 1
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin1
+        s3.secret-key: minioadmin1
+        s3.path.style.access: true
+      - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+      - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
+      - LAKESOUL_PG_USERNAME=lakesoul_test
+      - LAKESOUL_PG_PASSWORD=lakesoul_test
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.16.1.0/16
+          gateway: 10.16.1.1
