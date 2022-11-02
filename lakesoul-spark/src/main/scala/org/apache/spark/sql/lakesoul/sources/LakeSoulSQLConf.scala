@@ -106,4 +106,13 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .intConf
       .createWithDefault(10)
+
+  val NATIVE_IO_ENABLE: ConfigEntry[Boolean] =
+    buildConf("native.io.scan.enable")
+      .doc(
+        """
+
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }

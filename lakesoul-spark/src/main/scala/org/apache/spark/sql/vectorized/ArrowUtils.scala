@@ -15,7 +15,7 @@ object ArrowUtils{
       .asScala
       .toSeq
       .map(vector => {
-        println(vector.getField)
+//        println(vector.getField)
         asColumnVector(vector)
       })
       .toArray

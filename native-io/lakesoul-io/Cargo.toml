@@ -10,3 +10,8 @@ tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
+heapless = "0.7.16"
+arrow = "24.0.0"
+parquet = "24.0.0"
+bytes = "1.1"
+futures = "0.3.25"

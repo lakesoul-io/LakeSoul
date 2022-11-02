@@ -1,4 +1,20 @@
-package org.apache.spark.sql.execution.datasources.v2.parquet
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native
 
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
@@ -14,8 +30,8 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, ParquetReadSupport, ParquetWriteSupport, VectorizedParquetRecordReader}
-import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
-import org.apache.spark.sql.execution.datasources.v2.parquet.Native.NativeMergeVectorizedReader
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.execution.datasources.v2.merge.{MergePartitionedFile, MergePartitionedFileReader}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.sources.Filter
@@ -43,8 +59,10 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                     dataSchema: StructType,
                                                     readDataSchema: StructType,
                                                     partitionSchema: StructType,
-                                                    filters: Array[Filter])
-  extends NativeMergeFilePartitionReaderFactory with Logging{
+                                                    filters: Array[Filter],
+                                                    mergeOperatorInfo: Map[String, MergeOperator[Any]],
+                                                    defaultMergeOp: MergeOperator[Any])
+  extends NativeMergeFilePartitionReaderFactory(mergeOperatorInfo, defaultMergeOp) with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
@@ -76,6 +94,9 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   }
 
 
+  override def buildReader(file: MergePartitionedFile): PartitionReader[InternalRow] = {
+    throw new Exception("LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used.")
+  }
 
   override def buildColumnarReader(file: MergePartitionedFile): PartitionReader[ColumnarBatch] = {
 
@@ -191,7 +212,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     reader.initialize(split, hadoopAttemptContext)
     reader
   }
-
 
 
 }

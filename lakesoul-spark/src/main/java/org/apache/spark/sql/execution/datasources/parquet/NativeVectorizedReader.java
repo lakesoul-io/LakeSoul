@@ -1,29 +1,40 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import org.apache.arrow.lakesoul.io.ArrowCDataWrapper;
+import org.apache.arrow.lakesoul.io.NativeIOWrapper;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
-import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
-import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.vectorized.ArrowUtils;
-import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.IOException;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -127,7 +138,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.datetimeRebaseMode = datetimeRebaseMode;
     this.int96RebaseMode = int96RebaseMode;
     MEMORY_MODE = useOffHeap ? MemoryMode.OFF_HEAP : MemoryMode.ON_HEAP;
-    System.out.println("[Debug][huazeng]on NativeVectorizedReader, capacity:"+capacity);
     this.capacity = capacity;
     this.file = file;
   }
@@ -182,12 +192,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   @Override
   public Object getCurrentValue() {
-//    System.out.println("[Debug][huazeng]on getCurrentValue, rowsReturned:"+rowsReturned + " totalRowCount:" + totalRowCount);
-    System.out.println("[Debug][huazeng]on getCurrentValue, columnarBatch.numCols():"+columnarBatch.numCols() + "columnarBatch.numRows():"+columnarBatch.numRows());
     if (returnColumnarBatch) return columnarBatch;
     return columnarBatch.getRow(batchIdx - 1);
-//    if (returnColumnarBatch) return columnarBatch;
-//    return columnarBatch.getRow(batchIdx - 1);
   }
 
   @Override
@@ -206,30 +212,15 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           StructType partitionColumns,
           InternalRow partitionValues) throws IOException {
 
-    System.out.println("[Debug][huazeng]on initBatch, partitionValues: "+partitionValues);
-    if (partitionColumns != null) {
-      StructType partitionSchema = new StructType();
-      for (StructField f : partitionColumns.fields()) {
-        partitionSchema = partitionSchema.add(f);
-      }
-
-      if (memMode == MemoryMode.OFF_HEAP) {
-        partitionColumnVectors = OffHeapColumnVector.allocateColumns((int)totalRowCount, partitionSchema);
-      } else {
-        partitionColumnVectors = OnHeapColumnVector.allocateColumns((int)totalRowCount, partitionSchema);
-      }
-      for (int i = 0; i < partitionColumns.fields().length; i++) {
-        System.out.println("[Debug][huazeng]on initBatch: partitionColumnVectors.length=" + partitionColumnVectors.length);
-        ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
-        partitionColumnVectors[i].setIsConstant();
-      }
-    }
     if (nextVectorSchemaRoot == null) {
       System.out.println("nextVectorSchemaRoot not ready");
-    } else if (nextVectorSchemaRoot.getRowCount() != totalRowCount) {
-      throw new IOException("nextVectorSchemaRoot row count error");
     } else {
-      columnarBatch = new ColumnarBatch(concatBatchVectorWithPartitionVectors(ArrowUtils.asArrayColumnVector(nextVectorSchemaRoot)), nextVectorSchemaRoot.getRowCount());
+      totalRowCount += nextVectorSchemaRoot.getRowCount();
+      if (totalRowCount % 100000 < capacity) {
+        System.out.println(totalRowCount);
+//        System.gc();
+      }
+      columnarBatch = new ColumnarBatch(ArrowUtils.asArrayColumnVector(nextVectorSchemaRoot), nextVectorSchemaRoot.getRowCount());
     }
   }
 
@@ -265,30 +256,19 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     if (nativeReader.hasNext()) {
       nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
       initBatch();
-//      columnarBatch = new ColumnarBatch(concatBatchVectorWithPartitionVectors(ArrowUtils.asArrayColumnVector(vsr)), vsr.getRowCount());
       return true;
     } else {
       return false;
     }
-//    columnarBatch.setNumRows(0);
-//    if (rowsReturned >= totalRowCount) return false;
-////    checkEndOfRowGroup();
-//    int num = (int) Math.min((long) capacity, totalRowCount - rowsReturned);
-//    rowsReturned += num;
-//    columnarBatch.setNumRows((int)totalRowCount);
-//    numBatched = num;
-//    batchIdx = 0;
-//    return true;
+
   }
 
-  private ColumnVector[] concatBatchVectorWithPartitionVectors(ColumnVector[] batchVectors){
-    ColumnVector[] descColumnVectors = new ColumnVector[batchVectors.length + partitionColumnVectors.length];
-    System.arraycopy(batchVectors, 0, descColumnVectors, 0, batchVectors.length);
-    System.arraycopy(partitionColumnVectors, 0, descColumnVectors, batchVectors.length,  partitionColumnVectors.length);
-    System.out.println("[Debug][huazeng]on concatBatchVectorWithPartitionVectors");
-    System.out.println(descColumnVectors[batchVectors.length]);
-    return descColumnVectors;
-  }
+//  private ColumnVector[] concatBatchVectorWithPartitionVectors(ColumnVector[] batchVectors){
+//    ColumnVector[] descColumnVectors = new ColumnVector[batchVectors.length + partitionColumnVectors.length];
+//    System.arraycopy(batchVectors, 0, descColumnVectors, 0, batchVectors.length);
+//    System.arraycopy(partitionColumnVectors, 0, descColumnVectors, batchVectors.length,  partitionColumnVectors.length);
+//    return descColumnVectors;
+//  }
 
   private void initializeInternal() throws IOException, UnsupportedOperationException {
     // Check that the requested schema is supported.
@@ -317,9 +297,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         missingColumns[i] = true;
       }
     }
-    // initalizing native reader
-    wrapper = new ArrowCDataWrapper();
-    wrapper.initializeConfigBuilder();
+    wrapper = new NativeIOWrapper();
+    wrapper.initialize();
     wrapper.addFile(file.filePath());
     // Initialize missing columns with nulls.
     for (int i = 0; i < missingColumns.length; i++) {
@@ -329,36 +308,15 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     wrapper.setThreadNum(1);
+    wrapper.setBatchSize(capacity);
     wrapper.createReader();
     wrapper.startReader(bool -> {});
-    nativeReader = new LakeSoulArrowReader(wrapper, 1000);
+
+    totalRowCount= 0;
+    nativeReader = new LakeSoulArrowReader(wrapper, 5000);
   }
 
-  private void checkEndOfRowGroup() throws IOException {
-
-    if (rowsReturned != totalCountLoadedSoFar) return;
-    PageReadStore pages = reader.readNextRowGroup();
-    if (pages == null) {
-      throw new IOException("expecting more rows but reached last block. Read "
-              + rowsReturned + " out of " + totalRowCount);
-    }
-//    List<ColumnDescriptor> columns = requestedSchema.getColumns();
-//    List<Type> types = requestedSchema.asGroupType().getFields();
-//    columnReaders = new VectorizedColumnReader[columns.size()];
-//    for (int i = 0; i < columns.size(); ++i) {
-//      if (missingColumns[i]) continue;
-//      columnReaders[i] = new VectorizedColumnReader(
-//              columns.get(i),
-//              types.get(i).getOriginalType(),
-//              pages.getPageReader(columns.get(i)),
-//              convertTz,
-//              datetimeRebaseMode,
-//              int96RebaseMode);
-//    }
-    totalCountLoadedSoFar += pages.getRowCount();
-  }
-
-  private ArrowCDataWrapper wrapper;
+  private NativeIOWrapper wrapper;
   private LakeSoulArrowReader nativeReader;
   private WritableColumnVector[] partitionColumnVectors;
 

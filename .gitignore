@@ -11,6 +11,7 @@
 .DS_Store
 *.iml
 /native-io/lakesoul-io-java/target/
+/native-io/Cargo.lock
 /native-io/lakesoul-io-java/.idea/
 dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/

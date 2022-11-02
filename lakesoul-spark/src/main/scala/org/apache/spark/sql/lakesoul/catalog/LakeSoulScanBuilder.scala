@@ -26,7 +26,7 @@ import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, NativeMergeParquetScan, NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
@@ -121,7 +121,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     }
 
     if (tableInfo.hash_partition_columns.isEmpty || fileInfo.isEmpty) {
-      //      nativeParquetScan()
       parquetScan(partitionFilters, dataFilters)
     }
     else if (onlyOnePartition) {
@@ -141,14 +140,13 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
 
-  def nativeParquetScan(): Scan = {
-    logInfo("[Debug][huazeng]on org.apache.spark.sql.lakesoul.catalog.LakeSoulScanBuilder.NativeParquetScan")
-    NativeParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-      readPartitionSchema(), pushedParquetFilters, options, Seq(parseFilter()))
-  }
-
   def parquetScan(partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Scan = {
-    ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-      readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
+      NativeParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else {
+      ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    }
   }
 }

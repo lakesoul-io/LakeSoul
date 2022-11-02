@@ -1,3 +1,19 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.spark.sql.execution.datasources.v2.parquet
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{JobID, RecordReader, TaskAttemptID, TaskID, TaskType}
@@ -12,12 +28,12 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.read.PartitionReader
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedFile, RecordReaderIterator}
-import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, VectorizedParquetRecordReader}
+import org.apache.spark.sql.execution.datasources.parquet.{NativeVectorizedReader, ParquetFilters, SpecificParquetRecordReaderBase, VectorizedParquetRecordReader}
 import org.apache.spark.sql.execution.datasources.v2.PartitionReaderWithPartitionValues
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
-import org.apache.spark.sql.execution.datasources.parquet.NativeVectorizedReader
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -43,7 +59,8 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                dataSchema: StructType,
                                                readDataSchema: StructType,
                                                partitionSchema: StructType,
-                                               filters: Array[Filter])
+                                               filters: Array[Filter],
+                                               nativeIOEnable: Boolean = false)
   extends NativeFilePartitionReaderFactory with Logging{
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
@@ -62,22 +79,32 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
   override def buildReader(partitionedFile: PartitionedFile): PartitionReader[InternalRow] = ???
 
-  def createVectorizedReader(file: PartitionedFile):NativeVectorizedReader = {
-    val vectorizedReader = buildReaderBase(file, createParquetVectorizedReader)
-      .asInstanceOf[NativeVectorizedReader]
-    vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-    vectorizedReader
+  def createVectorizedReader(file: PartitionedFile): RecordReader[Void,ColumnarBatch] = {
+    val recordReader = buildReaderBase(file, createParquetVectorizedReader)
+    if (nativeIOEnable) {
+      val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
+      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
+      vectorizedReader.enableReturningBatches()
+      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+    } else {
+      val vectorizedReader=recordReader.asInstanceOf[VectorizedParquetRecordReader]
+      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
+      vectorizedReader.enableReturningBatches()
+      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+    }
   }
 
   override def buildColumnarReader(file: PartitionedFile): PartitionReader[ColumnarBatch] = {
     val vectorizedReader = createVectorizedReader(file)
-    vectorizedReader.enableReturningBatches()
 
     new PartitionReader[ColumnarBatch] {
-      override def next(): Boolean = vectorizedReader.nextKeyValue()
+      override def next(): Boolean = {
+        vectorizedReader.nextKeyValue()
+      }
 
-      override def get(): ColumnarBatch =
-        vectorizedReader.getCurrentValue.asInstanceOf[ColumnarBatch]
+      override def get(): ColumnarBatch = {
+        vectorizedReader.getCurrentValue
+      }
 
       override def close(): Unit = vectorizedReader.close()
     }
@@ -167,9 +194,14 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                              pushed: Option[FilterPredicate],
                                              convertTz: Option[ZoneId],
                                              datetimeRebaseMode: LegacyBehaviorPolicy.Value,
-                                             int96RebaseMode: LegacyBehaviorPolicy.Value): NativeVectorizedReader = {
+                                             int96RebaseMode: LegacyBehaviorPolicy.Value):
+//  NativeVectorizedReader =
+  RecordReader[Void,ColumnarBatch] =
+  {
     val taskContext = Option(TaskContext.get())
-    val vectorizedReader = new NativeVectorizedReader(
+
+  val vectorizedReader = if (nativeIOEnable) {
+    new NativeVectorizedReader(
       convertTz.orNull,
       datetimeRebaseMode.toString,
       int96RebaseMode.toString,
@@ -177,10 +209,18 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
       capacity,
       file
     )
+  } else {
+    new VectorizedParquetRecordReader(
+      convertTz.orNull,
+      datetimeRebaseMode.toString,
+      int96RebaseMode.toString,
+      enableOffHeapColumnVector && taskContext.isDefined,
+      capacity)
+  }
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema ${file.partitionValues}")
-    vectorizedReader
+    vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
   }
 }

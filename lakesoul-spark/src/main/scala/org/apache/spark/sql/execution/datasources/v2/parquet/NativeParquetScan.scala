@@ -1,3 +1,19 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import org.apache.hadoop.conf.Configuration
@@ -10,6 +26,7 @@ import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, ParquetWriteSupport}
 import org.apache.spark.sql.execution.datasources.v2.FileScan
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -27,7 +44,7 @@ case class NativeParquetScan(
                partitionFilters: Seq[Expression] = Seq.empty,
                dataFilters: Seq[Expression] = Seq.empty) extends FileScan {
 
-  override def isSplitable(path: Path): Boolean = true
+  override def isSplitable(path: Path): Boolean = false
 
 
   override def equals(obj: Any): Boolean = obj match {
@@ -84,7 +101,10 @@ case class NativeParquetScan(
       new SerializableConfiguration(hadoopConf))
 
 
+    val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
+//    val nativeIOEnable =false
+
     NativeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
+      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, nativeIOEnable)
   }
 }

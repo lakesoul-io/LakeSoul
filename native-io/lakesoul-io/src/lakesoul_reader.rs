@@ -1,15 +1,17 @@
 use atomic_refcell::AtomicRefCell;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
+use std::mem::ManuallyDrop;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use std::time::Instant; 
+
 use derivative::Derivative;
 
-pub use datafusion::arrow::array::{export_array_into_raw, StructArray};
+
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
-pub use datafusion::arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
@@ -23,16 +25,20 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 
+use crate::merge_logic::merge_partitioned_file::MergePartitionedFile;
+
 #[derive(Derivative, Default)]
 pub struct LakeSoulReaderConfig {
     // files to read
     files: Vec<String>,
+    merge_files: Vec<MergePartitionedFile>,
     // primary key column names
     primary_keys: Vec<String>,
     // selecting columns
     columns: Vec<String>,
     // filtering predicates
     filters: Vec<Expr>,
+    batch_size: usize,
 
     // object store related configs
     object_store_options: HashMap<String, String>,
@@ -63,6 +69,16 @@ impl LakeSoulReaderConfigBuilder {
         self
     }
 
+    pub fn with_merge_file(mut self, file: MergePartitionedFile) -> Self {
+        self.config.merge_files.push(file);
+        self
+    }
+
+    pub fn with_merge_files(mut self, files: Vec<MergePartitionedFile>) -> Self {
+        self.config.merge_files = files;
+        self
+    }
+
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
         self
@@ -70,6 +86,11 @@ impl LakeSoulReaderConfigBuilder {
 
     pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(col);
+        self
+    }
+
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.config.batch_size=batch_size;
         self
     }
 
@@ -101,7 +122,6 @@ impl LakeSoulReaderConfigBuilder {
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
-    runtime: Arc<Runtime>,
     config: LakeSoulReaderConfig,
     stream: Box<MaybeUninit<SendableRecordBatchStream>>,
 }
@@ -109,10 +129,8 @@ pub struct LakeSoulReader {
 impl LakeSoulReader {
     pub fn new(config: LakeSoulReaderConfig) -> Result<Self> {
         let sess_ctx = LakeSoulReader::create_session_context(&config)?;
-        let runtime = Builder::new_multi_thread().worker_threads(config.thread_num).build()?;
         Ok(LakeSoulReader {
             sess_ctx,
-            runtime: Arc::new(runtime),
             config,
             stream: Box::new_uninit(),
         })
@@ -168,7 +186,8 @@ impl LakeSoulReader {
     }
 
     fn create_session_context(config: &LakeSoulReaderConfig) -> Result<SessionContext> {
-        let sess_conf = SessionConfig::default();
+        let sess_conf = SessionConfig::default()
+            .with_batch_size(config.batch_size);
         let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 
         // register object store(s)
@@ -196,27 +215,27 @@ impl LakeSoulReader {
         unsafe { self.stream.assume_init_mut().next().await }
     }
 
-    pub fn get_runtime(&self) -> Arc<Runtime> {
-        self.runtime.clone()
-    }
+
 }
 
 // Reader will be used in async closure sent to tokio
 // while accessing its mutable methods.
 pub struct SyncSendableMutableLakeSoulReader {
     inner: Arc<AtomicRefCell<Mutex<LakeSoulReader>>>,
+    runtime: Arc<Runtime>,
 }
 
 impl SyncSendableMutableLakeSoulReader {
-    pub fn new(reader: LakeSoulReader) -> Self {
+    pub fn new(reader: LakeSoulReader, runtime:Runtime) -> Self {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
+            runtime: Arc::new(runtime)
         }
     }
 
     pub fn start_blocked(&self) -> Result<()> {
         let inner_reader = self.inner.clone();
-        let runtime = (inner_reader).borrow_mut().get_mut().get_runtime();
+        let runtime = self.get_runtime();
         runtime.block_on(async { inner_reader.borrow().lock().await.start().await })
     }
 
@@ -224,15 +243,41 @@ impl SyncSendableMutableLakeSoulReader {
         &self,
         f: Box<dyn FnOnce(Option<ArrowResult<RecordBatch>>) + Send + Sync>,
     ) -> JoinHandle<()> {
-        let inner_reader = self.inner.clone();
-        let runtime = (inner_reader).borrow_mut().get_mut().get_runtime();
+        let inner_reader = self.get_inner_reader();
+        let runtime = self.get_runtime();
         runtime.spawn(async move {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
             f(reader.next_rb().await);
         })
     }
+
+    pub fn hello(&self) {
+    }
+
+    fn get_runtime(&self) -> Arc<Runtime> {
+        self.runtime.clone()
+    }
+
+    fn get_inner_reader(&self) -> Arc<AtomicRefCell<Mutex<LakeSoulReader>>>{
+        self.inner.clone()
+    }
 }
+
+
+impl Iterator for LakeSoulReader{
+    type Item=RecordBatch;
+    fn next(&mut self) -> Option<RecordBatch>{
+        None
+    }
+}
+
+impl Drop for LakeSoulReader{
+    fn drop(&mut self) {
+        println!("Dropping LakeSoulReader with data `{}`!", self.config.thread_num);
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -243,34 +288,65 @@ mod tests {
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
-            .with_files(vec!["test/test.snappy.parquet".to_string()])
+            .with_files(vec![
+                // "/Users/ceng/base-0-0.parquet"
+                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                .to_string()])
+            .with_thread_num(1)
+            .with_batch_size(256)
             .build();
         let mut reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        while let Some(record_batch) = reader.next_rb().await {
-            print_batches(std::slice::from_ref(&record_batch?))?;
+        static mut row_cnt: usize = 0;
+
+        while let Some(rb) = reader.next_rb().await {
+            // print_batches(std::slice::from_ref(&record_batch?))?;
+            let num_rows = &rb.unwrap().num_rows();
+            unsafe {
+                row_cnt = row_cnt + num_rows;
+                println!("{}", row_cnt);
+            }
         }
+        // unsafe{
+        //     ManuallyDrop::drop(&mut reader);
+        // }
         Ok(())
     }
 
     #[test]
-    fn test_reader_local_bloked() -> Result<()> {
+    fn test_reader_local_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "parquet-testing/data/alltypes_plain.snappy.parquet"
+                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
-            .with_thread_num(2)
+            .with_thread_num(1)
+            .with_batch_size(8192)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
-        let reader = SyncSendableMutableLakeSoulReader::new(reader);
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(reader.config.thread_num)
+            .build()
+            .unwrap();
+        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
+        static mut row_cnt: usize = 0;
         loop {
             let (tx, rx) = sync_channel(1);
+            let start = Instant::now();
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    print_batches(std::slice::from_ref(&rb.unwrap())).unwrap();
+                    // print_batches(std::slice::from_ref(&rb.unwrap())).unwrap();
+                    let num_rows = &rb.unwrap().num_rows();
+                    unsafe {
+                        row_cnt = row_cnt + num_rows;
+                        println!("{}", row_cnt);
+                    }
+                    println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
                     tx.send(false).unwrap();
                 }
             };
