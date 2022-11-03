@@ -31,15 +31,15 @@ object CHBenchmark {
 
   val queryMap = Map("query_1" -> query_1, "query_2" -> query_2, "query_3" -> query_3, "query_4" -> query_4, "query_5" -> query_5, "query_6" -> query_6,
     "query_7" -> query_7, "query_8" -> query_8, "query_9" -> query_9, "query_10" -> query_10, "query_11" -> query_11, "query_12" -> query_12,
-    "query_13" -> query_13, "query_14" -> query_14, "query_16" -> query_16, "query_7" -> query_17, "query_18" -> query_18, "query_19" -> query_19,
-    "query_20" -> query_20, "query_21" -> query_21, "query_2" -> query_22)
+    "query_13" -> query_13, "query_14" -> query_14, "query_16" -> query_16, "query_17" -> query_17, "query_18" -> query_18, "query_19" -> query_19,
+    "query_20" -> query_20, "query_21" -> query_21, "query_22" -> query_22)
 
-  val hostname = "localhost"
-  val dbName = "tpcc"
+  val hostname = "mysql"
+  val dbName = "test_cdc"
   val mysqlUserName = "root"
-  val mysqlPassword = "123456"
+  val mysqlPassword = "root"
   val mysqlPort = 3306
-  val serverTimeZone = "Asia/Shanghai"
+  val serverTimeZone = "UTC"
 
   val url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
@@ -50,6 +50,28 @@ object CHBenchmark {
     val builder = SparkSession.builder()
       .appName("CH_BENCHMARK TEST")
       .master("local[4]")
+      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config("hadoop.fs.s3a.committer.name", "directory")
+      .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
+      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
+      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config("spark.hadoop.fs.s3a.path.style.access", "true")
+      .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
+      .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
+      .config("spark.hadoop.fs.s3a.fast.upload.buffer", "disk")
+      .config("spark.hadoop.fs.s3a.fast.upload", value = true)
+      .config("spark.hadoop.fs.s3a.multipart.size", 67108864)
+      .config("spark.hadoop.fs.s3a.connection.maximum", 100)
+      .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")
+      .config("spark.sql.shuffle.partitions", 10)
+      .config("spark.sql.files.maxPartitionBytes", "1g")
+      .config("spark.default.parallelism", 8)
+      .config("spark.sql.parquet.mergeSchema", value = false)
+      .config("spark.sql.parquet.filterPushdown", value = true)
+      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
+      .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/")
+      .config("spark.sql.session.timeZone", "Asia/Shanghai")
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
@@ -64,7 +86,6 @@ object CHBenchmark {
     queryMap.foreach(k => queryTest(spark, k._2, k._1))
     println(splitLine)
 
-//    verifyQuery(spark, query_2, "query_2")
     if (args.length >= 1 && args(0) == "--verifyQuery") {
       queryMap.foreach(
         k => k._1 match {
@@ -86,7 +107,7 @@ object CHBenchmark {
   }
 
   def verifyQuery(spark: SparkSession, query: String, queryNum: String): Unit = {
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
     val lakesoulDF = spark.sql(query)
 
@@ -100,7 +121,7 @@ object CHBenchmark {
 
   def verifyQuery1(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
       .withColumn("avg_qty", format_number(col("avg_qty"), 1))
       .withColumn("sum_qty", format_number(col("sum_qty"), 0))
@@ -113,7 +134,7 @@ object CHBenchmark {
 
   def verifyQuery8(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
       .withColumn("mkt_share", format_number(col("mkt_share"), 6))
 
@@ -131,7 +152,7 @@ object CHBenchmark {
 
   def verifyQuery11(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
       .withColumn("ordercount", format_number(col("ordercount"), 0))
 
@@ -149,7 +170,7 @@ object CHBenchmark {
 
   def verifyQuery12(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
       .withColumn("high_line_count", format_number(col("high_line_count"), 0))
       .withColumn("low_line_count", format_number(col("low_line_count"), 0))
@@ -169,7 +190,7 @@ object CHBenchmark {
 
   def verifyQuery14(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("url", url).option("dbtable", "(" + query + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
       .load()
       .withColumn("promo_revenue", format_number(col("promo_revenue"), 8))
 

@@ -1,3 +1,5 @@
+#!/bin/sh
+
 table_num=$(cat ./properties | grep table_num |awk -F'=' '{print $2}')
 row_num=$(cat ./properties | grep row_num |awk -F'=' '{print $2}')
 
