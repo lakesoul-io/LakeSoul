@@ -54,8 +54,8 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.memory.process.size: 4096m
-        taskmanager.memory.flink.size: 3072m
+        taskmanager.memory.process.size: 3000m
+        taskmanager.memory.flink.size: 2048m
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
@@ -70,14 +70,14 @@ services:
     depends_on:
       - jobmanager
     command: taskmanager
-    scale: 1
+    scale: 2
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
-        taskmanager.memory.process.size: 4096m
-        taskmanager.memory.flink.size: 3072m
-        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 3000m
+        taskmanager.memory.flink.size: 2048m
+        taskmanager.numberOfTaskSlots: 4
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
