@@ -1,15 +1,15 @@
+use std::borrow::BorrowMut;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::{Debug, Formatter};
+use std::future::Ready;
 use std::pin::Pin;
-use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow::error::ArrowError;
 use arrow::row::{Row, Rows};
 use arrow::{array::make_array as make_arrow_array, error::Result as ArrowResult, record_batch::RecordBatch};
-use arrow::compute::sort;
 use datafusion::arrow::array::MutableArrayData;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::row::{RowConverter, SortField};
@@ -18,26 +18,27 @@ use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::metrics::MemTrackingMetrics;
 use datafusion::physical_plan::sorts::RowIndex;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use futures::stream::{Buffered, Fuse, FusedStream, Peekable};
+use futures::stream::{Buffered, Fuse, FusedStream, Map};
 use futures::{Stream, StreamExt};
 use smallvec::SmallVec;
-use async_stream::stream;
+use async_stream::{AsyncStream, stream, try_stream};
+use pin_project_lite::pin_project;
 
 // A range in one record batch with same primary key
 pub struct SortKeyRangeInBatch {
     batch_id: usize,
     begin_row: usize, // begin row in this batch, included
     end_row: usize,   // included
-    num_rows_in_batch: usize,
+    rows: Arc<Rows>,
 }
 
 impl SortKeyRangeInBatch {
-    pub fn new(batch_id: usize, begin_row: usize, end_row: usize, num_rows_in_batch: usize) -> Self {
+    pub fn new(batch_id: usize, begin_row: usize, end_row: usize, rows: Arc<Rows>) -> Self {
         SortKeyRangeInBatch {
             batch_id,
             begin_row,
             end_row,
-            num_rows_in_batch,
+            rows,
         }
     }
 
@@ -99,7 +100,6 @@ impl Debug for SortKeyRangeInBatch {
         f.debug_struct("SortKeyRangeInBatch")
             .field("begin_row", &self.begin_row)
             .field("end_row", &self.end_row)
-            .field("num_rows", &self.num_rows_in_batch)
             .field("batch_id", &self.batch_id)
             .finish()
     }
@@ -131,9 +131,12 @@ impl SortedStream {
     }
 }
 
+pub type BufferedRecordBatchStream =
+    Buffered<Map<SendableRecordBatchStream, fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>>>;
+
 struct MergingStreams {
     /// The sorted input streams to merge together
-    streams: Vec<Fuse<Peekable<Buffered<SendableRecordBatchStream>>>>,
+    streams: Vec<Fuse<BufferedRecordBatchStream>>,
     /// number of streams
     num_streams: usize,
 }
@@ -147,7 +150,7 @@ impl Debug for MergingStreams {
 }
 
 impl MergingStreams {
-    fn new(input_streams: Vec<Fuse<Peekable<Buffered<SendableRecordBatchStream>>>>) -> Self {
+    fn new(input_streams: Vec<Fuse<BufferedRecordBatchStream>>) -> Self {
         Self {
             num_streams: input_streams.len(),
             streams: input_streams,
@@ -156,6 +159,44 @@ impl MergingStreams {
 
     fn num_streams(&self) -> usize {
         self.num_streams
+    }
+}
+
+pin_project! {
+    pub struct MergedStream<St> {
+        #[pin]
+        inner: St,
+        schema: SchemaRef,
+    }
+}
+
+impl <St> MergedStream<St>
+where St: Stream<Item = ArrowResult<RecordBatch>>
+{
+    pub fn new(schema: SchemaRef, stream: St) -> Self {
+        MergedStream {
+            inner: stream,
+            schema,
+        }
+    }
+}
+
+impl <St> Stream for MergedStream<St>
+where
+    St: Stream<Item = ArrowResult<RecordBatch>>
+{
+    type Item = ArrowResult<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.project().inner.as_mut().poll_next(cx)
+    }
+}
+
+impl <St> RecordBatchStream for MergedStream<St>
+where St: Stream<Item = ArrowResult<RecordBatch>>
+{
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
     }
 }
 
@@ -171,7 +212,7 @@ pub(crate) struct SortPreservingMergeStream {
     ///
     /// Exhausted batches will be popped off the front once all
     /// their rows have been yielded to the output
-    batches: Vec<VecDeque<(RecordBatch, Rows)>>,
+    batches: Vec<VecDeque<(RecordBatch, Arc<Rows>)>>,
 
     /// The row index for each stream to identify next range begin row id
     in_progress_ranges: Vec<RowIndex>,
@@ -204,7 +245,12 @@ impl SortPreservingMergeStream {
         let stream_count = streams.len();
         let batches = (0..stream_count).into_iter().map(|_| VecDeque::new()).collect();
         tracking_metrics.init_mem_used(streams.iter().map(|s| s.mem_used).sum());
-        let wrappers = streams.into_iter().map(|s| s.stream.buffered(2).peekable()).collect();
+        let mut wrappers = Vec::with_capacity(stream_count);
+        streams.into_iter().for_each(|s| {
+            let ready_futures = s.stream.map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
+            let bufferred = ready_futures.buffered(2);
+            wrappers.push(bufferred.fuse());
+        });
         let default_row_index = RowIndex {
             stream_idx: 0,
             batch_idx: 0,
@@ -243,25 +289,27 @@ impl SortPreservingMergeStream {
             return Ok(());
         }
 
-        let batch = stream.next().await?;
         // Fetch a new input record and create a cursor from it
-        if batch.num_rows() > 0 {
-            let cols = self
-                .column_expressions
-                .iter()
-                .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
-                .collect::<Result<Vec<_>>>()?;
+        loop {
+            let batch = stream.next().await.unwrap()?;
+            if batch.num_rows() > 0 {
+                let cols = self
+                    .column_expressions
+                    .iter()
+                    .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
+                    .collect::<Result<Vec<_>>>()?;
 
-            let rows = self.row_converter.convert_columns(&cols)?;
-            let batch_idx = self.batches[idx].len();
-            self.batches[idx].push_back((batch, rows));
-            let in_progress_row_index = self.in_progress_ranges.get_mut(idx).unwrap();
-            in_progress_row_index.row_idx = 0;
-            in_progress_row_index.batch_idx = batch_idx;
-            in_progress_row_index.stream_idx = idx;
-            Ok(())
-        } else {
-            self.maybe_poll_stream(idx)
+                let rows = self.row_converter.convert_columns(&cols)?;
+                let batch_idx = self.batches[idx].len();
+                self.batches[idx].push_back((batch, Arc::new(rows)));
+                let in_progress_row_index = self.in_progress_ranges.get_mut(idx).unwrap();
+                in_progress_row_index.row_idx = 0;
+                in_progress_row_index.batch_idx = batch_idx;
+                in_progress_row_index.stream_idx = idx;
+                return Ok(());
+            } else {
+                continue;
+            }
         }
     }
 
@@ -277,8 +325,8 @@ impl SortPreservingMergeStream {
         loop {
             // get current in progress(next) begin row for this stream
             let in_progress_row_index = self.in_progress_ranges.get_mut(idx).unwrap();
-            let mut i = 0;
-            let rows = &self.batches[idx][in_progress_row_index.batch_idx].1;
+            let mut i = in_progress_row_index.row_idx;
+            let rows= self.batches[idx][in_progress_row_index.batch_idx].1.clone();
             while i < rows.num_rows() {
                 if i < rows.num_rows() - 1 {
                     if rows.row(i + 1) == rows.row(i) {
@@ -290,18 +338,22 @@ impl SortPreservingMergeStream {
                         in_progress_row_index.batch_idx,
                         in_progress_row_index.row_idx,
                         i,
-                        rows.num_rows(),
+                        rows.clone(),
                     );
                     sort_key_range.sort_key_ranges.push(sort_key_in_batch);
                     in_progress_row_index.row_idx += 1;
                 }
             }
+            // reach the end of current batch
             if i >= rows.num_rows() {
                 // see if next batch has same row
-                self.fetch_next_batch_from_stream(idx)?;
+                self.fetch_next_batch_from_stream(idx).await?;
                 if !sort_key_range.sort_key_ranges.last().is_some_and(|sort_key_last_batch| {
-                    sort_key_last_batch.current() == self.batches.last().unwrap().1
+                    let next_batch_and_row = self.batches[idx].back().unwrap();
+                    sort_key_last_batch.current() == (*next_batch_and_row).1.row(0)
                 }) {
+                    // if next batch's first row doesn't match, break the loop.
+                    // otherwise we'll continue to next batch
                     break;
                 }
             } else {
@@ -312,20 +364,13 @@ impl SortPreservingMergeStream {
         return Ok(());
     }
 
-    /// Drains the in_progress row indexes, and builds a new RecordBatch from them
-    ///
-    /// Will then drop any batches for which all rows have been yielded to the output
-    fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        Err(ArrowError::DivideByZero)
-    }
-
-    async fn pop_heap(&mut self) -> Option<SortKeyRange> {
+    async fn pop_heap(&mut self) -> ArrowResult<Option<SortKeyRange>> {
         match self.heap.pop() {
             Some(Reverse(range)) => {
                 self.fetch_sort_key_range_from_stream(range.stream_idx).await?;
-                Some(range)
+                Ok(Some(range))
             }
-            _ => None
+            _ => Ok(None)
         }
     }
 
@@ -338,33 +383,46 @@ impl SortPreservingMergeStream {
         None
     }
 
-    pub async fn get_stream(&mut self) /*-> ArrowResult<SendableRecordBatchStream>*/ {
+    pub async fn get_stream(mut self) -> ArrowResult<SendableRecordBatchStream> {
         for i in 0..self.streams.num_streams() {
             self.fetch_sort_key_range_from_stream(i).await?;
         }
-        loop {
-            let mut ranges: Vec<SmallVec<[SortKeyRange; 4]>> = Vec::with_capacity(self.streams.num_streams());
-            let sort_key_range = self.pop_heap().await;
-            match sort_key_range {
-                Some(range) => {
-                    let mut same_sort_key_ranges = SmallVec::<[SortKeyRange; 4]>::new();
-                    same_sort_key_ranges.push(range);
-                    loop {
-                        // check if next range (in another stream) has same row key
-                        let next_range = self.heap.peek();
-                        if next_range.is_some_and(|range| {
-                            range == next_range
-                        }) {
-                            let sort_key_range = self.pop_heap().await.unwrap();
-                            same_sort_key_ranges.push(sort_key_range);
-                        } else {
-                            break;
+        let schema = self.schema.clone();
+        let stream = try_stream! {
+            loop {
+                let mut ranges: SmallVec<[SortKeyRange; 4]> = SmallVec::<[SortKeyRange; 4]>::new();
+                let sort_key_range = self.pop_heap().await?;
+                match sort_key_range {
+                    Some(range) => {
+                        ranges.push(range);
+                        loop {
+                            // check if next range (in another stream) has same row key
+                            let next_range = self.heap.peek();
+                            if next_range.is_some_and(|nr| {
+                                match nr {
+                                    Reverse(r) => r == ranges.last().unwrap(),
+                                }
+                            }) {
+                                let sort_key_range_next = self.pop_heap().await?;
+                                match sort_key_range_next {
+                                    Some(range_next) => {
+                                        ranges.push(range_next);
+                                    },
+                                    _ => break,
+                                };
+                            } else {
+                                break;
+                            }
                         }
-                    }
-                    ranges.push(same_sort_key_ranges);
+                    },
+                    _ => break
                 }
-                _ => break
+                match self.maybe_merge_waiting_ranges(ranges).await {
+                    Some(rb) => yield rb,
+                    None => continue,
+                }
             }
-        }
+        };
+        Ok(Box::pin(MergedStream::new(schema.clone(), stream)))
     }
 }
