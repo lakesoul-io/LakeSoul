@@ -6,12 +6,12 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
 object Benchmark {
 
-  val hostname = "mysql"
-  val dbName = "test_cdc"
-  val mysqlUserName = "root"
-  val mysqlPassword = "root"
-  val mysqlPort = 3306
-  val serverTimeZone = "UTC"
+  var hostname = "mysql"
+  var dbName = "test_cdc"
+  var mysqlUserName = "root"
+  var mysqlPassword = "root"
+  var mysqlPort = 3306
+  var serverTimeZone = "UTC"
 
   val url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
@@ -50,6 +50,15 @@ object Benchmark {
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
+
+    if (args.length >= 6 ) {
+      hostname = args(0)
+      dbName = args(1)
+      mysqlUserName = args(2)
+      mysqlPassword = args(3)
+      mysqlPort = args(4).toInt
+      serverTimeZone =  args(5)
+    }
 
     spark.sql("use " + dbName)
 
