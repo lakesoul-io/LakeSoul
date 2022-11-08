@@ -23,7 +23,7 @@ services:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: test_cdc
     command:
-      --max_connections=1024
+      --max_connections=4096
     volumes:
       - ./mysql_init.sql:/docker-entrypoint-initdb.d/mysql_init.sql
       - ./mysql_random_data_insert:/mysql_random_data_insert

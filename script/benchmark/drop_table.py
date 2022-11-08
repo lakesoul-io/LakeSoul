@@ -18,7 +18,6 @@ with open("./properties") as file:
       property[strs[0].strip()] = strs[1].strip()
 
 table_num = int(property['table_num'])
-table_type = int(property['table_type'])
 host = property['host']
 user = property['user']
 password = property['password']

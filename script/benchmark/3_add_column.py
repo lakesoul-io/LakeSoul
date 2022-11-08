@@ -57,11 +57,5 @@ for i in range(table_num):
   cur.execute(exec_sql)
 connect.commit()
 
-for i in range(table_num):
-  exec_sql = sql_4 % str(i)
-  print(exec_sql)
-  cur.execute(exec_sql)
-
-connect.commit()
 cur.close()
 connect.close()
