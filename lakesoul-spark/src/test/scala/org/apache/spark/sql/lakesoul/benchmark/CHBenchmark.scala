@@ -34,12 +34,12 @@ object CHBenchmark {
     "query_13" -> query_13, "query_14" -> query_14, "query_16" -> query_16, "query_17" -> query_17, "query_18" -> query_18, "query_19" -> query_19,
     "query_20" -> query_20, "query_21" -> query_21, "query_22" -> query_22)
 
-  val hostname = "mysql"
-  val dbName = "test_cdc"
-  val mysqlUserName = "root"
-  val mysqlPassword = "root"
-  val mysqlPort = 3306
-  val serverTimeZone = "UTC"
+  var hostname = "mysql"
+  var dbName = "test_cdc"
+  var mysqlUserName = "root"
+  var mysqlPassword = "root"
+  var mysqlPort = 3306
+  var serverTimeZone = "UTC"
 
   val url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
@@ -78,6 +78,16 @@ object CHBenchmark {
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
+
+    if (args.length >= 7 ) {
+      hostname = args(1)
+      dbName = args(2)
+      mysqlUserName = args(3)
+      mysqlPassword = args(4)
+      mysqlPort = args(5).toInt
+      serverTimeZone =  args(6)
+    }
+
     spark.sql("use " + dbName)
 
 //    queryTest(spark, query_18, "query_18")
