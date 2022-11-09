@@ -7,6 +7,7 @@ user=root
 password=root
 port=3306
 db=test_cdc
+timezone=UTC
 # row_num随机向表中插入多少条数据
 row_num=10000
 # delete_num随机删除多少条数据
