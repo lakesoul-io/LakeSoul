@@ -36,9 +36,9 @@ cur = connect.cursor()
 sql = """alter table random_table_%s modify column extra_1 float default NULL, modify column extra_2 varchar(255) default NULL"""
 
 for i in range(table_num):
-    exec_sql = sql % str(i)
-    print(exec_sql)
-    cur.execute(exec_sql)
+  exec_sql = sql % str(i)
+  print(exec_sql)
+  cur.execute(exec_sql)
 
 
 connect.commit()
