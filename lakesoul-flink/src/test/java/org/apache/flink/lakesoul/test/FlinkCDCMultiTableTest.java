@@ -29,10 +29,7 @@ import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.JsonSourceRecord;
-import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
-import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
@@ -40,11 +37,9 @@ import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-//import org.apache.log4j.PropertyConfigurator;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -59,7 +54,6 @@ public class FlinkCDCMultiTableTest {
 
     @Before
     public void before() throws Exception {
-//        PropertyConfigurator.configure(FlinkCDCMultiTableTest.class.getResourceAsStream("/log4j.properties"));
 
         conf.set(LakeSoulSinkOptions.USE_CDC, true)
             .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)
