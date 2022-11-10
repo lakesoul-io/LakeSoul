@@ -80,3 +80,31 @@ object DropPartitionCommand extends PredicateHelper {
 
 
 }
+
+object CleanupPartitionDataCommand extends PredicateHelper {
+  def run(snapshot: Snapshot,partitionDesc:String, endTime: Long): Unit = {
+    val table_name = snapshot.getTableName
+    val table_id = snapshot.getTableInfo.table_id
+
+    val candidatePartitions = PartitionFilter.partitionsForScan(snapshot, Seq(condition))
+    //only one partition is allowed to drop at a time
+    if (candidatePartitions.isEmpty) {
+      LakeSoulErrors.partitionNotFoundException(snapshot.getTableName, condition.toString())
+    } else if (candidatePartitions.length > 1) {
+      LakeSoulErrors.tooMuchPartitionException(
+        snapshot.getTableName,
+        condition.toString(),
+        candidatePartitions.length)
+    }
+    val range_value = candidatePartitions.head.range_value
+    SnapshotManagement.invalidateCache(table_name)
+    val path = new Path(table_path.get)
+    val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
+    val fs = path.getFileSystem(sessionHadoopConf)
+    SnapshotManagement.invalidateCache(table_path.get)
+    fs.delete(path, true);
+  }
+
+
+
+}

@@ -129,4 +129,12 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       snapshotManagement.snapshot,
       condition)
   }
+
+
+  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement,
+                                        endTime:Long): Unit = {
+    DropPartitionCommand.run(
+      snapshotManagement.snapshot,
+      endTime)
+  }
 }

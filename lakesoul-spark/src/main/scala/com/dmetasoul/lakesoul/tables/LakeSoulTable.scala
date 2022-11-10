@@ -26,9 +26,10 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_o
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
 
+import java.util.TimeZone
 import scala.collection.JavaConverters._
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
@@ -340,6 +341,14 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   def rollbackPartition(partitionValue:String,toVersionNum:Int):Unit = {
     MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
   }
+  def rollbackPartition(partitionValue:String,toTime:String):Unit = {
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)/1000
+    // MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id,partitionValue,toVersionNum)
+  }
+  def cleanupPartitionData(partitionValue:String,toTime:String):Unit={
+    //"1970-01-01 01:00:00"
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)/1000
+  }
 }
 
 object LakeSoulTable {
@@ -410,6 +419,16 @@ object LakeSoulTable {
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p,partitionDesc,partitionVersion))
+    } else {
+      throw LakeSoulErrors.tableNotExistsException(path)
+    }
+  }
+
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc:String,toTime:String): LakeSoulTable = {
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)/1000
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
+      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p), SnapshotManagement(p,partitionDesc,1))
     } else {
       throw LakeSoulErrors.tableNotExistsException(path)
     }
