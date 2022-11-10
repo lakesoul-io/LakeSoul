@@ -1,7 +1,8 @@
 name: CI with flink cdc Test
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ "benchmark" ]
 
 jobs:
   build:
