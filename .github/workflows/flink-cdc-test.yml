@@ -11,24 +11,71 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - name: Set up JDK 8
-        uses: actions/setup-java@v3
-        with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: maven
       - name: Set up Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          cache: 'pip'
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install pymysql
-
-      - name: deploy
+      - name: Deploy cluster
         run: |
-          cd script/benchmark;
-          sh auto_test.sh > log;
-          cat log
+          cd ./docker/lakesoul-docker-compose-env
+          docker compose up -d
+          sleep 10s
+      - name: Pull spark image
+        run: |
+            docker pull swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2
+      - name: Start flink task
+        run: |
+          docker exec -id lakesoul-docker-compose-env-jobmanager-1 flink run -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/lakesoul-flink-2.1.1-flink-1.14-SNAPSHOT.jar --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path  s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC
+          sleep 20s
+      - name: Download spark task
+        run: |
+          cd ./script/benchmark
+          cd ./work-dir
+          if [ ! -e lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar ]; then wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar; fi
+          if [ ! -e lakesoul-spark-2.1.1-spark-3.1.2.jar ]; then wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.1.1-spark-3.1.2.jar; fi
+          if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
+      - name: Cerate table and insert data
+        run: |
+          cd ./script/benchmark
+          python 1_create_table.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          sleep 3m
+      - name: Accuracy verification task
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.1.1-spark-3.1.2.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf  spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar
+      - name: Adding columns for tables and deleting some data from tables
+        run: |
+          cd ./script/benchmark
+          python3 3_add_column.py
+          python3 delete_data.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          sleep 3m
+      - name: Accuracy verification task
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.1.1-spark-3.1.2.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf  spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar
+      - name: Updating data in tables
+        run: |
+          cd ./script/benchmark
+          python3 4_update_data.py
+          sleep 3m
+      - name: Accuracy verification task
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.1.1-spark-3.1.2.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf  spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar
+      - name: Dropping columns and deleting some data in tables
+        run: |
+          cd ./script/benchmark
+          python3 6_drop_column.py
+          python3 delete_data.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          sleep 3m
+      - name: Accuracy verification task
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2  spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars /opt/spark/work-dir/lakesoul-spark-2.1.1-spark-3.1.2.jar,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp --conf  spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar

@@ -160,7 +160,7 @@ docker pull swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2
 
 cd ..
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   change_dir_from_script_benchmark_to_docker_compose
   echo "====== Start docker compose services ======"
   docker compose up -d # Use docker-compose to start services
@@ -177,7 +177,7 @@ echo "====== Creating tables in mysql:test_cdc database ======"
 python3 1_create_table.py # Create tables in mysql:test_cdc database
 echo "====== Tables have been created! ======"
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   #docker exec -ti lakesoul-docker-compose-env-mysql-1 chmod 755 /2_insert_table_data.sh # Modify permissions for 2_insert_table_data.sh
   insert_data_into_tables
   sleep_after_ddl_or_dml
@@ -194,7 +194,7 @@ python3 3_add_column.py # Add columns for tables in mysql:test_cdc database
 python3 delete_data.py
 echo "====== Adding columns and deleting some data have been completed! ======"
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   insert_data_into_tables
   sleep_after_ddl_or_dml
   verify_data_consistency
@@ -210,7 +210,7 @@ python3 4_update_data.py # Update data in mysql:test_cdc tables
 echo "====== Data in tables has been updated! ======"
 sleep_after_ddl_or_dml
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   verify_data_consistency
 else
   verify_data_consistency_pass_db_info
@@ -222,7 +222,7 @@ sleep 5s
 #python3 5_change_column.py # Change columns in mysql:test_cdc tables
 #python3 delete_data.py
 #echo "====== hanging columns and deleting some data have been completed! ======"
-#if [ ! $IS_ON_K8S ]; then
+#if [ !$IS_ON_K8S ]; then
 #  insert_data_into_tables
 #  sleep_after_ddl_or_dml
 #  verify_data_consistency
@@ -237,7 +237,7 @@ python3 6_drop_column.py # Drop columns in mysql:test_cdc tables
 python3 delete_data.py
 echo "====== Dropping columns and deleting some data have been completed! ======"
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   insert_data_into_tables
   sleep_after_ddl_or_dml
   verify_data_consistency
@@ -249,7 +249,7 @@ fi
 
 sleep 5s
 
-if [ ! $IS_ON_K8S ]; then
+if [ !$IS_ON_K8S ]; then
   echo "====== Dropping tables ======"
   python3 drop_table.py
   echo "====== Dropping tables has been completed! ======"
