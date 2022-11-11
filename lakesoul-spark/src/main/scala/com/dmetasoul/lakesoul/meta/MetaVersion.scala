@@ -175,6 +175,10 @@ object MetaVersion {
 
   }
 
+  def getLastedVersionUptoTime(table_id: String, range_value: String, utcMills: Long): Int = {
+    return dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
+  }
+
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {
     (false, "")
   }
@@ -260,7 +264,7 @@ object MetaVersion {
     dbManager.updateTableShortName(table_name, table_id, short_table_name, table_namespace)
   }
 
-  def cleanMeta():Unit = {
+  def cleanMeta(): Unit = {
     dbManager.cleanMeta()
   }
 

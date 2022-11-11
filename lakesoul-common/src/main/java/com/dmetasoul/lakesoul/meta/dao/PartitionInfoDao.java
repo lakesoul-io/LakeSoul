@@ -125,10 +125,10 @@ public class PartitionInfoDao {
         String partitionString = DBUtil.changePartitionDescListToString(partitionDescList);
         String sql = String.format(
                 "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
-                "select table_id,partition_desc,max(version) from partition_info " +
-                "where table_id = '%s' and partition_desc in (%s) " +
-                "group by table_id,partition_desc) t " +
-                "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", tableId, partitionString);
+                        "select table_id,partition_desc,max(version) from partition_info " +
+                        "where table_id = '%s' and partition_desc in (%s) " +
+                        "group by table_id,partition_desc) t " +
+                        "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", tableId, partitionString);
         List<PartitionInfo> rsList = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -165,7 +165,29 @@ public class PartitionInfoDao {
         return getPartitionInfo(sql);
     }
 
-    public List<PartitionInfo> getPartitionVersions(String tableId,String partitionDesc) {
+    public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d",
+                tableId, partitionDesc, utcMills);
+        int version = -1;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                version = rs.getInt("version");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return version;
+    }
+
+    public List<PartitionInfo> getPartitionVersions(String tableId, String partitionDesc) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;

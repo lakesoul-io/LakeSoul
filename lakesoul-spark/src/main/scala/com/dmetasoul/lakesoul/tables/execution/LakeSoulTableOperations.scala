@@ -131,10 +131,8 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   }
 
 
-  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement,
+  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement,partitionDesc:String,
                                         endTime:Long): Unit = {
-    DropPartitionCommand.run(
-      snapshotManagement.snapshot,
-      endTime)
+    CleanupPartitionDataCommand.run(snapshotManagement.snapshot,partitionDesc, endTime);
   }
 }
