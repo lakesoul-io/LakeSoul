@@ -337,12 +337,12 @@ mod tests {
     fn test_reader_local_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
-            .with_thread_num(2)
-            .with_batch_size(4096)
+            .with_thread_num(1)
+            .with_batch_size(8192)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
