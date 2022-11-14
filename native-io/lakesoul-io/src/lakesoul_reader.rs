@@ -18,7 +18,8 @@ use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use object_store::aws;
+use object_store::aws::{AmazonS3Builder};
+use object_store::RetryConfig;
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Mutex;
@@ -171,17 +172,33 @@ impl LakeSoulReader {
         }
 
         let endpoint = config.object_store_options.get("fs.s3.endpoint");
-        let s3_store = aws::new_s3(
-            key,
-            secret,
-            region.unwrap(),
-            bucket.unwrap(),
-            endpoint,
-            None::<String>,
-            NonZeroUsize::new(4).unwrap(),
-            true,
-        )?;
-        runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store));
+        // aws::new_s3 is deprecated since object_store-v0.3.0
+        // let s3_store = aws::new_s3(
+        //     key,
+        //     secret,
+        //     region.unwrap(),
+        //     bucket.unwrap(),
+        //     endpoint,
+        //     None::<String>,
+        //     NonZeroUsize::new(4).unwrap(),
+        //     true,
+        // )?;
+        let retry_config = RetryConfig {
+            backoff: Default::default(),
+            max_retries: 4,
+            retry_timeout: Default::default()
+        };
+        let s3_store = AmazonS3Builder::new()
+            .with_access_key_id(key.unwrap())
+            .with_secret_access_key(secret.unwrap())
+            .with_region(region.unwrap())
+            .with_bucket_name(bucket.unwrap())
+            .with_endpoint(endpoint.unwrap())
+            .with_retry(retry_config)
+            .with_allow_http(true)
+            .build();
+        runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store.unwrap()));
+        // runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store));
         Ok(())
     }
 
@@ -291,7 +308,8 @@ mod tests {
             .with_files(vec![
                 // "/Users/ceng/base-0-0.parquet"
                 // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                //"/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                "/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                 .to_string()])
             .with_thread_num(1)
             .with_batch_size(256)
@@ -319,12 +337,12 @@ mod tests {
     fn test_reader_local_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
-            .with_thread_num(1)
-            .with_batch_size(8192)
+            .with_thread_num(2)
+            .with_batch_size(4096)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
