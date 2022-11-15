@@ -1,38 +1,502 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-package org.apache.spark.sql.vectorized;
+package org.apache.spark.sql.execution.vectorized;
 
 import org.apache.arrow.vector.*;
-import org.apache.arrow.vector.complex.*;
+import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.MapVector;
+import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.holders.NullableVarCharHolder;
-
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.util.ArrowUtils;
-import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.vectorized.ColumnVector;
+import org.apache.spark.sql.vectorized.ColumnarArray;
+import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/**
- * A column vector backed by Apache Arrow. Currently calendar interval type and map type are not
- * supported.
- */
-public final class OffHeapArrowColumnVector extends ColumnVector {
+public final class WritableArrowColumnVector extends WritableColumnVector {
+
+    /**
+     * Returns the dictionary Id for rowId.
+     * <p>
+     * This should only be called when this `WritableColumnVector` represents dictionaryIds.
+     * We have this separate method for dictionaryIds as per SPARK-16928.
+     *
+     * @param rowId
+     */
+    @Override
+    public int getDictId(int rowId) {
+        return 0;
+    }
+
+    /**
+     * Ensures that there is enough storage to store capacity elements. That is, the put() APIs
+     * must work for all rowIds < capacity.
+     *
+     * @param capacity
+     */
+    @Override
+    protected void reserveInternal(int capacity) {
+
+    }
+
+    /**
+     * Sets null/not null to the value at rowId.
+     *
+     * @param rowId
+     */
+    @Override
+    public void putNotNull(int rowId) {
+
+    }
+
+    @Override
+    public void putNull(int rowId) {
+
+    }
+
+    /**
+     * Sets null/not null to the values at [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     */
+    @Override
+    public void putNulls(int rowId, int count) {
+
+    }
+
+    @Override
+    public void putNotNulls(int rowId, int count) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putBoolean(int rowId, boolean value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putBooleans(int rowId, int count, boolean value) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putByte(int rowId, byte value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putBytes(int rowId, int count, byte value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putBytes(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putShort(int rowId, short value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putShorts(int rowId, int count, short value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putShorts(int rowId, int count, short[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 2]) to [rowId, rowId + count)
+     * The data in src must be 2-byte platform native endian shorts.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putShorts(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putInt(int rowId, int value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putInts(int rowId, int count, int value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putInts(int rowId, int count, int[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 4]) to [rowId, rowId + count)
+     * The data in src must be 4-byte platform native endian ints.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putInts(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 4]) to [rowId, rowId + count)
+     * The data in src must be 4-byte little endian ints.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putIntsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putLong(int rowId, long value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putLongs(int rowId, int count, long value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putLongs(int rowId, int count, long[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 8]) to [rowId, rowId + count)
+     * The data in src must be 8-byte platform native endian longs.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putLongs(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src + srcIndex, src + srcIndex + count * 8) to [rowId, rowId + count)
+     * The data in src must be 8-byte little endian longs.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putLongsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putFloat(int rowId, float value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putFloats(int rowId, int count, float value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putFloats(int rowId, int count, float[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 4]) to [rowId, rowId + count)
+     * The data in src must be ieee formatted floats in platform native endian.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putFloats(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 4]) to [rowId, rowId + count)
+     * The data in src must be ieee formatted floats in little endian.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putFloatsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets `value` to the value at rowId.
+     *
+     * @param rowId
+     * @param value
+     */
+    @Override
+    public void putDouble(int rowId, double value) {
+
+    }
+
+    /**
+     * Sets value to [rowId, rowId + count).
+     *
+     * @param rowId
+     * @param count
+     * @param value
+     */
+    @Override
+    public void putDoubles(int rowId, int count, double value) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count]) to [rowId, rowId + count)
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putDoubles(int rowId, int count, double[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 8]) to [rowId, rowId + count)
+     * The data in src must be ieee formatted doubles in platform native endian.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putDoubles(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Sets values from [src[srcIndex], src[srcIndex + count * 8]) to [rowId, rowId + count)
+     * The data in src must be ieee formatted doubles in little endian.
+     *
+     * @param rowId
+     * @param count
+     * @param src
+     * @param srcIndex
+     */
+    @Override
+    public void putDoublesLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
+
+    }
+
+    /**
+     * Puts a byte array that already exists in this column.
+     *
+     * @param rowId
+     * @param offset
+     * @param length
+     */
+    @Override
+    public void putArray(int rowId, int offset, int length) {
+
+    }
+
+    /**
+     * Sets values from [value + offset, value + offset + count) to the values at rowId.
+     *
+     * @param rowId
+     * @param value
+     * @param offset
+     * @param count
+     */
+    @Override
+    public int putByteArray(int rowId, byte[] value, int offset, int count) {
+        return 0;
+    }
+
+    /**
+     * Gets the values of bytes from [rowId, rowId + count), as a UTF8String.
+     * This method is similar to {@link ColumnVector#getBytes(int, int)}, but can save data copy as
+     * UTF8String is used as a pointer.
+     *
+     * @param rowId
+     * @param count
+     */
+    @Override
+    protected UTF8String getBytesAsUTF8String(int rowId, int count) {
+        return null;
+    }
+
+    @Override
+    public int getArrayLength(int rowId) {
+        return 0;
+    }
+
+    @Override
+    public int getArrayOffset(int rowId) {
+        return 0;
+    }
+
+    /**
+     * Reserve a new column.
+     *
+     * @param capacity
+     * @param type
+     */
+    @Override
+    protected WritableColumnVector reserveNewColumn(int capacity, DataType type) {
+        return null;
+    }
+
 
     private final ArrowVectorAccessor accessor;
-    private OffHeapArrowColumnVector[] childColumns;
+    private WritableArrowColumnVector[] childColumns;
 
     @Override
     public boolean hasNull() {
@@ -114,23 +578,23 @@ public final class OffHeapArrowColumnVector extends ColumnVector {
         return accessor.getBinary(rowId);
     }
 
-    @Override
-    public ColumnarArray getArray(int rowId) {
-        if (isNullAt(rowId)) return null;
-        return accessor.getArray(rowId);
-    }
+//    @Override
+//    public ColumnarArray getArray(int rowId) {
+//        if (isNullAt(rowId)) return null;
+//        return accessor.getArray(rowId);
+//    }
+//
+//    @Override
+//    public ColumnarMap getMap(int rowId) {
+//        if (isNullAt(rowId)) return null;
+//        return accessor.getMap(rowId);
+//    }
 
     @Override
-    public ColumnarMap getMap(int rowId) {
-        if (isNullAt(rowId)) return null;
-        return accessor.getMap(rowId);
-    }
+    public WritableArrowColumnVector getChild(int ordinal) { return childColumns[ordinal]; }
 
-    @Override
-    public OffHeapArrowColumnVector getChild(int ordinal) { return childColumns[ordinal]; }
-
-    public OffHeapArrowColumnVector(ValueVector vector) {
-        super(ArrowUtils.fromArrowField(vector.getField()));
+    public WritableArrowColumnVector(ValueVector vector) {
+        super(0, ArrowUtils.fromArrowField(vector.getField()));
 
         if (vector instanceof BitVector) {
             accessor = new BooleanAccessor((BitVector) vector);
@@ -166,9 +630,9 @@ public final class OffHeapArrowColumnVector extends ColumnVector {
             StructVector structVector = (StructVector) vector;
             accessor = new StructAccessor(structVector);
 
-            childColumns = new OffHeapArrowColumnVector[structVector.size()];
+            childColumns = new WritableArrowColumnVector[structVector.size()];
             for (int i = 0; i < childColumns.length; ++i) {
-                childColumns[i] = new OffHeapArrowColumnVector(structVector.getVectorById(i));
+                childColumns[i] = new WritableArrowColumnVector(structVector.getVectorById(i));
             }
         } else {
             throw new UnsupportedOperationException();
@@ -437,12 +901,12 @@ public final class OffHeapArrowColumnVector extends ColumnVector {
     private static class ArrayAccessor extends ArrowVectorAccessor {
 
         private final ListVector accessor;
-        private final OffHeapArrowColumnVector arrayData;
+        private final WritableArrowColumnVector arrayData;
 
         ArrayAccessor(ListVector vector) {
             super(vector);
             this.accessor = vector;
-            this.arrayData = new OffHeapArrowColumnVector(vector.getDataVector());
+            this.arrayData = new WritableArrowColumnVector(vector.getDataVector());
         }
 
         @Override
@@ -480,15 +944,15 @@ public final class OffHeapArrowColumnVector extends ColumnVector {
 
     private static class MapAccessor extends ArrowVectorAccessor {
         private final MapVector accessor;
-        private final OffHeapArrowColumnVector keys;
-        private final OffHeapArrowColumnVector values;
+        private final WritableArrowColumnVector keys;
+        private final WritableArrowColumnVector values;
 
         MapAccessor(MapVector vector) {
             super(vector);
             this.accessor = vector;
             StructVector entries = (StructVector) vector.getDataVector();
-            this.keys = new OffHeapArrowColumnVector(entries.getChild(MapVector.KEY_NAME));
-            this.values = new OffHeapArrowColumnVector(entries.getChild(MapVector.VALUE_NAME));
+            this.keys = new WritableArrowColumnVector(entries.getChild(MapVector.KEY_NAME));
+            this.values = new WritableArrowColumnVector(entries.getChild(MapVector.VALUE_NAME));
         }
 
         @Override
