@@ -142,9 +142,11 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
   def parquetScan(partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Scan = {
     if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
+      println("building NativeParquetScan")
       NativeParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
     } else {
+      println("building ParquetScan")
       ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
     }

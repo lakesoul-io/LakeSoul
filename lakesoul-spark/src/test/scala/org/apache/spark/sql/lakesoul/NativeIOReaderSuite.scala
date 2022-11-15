@@ -22,6 +22,7 @@ import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.{AnalysisException, QueryTest, SaveMode, SparkSession}
 import org.apache.spark.sql.functions.{col, expr, when}
 import org.apache.spark.sql.internal.SQLConf
@@ -31,7 +32,7 @@ import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestS
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.streaming.StreamTest
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
-import org.apache.spark.sql.vectorized.{ArrowColumnVector, ArrowUtils, ColumnVector, ColumnarBatch}
+import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnVector, ColumnarBatch, NativeIOUtils}
 import org.scalatest.BeforeAndAfter
 
 import scala.language.implicitConversions
@@ -78,7 +79,7 @@ trait NativeIOReaderTests
       result match {
         case Some(vsr) =>
           assert(vsr.getFieldVectors.size()==testParquetColNum)
-          val vectors = ArrowUtils.asArrayColumnVector(vsr)
+          val vectors = NativeIOUtils.asArrayColumnVector(vsr)
 
           val batch = {
             new ColumnarBatch(vectors, vsr.getRowCount)
@@ -103,8 +104,21 @@ trait NativeIOReaderTests
           .format("lakesoul")
           .mode("Overwrite")
           .save(tablePath)
-        assert(spark.read.format("lakesoul").load(tablePath).schema.size == testParquetColNum)
-        assert(spark.read.format("lakesoul").load(tablePath).count() == testParquetRowCount)
+
+//        assert(spark.read.format("lakesoul").load(tablePath).schema.size == testParquetColNum)
+//        assert(spark.read.format("lakesoul").load(tablePath).count() == testParquetRowCount)
+      val native_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
+//      assert(native_df.head.length==testParquetColNum)
+      println("load native_df done")
+      spark.sessionState.conf.setConf(NATIVE_IO_ENABLE, false)
+      val orig_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
+      assert(orig_df.head.length==testParquetColNum)
+      println("load orig_df done")
+      orig_df
+        .zipAll(native_df, InternalRow(), InternalRow())
+        .foreach(zipped=>assert(zipped._1 == zipped._2))
+      spark.sessionState.conf.setConf(NATIVE_IO_ENABLE, true)
+
     }
   }
 
@@ -159,7 +173,6 @@ trait NativeIOReaderTests
         .option("hashBucketNum", testHashBucketNum)
         .mode("Overwrite")
         .save(tablePath)
-      // TODO:  NATIVE_IO_ENABLE for MultiPartitionMergeScan not implemented
       val readTable = spark.read.format("lakesoul").load(tablePath)
       assert(readTable.schema.size == testParquetColNum)
       assert(readTable.count() == testParquetRowCount)
@@ -180,12 +193,11 @@ trait NativeIOReaderTests
         .option("lakesoul_cdc_change_column", "op")
         .partitionBy("range","op")
         .save(tablePath)
-      val lake = LakeSoulTable.forPath(tablePath);
+      val lake = LakeSoulTable.forPath(tablePath)
       val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
         .toDF("range", "hash", "op")
       lake.upsert(tableForUpsert)
 
-      // TODO:  NATIVE_IO_ENABLE for MultiPartitionMergeScan not implemented
       val data1 = spark.read.format("lakesoul").load(tablePath)
       val data2 = data1.select("range","hash","op")
       checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))

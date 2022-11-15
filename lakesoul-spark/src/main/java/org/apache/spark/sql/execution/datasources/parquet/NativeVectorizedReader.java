@@ -23,18 +23,20 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.hadoop.ParquetInputSplit;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.execution.datasources.PartitionedFile;
+import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
+import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
+import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
-import org.apache.spark.sql.vectorized.ArrowUtils;
+import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.IOException;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -115,7 +117,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    */
   private ColumnarBatch columnarBatch;
 
-  private WritableColumnVector[] columnVectors;
+  private WritableColumnVector[] partitionColumnVectors;
 
   /**
    * If true, this class returns batches instead of rows.
@@ -132,14 +134,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           String datetimeRebaseMode,
           String int96RebaseMode,
           boolean useOffHeap,
-          int capacity,
-          PartitionedFile file) {
+          int capacity) {
     this.convertTz = convertTz;
     this.datetimeRebaseMode = datetimeRebaseMode;
     this.int96RebaseMode = int96RebaseMode;
     MEMORY_MODE = useOffHeap ? MemoryMode.OFF_HEAP : MemoryMode.ON_HEAP;
     this.capacity = capacity;
-    this.file = file;
   }
 
 
@@ -150,6 +150,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   public void initialize(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
           throws IOException, InterruptedException, UnsupportedOperationException {
     super.initialize(inputSplit, taskAttemptContext);
+    ParquetInputSplit split = (ParquetInputSplit)inputSplit;
+    this.filePath = split.getPath().toString();
     initializeInternal();
   }
 
@@ -161,6 +163,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   public void initialize(String path, List<String> columns) throws IOException,
           UnsupportedOperationException {
     super.initialize(path, columns);
+    this.filePath = path;
     initializeInternal();
   }
 
@@ -211,16 +214,39 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           MemoryMode memMode,
           StructType partitionColumns,
           InternalRow partitionValues) throws IOException {
-
-    if (nextVectorSchemaRoot == null) {
-      System.out.println("nextVectorSchemaRoot not ready");
-    } else {
-      totalRowCount += nextVectorSchemaRoot.getRowCount();
-      if (totalRowCount % 100000 < capacity) {
-        System.out.println(totalRowCount);
-//        System.gc();
+    if (nativeReader != null) {
+      nativeReader.close();
+    }
+    wrapper = new NativeIOWrapper();
+    wrapper.initialize();
+    wrapper.addFile(filePath);
+    // Initialize missing columns with nulls.
+    for (int i = 0; i < missingColumns.length; i++) {
+      if (!missingColumns[i]) {
+        wrapper.addColumn(sparkSchema.fields()[i].name());
       }
-      columnarBatch = new ColumnarBatch(ArrowUtils.asArrayColumnVector(nextVectorSchemaRoot), nextVectorSchemaRoot.getRowCount());
+    }
+
+    wrapper.setThreadNum(1);
+    wrapper.setBatchSize(capacity);
+    wrapper.createReader();
+    wrapper.startReader(bool -> {});
+
+    totalRowCount= 0;
+    nativeReader = new LakeSoulArrowReader(wrapper, 5000);
+
+
+    if (partitionColumns != null) {
+      if (memMode == MemoryMode.OFF_HEAP) {
+        partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
+      } else {
+        partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
+      }
+//    columnarBatch = new ColumnarBatch(columnVectors);
+      for (int i = 0; i < partitionColumns.fields().length; i++) {
+        ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
+        partitionColumnVectors[i].setIsConstant();
+      }
     }
   }
 
@@ -255,7 +281,20 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   public boolean nextBatch() throws IOException {
     if (nativeReader.hasNext()) {
       nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
-      initBatch();
+      if (nextVectorSchemaRoot == null) {
+        System.out.println("nextVectorSchemaRoot not ready");
+      } else {
+        totalRowCount += nextVectorSchemaRoot.getRowCount();
+        if (totalRowCount % 100000 < capacity) {
+          System.out.println(totalRowCount);
+        }
+        // fill nextVectorSchemaRoot into columnarBatch
+        WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
+        WritableColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
+        System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
+
+        columnarBatch = new ColumnarBatch(resultColumnVector, nextVectorSchemaRoot.getRowCount());
+      }
       return true;
     } else {
       return false;
@@ -297,31 +336,15 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         missingColumns[i] = true;
       }
     }
-    wrapper = new NativeIOWrapper();
-    wrapper.initialize();
-    wrapper.addFile(file.filePath());
-    // Initialize missing columns with nulls.
-    for (int i = 0; i < missingColumns.length; i++) {
-      if (!missingColumns[i]) {
-        wrapper.addColumn(sparkSchema.fields()[i].name());
-      }
-    }
 
-    wrapper.setThreadNum(1);
-    wrapper.setBatchSize(capacity);
-    wrapper.createReader();
-    wrapper.startReader(bool -> {});
-
-    totalRowCount= 0;
-    nativeReader = new LakeSoulArrowReader(wrapper, 5000);
+    //initbatch with empty partition column
+    initBatch();
   }
 
-  private NativeIOWrapper wrapper;
-  private LakeSoulArrowReader nativeReader;
-  private WritableColumnVector[] partitionColumnVectors;
+  private NativeIOWrapper wrapper = null;
+  private LakeSoulArrowReader nativeReader = null;
 
-  private PartitionedFile file;
-
+  private String filePath;
   private VectorSchemaRoot nextVectorSchemaRoot;
 
 }

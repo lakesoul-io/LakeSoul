@@ -34,6 +34,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -59,8 +60,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                dataSchema: StructType,
                                                readDataSchema: StructType,
                                                partitionSchema: StructType,
-                                               filters: Array[Filter],
-                                               nativeIOEnable: Boolean = false)
+                                               filters: Array[Filter])
   extends NativeFilePartitionReaderFactory with Logging{
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
@@ -76,6 +76,8 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
   private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+  private val nativeIOEnable =
+    sqlConf.getConf(NATIVE_IO_ENABLE)
 
   override def buildReader(partitionedFile: PartitionedFile): PartitionReader[InternalRow] = ???
 
@@ -199,15 +201,13 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   RecordReader[Void,ColumnarBatch] =
   {
     val taskContext = Option(TaskContext.get())
-
   val vectorizedReader = if (nativeIOEnable) {
     new NativeVectorizedReader(
       convertTz.orNull,
       datetimeRebaseMode.toString,
       int96RebaseMode.toString,
       enableOffHeapColumnVector && taskContext.isDefined,
-      capacity,
-      file
+      capacity
     )
   } else {
     new VectorizedParquetRecordReader(

@@ -4,6 +4,8 @@ import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.execution.vectorized.WritableArrowColumnVector
+import org.apache.spark.sql.execution.vectorized.WritableColumnVector
 import org.apache.spark.sql.types.{BinaryType, BooleanType, StructField}
 
 import scala.collection.JavaConverters._
@@ -25,11 +27,31 @@ object NativeIOUtils{
       .toArray
   }
 
-  def asArrowColumnVector(vector: ValueVector): OffHeapArrowColumnVector ={
-    new OffHeapArrowColumnVector(vector)
+  def asArrayWritableColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[WritableColumnVector] = {
+    asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
+      .asScala
+      .toSeq
+      .map(vector => {
+        //        println(vector.getField)
+        asWritableColumnVector(vector)
+      })
+      .toArray
   }
+
+  def asArrowColumnVector(vector: ValueVector): ArrowColumnVector ={
+    new ArrowColumnVector(vector)
+  }
+
 
   def asColumnVector(vector: ValueVector): ColumnVector ={
     asArrowColumnVector(vector).asInstanceOf[ColumnVector]
+  }
+
+  def asWritableColumnVector(vector: ValueVector): WritableColumnVector ={
+    asWritableArrowColumnVector(vector).asInstanceOf[WritableColumnVector]
+  }
+
+  def asWritableArrowColumnVector(vector: ValueVector): WritableArrowColumnVector ={
+    new WritableArrowColumnVector(vector)
   }
 }
