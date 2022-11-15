@@ -1,14 +1,18 @@
 package org.apache.spark.sql.vectorized
 
+import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
+import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.types.{BinaryType, BooleanType, StructField}
 
 import scala.collection.JavaConverters._
 
-class ArrowUtils {
+class NativeIOUtils {
 
 }
 
-object ArrowUtils{
+object NativeIOUtils{
 
   def asArrayColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[ColumnVector] = {
     asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
@@ -21,8 +25,8 @@ object ArrowUtils{
       .toArray
   }
 
-  def asArrowColumnVector(vector: ValueVector): ArrowColumnVector ={
-    new ArrowColumnVector(vector)
+  def asArrowColumnVector(vector: ValueVector): OffHeapArrowColumnVector ={
+    new OffHeapArrowColumnVector(vector)
   }
 
   def asColumnVector(vector: ValueVector): ColumnVector ={
