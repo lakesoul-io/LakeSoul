@@ -177,14 +177,14 @@ object MetaVersion {
   }
 
   def getLastedVersionUptoTime(table_id: String, range_value: String, utcMills: Long): Int = {
-    return dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
+    dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
   }
   /*
   if range_value is "", clean up all patitions;
   if not "" , just one partition
   */
-  def cleanMetaUptoTime(table_id: String, range_value: String, utcMills: Long): List[DataFileInfo] = {
-    return null;
+  def cleanMetaUptoTime(table_id: String, range_value: String, utcMills: Long): List[String] = {
+    dbManager.getDeleteFilePath(table_id, range_value, utcMills).asScala.toList
   }
 
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {

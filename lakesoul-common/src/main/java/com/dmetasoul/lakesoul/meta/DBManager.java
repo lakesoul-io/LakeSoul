@@ -162,6 +162,53 @@ public class DBManager {
         return partitionInfoDao.getLastedVersionUptoTime(tableId, partitionDesc, utcMills);
     }
 
+    public List<String> getDeleteFilePath(String tableId, String partitionDesc, long utcMills) {
+        List<DataFileOp> fileOps = new ArrayList<>();
+        List<String> deleteFilePathList = new ArrayList<>();
+        if (StringUtils.isNotBlank(partitionDesc)) {
+            deleteSinglePartitionMetaInfo(tableId, partitionDesc, utcMills, fileOps, deleteFilePathList);
+        } else {
+            List<String> allPartitionDesc = partitionInfoDao.getAllPartitionDescByTableId(tableId);
+            allPartitionDesc.forEach(partition -> deleteSinglePartitionMetaInfo(tableId, partition, utcMills, fileOps, deleteFilePathList));
+        }
+        return deleteFilePathList;
+    }
+
+    public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc, long utcMills, List<DataFileOp> fileOps, List<String> deleteFilePathList) {
+        List<PartitionInfo> filterPartitionInfo = getFilterPartitionInfo(tableId, partitionDesc, utcMills);
+        List<UUID> snapshotList = new ArrayList<>();
+        filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshot()));
+        List<DataCommitInfo> filterDataCommitInfo = dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
+        filterDataCommitInfo.forEach(dataCommitInfo -> fileOps.addAll(dataCommitInfo.getFileOps()));
+        fileOps.forEach(fileOp -> deleteFilePathList.add(fileOp.getPath()));
+        partitionInfoDao.deletePreviousVersionPartition(tableId, partitionDesc, utcMills);
+        dataCommitInfoDao.deleteByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
+    }
+
+    public List<PartitionInfo> getFilterPartitionInfo(String tableId, String partitionDesc, long utcMills) {
+        long minValueToUtcMills = Long.MAX_VALUE;
+        List<PartitionInfo> singlePartitionAllVersionList = getOnePartitionVersions(tableId, partitionDesc);
+        Map<Long, PartitionInfo> timestampToPartition = new HashMap<>();
+        List<PartitionInfo> filterPartition = new ArrayList<>();
+        for(PartitionInfo p : singlePartitionAllVersionList) {
+            long curTimestamp = p.getTimestamp();
+            timestampToPartition.put(curTimestamp, p);
+            if (curTimestamp > utcMills) {
+                minValueToUtcMills = Math.min(minValueToUtcMills, curTimestamp);
+            } else {
+                filterPartition.add(p);
+            }
+        }
+        PartitionInfo rearVersionPartition = timestampToPartition.get(minValueToUtcMills);
+        if (rearVersionPartition == null) {
+            return singlePartitionAllVersionList;
+        } else if (rearVersionPartition.getCommitOp().equals("CompactionCommit") || rearVersionPartition.getCommitOp().equals("UpdateCommit")) {
+            return filterPartition;
+        } else {
+            throw new IllegalStateException("this operation is Illegal: later versions of snapshots depend on previous version snapshots");
+        }
+    }
+
     public void updateTableSchema(String tableId, String tableSchema) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         tableInfo.setTableSchema(tableSchema);

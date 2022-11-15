@@ -61,6 +61,26 @@ public class DataCommitInfoDao {
         }
     }
 
+    public void deleteByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<UUID> commitIdList) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        if (commitIdList.size() < 1) {
+            return ;
+        }
+        String uuidListString = DBUtil.changeUUIDListToString(commitIdList);
+        String sql = String.format("delete from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
+                "commit_id in (%s)", tableId, partitionDesc, uuidListString);
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
+    }
+
     public void deleteByTableIdAndPartitionDesc(String tableId, String partitionDesc) {
         Connection conn = null;
         PreparedStatement pstmt = null;
