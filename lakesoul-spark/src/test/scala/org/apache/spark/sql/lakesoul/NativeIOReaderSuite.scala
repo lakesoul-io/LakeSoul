@@ -91,7 +91,7 @@ trait NativeIOReaderTests
     }
   }
 
-  test("[NativeParquetScan test]Read ColumnarBatch from test file") {
+  test("[Small file test]without hash_key and range_key") {
     withTempDir { dir =>
         val tablePath = dir.toString
         val df = spark
@@ -108,11 +108,11 @@ trait NativeIOReaderTests
 //        assert(spark.read.format("lakesoul").load(tablePath).schema.size == testParquetColNum)
 //        assert(spark.read.format("lakesoul").load(tablePath).count() == testParquetRowCount)
       val native_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
-//      assert(native_df.head.length==testParquetColNum)
       println("load native_df done")
+      assert(native_df.head.length==testParquetColNum)
+      assert(native_df.length==testParquetRowCount)
       spark.sessionState.conf.setConf(NATIVE_IO_ENABLE, false)
       val orig_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
-      assert(orig_df.head.length==testParquetColNum)
       println("load orig_df done")
       orig_df
         .zipAll(native_df, InternalRow(), InternalRow())
@@ -122,7 +122,42 @@ trait NativeIOReaderTests
     }
   }
 
-  test("[NativeParquetScan test]Read ColumnarBatch from large test file") {
+
+  test("[Small file test]with hash_key and range_key") {
+    withTempDir { dir =>
+      val tablePath = dir.toString
+      val df = spark
+        .read
+        .format("parquet")
+        .load(testSrcFilePath)
+        .toDF()
+      df
+        .write
+        .format("lakesoul")
+        .mode("Overwrite")
+        .option("rangePartitions","gender")
+        .option("hashPartitions","id")
+        .option("hashBucketNum",2)
+        .save(tablePath)
+
+      //        assert(spark.read.format("lakesoul").load(tablePath).schema.size == testParquetColNum)
+      //        assert(spark.read.format("lakesoul").load(tablePath).count() == testParquetRowCount)
+      val native_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
+      println("load native_df done")
+      assert(native_df.head.length==testParquetColNum)
+      assert(native_df.length==testParquetRowCount)
+      spark.sessionState.conf.setConf(NATIVE_IO_ENABLE, false)
+      val orig_df = spark.read.format("lakesoul").load(tablePath).toDF().collect()
+      println("load orig_df done")
+      orig_df
+        .zipAll(native_df, InternalRow(), InternalRow())
+        .foreach(zipped=>assert(zipped._1 == zipped._2))
+      spark.sessionState.conf.setConf(NATIVE_IO_ENABLE, true)
+
+    }
+  }
+
+  test("[Large file test]without hash_key and range_key") {
     withTempDir { dir =>
       val tablePath = dir.toString
       val testSrcFilePath = "/Users/ceng/base-0-0.parquet"    // ccf data_contest base file
@@ -150,6 +185,44 @@ trait NativeIOReaderTests
             col("job").isNotNull and
             col("city").isNotNull and
             col("phonenum").isNotNull)
+          .count()==10000000)
+        sql("CLEAR CACHE")
+      }
+
+    }
+  }
+
+  test("[Large file test]with hash_key") {
+    withTempDir { dir =>
+      val tablePath = dir.toString
+      val testSrcFilePath = "/Users/ceng/base-0-0.parquet"    // ccf data_contest base file
+      val df = spark
+        .read
+        .format("parquet")
+        .load(testSrcFilePath)
+        .toDF()
+      df
+        .write
+        .format("lakesoul")
+        .mode("Overwrite")
+        .option("hashPartitions","uuid")
+        .option("hashBucketNum",2)
+        .save(tablePath)
+      println("write lakesoul table done")
+      //      val table = spark.read.format("lakesoul").load(tablePath)
+      for (_ <- 1 to 2) {
+        assert(spark.read.format("lakesoul")
+          .load(tablePath)
+          .select("*")
+          .where(col("uuid").isNotNull
+            and col("ip").isNotNull
+            and col("hostname").isNotNull
+            and col("requests").isNotNull
+            and col("name").isNotNull
+            and col("job").isNotNull
+            and col("city").isNotNull
+            and col("phonenum").isNotNull
+          )
           .count()==10000000)
         sql("CLEAR CACHE")
       }
