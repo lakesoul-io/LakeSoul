@@ -202,7 +202,8 @@ public class DBManager {
         PartitionInfo rearVersionPartition = timestampToPartition.get(minValueToUtcMills);
         if (rearVersionPartition == null) {
             return singlePartitionAllVersionList;
-        } else if (rearVersionPartition.getCommitOp().equals("CompactionCommit") || rearVersionPartition.getCommitOp().equals("UpdateCommit")) {
+        } else if (rearVersionPartition.getCommitOp().equals("CompactionCommit") || rearVersionPartition.getCommitOp().equals("UpdateCommit")
+                || filterPartition.size() == 0) {
             return filterPartition;
         } else {
             throw new IllegalStateException("this operation is Illegal: later versions of snapshots depend on previous version snapshots");

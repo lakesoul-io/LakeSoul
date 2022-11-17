@@ -90,7 +90,7 @@ object CleanupPartitionDataCommand extends PredicateHelper {
     val table_id = tableInfo.table_id
     val table_path = tableInfo.table_path_s
     val deleteFiles = MetaVersion.cleanMetaUptoTime(table_id, partitionDesc, endTime)
-    if (null != deleteFiles) {
+    if (null != deleteFiles && deleteFiles.length > 0) {
       val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
       val path = new Path(table_path.get)
       val fs = path.getFileSystem(sessionHadoopConf)
