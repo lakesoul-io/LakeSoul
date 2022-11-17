@@ -21,6 +21,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.lakesoul.{PartitionFilter, Snapshot, SnapshotManagement}
 
 import java.util.concurrent.TimeUnit
@@ -28,9 +29,11 @@ import java.util.concurrent.TimeUnit
 object DropTableCommand {
 
   val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
+
   def run(snapshot: Snapshot): Unit = {
-       dropTable(snapshot)
+    dropTable(snapshot)
   }
+
   def dropTable(snapshot: Snapshot): Unit = {
     val tableInfo = snapshot.getTableInfo
     val table_namespace = tableInfo.namespace
@@ -48,7 +51,7 @@ object DropTableCommand {
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)
     SnapshotManagement.invalidateCache(table_path.get)
-    fs.delete(path, true);
+    fs.delete(path, true)
   }
 }
 
@@ -82,29 +85,21 @@ object DropPartitionCommand extends PredicateHelper {
 }
 
 object CleanupPartitionDataCommand extends PredicateHelper {
-  def run(snapshot: Snapshot,partitionDesc:String, endTime: Long): Unit = {
-//    val table_name = snapshot.getTableName
-//    val table_id = snapshot.getTableInfo.table_id
-//
-//    val candidatePartitions = PartitionFilter.partitionsForScan(snapshot, Seq(condition))
-//    //only one partition is allowed to drop at a time
-//    if (candidatePartitions.isEmpty) {
-//      LakeSoulErrors.partitionNotFoundException(snapshot.getTableName, condition.toString())
-//    } else if (candidatePartitions.length > 1) {
-//      LakeSoulErrors.tooMuchPartitionException(
-//        snapshot.getTableName,
-//        condition.toString(),
-//        candidatePartitions.length)
-//    }
-//    val range_value = candidatePartitions.head.range_value
-//    SnapshotManagement.invalidateCache(table_name)
-//    val path = new Path(table_path.get)
-//    val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
-//    val fs = path.getFileSystem(sessionHadoopConf)
-//    SnapshotManagement.invalidateCache(table_path.get)
-//    fs.delete(path, true);
+  def run(snapshot: Snapshot, partitionDesc: String, endTime: Long): Unit = {
+    val tableInfo = snapshot.getTableInfo
+    val table_id = tableInfo.table_id
+    val table_path = tableInfo.table_path_s
+    val deleteFiles = MetaVersion.cleanMetaUptoTime(table_id, partitionDesc, endTime)
+    if (null != deleteFiles) {
+      val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
+      val path = new Path(table_path.get)
+      val fs = path.getFileSystem(sessionHadoopConf)
+      for (item <- deleteFiles) {
+        fs.delete(new Path(item), true)
+      }
+      SnapshotManagement.invalidateCache(table_path.get)
+    }
   }
-
 
 
 }

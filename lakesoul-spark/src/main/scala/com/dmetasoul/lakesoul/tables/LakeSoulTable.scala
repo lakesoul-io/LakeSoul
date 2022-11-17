@@ -408,6 +408,18 @@ object LakeSoulTable {
   }
 
   /**
+   * Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
+   *
+   */
+  def forPath(path: String, partitionDesc: String, toTime: String): LakeSoulTable = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse {
+      throw new IllegalArgumentException("Could not find active SparkSession")
+    }
+
+    forPath(sparkSession, path, partitionDesc, toTime)
+  }
+
+  /**
    * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
    */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
@@ -431,7 +443,7 @@ object LakeSoulTable {
   }
 
   def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, toTime: String): LakeSoulTable = {
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)
