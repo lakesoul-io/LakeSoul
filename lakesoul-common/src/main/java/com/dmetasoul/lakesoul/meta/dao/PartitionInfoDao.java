@@ -187,15 +187,21 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d",
+        String sql = String.format("select count(*) as total,max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d",
                 tableId, partitionDesc, utcMills);
         int version = -1;
+        int total = 0;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                version = rs.getInt("version");
+                total = rs.getInt("total");
+                if (total == 0) {
+                    break;
+                } else {
+                    version = rs.getInt("version");
+                }
             }
         } catch (SQLException e) {
             e.printStackTrace();

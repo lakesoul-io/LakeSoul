@@ -345,13 +345,19 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   def rollbackPartition(partitionValue: String, toTime: String): Unit = {
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
     val version = MetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, partitionValue, endTime)
-    assert(version>=0,s"Version does not exist in Table `${snapshotManagement.table_path}` with `${partitionValue}`")
-    rollbackPartition(partitionValue,version)
+    if (version < 0) {
+      println("No version found in Table before time")
+    } else {
+      rollbackPartition(partitionValue, version)
+    }
   }
 
-  def cleanupPartitionData(partitionValue: String, toTime: String): Unit = {
+  def cleanupPartitionData(partitionDesc: String, toTime: String): Unit = {
     //"1970-01-01 01:00:00"
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
+    assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns.nonEmpty,
+      s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
+    executeCleanupPartition(snapshotManagement,partitionDesc,endTime)
   }
 }
 
@@ -442,14 +448,23 @@ object LakeSoulTable {
     }
   }
 
+  /*
+  *   toTime 2022-10-01 13:45:30
+  * */
   def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, toTime: String): LakeSoulTable = {
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)
-      val version = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime)
-      new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
-        SnapshotManagement(p, partitionDesc, version))
+      val version = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime / 1000)
+      if (version < 0) {
+        println("No version found in Table before time")
+        null
+      } else {
+        new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
+          SnapshotManagement(p, partitionDesc, version))
+      }
+
     } else {
       throw LakeSoulErrors.tableNotExistsException(path)
     }
