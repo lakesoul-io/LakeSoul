@@ -265,46 +265,51 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
   //by default, force perform compaction on whole table
   def compaction(): Unit = {
-    compaction("", true, Map.empty[String, Any], "")
+    compaction("", true, Map.empty[String, Any], "", "")
   }
 
   def compaction(condition: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any], "")
+    compaction(condition, true, Map.empty[String, Any], "", "")
   }
 
   def compaction(mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction("", true, mergeOperatorInfo, "")
+    compaction("", true, mergeOperatorInfo, "", "")
   }
 
   def compaction(condition: String,
                  mergeOperatorInfo: Map[String, Any]): Unit = {
-    compaction(condition, true, mergeOperatorInfo, "")
+    compaction(condition, true, mergeOperatorInfo, "", "")
   }
 
   def compaction(condition: String, hiveTableName: String): Unit = {
-    compaction(condition, true, Map.empty[String, Any], hiveTableName)
+    compaction(condition, true, Map.empty[String, Any], hiveTableName, "")
+  }
+
+  def compaction(condition: String, hiveTableName: String, hivePartitionName: String): Unit = {
+    compaction(condition, true, Map.empty[String, Any], hiveTableName, hivePartitionName)
   }
 
   def compaction(force: Boolean,
                  mergeOperatorInfo: Map[String, Any] = Map.empty[String, Any]): Unit = {
-    compaction("", force, mergeOperatorInfo, "")
+    compaction("", force, mergeOperatorInfo, "", "")
   }
 
   def compaction(condition: String,
                  force: Boolean): Unit = {
-    compaction(condition, true, Map.empty[String, Any], "")
+    compaction(condition, true, Map.empty[String, Any], "", "")
   }
 
   def compaction(condition: String,
                  force: Boolean,
                  mergeOperatorInfo: java.util.Map[String, Any]): Unit = {
-    compaction(condition, force, mergeOperatorInfo.asScala.toMap, "")
+    compaction(condition, force, mergeOperatorInfo.asScala.toMap, "", "")
   }
 
   def compaction(condition: String,
                  force: Boolean,
                  mergeOperatorInfo: Map[String, Any],
-                 hiveTableName: String): Unit = {
+                 hiveTableName: String,
+                 hivePartitionName: String): Unit = {
     val newMergeOpInfo = mergeOperatorInfo.map(m => {
       val key =
         if (!m._1.startsWith(LakeSoulUtils.MERGE_OP_COL)) {
@@ -320,7 +325,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       (key, value)
     })
 
-    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName)
+    executeCompaction(df, snapshotManagement, condition, force, newMergeOpInfo, hiveTableName, hivePartitionName)
   }
 
   def dropTable(): Boolean = {
