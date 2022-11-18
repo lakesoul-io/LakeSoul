@@ -2,7 +2,7 @@
 mod tests{
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::pretty_format_batches;
-    use futures::TryStreamExt;
+    use futures::{TryStreamExt, StreamExt};
     use tokio::fs::File;
 
 
@@ -69,6 +69,7 @@ mod tests{
 
     use arrow::error::Result as ArrowResult;
 
+    use std::string::ParseError;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::ops::Range;
@@ -173,5 +174,113 @@ mod tests{
         }
 
     }
+
+    use object_store::{RetryConfig, path::Path, ObjectStore, aws::AmazonS3Builder};
+
+    fn get_s3_object_store() -> Arc<dyn ObjectStore> {
+        let key = "minioadmin1";
+        let secret = "minioadmin1";
+        let region = "us-east-1";
+        let bucket = "lakesoul-test-s3";
+        let endpoint = "http://localhost:9000";
+        let retry_config = RetryConfig {
+            backoff: Default::default(),
+            max_retries: 4,
+            retry_timeout: Default::default()
+        };
+        let s3_store = AmazonS3Builder::new()
+            .with_access_key_id(key)
+            .with_secret_access_key(secret)
+            .with_region(region)
+            .with_bucket_name(bucket)
+            .with_endpoint(endpoint)
+            .with_retry(retry_config)
+            .with_allow_http(true)
+            .build();
+        let object_store: Arc<dyn ObjectStore> = Arc::new(s3_store.unwrap());
+        object_store
+    }
+
+    #[tokio::test]
+    async fn test_s3_read() {
+        let object_store = get_s3_object_store();
+
+        // list all files under bucket_name/sub_folder
+        let prefix: Path = "/sub_folder".try_into().unwrap();
+        let list_stream = object_store
+            .list(Some(&prefix))
+            .await
+            .expect("Error listing files");
+        list_stream
+            .for_each(move |meta| {
+                async {
+                    let meta = meta.expect("Error listing");
+                    println!("Name: {}, size: {}", meta.location, meta.size);
+                }
+            })
+            .await;
+        
+        // fetch objects
+        let path: Path = "part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".try_into().unwrap();
+        let s3_data = object_store.get(&path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let s3_metadata = parse_metadata(&s3_data).unwrap();
+        let s3_metadata = Arc::new(s3_metadata);
+
+        assert_eq!(s3_metadata.num_row_groups(), 1);
+
+        let s3_sync_batches = ParquetRecordBatchReaderBuilder::try_new(s3_data)
+            .unwrap()
+            .with_batch_size(1024)
+            .build()
+            .unwrap()
+            .collect::<ArrowResult<Vec<_>>>()
+            .unwrap();
+        // print_batches(s3_sync_batches.as_slice());
+
+        let local_data = Bytes::from(std::fs::read(
+            "/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+        ).unwrap());
+
+        let local_metadata = parse_metadata(&local_data).unwrap();
+        let local_metadata = Arc::new(local_metadata);
+        let local_sync_batches = ParquetRecordBatchReaderBuilder::try_new(local_data)
+            .unwrap()
+            .with_batch_size(1024)
+            .build()
+            .unwrap()
+            .collect::<ArrowResult<Vec<_>>>()
+            .unwrap();
+        
+        assert_eq!(s3_metadata.num_row_groups(), 1);
+        assert_eq!(local_sync_batches, s3_sync_batches);
+    }
+
+    use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+    use datafusion::datasource::object_store::ObjectStoreUrl;
+    #[tokio::test]
+    async fn test_datafusion_runtimeenv() {
+        let object_store = get_s3_object_store();
+        let bucket = "lakesoul-test-s3";
+
+        let runtime = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+        runtime.register_object_store("s3", bucket, object_store);
+
+        let object_store = runtime.object_store(ObjectStoreUrl::parse("s3://lakesoul-test-s3/").unwrap()).unwrap();
+        let path: Path = "part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".try_into().unwrap();
+        let s3_data = object_store.get(&path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let s3_metadata = parse_metadata(&s3_data).unwrap();
+        assert_eq!(s3_metadata.num_row_groups(), 1);
+    }
+
 }
 
