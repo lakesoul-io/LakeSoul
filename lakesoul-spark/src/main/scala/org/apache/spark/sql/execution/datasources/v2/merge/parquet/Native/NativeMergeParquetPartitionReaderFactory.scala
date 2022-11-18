@@ -34,6 +34,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_o
 import org.apache.spark.sql.execution.datasources.v2.merge.{MergePartitionedFile, MergePartitionedFileReader}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -78,6 +79,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
   private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+  private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
+
 
   // schemea: path->schema    source: path->file|path->file|path->file
   private val requestSchemaMap: mutable.Map[String, String] = broadcastedConf.value.value

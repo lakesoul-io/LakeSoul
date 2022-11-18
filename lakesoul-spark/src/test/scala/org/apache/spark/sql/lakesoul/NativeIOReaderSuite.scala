@@ -177,14 +177,53 @@ trait NativeIOReaderTests
         assert(spark.read.format("lakesoul")
           .load(tablePath)
           .select("*")
-          .where(col("uuid").isNotNull and
-            col("ip").isNotNull and
-            col("hostname").isNotNull and
-            col("requests").isNotNull and
-            col("name").isNotNull and
-            col("job").isNotNull and
-            col("city").isNotNull and
-            col("phonenum").isNotNull)
+          .where(col("uuid").isNotNull
+              and col("ip").isNotNull
+              and col("hostname").isNotNull
+              and col("requests").isNotNull
+              and col("name").isNotNull
+              and col("job").isNotNull
+              and col("city").isNotNull
+              and col("phonenum").isNotNull
+          )
+          .count()==10000000)
+        sql("CLEAR CACHE")
+      }
+
+    }
+  }
+
+  test("[Large file test]with hash_key") {
+    withTempDir { dir =>
+      val tablePath = dir.toString
+      val testSrcFilePath = "/Users/ceng/base-0-0.parquet"    // ccf data_contest base file
+      val df = spark
+        .read
+        .format("parquet")
+        .load(testSrcFilePath)
+        .toDF()
+      df
+        .write
+        .format("lakesoul")
+        .mode("Overwrite")
+        .option("hashPartitions","uuid")
+        .option("hashBucketNum",2)
+        .save(tablePath)
+      println("write lakesoul table done")
+      //      val table = spark.read.format("lakesoul").load(tablePath)
+      for (_ <- 1 to 2) {
+        assert(spark.read.format("lakesoul")
+          .load(tablePath)
+          .select("*")
+          .where(col("uuid").isNotNull
+            and col("ip").isNotNull
+            and col("hostname").isNotNull
+            and col("requests").isNotNull
+            and col("name").isNotNull
+            and col("job").isNotNull
+            and col("city").isNotNull
+            and col("phonenum").isNotNull
+          )
           .count()==10000000)
         sql("CLEAR CACHE")
       }

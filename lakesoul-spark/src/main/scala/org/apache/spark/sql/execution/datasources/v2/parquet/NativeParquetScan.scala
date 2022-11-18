@@ -101,10 +101,7 @@ case class NativeParquetScan(
       new SerializableConfiguration(hadoopConf))
 
 
-    val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
-//    val nativeIOEnable =false
-
     NativeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, nativeIOEnable)
+      dataSchema, readDataSchema, readPartitionSchema, pushedFilters)
   }
 }
