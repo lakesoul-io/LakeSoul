@@ -15,8 +15,15 @@
  */
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
+#![feature(is_some_with)]
+#![feature(async_closure)]
+#![feature(let_chains)]
 
 pub mod lakesoul_reader;
 pub mod filter;
 pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
+pub mod sorted_stream_merger;
+pub mod merge_traits;
+pub mod non_unique_fetcher;
+pub mod min_heap_combiner;
