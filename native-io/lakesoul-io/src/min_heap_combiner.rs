@@ -86,10 +86,12 @@ where
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_reader::ArrowResult;
-    use crate::merge_traits::StreamSortKeyRangeFetcher;
+    use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+    use crate::min_heap_combiner::MinHeapSortKeyRangeCombiner;
     use crate::non_unique_fetcher::NonUniqueSortKeyRangeFetcher;
     use crate::sorted_stream_merger::SortKeyRangeInBatch;
     use arrow::array::{ArrayRef, Int32Array};
@@ -107,6 +109,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn create_stream_fetcher(
+        stream_idx: usize,
         batches: Vec<RecordBatch>,
         context: Arc<TaskContext>,
         sort_fields: Vec<&str>,
@@ -125,7 +128,7 @@ mod tests {
         let ready_futures =
             stream.map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
         let bufferred = ready_futures.buffered(2);
-        NonUniqueSortKeyRangeFetcher::new(0, bufferred, &sort_exprs, schema)
+        NonUniqueSortKeyRangeFetcher::new(stream_idx, bufferred, &sort_exprs, schema)
     }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
@@ -133,9 +136,10 @@ mod tests {
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
     }
 
-    fn assert_sort_key_range_in_batch(sk: &SortKeyRangeInBatch, begin_row: usize, end_row: usize) {
+    fn assert_sort_key_range_in_batch(sk: &SortKeyRangeInBatch, begin_row: usize, end_row: usize, batch: &RecordBatch) {
         assert_eq!(sk.begin_row, begin_row);
         assert_eq!(sk.end_row, end_row);
+        assert_eq!(sk.batch.as_ref(), batch);
     }
 
     #[tokio::test]
@@ -147,24 +151,126 @@ mod tests {
         let s1b3 = create_batch_one_col_i32("a", &[]);
         let s1b4 = create_batch_one_col_i32("a", &[5]);
         let s1b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
-        let mut s1fetcher = create_stream_fetcher(
+        let s1fetcher = create_stream_fetcher(
+            0,
             vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
             task_ctx.clone(),
             vec!["a"],
         )
         .await
         .unwrap();
-        let s2b1 = create_batch_one_col_i32("a", &[1, 1, 3, 3, 4]);
+        let s2b1 = create_batch_one_col_i32("a", &[3, 4]);
         let s2b2 = create_batch_one_col_i32("a", &[4, 5]);
         let s2b3 = create_batch_one_col_i32("a", &[]);
         let s2b4 = create_batch_one_col_i32("a", &[5]);
-        let s2b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
-        let mut s2fetcher = create_stream_fetcher(
-            vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
+        let s2b5 = create_batch_one_col_i32("a", &[5, 7]);
+        let s2fetcher = create_stream_fetcher(
+            1,
+            vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
             task_ctx.clone(),
             vec!["a"],
         )
         .await
         .unwrap();
+        let s3b1 = create_batch_one_col_i32("a", &[]);
+        let s3b2 = create_batch_one_col_i32("a", &[5]);
+        let s3b3 = create_batch_one_col_i32("a", &[5, 7]);
+        let s3b4 = create_batch_one_col_i32("a", &[7, 9]);
+        let s3b5 = create_batch_one_col_i32("a", &[]);
+        let s3b6 = create_batch_one_col_i32("a", &[10]);
+        let s3fetcher = create_stream_fetcher(
+            2,
+            vec![
+                s3b1.clone(),
+                s3b2.clone(),
+                s3b3.clone(),
+                s3b4.clone(),
+                s3b5.clone(),
+                s3b6.clone(),
+            ],
+            task_ctx.clone(),
+            vec!["a"],
+        )
+        .await
+        .unwrap();
+
+        let mut combiner = MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![
+            s1fetcher, s2fetcher, s3fetcher,
+        ]);
+        combiner.init().await.unwrap();
+        // [1, 1] from s0
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].stream_idx, 0);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 0, 1, &s1b1);
+        // [3, 3] from s0, [3] from s1
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].stream_idx, 0);
+        assert_eq!(ranges[1].stream_idx, 1);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_eq!(ranges[1].sort_key_ranges.len(), 1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 2, 3, &s1b1);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[0], 0, 0, &s2b1);
+        // [4, 4] from s0, [4, 4] from s1
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].stream_idx, 0);
+        assert_eq!(ranges[1].stream_idx, 1);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 2);
+        assert_eq!(ranges[1].sort_key_ranges.len(), 2);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 4, 4, &s1b1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[1], 0, 0, &s1b2);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[0], 1, 1, &s2b1);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[1], 0, 0, &s2b2);
+        // [5, 5, 5] from s0, [5, 5, 5] from s1, [5, 5] from s2
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0].stream_idx, 0);
+        assert_eq!(ranges[1].stream_idx, 1);
+        assert_eq!(ranges[2].stream_idx, 2);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 3);
+        assert_eq!(ranges[1].sort_key_ranges.len(), 3);
+        assert_eq!(ranges[2].sort_key_ranges.len(), 2);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 1, 1, &s1b2);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[1], 0, 0, &s1b4);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[2], 0, 0, &s1b5);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[0], 1, 1, &s2b2);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[1], 0, 0, &s2b4);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[2], 0, 0, &s2b5);
+        assert_sort_key_range_in_batch(&ranges[2].sort_key_ranges[0], 0, 0, &s3b2);
+        assert_sort_key_range_in_batch(&ranges[2].sort_key_ranges[1], 0, 0, &s3b3);
+        // [6, 6] from s0
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].stream_idx, 0);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 1, 2, &s1b5);
+        // [7] from s1, [7, 7] from s2
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].stream_idx, 1);
+        assert_eq!(ranges[1].stream_idx, 2);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_eq!(ranges[1].sort_key_ranges.len(), 2);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 1, 1, &s2b5);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[0], 1, 1, &s3b3);
+        assert_sort_key_range_in_batch(&ranges[1].sort_key_ranges[1], 0, 0, &s3b4);
+        // [9] from s2
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].stream_idx, 2);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 1, 1, &s3b4);
+        // [10] from s2
+        let ranges = combiner.next().await.unwrap().unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].stream_idx, 2);
+        assert_eq!(ranges[0].sort_key_ranges.len(), 1);
+        assert_sort_key_range_in_batch(&ranges[0].sort_key_ranges[0], 0, 0, &s3b6);
+        // end
+        let ranges = combiner.next().await.unwrap();
+        assert!(ranges.is_none());
     }
 }

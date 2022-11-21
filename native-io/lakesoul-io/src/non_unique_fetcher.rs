@@ -5,16 +5,24 @@ use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, Rows, SortField};
 use async_trait::async_trait;
-use datafusion::error::DataFusionError::Execution;
+use datafusion::error::DataFusionError::{ArrowError, Execution};
 use datafusion::error::Result;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use futures::StreamExt;
-use futures_util::stream::{FusedStream, Map, Peekable};
+use futures_util::stream::{FilterMap, FusedStream, Peekable};
 use std::pin::Pin;
 use std::sync::Arc;
 
 pub type PeekableBatchRowsStream = Peekable<
-    Map<BufferedRecordBatchStream, Box<dyn FnMut(ArrowResult<RecordBatch>) -> Result<(RecordBatch, Rows)> + Send>>,
+    FilterMap<
+        BufferedRecordBatchStream,
+        std::future::Ready<Option<Result<(RecordBatch, Rows)>>>,
+        Box<
+            dyn FnMut(ArrowResult<RecordBatch>) -> std::future::Ready<Option<Result<(RecordBatch, Rows)>>>
+                + Send
+                + Unpin,
+        >,
+    >,
 >;
 
 pub struct NonUniqueSortKeyRangeFetcher {
@@ -27,18 +35,12 @@ impl NonUniqueSortKeyRangeFetcher {
         if self.stream.is_terminated() {
             return Ok(None);
         }
-        loop {
-            let batch_opt = self.stream.next().await;
-            if batch_opt.is_none() {
-                // stream would return None once before is_terminated is true
-                return Ok(None);
-            }
-            let batch = batch_opt.unwrap()?;
-            if batch.1.num_rows() > 0 {
-                return Ok(Some(batch));
-            } else {
-                // skip empty batch
-                continue;
+        let batch_opt = self.stream.next().await;
+        match batch_opt {
+            None => Ok(None),
+            Some(batch_result) => {
+                let batch = batch_result?;
+                Ok(Some(batch))
             }
         }
     }
@@ -61,17 +63,33 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
             .collect::<Result<Vec<_>>>()?;
         let mut row_converter = RowConverter::new(sort_fields);
         let column_expressions: Vec<Arc<dyn PhysicalExpr>> = expressions.iter().map(|x| x.expr.clone()).collect();
-        let map_fn: Box<dyn FnMut(ArrowResult<RecordBatch>) -> Result<(RecordBatch, Rows)> + Send> =
-            Box::new(move |batch_result| {
-                let batch = batch_result?;
-                let cols = column_expressions
-                    .iter()
-                    .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
-                    .collect::<Result<Vec<_>>>()?;
-                let rows = row_converter.convert_columns(&cols)?;
-                Ok((batch, rows))
-            });
-        let stream = stream.map(map_fn).peekable();
+        let map_fn: Box<
+            dyn FnMut(ArrowResult<RecordBatch>) -> std::future::Ready<Option<Result<(RecordBatch, Rows)>>>
+                + Send
+                + Unpin,
+        > = Box::new(move |batch_result| match batch_result {
+            Ok(batch) => {
+                if batch.num_rows() > 0 {
+                    let cols_result = column_expressions
+                        .iter()
+                        .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
+                        .collect::<Result<Vec<_>>>();
+                    match cols_result {
+                        Ok(cols) => match row_converter.convert_columns(&cols) {
+                            // convert to rows
+                            Ok(rows) => std::future::ready(Some(Ok((batch, rows)))),
+                            Err(e) => std::future::ready(Some(Err(ArrowError(e)))),
+                        },
+                        Err(e) => std::future::ready(Some(Err(e))),
+                    }
+                } else {
+                    // skip empty batch
+                    std::future::ready(None)
+                }
+            }
+            Err(e) => std::future::ready(Some(Err(ArrowError(e)))),
+        });
+        let stream = stream.filter_map(map_fn).peekable();
         Ok(NonUniqueSortKeyRangeFetcher { stream_idx, stream })
     }
 
@@ -126,39 +144,32 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
                 break; // while
             }
             // reach the end of current batch
-            if i >= rows.num_rows() && !sort_key_range.sort_key_ranges.is_empty() {
-                // peek to see if next batch has same row
-                let mut found_next = false;
-                loop {
+            // current ranges in batch could be empty
+            if i >= rows.num_rows() {
+                // current range in batches is empty, directly go to next batch
+                let mut need_next = sort_key_range.sort_key_ranges.is_empty();
+                if !need_next {
+                    // current range in batches non empty, peek to see if next batch has same row
                     if let Some(peeked_result) = Pin::new(&mut self.stream).peek().await {
                         match peeked_result {
                             Ok((_, next_rows)) => {
-                                if next_rows.num_rows() == 0 {
-                                    // skip empty batch
-                                    if let Some(result) = self.stream.next().await {
-                                        let _ = result?;
-                                    }
-                                    continue;
-                                }
+                                // last batch must exist, so we unwrap it directly
                                 let last_batch = sort_key_range.sort_key_ranges.last().unwrap();
                                 if last_batch.current() == next_rows.row(0) {
-                                    if let Some(batch_rows) = self.fetch_next_batch().await? {
-                                        batch = Arc::new(batch_rows.0);
-                                        rows = Arc::new(batch_rows.1);
-                                        begin = 0usize;
-                                        found_next = true;
-                                        break; // inner loop
-                                    }
+                                    need_next = true;
                                 }
                             }
                             Err(e) => return Err(Execution(e.to_string())),
                         }
-                    } else {
-                        break;
                     }
                 }
-                if found_next {
-                    continue;
+                if need_next {
+                    if let Some(batch_rows) = self.fetch_next_batch().await? {
+                        batch = Arc::new(batch_rows.0);
+                        rows = Arc::new(batch_rows.1);
+                        begin = 0usize;
+                        continue;
+                    }
                 }
             }
             break; // loop
@@ -228,8 +239,9 @@ mod tests {
         let b3 = create_batch_one_col_i32("a", &[]);
         let b4 = create_batch_one_col_i32("a", &[5]);
         let b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
+        let b6 = create_batch_one_col_i32("a", &[7]);
         let mut fetcher = create_stream_fetcher(
-            vec![b1.clone(), b2.clone(), b3.clone(), b4.clone(), b5.clone()],
+            vec![b1.clone(), b2.clone(), b3.clone(), b4.clone(), b5.clone(), b6.clone()],
             task_ctx,
             vec!["a"],
         )
@@ -288,6 +300,18 @@ mod tests {
         assert_eq!(range.sort_key_ranges.len(), 1usize);
         assert_sort_key_range_in_batch(&range.sort_key_ranges[0], 1, 2);
         assert_eq!(range.sort_key_ranges[0].batch.column(0), b5.column(0));
+
+        // sixth range, [7] in batch 4
+        let range = fetcher
+            .fetch_sort_key_range_from_stream(Some(&range))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range.sort_key_ranges.len(), 1usize);
+        assert_sort_key_range_in_batch(&range.sort_key_ranges[0], 0, 0);
+        assert_eq!(range.sort_key_ranges[0].batch.column(0), b6.column(0));
+
+        // terminated
         assert!(fetcher.is_terminated());
     }
 }
