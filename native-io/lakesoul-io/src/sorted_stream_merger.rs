@@ -95,6 +95,7 @@ impl Debug for SortKeyRangeInBatch {
         f.debug_struct("SortKeyRangeInBatch")
             .field("begin_row", &self.begin_row)
             .field("end_row", &self.end_row)
+            .field("batch", &self.batch)
             .finish()
     }
 }
