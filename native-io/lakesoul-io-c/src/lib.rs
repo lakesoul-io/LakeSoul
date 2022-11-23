@@ -95,7 +95,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
     file: *const c_char
 ) -> NonNull<ReaderConfigBuilder> {
     unsafe {
-        println!("[From Rust][lakesoul_config_builder_add_single_file], file={}", CStr::from_ptr(file).to_str().unwrap().to_string());
+        // println!("[From Rust][lakesoul_config_builder_add_single_file], file={}", CStr::from_ptr(file).to_str().unwrap().to_string());
         let file = CStr::from_ptr(file).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_file(file))
     }
@@ -107,7 +107,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
     column: *const c_char
 ) -> NonNull<ReaderConfigBuilder> {
     unsafe {
-        println!("[From Rust][lakesoul_config_builder_add_single_column], col={}", CStr::from_ptr(column).to_str().unwrap().to_string());
+        // println!("[From Rust][lakesoul_config_builder_add_single_column], col={}", CStr::from_ptr(column).to_str().unwrap().to_string());
         let column = CStr::from_ptr(column).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_column(column))
     }
@@ -118,7 +118,7 @@ pub extern "C" fn lakesoul_config_builder_set_thread_num(
     builder: NonNull<ReaderConfigBuilder>,
     thread_num: c_size_t,
 ) -> NonNull<ReaderConfigBuilder> {
-    println!("Setting thread_num={} for lakesoul_config_builder", thread_num);
+    // println!("Setting thread_num={} for lakesoul_config_builder", thread_num);
     convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_thread_num(thread_num))
 }
 
@@ -127,8 +127,31 @@ pub extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<ReaderConfigBuilder>,
     batch_size: c_size_t,
 ) -> NonNull<ReaderConfigBuilder> {
-    println!("Setting batch_size={} for lakesoul_config_builder", batch_size);
+    // println!("Setting batch_size={} for lakesoul_config_builder", batch_size);
     convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_batch_size(batch_size))
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_buffer_size(
+    builder: NonNull<ReaderConfigBuilder>,
+    buffer_size: c_size_t,
+) -> NonNull<ReaderConfigBuilder> {
+    // println!("Setting batch_size={} for lakesoul_config_builder", batch_size);
+    convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_buffer_size(buffer_size))
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_object_store_option(
+    builder: NonNull<ReaderConfigBuilder>,
+    key: *const c_char,
+    value: *const c_char,
+) -> NonNull<ReaderConfigBuilder> {
+    unsafe {
+        println!("Setting object_store_option:{}={}", CStr::from_ptr(key).to_str().unwrap().to_string(), CStr::from_ptr(value).to_str().unwrap().to_string());
+        let key = CStr::from_ptr(key).to_str().unwrap().to_string();
+        let value = CStr::from_ptr(value).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_object_store_option(key, value))
+    }
 }
 
 
@@ -163,10 +186,8 @@ pub extern "C" fn create_lakesoul_reader_from_config(
     config: NonNull<ReaderConfig>,
     runtime: NonNull<TokioRuntime>
 ) -> NonNull<Result<Reader>> {
-    println!("create_lakesoul_reader_from_config");
     let config: LakeSoulReaderConfig = from_opaque(config);
     let runtime: Runtime = from_opaque(runtime);
-    println!("from_opaque done");
     let result = match LakeSoulReader::new(config) {
         Ok(reader) => unsafe{
             Result::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime))
@@ -190,7 +211,6 @@ fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_ch
 
 #[no_mangle]
 pub extern "C" fn start_reader(reader: NonNull<Result<Reader>>, callback: ResultCallback) {
-    println!("start_reader");
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
         let result = reader.as_ref().start_blocked();
@@ -287,7 +307,7 @@ pub extern "C" fn tokio_runtime_builder_set_thread_num(
     builder: NonNull<TokioRuntimeBuilder>,
     thread_num: c_size_t,
 ) -> NonNull<TokioRuntimeBuilder> {
-    println!("Setting thread_num={} for tokio_runtime_builder", thread_num);
+    // println!("Setting thread_num={} for tokio_runtime_builder", thread_num);
     convert_to_opaque(from_opaque::<TokioRuntimeBuilder, Builder>(builder).worker_threads(thread_num))
 }
 
@@ -296,12 +316,8 @@ pub extern "C" fn tokio_runtime_builder_set_thread_num(
 pub extern "C" fn create_tokio_runtime_from_builder(
     builder: NonNull<TokioRuntimeBuilder>,
 ) -> NonNull<TokioRuntime> {
-    println!("create_tokio_runtime_from_builder");
     let mut builder = from_opaque::<TokioRuntimeBuilder, Builder>(builder);
-    println!("from_opaque done");
-    println!("{:?}", builder);
-    let runtime = builder.worker_threads(1).build().unwrap();
-    println!("build done");
+    let runtime = builder.worker_threads(1).enable_all().build().unwrap();
     let ret = convert_to_opaque(runtime);
     ret
 }

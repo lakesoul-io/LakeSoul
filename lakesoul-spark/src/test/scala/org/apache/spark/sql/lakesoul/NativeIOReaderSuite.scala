@@ -35,6 +35,7 @@ import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnVector, ColumnarBatch, NativeIOUtils}
 import org.scalatest.BeforeAndAfter
 
+import java.util.concurrent.TimeUnit.NANOSECONDS
 import scala.language.implicitConversions
 
 
@@ -53,7 +54,9 @@ trait NativeIOReaderTests
     LakeSoulCatalog.cleanMeta()
   }
 
-  val testSrcFilePath = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+  val testSrcFilePath =
+    "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+//    "s3a://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
   val testDeltaFilePath = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
   val testParquetRowCount = 1000
   val testParquetColNum = 12
@@ -61,13 +64,13 @@ trait NativeIOReaderTests
 
 
 
-  test("[ArrowCDataWrapper test]Read ColumnarBatch from test file") {
+  test("[NativeIOWrapper]Read local file") {
     val wrapper = new NativeIOWrapper()
     wrapper.initialize()
-    //        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io/test/test.snappy.parquet")
     wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
 //    wrapper.setThreadNum(2)
     wrapper.setBatchSize(10)
+    wrapper.setBufferSize(1)
     wrapper.createReader()
     wrapper.startReader(_ => {})
     val reader = LakeSoulArrowReader(
@@ -85,8 +88,43 @@ trait NativeIOReaderTests
             new ColumnarBatch(vectors, vsr.getRowCount)
           }
           assert(batch.numRows() == 10)
+          cnt += 1
+          println(cnt)
         case None =>
 //          assert(false)
+      }
+    }
+  }
+
+  test("[NativeIOWrapper]Read s3 file") {
+    val wrapper = new NativeIOWrapper()
+    wrapper.initialize()
+    wrapper.addFile("s3://lakesoul-test-s3/large_file.parquet")
+    wrapper.setThreadNum(2)
+    wrapper.setBatchSize(8192)
+    wrapper.setBufferSize(1)
+    wrapper.setObjectStoreOptions("minioadmin1", "minioadmin1", "us-east-1", "lakesoul-test-s3", "http://localhost:9002")
+    wrapper.createReader()
+    wrapper.startReader(_ => {})
+    val reader = LakeSoulArrowReader(
+      wrapper = wrapper
+    )
+    var cnt = 0
+    while (reader.hasNext) {
+      val result = reader.next()
+      result match {
+        case Some(vsr) =>
+          assert(vsr.getFieldVectors.size()==31)
+          val vectors = NativeIOUtils.asArrayColumnVector(vsr)
+
+          val batch = {
+            new ColumnarBatch(vectors, vsr.getRowCount)
+          }
+          assert(batch.numRows() <= 8192)
+          cnt += 1
+          println(cnt)
+        case None =>
+        //          assert(false)
       }
     }
   }
@@ -125,12 +163,13 @@ trait NativeIOReaderTests
 
   test("[Small file test]with hash_key and range_key") {
     withTempDir { dir =>
-      val tablePath = dir.toString
+      val tablePath = "s3a://lakesoul-test-s3/" + dir.getName
       val df = spark
         .read
         .format("parquet")
         .load(testSrcFilePath)
         .toDF()
+      println(spark.sessionState.conf.getConfString("spark.hadoop.fs.s3a.aws.credentials.provider"))
       df
         .write
         .format("lakesoul")
@@ -172,8 +211,10 @@ trait NativeIOReaderTests
         .mode("Overwrite")
         .save(tablePath)
       println("write lakesoul table done")
+      val start = System.nanoTime()
 //      val table = spark.read.format("lakesoul").load(tablePath)
-      for (_ <- 1 to 10) {
+      val loop=10
+      for (_ <- 1 to loop) {
         assert(spark.read.format("lakesoul")
           .load(tablePath)
           .select("*")
@@ -190,6 +231,7 @@ trait NativeIOReaderTests
         sql("CLEAR CACHE")
       }
 
+      println(s"count ${loop} times complete, using ${NANOSECONDS.toSeconds(System.nanoTime() - start)}s")
     }
   }
 
@@ -314,6 +356,54 @@ trait NativeIOReaderTests
       val data2 = data1.select("range","hash","op")
       checkAnswer(data2, Seq(("range2", "hash2", "insert"),("range3", "hash2", "insert"),("range4", "hash2", "insert"),("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
     }
+  }
+
+  test("s3") {
+    val builder = SparkSession.builder()
+      .appName("CCF BDCI 2022 DataLake Contest")
+      .master("local[4]")
+      .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config("hadoop.fs.s3a.committer.name", "directory")
+      .config("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "append")
+      .config("spark.hadoop.fs.s3a.committer.staging.tmp.path", "/opt/spark/work-dir/s3a_staging")
+      .config("spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a", "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory")
+      .config("spark.hadoop.fs.s3a.path.style.access", "true")
+      .config("spark.hadoop.fs.s3.buffer.dir", "/opt/spark/work-dir/s3")
+      .config("spark.hadoop.fs.s3a.buffer.dir", "/opt/spark/work-dir/s3a")
+      .config("spark.hadoop.fs.s3a.fast.upload.buffer", "disk")
+      .config("spark.hadoop.fs.s3a.fast.upload", value = true)
+      .config("spark.hadoop.fs.s3a.multipart.size", 67108864)
+      .config("spark.sql.shuffle.partitions", 10)
+      .config("spark.sql.files.maxPartitionBytes", "1g")
+      .config("spark.default.parallelism", 8)
+      .config("spark.sql.parquet.mergeSchema", value = false)
+      .config("spark.sql.parquet.filterPushdown", value = true)
+      .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
+      .config("spark.sql.warehouse.dir", "s3://ccf-datalake-contest/datalake_table/")
+      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
+      .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9002")
+      .config("fs.s3a.endpoint", "http://localhost:9002")
+      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")
+
+    val spark = builder.getOrCreate()
+    println(spark.sessionState.conf.getConfString("spark.hadoop.fs.s3a.endpoint"))
+//    withTempDir { dir =>
+//      val tablePath = dir.toString
+      val df = spark
+        .read
+        .format("parquet")
+        .load("s3a://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
+        .toDF()
+//      df
+//        .write
+//        .format("lakesoul")
+//        .option("rangePartitions", "gender")
+//        .option("hashPartitions", "id")
+//        .option("hashBucketNum", testHashBucketNum)
+//        .mode("Overwrite")
+//        .save(tablePath)
+//    }
   }
 }
 

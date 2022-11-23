@@ -6,6 +6,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use std::time::Instant; 
+use std::future::Future;
+
+
+use std::future::Ready;
 
 use derivative::Derivative;
 
@@ -14,6 +18,7 @@ pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
+use datafusion::physical_plan::RecordBatchStream;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -21,10 +26,14 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use object_store::aws::{AmazonS3Builder};
 use object_store::RetryConfig;
 
+use futures::StreamExt;
+use futures::stream::{Map, Buffered, Stream};
+use core::pin::Pin;
+
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_stream::StreamExt;
+// use tokio_stream::StreamExt;
 
 use crate::merge_logic::merge_partitioned_file::MergePartitionedFile;
 
@@ -47,6 +56,9 @@ pub struct LakeSoulReaderConfig {
     // tokio runtime related configs
     #[derivative(Default(value = "2"))]
     thread_num: usize,
+
+    #[derivative(Default(value = "1"))]
+    buffer_size: usize,
 }
 
 pub struct LakeSoulReaderConfigBuilder {
@@ -95,6 +107,11 @@ impl LakeSoulReaderConfigBuilder {
         self
     }
 
+    pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
+        self.config.buffer_size=buffer_size;
+        self
+    }
+
 
     pub fn with_columns(mut self, cols: Vec<String>) -> Self {
         self.config.columns = cols;
@@ -124,7 +141,8 @@ impl LakeSoulReaderConfigBuilder {
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulReaderConfig,
-    stream: Box<MaybeUninit<SendableRecordBatchStream>>,
+    // stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream+Send>>>>,
+    stream: Box<MaybeUninit<Pin<Box<dyn Stream<Item=ArrowResult<RecordBatch>>+Send>>>>,
 }
 
 impl LakeSoulReader {
@@ -172,17 +190,6 @@ impl LakeSoulReader {
         }
 
         let endpoint = config.object_store_options.get("fs.s3.endpoint");
-        // aws::new_s3 is deprecated since object_store-v0.3.0
-        // let s3_store = aws::new_s3(
-        //     key,
-        //     secret,
-        //     region.unwrap(),
-        //     bucket.unwrap(),
-        //     endpoint,
-        //     None::<String>,
-        //     NonZeroUsize::new(4).unwrap(),
-        //     true,
-        // )?;
         let retry_config = RetryConfig {
             backoff: Default::default(),
             max_retries: 4,
@@ -198,7 +205,7 @@ impl LakeSoulReader {
             .with_allow_http(true)
             .build();
         runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store.unwrap()));
-        // runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store));
+        println!("{:?}", config.object_store_options);
         Ok(())
     }
 
@@ -224,7 +231,15 @@ impl LakeSoulReader {
             df = df.select_columns(&cols)?;
         }
         df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
-        self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
+        // self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
+        println!("{}", self.config.buffer_size);
+        self.stream = Box::new(MaybeUninit::new(
+            Box::pin(
+                df.execute_stream().await?
+            .map(std::future::ready).buffered(self.config.buffer_size))
+        ));
+        // let buffered_stream:Box<MaybeUninit<Buffered<_>>> = Box::new(MaybeUninit::new(df.execute_stream().await?));
+        
         Ok(())
     }
 
@@ -253,7 +268,10 @@ impl SyncSendableMutableLakeSoulReader {
     pub fn start_blocked(&self) -> Result<()> {
         let inner_reader = self.inner.clone();
         let runtime = self.get_runtime();
-        runtime.block_on(async { inner_reader.borrow().lock().await.start().await })
+        runtime.block_on(async { 
+            inner_reader.borrow().lock().await.start().await;
+            Ok(())
+         })
     }
 
     pub fn next_rb_callback(
@@ -347,6 +365,104 @@ mod tests {
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
             .worker_threads(reader.config.thread_num)
+            .build()
+            .unwrap();
+        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        reader.start_blocked()?;
+        static mut row_cnt: usize = 0;
+        loop {
+            let (tx, rx) = sync_channel(1);
+            let start = Instant::now();
+            let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+                None => tx.send(true).unwrap(),
+                Some(rb) => {
+                    // print_batches(std::slice::from_ref(&rb.unwrap())).unwrap();
+                    let num_rows = &rb.unwrap().num_rows();
+                    unsafe {
+                        row_cnt = row_cnt + num_rows;
+                        println!("{}", row_cnt);
+                    }
+                    println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
+                    tx.send(false).unwrap();
+                }
+            };
+            reader.next_rb_callback(Box::new(f));
+            let done = rx.recv().unwrap();
+            if done {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    use tokio::time::{Duration, sleep};
+
+    #[tokio::test]
+    async fn test_reader_s3() -> Result<()> {
+        let reader_conf = LakeSoulReaderConfigBuilder::new()
+            .with_files(vec![
+                // "s3://lakesoul-test-s3/base-0-0.parquet"
+                "s3://lakesoul-test-s3/large_file.parquet"
+                // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
+                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "/Users/ceng/base-0-0.parquet"
+                .to_string()])
+            .with_thread_num(1)
+            .with_batch_size(8192)
+            .with_buffer_size(16)
+            .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
+            .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
+            .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
+            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9002"))
+            .build();
+        let mut reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = ManuallyDrop::new(reader);
+        reader.start().await?;
+        static mut row_cnt: usize = 0;
+
+        let start = Instant::now();
+        while let Some(rb) = reader.next_rb().await {
+            // print_batches(std::slice::from_ref(&record_batch?))?;
+            let num_rows = &rb.unwrap().num_rows();
+            unsafe {
+                row_cnt = row_cnt + num_rows;
+                println!("{}", row_cnt);
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        println!("time cost: {:?}ms", start.elapsed().as_millis());// ms
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_reader_s3_blocked() -> Result<()> {
+        let reader_conf = LakeSoulReaderConfigBuilder::new()
+            .with_files(vec![
+                // "s3://lakesoul-test-s3/base-0-0.parquet"
+                "s3://lakesoul-test-s3/large_file.parquet"
+                // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
+                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "/Users/ceng/base-0-0.parquet"
+                .to_string()])
+            .with_thread_num(1)
+            .with_batch_size(8192)
+            .with_buffer_size(16)
+            .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
+            .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
+            .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
+            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9002"))
+            .build();
+        let reader = LakeSoulReader::new(reader_conf)?;
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(reader.config.thread_num)
+            .enable_all()
             .build()
             .unwrap();
         let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);

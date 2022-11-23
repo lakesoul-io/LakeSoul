@@ -93,20 +93,35 @@ mod tests{
         }
     }
 
+    #[test]
+    fn test_read_meta() {
+        // let testdata = arrow::util::test_util::parquet_test_data();
+        // let path = format!("{}/alltypes_tiny_pages_plain.parquet", testdata);
+        let data = Bytes::from(std::fs::read(
+            // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+            "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
+            // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+        ).unwrap());
+
+        let metadata = parse_metadata(&data).unwrap();
+        let metadata = Arc::new(metadata);
+        println!("{:?}",metadata);
+        // println!("{:?}",metadata.row_group(0));
+    }
 
     #[tokio::test]
     async fn test_async_reader_skip_pages() {
         // let testdata = arrow::util::test_util::parquet_test_data();
         // let path = format!("{}/alltypes_tiny_pages_plain.parquet", testdata);
         let data = Bytes::from(std::fs::read(
-            // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-            "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+            "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+            // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
         ).unwrap());
 
         let metadata = parse_metadata(&data).unwrap();
         let metadata = Arc::new(metadata);
         // println!("{:?}",metadata);
-        // println!("{:?}",metadata.row_group(0));
+        println!("{:?}",metadata.row_group(0));
         // return;
 
         assert_eq!(metadata.num_row_groups(), 1);
@@ -182,7 +197,7 @@ mod tests{
         let secret = "minioadmin1";
         let region = "us-east-1";
         let bucket = "lakesoul-test-s3";
-        let endpoint = "http://localhost:9000";
+        let endpoint = "http://localhost:9002";
         let retry_config = RetryConfig {
             backoff: Default::default(),
             max_retries: 4,
@@ -221,7 +236,7 @@ mod tests{
             .await;
         
         // fetch objects
-        let path: Path = "part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".try_into().unwrap();
+        let path: Path = "base-0-0.parquet".try_into().unwrap();
         let s3_data = object_store.get(&path)
             .await
             .unwrap()
@@ -243,7 +258,7 @@ mod tests{
         // print_batches(s3_sync_batches.as_slice());
 
         let local_data = Bytes::from(std::fs::read(
-            "/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+            "/Users/ceng/base-0-0.parquet"
         ).unwrap());
 
         let local_metadata = parse_metadata(&local_data).unwrap();
@@ -262,6 +277,8 @@ mod tests{
 
     use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
     use datafusion::datasource::object_store::ObjectStoreUrl;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+
     #[tokio::test]
     async fn test_datafusion_runtimeenv() {
         let object_store = get_s3_object_store();
@@ -271,7 +288,7 @@ mod tests{
         runtime.register_object_store("s3", bucket, object_store);
 
         let object_store = runtime.object_store(ObjectStoreUrl::parse("s3://lakesoul-test-s3/").unwrap()).unwrap();
-        let path: Path = "part-00004-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".try_into().unwrap();
+        let path: Path = "base-0-0.parquet".try_into().unwrap();
         let s3_data = object_store.get(&path)
             .await
             .unwrap()
@@ -280,6 +297,103 @@ mod tests{
             .unwrap();
         let s3_metadata = parse_metadata(&s3_data).unwrap();
         assert_eq!(s3_metadata.num_row_groups(), 1);
+    }
+
+    use datafusion::error::{DataFusionError, Result as DataFusionResult};
+    #[tokio::test]
+    async fn test_datafusion_session_context_with_s3() -> DataFusionResult<()>{
+        let object_store = get_s3_object_store();
+        let bucket = "lakesoul-test-s3";
+
+        let runtime = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+        runtime.register_object_store("s3", bucket, object_store);
+
+        let context = SessionContext::with_config_rt(SessionConfig::default(), Arc::new(runtime));
+        let mut stream = context
+            .read_parquet(
+                // "base-0-0.parquet"
+                // "/Users/ceng/base-0-0.parquet"
+                "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                , Default::default())
+            .await?
+            .execute_stream()
+            .await?;
+        
+        unsafe {
+            let mut result = stream.next().await.unwrap().unwrap();
+            print_batches(&[result]);
+        }
+
+        // let object_store = runtime.object_store(ObjectStoreUrl::parse("s3://lakesoul-test-s3/").unwrap()).unwrap();
+        // let path: Path = "base-0-0.parquet".try_into().unwrap();
+        // let s3_data = object_store.get(&path)
+        //     .await
+        //     .unwrap()
+        //     .bytes()
+        //     .await
+        //     .unwrap();
+        // let s3_metadata = parse_metadata(&s3_data).unwrap();
+        // assert_eq!(s3_metadata.num_row_groups(), 1);
+        Ok(())
+    }
+
+    use tokio::time::Duration;
+    use tokio::time::sleep;
+    use tokio::time::Instant;
+    use std::mem::MaybeUninit;
+    use futures::Future;
+    use std::future::Ready;
+    use futures::stream::{Map, Buffered};
+    use datafusion::physical_plan::SendableRecordBatchStream;
+    use futures::stream::Stream;
+    use std::pin::Pin;
+    use datafusion::physical_plan::RecordBatchStream;
+
+
+    type ReadyArrowResult=Ready<ArrowResult<RecordBatch>>;
+    type FnReady = fn(ArrowResult<RecordBatch>) -> ReadyArrowResult;
+    type BufferedStream=Buffered<Map<SendableRecordBatchStream, FnReady>>;
+
+
+    // use crate::ReadyRecordBatchStream;
+    // use crate::SendableReadyRecordBatchStream;
+
+    
+
+    #[tokio::test]
+    async fn test_buffered_stream() -> DataFusionResult<()>{
+        let object_store = get_s3_object_store();
+        let bucket = "lakesoul-test-s3";
+
+        let runtime = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+        runtime.register_object_store("s3", bucket, object_store);
+
+        let context = SessionContext::with_config_rt(SessionConfig::default().with_batch_size(8192), Arc::new(runtime));
+        let mut stream = context
+            .read_parquet(
+                // "base-0-0.parquet"
+                // "/Users/ceng/base-0-0.parquet"
+                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                "s3://lakesoul-test-s3/large_file.parquet"
+                // "s3://lakesoul-test-s3/large_file_5rg.parquet"
+                // "s3://lakesoul-test-s3/base-0-0.parquet"
+                , Default::default())
+            .await?
+            .execute_stream()
+            .await?;
+        let mut stream = Pin::new(Box::new(stream.map(|x| { std::future::ready(x) })));
+        let mut stream:Pin<Box<dyn Stream<Item=ArrowResult<RecordBatch>>+Send>> = Box::pin(stream.buffered(64));
+        let start = Instant::now();
+        while let Some(batch) = stream.next().await {
+            // let batch = batch.await?;
+            let batch = batch?;
+            // println!("{}x{}", batch.num_rows(), batch.num_columns());
+            sleep(Duration::from_millis(20)).await;
+        }
+        println!("time cost: {:?}ms", start.elapsed().as_millis());// ms
+        
+        Ok(())
+
     }
 
 }

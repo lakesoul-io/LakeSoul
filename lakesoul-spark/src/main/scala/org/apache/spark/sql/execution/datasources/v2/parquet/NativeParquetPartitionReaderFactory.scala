@@ -42,6 +42,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 import java.net.URI
 import java.time.ZoneId
+import java.util.concurrent.TimeUnit.NANOSECONDS
 
 
 
@@ -100,15 +101,37 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
     val vectorizedReader = createVectorizedReader(file)
 
     new PartitionReader[ColumnarBatch] {
+      var count = 0
+      var multiBatchBefore = System.nanoTime()
+      var start = System.nanoTime()
+      var nextMetric = 0.0
+      var getMetric = 0.0
       override def next(): Boolean = {
-        vectorizedReader.nextKeyValue()
+        val start = System.nanoTime()
+        val ret = vectorizedReader.nextKeyValue()
+        nextMetric += NANOSECONDS.toMillis(System.nanoTime() - start)
+        ret
       }
 
       override def get(): ColumnarBatch = {
-        vectorizedReader.getCurrentValue
+        count+= 1
+        if (count % 100 == 0) {
+          val current = System.nanoTime()
+//          println(s"fetch 100 batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
+          multiBatchBefore = current
+        }
+        val start = System.nanoTime()
+        val ret = vectorizedReader.getCurrentValue
+        getMetric += NANOSECONDS.toMillis(System.nanoTime() - start)
+        ret
       }
 
-      override def close(): Unit = vectorizedReader.close()
+      override def close(): Unit = {
+        val current = System.nanoTime()
+//        println(s"fetch remain batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
+        println(s"fetch all batch using ${NANOSECONDS.toMillis(current - start)} ms, total next() time=${nextMetric}ms, other time=${NANOSECONDS.toMillis(current - start) - nextMetric}ms")
+        vectorizedReader.close()
+      }
     }
   }
 
