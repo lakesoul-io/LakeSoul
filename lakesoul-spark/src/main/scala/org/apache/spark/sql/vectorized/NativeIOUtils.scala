@@ -1,12 +1,7 @@
 package org.apache.spark.sql.vectorized
 
-import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
-import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.vectorized.WritableArrowColumnVector
-import org.apache.spark.sql.execution.vectorized.WritableColumnVector
-import org.apache.spark.sql.types.{BinaryType, BooleanType, StructField}
+import org.apache.spark.sql.execution.vectorized.{WritableArrowColumnVector, WritableColumnVector}
 
 import scala.collection.JavaConverters._
 

@@ -273,7 +273,7 @@ impl SyncSendableMutableLakeSoulReader {
     pub fn new(reader: LakeSoulReader, runtime:Runtime) -> Self {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
-            runtime: Arc::new(runtime)
+            runtime: Arc::new(runtime),
         }
     }
 
@@ -312,18 +312,6 @@ impl SyncSendableMutableLakeSoulReader {
 }
 
 
-impl Iterator for LakeSoulReader{
-    type Item=RecordBatch;
-    fn next(&mut self) -> Option<RecordBatch>{
-        None
-    }
-}
-
-impl Drop for LakeSoulReader{
-    fn drop(&mut self) {
-        println!("Dropping LakeSoulReader with data `{}`!", self.config.thread_num);
-    }
-}
 
 
 #[cfg(test)]
@@ -367,12 +355,12 @@ mod tests {
     fn test_reader_local_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
-            .with_thread_num(1)
-            .with_batch_size(8192)
+            .with_thread_num(16)
+            .with_batch_size(1)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
@@ -395,6 +383,54 @@ mod tests {
                         println!("{}", row_cnt);
                     }
                     println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
+                    tx.send(false).unwrap();
+                }
+            };
+            reader.next_rb_callback(Box::new(f));
+            let done = rx.recv().unwrap();
+            if done {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+
+    use datafusion::prelude::Partitioning;
+    #[test]
+    fn test_reader_partition() -> Result<()> {
+        let reader_conf = LakeSoulReaderConfigBuilder::new()
+            .with_files(vec![
+                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+                    .to_string(),
+            ])
+            .with_thread_num(1)
+            .with_batch_size(8192)
+            .build();
+        let reader = LakeSoulReader::new(reader_conf)?;
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(reader.config.thread_num)
+            .build()
+            .unwrap();
+        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        reader.start_blocked()?;
+        static mut row_cnt: usize = 0;
+        loop {
+            let (tx, rx) = sync_channel(1);
+            let start = Instant::now();
+            let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+                None => tx.send(true).unwrap(),
+                Some(rb) => {
+                    let rb = rb.unwrap();
+                    let num_rows = &rb.num_rows();
+                    unsafe {
+                        row_cnt = row_cnt + num_rows;
+                        println!("{}", row_cnt);
+                    }
+                    // println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
+                    // print_batches(std::slice::from_ref(&rb)).unwrap();
+
                     tx.send(false).unwrap();
                 }
             };

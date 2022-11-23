@@ -46,12 +46,12 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putNotNull(int rowId) {
-
+        throw new UnsupportedOperationException();
     }
 
     @Override
     public void putNull(int rowId) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -62,12 +62,12 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putNulls(int rowId, int count) {
-
+        throw new UnsupportedOperationException();
     }
 
     @Override
     public void putNotNulls(int rowId, int count) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -78,7 +78,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putBoolean(int rowId, boolean value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -90,7 +90,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putBooleans(int rowId, int count, boolean value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -101,7 +101,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putByte(int rowId, byte value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -113,7 +113,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putBytes(int rowId, int count, byte value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -126,7 +126,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putBytes(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -137,7 +137,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putShort(int rowId, short value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -149,7 +149,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putShorts(int rowId, int count, short value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -162,7 +162,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putShorts(int rowId, int count, short[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -176,7 +176,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putShorts(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -187,7 +187,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putInt(int rowId, int value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -199,7 +199,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putInts(int rowId, int count, int value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -226,7 +226,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putInts(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -240,7 +240,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putIntsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -251,7 +251,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putLong(int rowId, long value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -263,7 +263,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putLongs(int rowId, int count, long value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -276,7 +276,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putLongs(int rowId, int count, long[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -290,7 +290,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putLongs(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -304,7 +304,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putLongsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -315,7 +315,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putFloat(int rowId, float value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -327,7 +327,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putFloats(int rowId, int count, float value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -340,7 +340,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putFloats(int rowId, int count, float[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -354,7 +354,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putFloats(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -368,7 +368,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putFloatsLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -379,7 +379,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putDouble(int rowId, double value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -391,7 +391,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putDoubles(int rowId, int count, double value) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -404,7 +404,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putDoubles(int rowId, int count, double[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -418,7 +418,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putDoubles(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -432,7 +432,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putDoublesLittleEndian(int rowId, int count, byte[] src, int srcIndex) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -444,7 +444,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public void putArray(int rowId, int offset, int length) {
-
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -457,7 +457,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
      */
     @Override
     public int putByteArray(int rowId, byte[] value, int offset, int count) {
-        return 0;
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -594,7 +594,7 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
     public WritableArrowColumnVector getChild(int ordinal) { return childColumns[ordinal]; }
 
     public WritableArrowColumnVector(ValueVector vector) {
-        super(0, ArrowUtils.fromArrowField(vector.getField()));
+        super(vector.getValueCapacity(), ArrowUtils.fromArrowField(vector.getField()));
 
         if (vector instanceof BitVector) {
             accessor = new BooleanAccessor((BitVector) vector);
