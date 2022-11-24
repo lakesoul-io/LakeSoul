@@ -19,9 +19,10 @@ package com.dmetasoul.lakesoul.meta
 import com.alibaba.fastjson.JSONObject
 import com.google.common.base.Splitter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{DataCommitInfo, DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
 
 import java.util
+import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
@@ -175,6 +176,17 @@ object MetaVersion {
 
   }
 
+  def getLastedVersionUptoTime(table_id: String, range_value: String, utcMills: Long): Int = {
+    dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
+  }
+  /*
+  if range_value is "", clean up all patitions;
+  if not "" , just one partition
+  */
+  def cleanMetaUptoTime(table_id: String, range_value: String, utcMills: Long): List[String] = {
+    dbManager.getDeleteFilePath(table_id, range_value, utcMills).asScala.toList
+  }
+
   def getPartitionId(table_id: String, range_value: String): (Boolean, String) = {
     (false, "")
   }
@@ -260,7 +272,7 @@ object MetaVersion {
     dbManager.updateTableShortName(table_name, table_id, short_table_name, table_namespace)
   }
 
-  def cleanMeta():Unit = {
+  def cleanMeta(): Unit = {
     dbManager.cleanMeta()
   }
 

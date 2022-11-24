@@ -103,13 +103,15 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   condition: String,
                                   force: Boolean = true,
                                   mergeOperatorInfo: Map[String, String],
-                                  hiveTableName: String = ""): Unit = {
+                                  hiveTableName: String = "",
+                                  hivePartitionName: String = ""): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
       force,
       mergeOperatorInfo,
-      hiveTableName))
+      hiveTableName,
+      hivePartitionName))
 
   }
 
@@ -128,5 +130,11 @@ trait LakeSoulTableOperations extends AnalysisHelper {
     DropPartitionCommand.run(
       snapshotManagement.snapshot,
       condition)
+  }
+
+
+  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement,partitionDesc:String,
+                                        endTime:Long): Unit = {
+    CleanupPartitionDataCommand.run(snapshotManagement.snapshot,partitionDesc, endTime);
   }
 }
