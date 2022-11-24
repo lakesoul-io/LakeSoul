@@ -98,7 +98,6 @@ public class MysqlCdc {
 
         StreamExecutionEnvironment env;
         env = StreamExecutionEnvironment.getExecutionEnvironment();
-//        env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
 
         ParameterTool pt = ParameterTool.fromMap(conf.toMap());
         env.getConfig().setGlobalJobParameters(pt);
