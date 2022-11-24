@@ -70,7 +70,8 @@ services:
     depends_on:
       - jobmanager
     command: taskmanager
-    scale: 2
+    deploy:
+      replicas: 2
     environment:
       - |
         FLINK_PROPERTIES=

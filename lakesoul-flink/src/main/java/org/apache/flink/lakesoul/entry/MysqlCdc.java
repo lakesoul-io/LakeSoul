@@ -19,7 +19,6 @@
 
 package org.apache.flink.lakesoul.entry;
 
-import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;

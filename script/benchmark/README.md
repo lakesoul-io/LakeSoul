@@ -13,3 +13,5 @@
 以数字开头的脚本需要严格按照顺序执行，2_insert_table_data.sh 可以在第3、5、6步后再次执行插入数据。
 
 以上为数据库自动生成数据脚本，配合org.apache.spark.sql.lakesoul.benchmark.Benchmark进行对比mysql和lakesoul数据准确性。
+
+auto_test.sh对各个执行步骤进行了整合，执行auto_test.sh可自动化执行测试全流程。
