@@ -113,6 +113,8 @@ public class TableSchemaWriterCreator implements Serializable {
 
     public static org.apache.hadoop.conf.Configuration getParquetConfiguration(ReadableConfig options) {
         org.apache.hadoop.conf.Configuration conf = new org.apache.hadoop.conf.Configuration();
+        conf.set("parquet.compression", "snappy");
+        conf.setInt("parquet.block.size", 32 * 1024 * 1024);
         Properties properties = new Properties();
         ((org.apache.flink.configuration.Configuration) options).addAllToProperties(properties);
         properties.forEach((k, v) -> conf.set(IDENTIFIER + "." + k, v.toString()));
