@@ -426,8 +426,17 @@ object LakeSoulTable {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
+    forPath(path, partitionDesc, toTime, false)
+  }
+  /* IncrementalQuery from time to now
+  *
+  * */
+  def forPath(path: String, partitionDesc: String, time: String,incremental: Boolean): LakeSoulTable = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse {
+      throw new IllegalArgumentException("Could not find active SparkSession")
+    }
 
-    forPath(sparkSession, path, partitionDesc, toTime)
+    forPath(sparkSession, path, partitionDesc, time,incremental)
   }
 
   /**
@@ -456,7 +465,7 @@ object LakeSoulTable {
   /*
   *   toTime 2022-10-01 13:45:30
   * */
-  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, toTime: String): LakeSoulTable = {
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, toTime: String,incremental:Boolean): LakeSoulTable = {
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
@@ -474,6 +483,7 @@ object LakeSoulTable {
       throw LakeSoulErrors.tableNotExistsException(path)
     }
   }
+
 
   /**
    * Create a LakeSoulTableRel using the given table name using the given SparkSession.
