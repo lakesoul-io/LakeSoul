@@ -289,7 +289,7 @@ public class PartitionInfoDao {
 
     public List<PartitionInfo> getPartitionsFromVersion(String tableId, String partitionDesc, int version) {
 
-        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version > %d",
+        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d",
                 tableId, partitionDesc, version);
         return getPartitionInfos(sql);
     }
