@@ -612,6 +612,14 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
     }
 
+    public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int version) {
+        return partitionInfoDao.getPartitionsFromVersion(tableId,partitionDesc,version);
+    }
+
+    public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc,List<UUID> dataCommitUUIDs) {
+        return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
+    }
+
     public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         if (partitionInfo.getTableId() == null) {
