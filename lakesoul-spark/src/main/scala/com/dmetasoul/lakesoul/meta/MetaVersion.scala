@@ -143,7 +143,8 @@ object MetaVersion {
       range_value = range_value,
       version = info.getVersion,
       read_files = info.getSnapshot.asScala.toArray,
-      expression = info.getExpression
+      expression = info.getExpression,
+      commit_op = info.getCommitOp
     )
   }
 
@@ -155,7 +156,8 @@ object MetaVersion {
       range_value = range_value,
       version = info.getVersion,
       read_files = info.getSnapshot.asScala.toArray,
-      expression = info.getExpression
+      expression = info.getExpression,
+      commit_op = info.getCommitOp
     )
     partitionVersionBuffer.toArray
 
@@ -170,6 +172,8 @@ object MetaVersion {
         table_id = res.getTableId,
         range_value = res.getPartitionDesc,
         version = res.getVersion,
+        expression = res.getExpression,
+        commit_op = res.getCommitOp
       )
     }
     partitionVersionBuffer.toArray
