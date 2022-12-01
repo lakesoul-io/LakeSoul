@@ -201,7 +201,8 @@ object MetaVersion {
         range_value = res.getPartitionDesc,
         version = res.getVersion,
         read_files = res.getSnapshot.asScala.toArray,
-        expression = res.getExpression
+        expression = res.getExpression,
+        commit_op = res.getCommitOp
       )
     }
     partitionVersionBuffer.toArray
