@@ -165,7 +165,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
    * @param set       rules to update a row as a Java map between target column names and
    *                  corresponding update expressions as Column objects.
    */
-  def update(condition: Column, set: java.util.Map[String, Column]): Unit = {
+    def update(condition: Column, set: java.util.Map[String, Column]): Unit = {
     executeUpdate(set.asScala.toMap, Some(condition))
   }
 
@@ -476,7 +476,7 @@ object LakeSoulTable {
         null
       } else {
         new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
-          SnapshotManagement(p, partitionDesc, version))
+          SnapshotManagement(p, partitionDesc, version,incremental))
       }
 
     } else {

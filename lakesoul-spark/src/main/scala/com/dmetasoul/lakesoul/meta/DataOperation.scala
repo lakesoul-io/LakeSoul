@@ -139,7 +139,7 @@ object DataOperation extends Logging {
     val loop = new Breaks()
     loop.breakable{
       for (dataItem <- dataCommitInfoList) {
-        if ("UpdateCommit".equals(dataItem.getCommitOp)) {
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && version != dataItem.getVersion) {
           updated = true
           loop.break()
         }

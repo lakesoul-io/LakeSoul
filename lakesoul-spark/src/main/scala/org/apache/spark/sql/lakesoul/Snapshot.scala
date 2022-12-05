@@ -30,12 +30,14 @@ class Snapshot(table_info: TableInfo,
               ) {
   private var partitionDesc:String = ""
   private var partitionVersion:Int = -1
-  def setPartitionDescAndVersion(parDesc:String,parVer:Int): Unit ={
+  private var incremental:Boolean = false;
+  def setPartitionDescAndVersion(parDesc:String,parVer:Int,incremental:Boolean): Unit ={
     this.partitionDesc = parDesc
     this.partitionVersion = parVer
+    this.incremental = incremental
   }
-  def getPartitionDescAndVersion:(String,Int)={
-    (this.partitionDesc,this.partitionVersion)
+  def getPartitionDescAndVersion:(String,Int,Boolean)={
+    (this.partitionDesc,this.partitionVersion,this.incremental)
   }
   def getTableName: String = table_info.table_path_s.get
   def getTableInfo: TableInfo = table_info

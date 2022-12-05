@@ -43,8 +43,8 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   }
 
   def getFileInfoForPartitionVersion(): Seq[DataFileInfo] = {
-    val (desc,version) = snapshotManagement.snapshot.getPartitionDescAndVersion
-      DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id,desc,version)
+    val (desc,version,incremental) = snapshotManagement.snapshot.getPartitionDescAndVersion
+    DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id,desc,version,incremental)
   }
 
   override def rootPaths: Seq[Path] = snapshotManagement.snapshot.getTableInfo.table_path :: Nil

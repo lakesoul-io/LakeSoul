@@ -31,8 +31,13 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
       p.children.find(_.isInstanceOf[DataSourceV2Relation]).get match {
         case dsv2@DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) =>
           val value = getLakeSoulTableCDCColumn(table)
+          val incremental = isIncrementalRead(table)
           if (value.nonEmpty) {
-            p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
+            if(incremental) {
+              p
+            }else{
+              p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
+            }
           }
           else {
             p
@@ -42,12 +47,17 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
       p.children.find(_.isInstanceOf[DataSourceV2Relation]).get match {
         case dsv2@DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) =>
           val value = getLakeSoulTableCDCColumn(table)
+          val incremental = isIncrementalRead(table)
           if (value.nonEmpty) {
             val bool = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
-            if (!bool) {
-              p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
-            } else {
+            if (incremental) {
               p
+            } else {
+              if(!bool) {
+                p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
+              }else{
+                p
+              }
             }
           } else {
             p
@@ -57,5 +67,9 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
 
   private def getLakeSoulTableCDCColumn(table: LakeSoulTableV2): Option[String] = {
     table.snapshotManagement.snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
+  }
+
+  private def isIncrementalRead(table: LakeSoulTableV2):Boolean = {
+    table.snapshotManagement.snapshot.getPartitionDescAndVersion._3
   }
 }

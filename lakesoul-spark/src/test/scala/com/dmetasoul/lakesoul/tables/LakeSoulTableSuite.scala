@@ -32,6 +32,8 @@ class LakeSoulTableSuite extends QueryTest
   test("forPath") {
     withTempDir { dir =>
       testData.write.format("lakesoul").save(dir.getAbsolutePath)
+      println("***************"+LakeSoulTable.forPath(spark, dir.getAbsolutePath))
+      println("***************"+spark)
       checkAnswer(
         LakeSoulTable.forPath(spark, dir.getAbsolutePath).toDF,
         testData.collect().toSeq)

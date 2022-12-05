@@ -86,9 +86,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, partitionVersion: Int): Unit = {
+  def updateSnapshotForVersion(partitionDesc: String, partitionVersion: Int,incremental:Boolean): Unit = {
     lockInterruptibly {
-      currentSnapshot.setPartitionDescAndVersion(partitionDesc, partitionVersion)
+      currentSnapshot.setPartitionDescAndVersion(partitionDesc, partitionVersion,incremental)
     }
   }
 
@@ -205,7 +205,18 @@ object SnapshotManagement {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, partitionVersion)
+      sm.updateSnapshotForVersion(partitionDesc, partitionVersion,false)
+      apply(qualifiedPath)
+    } else {
+      throw new AnalysisException("table not exitst in the path;")
+    }
+  }
+
+  def apply(path: String, partitionDesc: String, partitionVersion: Int,incremental:Boolean): SnapshotManagement = {
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
+      val sm = apply(qualifiedPath)
+      sm.updateSnapshotForVersion(partitionDesc, partitionVersion,incremental)
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
