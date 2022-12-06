@@ -20,7 +20,7 @@ use tokio::spawn;
 pub use tokio_postgres::{NoTls, Client, Statement};
 use postgres_types::{ToSql, FromSql};
 
-pub use metadata_client::MetaDataClient;
+pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 
 pub const DAO_TYPE_QUERY_ONE_OFFSET : i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET : i32 = 100;

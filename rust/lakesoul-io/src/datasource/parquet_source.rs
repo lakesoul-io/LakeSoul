@@ -136,7 +136,7 @@ impl LakeSoulParquetProvider {
         }
     }
 
-    pub(crate) async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
+    pub async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
         let mut plans = vec![];
         let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema().unwrap();
         for i in 0..self.config.files.len() {
