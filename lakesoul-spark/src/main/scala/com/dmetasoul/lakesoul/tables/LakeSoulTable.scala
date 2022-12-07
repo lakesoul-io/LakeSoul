@@ -422,21 +422,21 @@ object LakeSoulTable {
    * Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
    *
    */
-  def forPath(path: String, partitionDesc: String, toTime: String): LakeSoulTable = {
+  def forPath(path: String, partitionDesc: String, startTime: String,endTime: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
-    forPath(path, partitionDesc, toTime, false)
+    forPath(path, partitionDesc, startTime,endTime, false)
   }
   /* IncrementalQuery from time to now
   *
   * */
-  def forPath(path: String, partitionDesc: String, time: String,incremental: Boolean): LakeSoulTable = {
+  def forPath(path: String, partitionDesc: String, startTime: String,endTime: String,incremental: Boolean): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, time,incremental)
+    forPath(sparkSession, path, partitionDesc, startTime,endTime,incremental)
   }
 
   /**
@@ -463,20 +463,23 @@ object LakeSoulTable {
   }
 
   /*
-  *   toTime 2022-10-01 13:45:30
+  *   startTime 2022-10-01 13:45:30
+  *   endTime 2022-10-01 13:46:30
   * */
-  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, toTime: String,incremental:Boolean): LakeSoulTable = {
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime)
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String,endTimeStamp: String,incremental:Boolean): LakeSoulTable = {
+    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(startTimeStamp)
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)
-      val version = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime / 1000)
-      if (version < 0) {
+      val endVersion = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime / 1000)
+      val startVersion = if(incremental) MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, startTime / 1000) else 0
+      if (endVersion < 0) {
         println("No version found in Table before time")
         null
       } else {
         new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
-          SnapshotManagement(p, partitionDesc, version,incremental))
+          SnapshotManagement(p, partitionDesc, startVersion, endVersion, incremental))
       }
 
     } else {

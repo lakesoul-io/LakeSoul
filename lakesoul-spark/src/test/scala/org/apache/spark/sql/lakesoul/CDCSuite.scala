@@ -175,10 +175,9 @@ class CDCSuite
           val tableForUpsert = Seq(("range1", "hash1-2", "delete"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
-
           lake.upsert(tableForUpsert)
 
-          val tableForUpsert1 = Seq(("range1", "hash1-1", "update"), ("range2", "hash2-10", "delete"))
+          val tableForUpsert1 = Seq(("range1", "hash1-1", "update"), ("range2", "hash2-1", "delete"))
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
           val timeA = System.currentTimeMillis()
@@ -189,7 +188,8 @@ class CDCSuite
           val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionA)
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, false)
+          // snapshot startVersion default to 0
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, false)
           val data1 = lake1.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "insert"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
         }
@@ -215,30 +215,40 @@ class CDCSuite
             .partitionBy("range", "op")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
-          val tableForUpsert = Seq(("range1", "hash1-2", "insert"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
+          val tableForUpsert = Seq(("range1", "hash1-2", "delete"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
           lake.upsert(tableForUpsert)
 
           val tableForUpsert1 = Seq(("range1", "hash1-1", "delete"), ("range2", "hash2-10", "delete"))
             .toDF("range", "hash", "op")
-          Thread.sleep(6000)
-          val timeB = System.currentTimeMillis()
+          Thread.sleep(3000)
           lake.upsert(tableForUpsert1)
 
-          val tableForUpsert2 = Seq(("range1", "hash1-13", "update"), ("range2", "hash2-13", "update"))
+          val tableForUpsert2 = Seq(("range1", "hash1-13", "insert"), ("range2", "hash2-13", "update"))
             .toDF("range", "hash", "op")
+          val timeB = System.currentTimeMillis()
+          Thread.sleep(3000)
           lake.upsert(tableForUpsert2)
 
+          val tableForUpsert3 = Seq(("range1", "hash1-15", "insert"), ("range2", "hash2-15", "update"))
+            .toDF("range", "hash", "op")
+          lake.upsert(tableForUpsert3)
+          Thread.sleep(3000)
+          val timeC = System.currentTimeMillis()
+
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
+          val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           // Processing time zone time difference
           val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
+          val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionC)
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
+          val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, true)
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, true)
           val data1 = lake1.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),
-            ("range1", "hash1-13", "update")).toDF("range", "hash", "op"))
+            ("range1", "hash1-13", "insert"), ("range1", "hash1-15", "insert")).toDF("range", "hash", "op"))
         }
       })
     }

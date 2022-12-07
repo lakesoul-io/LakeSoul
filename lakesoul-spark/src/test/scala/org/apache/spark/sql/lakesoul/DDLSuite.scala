@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
@@ -423,6 +424,35 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
 
         verifyDescribeTable("lakesoul_test")
         verifyDescribeTable(s"lakesoul.`$path`")
+      }
+    }
+  }
+
+
+  test("test sparkSQL and DF") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+        val path = dir.getCanonicalPath
+        val df = Seq(
+          (1, "IT", "Alice",90),
+          (2, "CS", "Bob",85),
+          (3, "IT", "Carol",171)).toDF("id", "dept", "name","score")
+        df.write.format("lakesoul").option("rangePartitions", "dept").save(path)
+
+        val lake = spark.read.format("lakesoul").option("rangePartitions", "score").load(path).toDF()
+//        val lake = LakeSoulTable.forPath(path).toDF
+//        println("full table ："+lake.show())
+//        println("DataFrame SQL ："+lake.select("*").sort($"score".desc).show())
+//
+//        lake.createOrReplaceTempView("test_view")
+//        println("spark SQL ："+sql("SELECT * FROM test_view order by score desc").show())
+
+//        sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '$path'")
+//        println("========"+sql("SELECT * FROM lakesoul_test"))
+//        val df1 = spark.read.format("lakesoul")
+//        println("========"+df1)
+//        verifyDescribeTable("lakesoul_test")
+//        verifyDescribeTable(s"lakesoul.`$path`")
       }
     }
   }

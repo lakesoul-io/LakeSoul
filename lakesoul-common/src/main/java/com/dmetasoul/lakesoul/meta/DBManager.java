@@ -612,8 +612,8 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
     }
 
-    public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int version) {
-        return partitionInfoDao.getPartitionsFromVersion(tableId,partitionDesc,version);
+    public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion,int endVersion) {
+        return partitionInfoDao.getPartitionsFromVersion(tableId,partitionDesc,startVersion,endVersion);
     }
 
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc,List<UUID> dataCommitUUIDs) {

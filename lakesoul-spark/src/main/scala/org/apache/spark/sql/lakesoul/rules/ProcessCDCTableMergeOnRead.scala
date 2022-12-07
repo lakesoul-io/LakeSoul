@@ -70,6 +70,6 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
   }
 
   private def isIncrementalRead(table: LakeSoulTableV2):Boolean = {
-    table.snapshotManagement.snapshot.getPartitionDescAndVersion._3
+    table.snapshotManagement.snapshot.getPartitionDescAndVersion._4
   }
 }

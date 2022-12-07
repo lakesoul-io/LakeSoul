@@ -29,15 +29,17 @@ class Snapshot(table_info: TableInfo,
                is_first_commit: Boolean = false
               ) {
   private var partitionDesc:String = ""
-  private var partitionVersion:Int = -1
+  private var startPartitionVersion:Int = -1
+  private var endPartitionVersion:Int = -1
   private var incremental:Boolean = false;
-  def setPartitionDescAndVersion(parDesc:String,parVer:Int,incremental:Boolean): Unit ={
+  def setPartitionDescAndVersion(parDesc:String,startParVer:Int,endParVer:Int,incremental:Boolean): Unit ={
     this.partitionDesc = parDesc
-    this.partitionVersion = parVer
+    this.startPartitionVersion = startParVer
+    this.endPartitionVersion = endParVer
     this.incremental = incremental
   }
-  def getPartitionDescAndVersion:(String,Int,Boolean)={
-    (this.partitionDesc,this.partitionVersion,this.incremental)
+  def getPartitionDescAndVersion:(String,Int,Int,Boolean)={
+    (this.partitionDesc,this.startPartitionVersion,this.endPartitionVersion,this.incremental)
   }
   def getTableName: String = table_info.table_path_s.get
   def getTableInfo: TableInfo = table_info

@@ -118,20 +118,20 @@ object DataOperation extends Logging {
     }
   }
 
-  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, version: Int, incremental: Boolean): ArrayBuffer[DataFileInfo] = {
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startVersion: Int, endVersion:Int, incremental: Boolean): ArrayBuffer[DataFileInfo] = {
     if (incremental) {
-      getSinglePartitionIncrementalDataInfos(table_id, partition_desc, version)
+      getSinglePartitionIncrementalDataInfos(table_id, partition_desc, startVersion,endVersion)
     } else {
-      getSinglePartitionDataInfo(table_id, partition_desc, version)
+      getSinglePartitionDataInfo(table_id, partition_desc, endVersion)
     }
   }
 
-  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, version: Int): ArrayBuffer[DataFileInfo] = {
+  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersion: Int,endVersion:Int): ArrayBuffer[DataFileInfo] = {
     var preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
     var compactionUUIDs = new mutable.LinkedHashSet[UUID]()
     var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
     var updated: Boolean = false
-    val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitions(table_id, partition_desc, version).asScala.toArray
+    val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitions(table_id, partition_desc, startVersion,endVersion).asScala.toArray
     if (dataCommitInfoList.size < 2) {
       println("It is the latest version")
       return new ArrayBuffer[DataFileInfo]()
@@ -139,11 +139,11 @@ object DataOperation extends Logging {
     val loop = new Breaks()
     loop.breakable{
       for (dataItem <- dataCommitInfoList) {
-        if ("UpdateCommit".equals(dataItem.getCommitOp) && version != dataItem.getVersion) {
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersion != dataItem.getVersion) {
           updated = true
           loop.break()
         }
-        if (version == dataItem.getVersion) {
+        if (startVersion == dataItem.getVersion) {
           preVersionUUIDs ++= dataItem.getSnapshot.asScala
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
