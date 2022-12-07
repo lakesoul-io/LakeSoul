@@ -402,21 +402,29 @@ mod tests {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
                 // "s3://lakesoul-test-s3/base-0-0.parquet"
-                "s3://lakesoul-test-s3/large_file.parquet"
+                // "s3://lakesoul-test-s3/large_file.parquet"
+                // "s3://lakesoul-test-s3/large_file_for_native_io_rgc20.parquet"
+                "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io_rgc20.parquet"
                 // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
                 // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                 // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                 // "/Users/ceng/base-0-0.parquet"
                 .to_string()])
-            .with_thread_num(1)
+            .with_thread_num(64)
             .with_batch_size(8192)
-            .with_buffer_size(16)
+            .with_buffer_size(64)
+            // .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
+            // .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
+            // .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+            // .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
+            // .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
+            // .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9000"))
             .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.access.key"), String::from("WWCTQNZDHWMVZMJY9QJN"))
+            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("YoVuuQ9Qx7KYuODRyhWFqFxvEKKPQLjIaAm3aTam"))
             .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9002"))
+            .with_object_store_option(String::from("fs.s3.bucket"), String::from("dmetasoul-bucket"))
+            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://obs.cn-southwest-2.myhuaweicloud.com"))
             .build();
         let mut reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
@@ -438,28 +446,39 @@ mod tests {
         Ok(())
     }
 
+    use std::thread;
     #[test]
     fn test_reader_s3_blocked() -> Result<()> {
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
-            .with_files(vec![
-                // "s3://lakesoul-test-s3/base-0-0.parquet"
-                "s3://lakesoul-test-s3/large_file.parquet"
-                // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "/Users/ceng/base-0-0.parquet"
-                .to_string()])
-            .with_thread_num(1)
-            .with_batch_size(8192)
-            .with_buffer_size(16)
-            .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
-            .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9002"))
-            .build();
+        let reader_conf_builder = LakeSoulReaderConfigBuilder::new();
+
+        let reader_conf = reader_conf_builder.with_files(vec![
+            // "s3://lakesoul-test-s3/base-0-0.parquet"
+            // "s3://lakesoul-test-s3/large_file_for_native_io_rgc20.parquet"
+            // "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io.parquet"
+            "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io_rgc20.parquet"
+            // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
+            // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+            // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+            // "/Users/ceng/base-0-0.parquet"
+            .to_string()])
+        .with_thread_num(16)
+        .with_batch_size(8192)
+        .with_buffer_size(16)
+        .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
+        .with_object_store_option(String::from("fs.s3.access.key"), String::from("WWCTQNZDHWMVZMJY9QJN"))
+        .with_object_store_option(String::from("fs.s3.access.secret"), String::from("YoVuuQ9Qx7KYuODRyhWFqFxvEKKPQLjIaAm3aTam"))
+        .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
+        .with_object_store_option(String::from("fs.s3.bucket"), String::from("dmetasoul-bucket"))
+        .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://obs.cn-southwest-2.myhuaweicloud.com"))
+        // .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
+        // .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
+        // .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+        // .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
+        // .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
+        // .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9000"))
+        .build();
         let reader = LakeSoulReader::new(reader_conf)?;
+        println!("{}", reader.config.buffer_size);
         let runtime = Builder::new_multi_thread()
             .worker_threads(reader.config.thread_num)
             .enable_all()
@@ -468,9 +487,11 @@ mod tests {
         let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut row_cnt: usize = 0;
+        let start = Instant::now();
         loop {
             let (tx, rx) = sync_channel(1);
-            let start = Instant::now();
+            // let start = Instant::now();
+
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
@@ -480,13 +501,21 @@ mod tests {
                         row_cnt = row_cnt + num_rows;
                         println!("{}", row_cnt);
                     }
-                    println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
+                    // println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
+                    // async {
+                    //     sleep(Duration::from_millis(150)).await;
+
+                    // };
+                    thread::sleep(Duration::from_millis(20));
                     tx.send(false).unwrap();
+
                 }
             };
             reader.next_rb_callback(Box::new(f));
             let done = rx.recv().unwrap();
+
             if done {
+                println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
                 break;
             }
         }
