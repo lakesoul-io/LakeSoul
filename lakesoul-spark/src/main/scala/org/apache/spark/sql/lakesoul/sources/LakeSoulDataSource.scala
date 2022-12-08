@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
-import org.apache.spark.sql.execution.streaming.Sink
+import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
@@ -43,6 +43,7 @@ class LakeSoulDataSource
     with RelationProvider
     with CreatableRelationProvider
     with StreamSinkProvider
+    with StreamSourceProvider
     with TableProvider
     with Logging {
 
@@ -129,7 +130,11 @@ class LakeSoulDataSource
     LakeSoulTableV2(SparkSession.active, new Path(path))
   }
 
+  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {}
 
+  override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
+    new LakeSoulSource(sqlContext,metadataPath,schema,providerName,parameters)
+  }
 }
 
 

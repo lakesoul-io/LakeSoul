@@ -23,7 +23,7 @@ import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write._
 import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
+import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, StreamSourceProvider}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
@@ -42,7 +42,7 @@ case class LakeSoulTableV2(spark: SparkSession,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
-  extends Table with SupportsWrite with SupportsRead {
+  extends Table with SupportsWrite with SupportsRead  {
 
   val path = SparkUtil.makeQualifiedTablePath(path_orig)
 
@@ -115,7 +115,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
+      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE,MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA
