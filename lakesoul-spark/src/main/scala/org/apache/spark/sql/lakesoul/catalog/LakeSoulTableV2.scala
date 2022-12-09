@@ -28,7 +28,7 @@ import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
@@ -42,7 +42,7 @@ case class LakeSoulTableV2(spark: SparkSession,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
-  extends Table with SupportsWrite with SupportsRead  {
+  extends Table with SupportsWrite with SupportsRead {
 
   val path = SparkUtil.makeQualifiedTablePath(path_orig)
 
@@ -115,7 +115,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE,MICRO_BATCH_READ
+      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE, MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA
@@ -136,10 +136,8 @@ case class LakeSoulTableV2(spark: SparkSession,
           }
         })
     }
-
     val newOptions = options.asCaseSensitiveMap().asScala ++
       mergeOperatorInfo.getOrElse(Map.empty[String, String])
-
     LakeSoulScanBuilder(spark, fileIndex, schema(), dataSchema,
       new CaseInsensitiveStringMap(newOptions.asJava), snapshot.getTableInfo)
   }
@@ -149,9 +147,9 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   /**
-    * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
-    * paths.
-    */
+   * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
+   * paths.
+   */
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
@@ -203,7 +201,7 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // to this data source relation. This is the behavior for InsertInto
         val spark = SparkSession.active
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, spark)))
+          session, LogicalRelation(SparkUtil.createRelation(Nil, snapshotManagement, spark)))
       }
     }
   }

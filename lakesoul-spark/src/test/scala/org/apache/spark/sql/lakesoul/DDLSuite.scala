@@ -23,11 +23,13 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 
+import java.text.SimpleDateFormat
+import java.util.TimeZone
 import scala.collection.JavaConverters._
 
 class DDLSuite extends DDLTestBase with SharedSparkSession
@@ -424,35 +426,6 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
 
         verifyDescribeTable("lakesoul_test")
         verifyDescribeTable(s"lakesoul.`$path`")
-      }
-    }
-  }
-
-
-  test("test sparkSQL and DF") {
-    withTempDir { dir =>
-      withTable("lakesoul_test") {
-        val path = dir.getCanonicalPath
-        val df = Seq(
-          (1, "IT", "Alice",90),
-          (2, "CS", "Bob",85),
-          (3, "IT", "Carol",171)).toDF("id", "dept", "name","score")
-        df.write.format("lakesoul").option("rangePartitions", "dept").save(path)
-
-        val lake = spark.read.format("lakesoul").option("rangePartitions", "score").load(path).toDF()
-//        val lake = LakeSoulTable.forPath(path).toDF
-//        println("full table ："+lake.show())
-//        println("DataFrame SQL ："+lake.select("*").sort($"score".desc).show())
-//
-//        lake.createOrReplaceTempView("test_view")
-//        println("spark SQL ："+sql("SELECT * FROM test_view order by score desc").show())
-
-//        sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '$path'")
-//        println("========"+sql("SELECT * FROM lakesoul_test"))
-//        val df1 = spark.read.format("lakesoul")
-//        println("========"+df1)
-//        verifyDescribeTable("lakesoul_test")
-//        verifyDescribeTable(s"lakesoul.`$path`")
       }
     }
   }

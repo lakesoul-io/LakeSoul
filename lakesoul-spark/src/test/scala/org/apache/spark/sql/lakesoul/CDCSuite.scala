@@ -215,7 +215,7 @@ class CDCSuite
             .partitionBy("range", "op")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
-          val tableForUpsert = Seq(("range1", "hash1-2", "delete"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
+          val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
           lake.upsert(tableForUpsert)
@@ -224,10 +224,10 @@ class CDCSuite
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
           lake.upsert(tableForUpsert1)
+          val timeB = System.currentTimeMillis()
 
           val tableForUpsert2 = Seq(("range1", "hash1-13", "insert"), ("range2", "hash2-13", "update"))
             .toDF("range", "hash", "op")
-          val timeB = System.currentTimeMillis()
           Thread.sleep(3000)
           lake.upsert(tableForUpsert2)
 
@@ -247,7 +247,15 @@ class CDCSuite
           val parDesc = "range=range1"
           val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, true)
           val data1 = lake1.toDF.select("range", "hash", "op")
+          val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc).
+            option("readStartTime", currentVersion)
+            .option("readEndTime", endVersion)
+            .option("readType", "snapshot")
+            .load(tablePath)
+          val data2 = lake2.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),
+            ("range1", "hash1-13", "insert"), ("range1", "hash1-15", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data2, Seq(("range1", "hash1-1", "delete"),
             ("range1", "hash1-13", "insert"), ("range1", "hash1-15", "insert")).toDF("range", "hash", "op"))
         }
       })

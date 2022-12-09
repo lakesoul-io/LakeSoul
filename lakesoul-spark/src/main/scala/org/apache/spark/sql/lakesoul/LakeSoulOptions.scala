@@ -131,4 +131,9 @@ object LakeSoulOptions {
   /** whether it is allowed to use delta file */
   val AllowDeltaFile = "allowDeltaFile"
 
+  val PARTITION_DESC = "partitionDesc"
+  val READ_START_TIME = "readStartTime"
+  val READ_END_TIME = "readEndTime"
+  /** An option to allow read type whether snapshot or increamental. */
+  val READ_TYPE = "read_type"
 }

@@ -27,11 +27,11 @@ class LakeSoulSource(sqlContext: SQLContext,
                      schemaOption: Option[StructType],
                      providerName: String,
                      parameters: Map[String, String]) extends Source with Serializable {
-  override def schema: StructType = {}
+  override def schema: StructType = {null}
 
-  override def getOffset: Option[Offset] = {}
+  override def getOffset: Option[Offset] = {null}
 
-  override def getBatch(start: Option[Offset], end: Offset): DataFrame = {}
+  override def getBatch(start: Option[Offset], end: Offset): DataFrame = {null}
 
   override def stop(): Unit = {}
 }

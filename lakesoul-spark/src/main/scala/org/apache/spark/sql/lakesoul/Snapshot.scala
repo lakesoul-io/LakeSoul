@@ -31,7 +31,7 @@ class Snapshot(table_info: TableInfo,
   private var partitionDesc:String = ""
   private var startPartitionVersion:Int = -1
   private var endPartitionVersion:Int = -1
-  private var incremental:Boolean = false;
+  private var incremental:Boolean = false
   def setPartitionDescAndVersion(parDesc:String,startParVer:Int,endParVer:Int,incremental:Boolean): Unit ={
     this.partitionDesc = parDesc
     this.startPartitionVersion = startParVer

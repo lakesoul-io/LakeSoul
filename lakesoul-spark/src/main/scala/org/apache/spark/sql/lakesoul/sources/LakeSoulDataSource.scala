@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.MetaCommit
+import com.dmetasoul.lakesoul.meta.{MetaCommit, MetaVersion}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -31,12 +31,14 @@ import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TimestampFormatter}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.json4s.jackson.Serialization
 import org.json4s.{Formats, NoTypeHints}
+
+import java.util.TimeZone
 
 class LakeSoulDataSource
   extends DataSourceRegister
@@ -127,13 +129,35 @@ class LakeSoulDataSource
     val options = new CaseInsensitiveStringMap(properties)
     val path = options.get("path")
     if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
-    LakeSoulTableV2(SparkSession.active, new Path(path))
+    val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path))
+
+    def getOptions(options: CaseInsensitiveStringMap): (String, Int, Int, Boolean) = {
+      val partitionDesc = options.getOrDefault(LakeSoulOptions.PARTITION_DESC, "")
+      val readType = if (options.getOrDefault(LakeSoulOptions.READ_TYPE, "").equals("incremental")) true else false
+
+      def getSnapshotVersion(timeStamp: String): Int = {
+        val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+        MetaVersion.getLastedVersionUptoTime(lakeSoulTable.snapshotManagement.getTableInfoOnly.table_id, partitionDesc, time / 1000)
+      }
+
+      val startVersion = if (readType) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
+      val endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
+      (partitionDesc, startVersion, endVersion, readType)
+    }
+
+    if (options.containsKey(LakeSoulOptions.READ_TYPE)) {
+      lakeSoulTable.snapshotManagement.updateSnapshotForVersion(getOptions(options)._1, getOptions(options)._2, getOptions(options)._3, getOptions(options)._4)
+    }
+
+    lakeSoulTable
   }
 
-  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {}
+  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
+    null
+  }
 
   override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
-    new LakeSoulSource(sqlContext,metadataPath,schema,providerName,parameters)
+    new LakeSoulSource(sqlContext, metadataPath, schema, providerName, parameters)
   }
 }
 
