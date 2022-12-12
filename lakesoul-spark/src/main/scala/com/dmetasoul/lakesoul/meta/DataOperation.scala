@@ -19,6 +19,7 @@ package com.dmetasoul.lakesoul.meta
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp
 import org.apache.curator.shaded.com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
 
 import java.util
@@ -118,8 +119,8 @@ object DataOperation extends Logging {
     }
   }
 
-  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startVersion: Int, endVersion:Int, incremental: Boolean): ArrayBuffer[DataFileInfo] = {
-    if (incremental) {
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startVersion: Int, endVersion:Int, readType: String): ArrayBuffer[DataFileInfo] = {
+    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
       getSinglePartitionIncrementalDataInfos(table_id, partition_desc, startVersion,endVersion)
     } else {
       getSinglePartitionDataInfo(table_id, partition_desc, endVersion)

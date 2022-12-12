@@ -187,8 +187,7 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select count(*) as total,max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d",
-                tableId, partitionDesc, utcMills);
+        String sql = String.format("select count(*) as total,max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d", tableId, partitionDesc, utcMills);
         int version = -1;
         int total = 0;
         try {
@@ -287,10 +286,8 @@ public class PartitionInfoDao {
         return getPartitionInfo(sql);
     }
 
-    public List<PartitionInfo> getPartitionsFromVersion(String tableId, String partitionDesc, int startVersion,int endVersion) {
-
-        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d and version <= %d",
-                tableId, partitionDesc, startVersion,endVersion);
+    public List<PartitionInfo> getPartitionsFromVersion(String tableId, String partitionDesc, int startVersion, int endVersion) {
+        String sql = String.format("select * from partition_info where table_id = '%s' and version >= %d and version <= %d", tableId, startVersion, endVersion);
         return getPartitionInfos(sql);
     }
 

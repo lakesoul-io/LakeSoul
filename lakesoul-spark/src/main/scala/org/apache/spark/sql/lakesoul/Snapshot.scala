@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.utils._
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
@@ -31,15 +32,15 @@ class Snapshot(table_info: TableInfo,
   private var partitionDesc:String = ""
   private var startPartitionVersion:Int = -1
   private var endPartitionVersion:Int = -1
-  private var incremental:Boolean = false
-  def setPartitionDescAndVersion(parDesc:String,startParVer:Int,endParVer:Int,incremental:Boolean): Unit ={
+  private var readType:String = ReadType.FULL_READ
+  def setPartitionDescAndVersion(parDesc:String,startParVer:Int,endParVer:Int,readType:String): Unit ={
     this.partitionDesc = parDesc
     this.startPartitionVersion = startParVer
     this.endPartitionVersion = endParVer
-    this.incremental = incremental
+    this.readType = readType
   }
-  def getPartitionDescAndVersion:(String,Int,Int,Boolean)={
-    (this.partitionDesc,this.startPartitionVersion,this.endPartitionVersion,this.incremental)
+  def getPartitionDescAndVersion:(String,Int,Int,String)={
+    (this.partitionDesc,this.startPartitionVersion,this.endPartitionVersion,this.readType)
   }
   def getTableName: String = table_info.table_path_s.get
   def getTableInfo: TableInfo = table_info

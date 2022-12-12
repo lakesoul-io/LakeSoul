@@ -171,33 +171,36 @@ class CDCSuite
             .option("lakesoul_cdc_change_column", "op")
             .partitionBy("range", "op")
             .save(tablePath)
+
           val lake = LakeSoulTable.forPath(tablePath)
-          val tableForUpsert = Seq(("range1", "hash1-2", "delete"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
+          val tableForUpsert = Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-5", "insert"),
+            ("range2", "hash2-1", "delete"), ("range2", "hash2-5", "insert"))
             .toDF("range", "hash", "op")
-          Thread.sleep(3000)
+          Thread.sleep(2000)
           lake.upsert(tableForUpsert)
 
-          val tableForUpsert1 = Seq(("range1", "hash1-1", "update"), ("range2", "hash2-1", "delete"))
+          val tableForUpsert1 = Seq(("range1", "hash1-2", "update"), ("range2", "hash2-2", "update"))
             .toDF("range", "hash", "op")
-          Thread.sleep(3000)
-          val timeA = System.currentTimeMillis()
+          Thread.sleep(2000)
           lake.upsert(tableForUpsert1)
-
+          Thread.sleep(1000)
+          val timeA = System.currentTimeMillis()
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
           // Processing time zone time difference
           val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionA)
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, false)
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, "snapshot")
           val data1 = lake1.toDF.select("range", "hash", "op")
-          val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc)
+          val lake2 = spark.read.format("lakesoul")
+            .option("partitionDesc", parDesc)
             .option("readEndTime", currentVersion)
             .option("readType", "snapshot")
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
-          checkAnswer(data1, Seq(("range1", "hash1-1", "insert"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
-          checkAnswer(data2, Seq(("range1", "hash1-1", "insert"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data1, Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data2, Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
         }
       })
     }
@@ -223,14 +226,13 @@ class CDCSuite
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
             .toDF("range", "hash", "op")
-          Thread.sleep(3000)
+          Thread.sleep(2000)
           lake.upsert(tableForUpsert)
-
           val tableForUpsert1 = Seq(("range1", "hash1-1", "delete"), ("range2", "hash2-10", "delete"))
             .toDF("range", "hash", "op")
-          Thread.sleep(3000)
-          lake.upsert(tableForUpsert1)
+          Thread.sleep(2000)
           val timeB = System.currentTimeMillis()
+          lake.upsert(tableForUpsert1)
 
           val tableForUpsert2 = Seq(("range1", "hash1-13", "insert"), ("range2", "hash2-13", "update"))
             .toDF("range", "hash", "op")
@@ -240,7 +242,7 @@ class CDCSuite
           val tableForUpsert3 = Seq(("range1", "hash1-15", "insert"), ("range2", "hash2-15", "update"))
             .toDF("range", "hash", "op")
           lake.upsert(tableForUpsert3)
-          Thread.sleep(3000)
+          Thread.sleep(1000)
           val timeC = System.currentTimeMillis()
 
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
@@ -251,10 +253,11 @@ class CDCSuite
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, true)
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, "incremental")
           val data1 = lake1.toDF.select("range", "hash", "op")
-          val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc).
-            option("readStartTime", currentVersion)
+          val lake2 = spark.read.format("lakesoul")
+            .option("partitionDesc", parDesc)
+            .option("readStartTime", currentVersion)
             .option("readEndTime", endVersion)
             .option("readType", "incremental")
             .load(tablePath)

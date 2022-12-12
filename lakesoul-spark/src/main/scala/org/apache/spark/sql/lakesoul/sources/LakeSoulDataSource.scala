@@ -26,6 +26,7 @@ import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.streaming.Sink
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
@@ -130,9 +131,19 @@ class LakeSoulDataSource
     if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
     val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path))
 
-    def getOptions(options: CaseInsensitiveStringMap): (String, Int, Int, Boolean) = {
-      val partitionDesc = options.getOrDefault(LakeSoulOptions.PARTITION_DESC, "")
-      val readType = if (options.getOrDefault(LakeSoulOptions.READ_TYPE, "").equals(LakeSoulOptions.INCREMENTAL_READ)) true else false
+    def getSnapshotOptions(options: CaseInsensitiveStringMap): (String, Int, Int, String) = {
+      val partitionDesc = if (options.containsKey(LakeSoulOptions.PARTITION_DESC)) {
+        options.get(LakeSoulOptions.PARTITION_DESC)
+      } else {
+        ""
+      }
+      def getReadType(readType: String): String = readType match {
+        case ReadType.INCREMENTAL_READ => "incremental"
+        case ReadType.SNAPSHOT_READ => "snapshot"
+        case _ => "incremental"
+      }
+
+      val readType = getReadType(options.getOrDefault(LakeSoulOptions.READ_TYPE, ""))
 
       def getSnapshotVersion(timeStamp: String): Int = {
         if (timeStamp.equals("")) {
@@ -142,14 +153,15 @@ class LakeSoulDataSource
         MetaVersion.getLastedVersionUptoTime(lakeSoulTable.snapshotManagement.getTableInfoOnly.table_id, partitionDesc, time / 1000)
       }
 
-      val startVersion = if (readType) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
+      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
       var endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
       endVersion = if (endVersion == 0) Int.MaxValue else endVersion
       (partitionDesc, startVersion, endVersion, readType)
     }
 
     if (options.containsKey(LakeSoulOptions.READ_TYPE)) {
-      lakeSoulTable.snapshotManagement.updateSnapshotForVersion(getOptions(options)._1, getOptions(options)._2, getOptions(options)._3, getOptions(options)._4)
+      val snapshotOptions = getSnapshotOptions(options)
+      lakeSoulTable.snapshotManagement.updateSnapshotForVersion(snapshotOptions._1, snapshotOptions._2, snapshotOptions._3, snapshotOptions._4)
     }
 
     lakeSoulTable

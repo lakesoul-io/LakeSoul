@@ -23,6 +23,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
@@ -86,7 +87,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Int,endPartitionVersion: Int, incremental:Boolean): Unit = {
+  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Int,endPartitionVersion: Int, incremental:String): Unit = {
     lockInterruptibly {
       currentSnapshot.setPartitionDescAndVersion(partitionDesc, startPartitionVersion,endPartitionVersion,incremental)
     }
@@ -205,18 +206,18 @@ object SnapshotManagement {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, 0,partitionVersion,false)
+      sm.updateSnapshotForVersion(partitionDesc, 0,partitionVersion,ReadType.SNAPSHOT_READ)
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
     }
   }
 
-  def apply(path: String, partitionDesc: String, startPartitionVersion: Int,endPartitionVersion: Int, incremental: Boolean): SnapshotManagement = {
+  def apply(path: String, partitionDesc: String, startPartitionVersion: Int,endPartitionVersion: Int, readType: String): SnapshotManagement = {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, incremental)
+      sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")

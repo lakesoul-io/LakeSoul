@@ -22,6 +22,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.LakeSoulTableProperties
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 
@@ -33,9 +34,9 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
           val value = getLakeSoulTableCDCColumn(table)
           val incremental = isIncrementalRead(table)
           if (value.nonEmpty) {
-            if(incremental) {
+            if (incremental.equals(ReadType.INCREMENTAL_READ)) {
               p
-            }else{
+            } else {
               p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
             }
           }
@@ -50,12 +51,12 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
           val incremental = isIncrementalRead(table)
           if (value.nonEmpty) {
             val bool = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
-            if (incremental) {
+            if (incremental.equals(ReadType.INCREMENTAL_READ)) {
               p
             } else {
-              if(!bool) {
+              if (!bool) {
                 p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
-              }else{
+              } else {
                 p
               }
             }
@@ -69,7 +70,7 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
     table.snapshotManagement.snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
 
-  private def isIncrementalRead(table: LakeSoulTableV2):Boolean = {
+  private def isIncrementalRead(table: LakeSoulTableV2): String = {
     table.snapshotManagement.snapshot.getPartitionDescAndVersion._4
   }
 }
