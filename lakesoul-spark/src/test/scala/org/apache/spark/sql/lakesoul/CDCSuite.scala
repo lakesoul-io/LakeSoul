@@ -191,7 +191,14 @@ class CDCSuite
           // snapshot startVersion default to 0
           val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, false)
           val data1 = lake1.toDF.select("range", "hash", "op")
+          println("current " + currentVersion)
+          val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc)
+            .option("readEndTime", currentVersion)
+            .option("readType", "snapshot")
+            .load(tablePath)
+          val data2 = lake2.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "insert"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data2, Seq(("range1", "hash1-1", "insert"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
         }
       })
     }
@@ -250,7 +257,7 @@ class CDCSuite
           val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc).
             option("readStartTime", currentVersion)
             .option("readEndTime", endVersion)
-            .option("readType", "snapshot")
+            .option("readType", "incremental")
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),

@@ -133,15 +133,19 @@ class LakeSoulDataSource
 
     def getOptions(options: CaseInsensitiveStringMap): (String, Int, Int, Boolean) = {
       val partitionDesc = options.getOrDefault(LakeSoulOptions.PARTITION_DESC, "")
-      val readType = if (options.getOrDefault(LakeSoulOptions.READ_TYPE, "").equals("incremental")) true else false
+      val readType = if (options.getOrDefault(LakeSoulOptions.READ_TYPE, "").equals(LakeSoulOptions.INCREMENTAL_READ)) true else false
 
       def getSnapshotVersion(timeStamp: String): Int = {
+        if(timeStamp.equals("")) {
+          return 0
+        }
         val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
         MetaVersion.getLastedVersionUptoTime(lakeSoulTable.snapshotManagement.getTableInfoOnly.table_id, partitionDesc, time / 1000)
       }
 
       val startVersion = if (readType) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
-      val endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
+      var endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
+      endVersion = if(endVersion == 0) Int.MaxValue else endVersion
       (partitionDesc, startVersion, endVersion, readType)
     }
 
@@ -151,6 +155,8 @@ class LakeSoulDataSource
 
     lakeSoulTable
   }
+
+  def judgeInputOptions(options: CaseInsensitiveStringMap) = {}
 
   override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
     null
