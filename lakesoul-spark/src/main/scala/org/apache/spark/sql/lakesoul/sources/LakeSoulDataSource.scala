@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
-import org.apache.spark.sql.execution.streaming.{Sink, Source}
+import org.apache.spark.sql.execution.streaming.Sink
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
@@ -45,7 +45,6 @@ class LakeSoulDataSource
     with RelationProvider
     with CreatableRelationProvider
     with StreamSinkProvider
-    with StreamSourceProvider
     with TableProvider
     with Logging {
 
@@ -136,7 +135,7 @@ class LakeSoulDataSource
       val readType = if (options.getOrDefault(LakeSoulOptions.READ_TYPE, "").equals(LakeSoulOptions.INCREMENTAL_READ)) true else false
 
       def getSnapshotVersion(timeStamp: String): Int = {
-        if(timeStamp.equals("")) {
+        if (timeStamp.equals("")) {
           return 0
         }
         val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
@@ -145,7 +144,7 @@ class LakeSoulDataSource
 
       val startVersion = if (readType) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
       var endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
-      endVersion = if(endVersion == 0) Int.MaxValue else endVersion
+      endVersion = if (endVersion == 0) Int.MaxValue else endVersion
       (partitionDesc, startVersion, endVersion, readType)
     }
 
@@ -154,16 +153,6 @@ class LakeSoulDataSource
     }
 
     lakeSoulTable
-  }
-
-  def judgeInputOptions(options: CaseInsensitiveStringMap) = {}
-
-  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
-    null
-  }
-
-  override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
-    new LakeSoulSource(sqlContext, metadataPath, schema, providerName, parameters)
   }
 }
 

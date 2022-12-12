@@ -191,7 +191,6 @@ class CDCSuite
           // snapshot startVersion default to 0
           val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, false)
           val data1 = lake1.toDF.select("range", "hash", "op")
-          println("current " + currentVersion)
           val lake2 = spark.read.format("lakesoul").option("partitionDesc", parDesc)
             .option("readEndTime", currentVersion)
             .option("readType", "snapshot")
