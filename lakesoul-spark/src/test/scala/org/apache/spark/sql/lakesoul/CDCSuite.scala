@@ -22,6 +22,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.{READ_TYPE, ReadType}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
@@ -165,9 +166,9 @@ class CDCSuite
             .write
             .mode("append")
             .format("lakesoul")
-            .option("rangePartitions", "range")
-            .option("hashPartitions", "hash")
-            .option("hashBucketNum", "2")
+            .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
+            .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
+            .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
             .option("lakesoul_cdc_change_column", "op")
             .partitionBy("range", "op")
             .save(tablePath)
@@ -191,12 +192,12 @@ class CDCSuite
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, "snapshot")
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, ReadType.SNAPSHOT_READ)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
-            .option("partitionDesc", parDesc)
-            .option("readEndTime", currentVersion)
-            .option("readType", "snapshot")
+            .option(LakeSoulOptions.PARTITION_DESC, parDesc)
+            .option(LakeSoulOptions.READ_END_TIME, currentVersion)
+            .option(LakeSoulOptions.READ_TYPE, ReadType.SNAPSHOT_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
@@ -217,9 +218,9 @@ class CDCSuite
             .write
             .mode("append")
             .format("lakesoul")
-            .option("rangePartitions", "range")
-            .option("hashPartitions", "hash")
-            .option("hashBucketNum", "2")
+            .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
+            .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
+            .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
             .option("lakesoul_cdc_change_column", "op")
             .partitionBy("range", "op")
             .save(tablePath)
@@ -253,13 +254,13 @@ class CDCSuite
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, "incremental")
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, ReadType.INCREMENTAL_READ)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
-            .option("partitionDesc", parDesc)
-            .option("readStartTime", currentVersion)
-            .option("readEndTime", endVersion)
-            .option("readType", "incremental")
+            .option(LakeSoulOptions.PARTITION_DESC, parDesc)
+            .option(LakeSoulOptions.READ_START_TIME, currentVersion)
+            .option(LakeSoulOptions.READ_END_TIME, endVersion)
+            .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
           checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),
