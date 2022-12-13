@@ -140,7 +140,7 @@ class LakeSoulDataSource
       def getReadType(readType: String): String = readType match {
         case ReadType.INCREMENTAL_READ => "incremental"
         case ReadType.SNAPSHOT_READ => "snapshot"
-        case _ => "incremental"
+        case _ => "fullread"
       }
 
       val readType = getReadType(options.getOrDefault(LakeSoulOptions.READ_TYPE, ""))

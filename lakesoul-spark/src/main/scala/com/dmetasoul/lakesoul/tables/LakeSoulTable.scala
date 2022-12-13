@@ -166,7 +166,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
    * @param set       rules to update a row as a Java map between target column names and
    *                  corresponding update expressions as Column objects.
    */
-    def update(condition: Column, set: java.util.Map[String, Column]): Unit = {
+  def update(condition: Column, set: java.util.Map[String, Column]): Unit = {
     executeUpdate(set.asScala.toMap, Some(condition))
   }
 
@@ -363,7 +363,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
     assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns.nonEmpty,
       s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
-    executeCleanupPartition(snapshotManagement,partitionDesc,endTime)
+    executeCleanupPartition(snapshotManagement, partitionDesc, endTime)
   }
 }
 
@@ -419,25 +419,24 @@ object LakeSoulTable {
     forPath(sparkSession, path, partitionDesc, partitionVersion)
   }
 
-  /**
-   * Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
-   *
+  /** snapshot read
    */
-  def forPath(path: String, partitionDesc: String, startTime: String,endTime: String): LakeSoulTable = {
-    val sparkSession = SparkSession.getActiveSession.getOrElse {
-      throw new IllegalArgumentException("Could not find active SparkSession")
-    }
-    forPath(path, partitionDesc, startTime,endTime, ReadType.SNAPSHOT_READ)
-  }
-  /* IncrementalQuery from time to now
-  *
-  * */
-  def forPath(path: String, partitionDesc: String, startTime: String,endTime: String,readType: String): LakeSoulTable = {
+  def forPath(path: String, partitionDesc: String, endTime: String, readType: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, startTime,endTime,readType)
+    forPath(sparkSession, path, partitionDesc, endTime, endTime, readType)
+  }
+
+  /** IncrementalQuery from startTime to now
+   */
+  def forPath(path: String, partitionDesc: String, startTime: String, endTime: String, readType: String): LakeSoulTable = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse {
+      throw new IllegalArgumentException("Could not find active SparkSession")
+    }
+
+    forPath(sparkSession, path, partitionDesc, startTime, endTime, readType)
   }
 
   /**
@@ -467,13 +466,13 @@ object LakeSoulTable {
   *   startTime 2022-10-01 13:45:30
   *   endTime 2022-10-01 13:46:30
   * */
-  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String,endTimeStamp: String,readType:String): LakeSoulTable = {
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, readType: String): LakeSoulTable = {
     val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(startTimeStamp)
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)
-      val startVersion = if(readType.equals(ReadType.INCREMENTAL_READ)) MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, startTime / 1000) else 0
+      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, startTime / 1000) else 0
       val endVersion = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime / 1000)
       if (endVersion < 0) {
         println("No version found in Table before time")

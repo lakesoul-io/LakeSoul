@@ -191,7 +191,7 @@ class CDCSuite
           val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, currentVersion, "snapshot")
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, "snapshot")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option("partitionDesc", parDesc)
