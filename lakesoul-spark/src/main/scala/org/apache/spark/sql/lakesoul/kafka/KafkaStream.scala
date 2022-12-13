@@ -2,6 +2,7 @@ package org.apache.spark.sql.lakesoul.kafka
 
 import com.alibaba.fastjson.JSONObject
 import com.dmetasoul.lakesoul.meta.DBManager
+import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions.{col, from_json}
 import org.apache.spark.sql.lakesoul.kafka.utils.KafkaUtils
@@ -40,11 +41,11 @@ object KafkaStream {
     })
   }
 
-  def createStreamDF(spark: SparkSession, brokers: String, topic: String, schema: StructType): DataFrame = {
+  def createStreamDF(spark: SparkSession, brokers: String, topics: String, schema: StructType): DataFrame = {
     spark.readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", brokers)
-      .option("subscribe", topic)
+      .option("subscribe", topics)
       .option("startingOffsets", "earliest")
       .option("maxOffsetsPerTrigger", 100000)
       .option("enable.auto.commit", "false")
@@ -85,12 +86,10 @@ object KafkaStream {
     val topicAndMsg = KafkaUtils.getTopicMsg()
     val topicAndSchema = topicValueToSchema(spark, topicAndMsg)
     createTableIfNoExists(topicAndSchema)
-    val topicString = topicAndMsg.keySet().toString.replace("[","").replace("]","").replace(" ","").strip()
-
-    val multiTopicData = createStreamDF(spark, brokers, topicString, null)
+    val topics = StringUtils.join(topicAndMsg.keySet(), ",")
+    val multiTopicData = createStreamDF(spark, brokers, topics, null)
       .selectExpr("CAST(value AS STRING) as value", "topic")
       .filter("value is not null")
-
 
     multiTopicData.writeStream.queryName("demo").foreachBatch {
       (batchDF: DataFrame, _: Long) => {
@@ -98,11 +97,35 @@ object KafkaStream {
           val path = warehouse + "/" + namespace + "/" + topic
           val topicDF = batchDF.filter(col("topic").equalTo(topic))
           if (!topicDF.rdd.isEmpty()) {
-            topicDF.show(false)
-            val rows = topicDF.withColumn("payload", from_json(col("value"), topicAndSchema.get(topic).get))
-              .selectExpr("payload.*","topic")
-            rows.show(false)
-            rows.write.mode("append").format("lakesoul").option("mergeSchema", "true").save(path)
+            val valueList = topicDF.select(col("value")).rdd.map(r => r(0)).collect()
+            val schemaValueMap = mutable.Map[StructType, List[String]]()
+            var lakeSoulSchema = new StructType()
+            valueList.filter(_ != "").foreach(value => {
+              val jsonString = List.empty[String] :+ value.toString
+              val rddData = spark.sparkContext.parallelize(jsonString)
+              val dfData = spark.read.json(rddData)
+              val dataSchema = dfData.schema
+              lakeSoulSchema = new StructType()
+              dataSchema.foreach( f => f.dataType match {
+                case _: StructType => lakeSoulSchema = lakeSoulSchema.add(f.name, DataTypes.StringType, true)
+                case _ => lakeSoulSchema = lakeSoulSchema.add(f.name, f.dataType, true)
+              })
+              schemaValueMap.put(lakeSoulSchema, schemaValueMap.getOrElse(lakeSoulSchema, List.empty[String]) ++ jsonString)
+            })
+            schemaValueMap.foreach( map => {
+              val schema = map._1
+              val value = map._2
+              val rdd = spark.sparkContext.parallelize(value)
+              val df = spark.read.schema(schema).json(rdd)
+              df.write.mode("append").format("lakesoul").option("mergeSchema", "true").save(path)
+            })
+
+            // only apply for schemas do not change
+//            topicDF.show(false)
+//            val rows = topicDF.withColumn("payload", from_json(col("value"), topicAndSchema.get(topic).get))
+//              .selectExpr("payload.*","topic")
+//            rows.show(false)
+//            rows.write.mode("append").format("lakesoul").option("mergeSchema", "true").save(path)
           }
         }
       }

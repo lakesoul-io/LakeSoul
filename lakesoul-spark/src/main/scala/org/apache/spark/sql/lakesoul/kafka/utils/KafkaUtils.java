@@ -28,8 +28,6 @@ public class KafkaUtils {
     static AdminClient client = KafkaAdminClient.create(props);
 
     public static Set<String> kafkaListTopics(){
-        // 只需要提供一个或多个 broker 的 IP 和端口
-        // 创建 AdminClient 对象
 
         Set topics = null;
         try {
