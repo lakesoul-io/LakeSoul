@@ -56,7 +56,7 @@ object KafkaStream {
   }
 
   def topicValueToSchema(spark: SparkSession, topicAndMsg: util.Map[String, String]): Map[String, StructType] = {
-    val map: Map[String, StructType] = Map()
+    var map: Map[String, StructType] = Map()
     topicAndMsg.keySet().forEach(topic => {
       var strList = List.empty[String]
       strList = strList :+ topicAndMsg.get(topic)
@@ -69,7 +69,7 @@ object KafkaStream {
         case _: StructType => lakeSoulSchema = lakeSoulSchema.add(f.name, DataTypes.StringType, true)
         case _ => lakeSoulSchema = lakeSoulSchema.add(f.name, f.dataType, true)
       })
-      map += (topic, lakeSoulSchema)
+      map += (topic -> lakeSoulSchema)
     })
     map
   }
@@ -84,11 +84,9 @@ object KafkaStream {
 
     val spark = builder.getOrCreate()
 
-    val topicAndMsg = KafkaUtils.getTopicMsg()
-    val topicAndSchema = topicValueToSchema(spark, topicAndMsg)
+    var topicAndSchema = topicValueToSchema(spark, KafkaUtils.getTopicMsg())
     createTableIfNoExists(topicAndSchema)
-    val topics = StringUtils.join(topicAndMsg.keySet(), ",")
-    val multiTopicData = createStreamDF(spark, brokers, topics, null)
+    val multiTopicData = createStreamDF(spark, brokers, StringUtils.join(KafkaUtils.getTopicMsg(), ","), null)
       .selectExpr("CAST(value AS STRING) as value", "topic")
       .filter("value is not null")
 
