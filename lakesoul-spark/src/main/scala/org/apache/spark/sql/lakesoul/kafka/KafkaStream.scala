@@ -24,7 +24,7 @@ object KafkaStream {
   val dbManager = new DBManager()
   val checkpointPath = "/Users/dudongfeng/work/docker_compose/checkpoint/"
 
-  def createTableIfNoExists(topicAndSchema: mutable.Map[String, StructType]): Unit = {
+  def createTableIfNoExists(topicAndSchema: Map[String, StructType]): Unit = {
     topicAndSchema.foreach(info => {
       val tableName = info._1
       val schema = info._2.json
@@ -45,7 +45,8 @@ object KafkaStream {
     spark.readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", brokers)
-      .option("subscribe", topics)
+//      .option("subscribe", topics)
+      .option("subscribePattern", "test.*")
       .option("startingOffsets", "earliest")
       .option("maxOffsetsPerTrigger", 100000)
       .option("enable.auto.commit", "false")
@@ -54,8 +55,8 @@ object KafkaStream {
       .load()
   }
 
-  def topicValueToSchema(spark: SparkSession, topicAndMsg: util.Map[String, String]): mutable.Map[String, StructType] = {
-    val map = new mutable.HashMap[String, StructType]
+  def topicValueToSchema(spark: SparkSession, topicAndMsg: util.Map[String, String]): Map[String, StructType] = {
+    val map: Map[String, StructType] = Map()
     topicAndMsg.keySet().forEach(topic => {
       var strList = List.empty[String]
       strList = strList :+ topicAndMsg.get(topic)
@@ -68,7 +69,7 @@ object KafkaStream {
         case _: StructType => lakeSoulSchema = lakeSoulSchema.add(f.name, DataTypes.StringType, true)
         case _ => lakeSoulSchema = lakeSoulSchema.add(f.name, f.dataType, true)
       })
-      map.put(topic, lakeSoulSchema)
+      map += (topic, lakeSoulSchema)
     })
     map
   }
