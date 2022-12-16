@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.{MetaCommit, MetaVersion}
+import com.dmetasoul.lakesoul.meta.MetaCommit
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -25,27 +25,25 @@ import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
-import org.apache.spark.sql.execution.streaming.Sink
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
+import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.json4s.jackson.Serialization
 import org.json4s.{Formats, NoTypeHints}
 
-import java.util.TimeZone
-
 class LakeSoulDataSource
   extends DataSourceRegister
     with RelationProvider
     with CreatableRelationProvider
     with StreamSinkProvider
+    with StreamSourceProvider
     with TableProvider
     with Logging {
 
@@ -129,42 +127,25 @@ class LakeSoulDataSource
     val options = new CaseInsensitiveStringMap(properties)
     val path = options.get("path")
     if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
-    val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path))
+    LakeSoulTableV2(SparkSession.active, new Path(path))
+  }
 
-    def getSnapshotOptions(options: CaseInsensitiveStringMap): (String, Int, Int, String) = {
-      val partitionDesc = if (options.containsKey(LakeSoulOptions.PARTITION_DESC)) {
-        options.get(LakeSoulOptions.PARTITION_DESC)
-      } else {
-        ""
-      }
-      def getReadType(readType: String): String = readType match {
-        case ReadType.INCREMENTAL_READ => "incremental"
-        case ReadType.SNAPSHOT_READ => "snapshot"
-        case _ => "fullread"
-      }
+  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
+    val path = parameters.getOrElse("path", {
+      throw LakeSoulErrors.pathNotSpecifiedException
+    })
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
+    (LakeSoulSourceUtils.NAME ,snapshot.getTableInfo.schema)
+  }
 
-      val readType = getReadType(options.getOrDefault(LakeSoulOptions.READ_TYPE, ""))
-
-      def getSnapshotVersion(timeStamp: String): Int = {
-        if (timeStamp.equals("")) {
-          return 0
-        }
-        val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
-        MetaVersion.getLastedVersionUptoTime(lakeSoulTable.snapshotManagement.getTableInfoOnly.table_id, partitionDesc, time / 1000)
-      }
-
-      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
-      var endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
-      endVersion = if (endVersion == 0) Int.MaxValue else endVersion
-      (partitionDesc, startVersion, endVersion, readType)
-    }
-
-    if (options.containsKey(LakeSoulOptions.READ_TYPE)) {
-      val snapshotOptions = getSnapshotOptions(options)
-      lakeSoulTable.snapshotManagement.updateSnapshotForVersion(snapshotOptions._1, snapshotOptions._2, snapshotOptions._3, snapshotOptions._4)
-    }
-
-    lakeSoulTable
+  override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
+    val path = parameters.getOrElse("path", {
+      throw LakeSoulErrors.pathNotSpecifiedException
+    })
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
+    new LakeSoulSource(sqlContext,metadataPath,Some(snapshot.getTableInfo.schema),providerName,parameters)
   }
 }
 
