@@ -18,8 +18,12 @@
  */
 
 package org.apache.spark.sql.lakesoul.sources
+
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.execution.streaming.{Offset, Source}
-import org.apache.spark.sql.{DataFrame, SQLContext}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.{DataFrame, SQLContext, SparkSession}
 import org.apache.spark.sql.types.StructType
 
 class LakeSoulSource(sqlContext: SQLContext,
@@ -27,11 +31,23 @@ class LakeSoulSource(sqlContext: SQLContext,
                      schemaOption: Option[StructType],
                      providerName: String,
                      parameters: Map[String, String]) extends Source with Serializable {
-  override def schema: StructType = schemaOption.get
 
-  override def getOffset: Option[Offset] = {}
 
-  override def getBatch(start: Option[Offset], end: Offset): DataFrame = {}
+  override def schema: StructType = {
+    val path = parameters.get("path")
+    if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
+    val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path.get))
+    StructType(lakeSoulTable.snapshotManagement.snapshot.getTableInfo.data_schema ++ lakeSoulTable.snapshotManagement.snapshot.getTableInfo.range_partition_schema)
+    null
+  }
+
+  override def getOffset: Option[Offset] = {
+    null
+  }
+
+  override def getBatch(start: Option[Offset], end: Offset): DataFrame = {
+    null
+  }
 
   override def stop(): Unit = {}
 }
