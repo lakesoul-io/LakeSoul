@@ -50,11 +50,11 @@ case class ProcessCDCTableMergeOnRead(sqlConf: SQLConf) extends Rule[LogicalPlan
           val value = getLakeSoulTableCDCColumn(table)
           val incremental = isIncrementalRead(table)
           if (value.nonEmpty) {
-            val bool = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
+            val isDeleteStatement = p.expressions.forall(s => s.toString().contains(value.get) && s.toString().contains("delete"))
             if (incremental.equals(ReadType.INCREMENTAL_READ)) {
               p
             } else {
-              if (!bool) {
+              if (!isDeleteStatement) {
                 p.withNewChildren(Filter(Column(expr(s" ${value.get}!= 'delete'").expr).expr, dsv2) :: Nil)
               } else {
                 p

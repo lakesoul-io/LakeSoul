@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
-import org.apache.spark.sql.execution.streaming.{Sink, Source}
+import org.apache.spark.sql.execution.streaming.Sink
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
@@ -46,7 +46,6 @@ class LakeSoulDataSource
     with RelationProvider
     with CreatableRelationProvider
     with StreamSinkProvider
-    with StreamSourceProvider
     with TableProvider
     with Logging {
 
@@ -139,13 +138,7 @@ class LakeSoulDataSource
         ""
       }
 
-      def getReadType(readType: String): String = readType match {
-        case ReadType.INCREMENTAL_READ => "incremental"
-        case ReadType.SNAPSHOT_READ => "snapshot"
-        case _ => "fullread"
-      }
-
-      val readType = getReadType(options.getOrDefault(LakeSoulOptions.READ_TYPE, ""))
+      val readType = options.getOrDefault(LakeSoulOptions.READ_TYPE, ReadType.FULL_READ)
 
       def getSnapshotVersion(timeStamp: String): Int = {
         if (timeStamp.equals("")) {
@@ -167,24 +160,6 @@ class LakeSoulDataSource
     }
 
     lakeSoulTable
-  }
-
-  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
-    val path = parameters.getOrElse("path", {
-      throw LakeSoulErrors.pathNotSpecifiedException
-    })
-    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
-      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
-    (LakeSoulSourceUtils.NAME, snapshot.getTableInfo.schema)
-  }
-
-  override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
-    val path = parameters.getOrElse("path", {
-      throw LakeSoulErrors.pathNotSpecifiedException
-    })
-    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
-      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
-    new LakeSoulSource(sqlContext, metadataPath, Some(snapshot.getTableInfo.schema), providerName, parameters)
   }
 }
 

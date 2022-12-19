@@ -29,24 +29,30 @@ class Snapshot(table_info: TableInfo,
                partition_info_arr: Array[PartitionInfo],
                is_first_commit: Boolean = false
               ) {
-  private var partitionDesc:String = ""
-  private var startPartitionVersion:Int = -1
-  private var endPartitionVersion:Int = -1
-  private var readType:String = ReadType.FULL_READ
-  def setPartitionDescAndVersion(parDesc:String,startParVer:Int,endParVer:Int,readType:String): Unit ={
+  private var partitionDesc: String = ""
+  private var startPartitionVersion: Int = -1
+  private var endPartitionVersion: Int = -1
+  private var readType: String = ReadType.FULL_READ
+
+  def setPartitionDescAndVersion(parDesc: String, startParVer: Int, endParVer: Int, readType: String): Unit = {
     this.partitionDesc = parDesc
     this.startPartitionVersion = startParVer
     this.endPartitionVersion = endParVer
     this.readType = readType
   }
-  def getPartitionDescAndVersion:(String,Int,Int,String)={
-    (this.partitionDesc,this.startPartitionVersion,this.endPartitionVersion,this.readType)
+
+  def getPartitionDescAndVersion: (String, Int, Int, String) = {
+    (this.partitionDesc, this.startPartitionVersion, this.endPartitionVersion, this.readType)
   }
+
   def getTableName: String = table_info.table_path_s.get
+
   def getTableInfo: TableInfo = table_info
+
   def sizeInBytes(filters: Seq[Expression] = Nil): Long = {
     PartitionFilter.filesForScan(this, filters).map(_.size).sum
   }
+
   /** Return the underlying Spark `FileFormat` of the LakeSoulTableRel. */
   def fileFormat: FileFormat = new ParquetFileFormat()
 

@@ -43,8 +43,8 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   }
 
   def getFileInfoForPartitionVersion(): Seq[DataFileInfo] = {
-    val (desc,startVersion,endVersion,readType) = snapshotManagement.snapshot.getPartitionDescAndVersion
-    DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id,desc,startVersion,endVersion,readType)
+    val (desc, startVersion, endVersion, readType) = snapshotManagement.snapshot.getPartitionDescAndVersion
+    DataOperation.getSinglePartitionDataInfo(snapshotManagement.snapshot.getTableInfo.table_id, desc, startVersion, endVersion, readType)
   }
 
   override def rootPaths: Seq[Path] = snapshotManagement.snapshot.getTableInfo.table_path :: Nil
@@ -52,8 +52,8 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   override def refresh(): Unit = {}
 
   /**
-    * Returns all matching/valid files by the given `partitionFilters` and `dataFilters`
-    */
+   * Returns all matching/valid files by the given `partitionFilters` and `dataFilters`
+   */
   def matchingFiles(partitionFilters: Seq[Expression],
                     dataFilters: Seq[Expression] = Nil): Seq[DataFileInfo]
 
@@ -63,14 +63,14 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   override def listFiles(partitionFilters: Seq[Expression],
                          dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
     val timeZone = spark.sessionState.conf.sessionLocalTimeZone
-    var files:Seq[DataFileInfo] = Seq.empty
-    if(SparkUtil.isPartitionVersionRead(snapshotManagement)){
+    var files: Seq[DataFileInfo] = Seq.empty
+    if (SparkUtil.isPartitionVersionRead(snapshotManagement)) {
       files = getFileInfoForPartitionVersion()
-    }else{
-      files =  matchingFiles(partitionFilters, dataFilters)
+    } else {
+      files = matchingFiles(partitionFilters, dataFilters)
     }
 
-      files.groupBy(x=>MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
+    files.groupBy(x => MetaUtils.getPartitionMapFromKey(x.range_partitions)).map {
       case (partitionValues, files) =>
         val rowValues: Array[Any] = partitionSchema.map { p =>
           Cast(Literal(partitionValues(p.name)), p.dataType, Option(timeZone)).eval()
@@ -133,9 +133,9 @@ case class DataSoulFileIndexV2(override val spark: SparkSession,
 
 
 /**
-  * A [[LakeSoulFileIndexV2]] that generates the list of files from a given list of files
-  * that are within a version range of SnapshotManagement.
-  */
+ * A [[LakeSoulFileIndexV2]] that generates the list of files from a given list of files
+ * that are within a version range of SnapshotManagement.
+ */
 case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
                                     override val snapshotManagement: SnapshotManagement,
                                     files: Seq[DataFileInfo])
