@@ -119,6 +119,11 @@ impl LakeSoulReaderConfigBuilder {
         self
     }
 
+    pub fn with_filter_str(mut self, filter_str: String) -> Self {
+        // self.config.filters = filters;
+        self
+    }
+
     pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
         self.config.filters = filters;
         self

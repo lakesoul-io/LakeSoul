@@ -58,6 +58,16 @@ public class NativeIOWrapper implements AutoCloseable {
         readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(readerConfigBuilder, ptr);
     }
 
+    public void addFilter(String filter){
+        if (!useJavaReader) {
+            assert readerConfigBuilder != null;
+            System.out.println("[JNI][JAVA]addFilter "+filter);
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, filter);
+            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(readerConfigBuilder, ptr);
+        }
+    }
+
+
     public void setThreadNum(int threadNum){
         readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_thread_num(readerConfigBuilder, threadNum);
     }

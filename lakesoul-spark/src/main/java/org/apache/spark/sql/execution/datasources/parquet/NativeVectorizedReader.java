@@ -16,13 +16,18 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
+import com.amazonaws.auth.AWSCredentials;
 import org.apache.arrow.lakesoul.io.NativeIOWrapper;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.s3a.S3AFileSystem;
+import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.hadoop.ParquetInputSplit;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
@@ -40,7 +45,6 @@ import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
 
-import static org.apache.parquet.hadoop.ParquetFileReader.readFooter;
 
 /**
  * A specialized RecordReader that reads into InternalRows or ColumnarBatches directly using the
@@ -135,11 +139,23 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           String int96RebaseMode,
           boolean useOffHeap,
           int capacity) {
+    this(convertTz, datetimeRebaseMode, int96RebaseMode, useOffHeap, capacity, null);
+  }
+
+  public NativeVectorizedReader(
+          ZoneId convertTz,
+          String datetimeRebaseMode,
+          String int96RebaseMode,
+          boolean useOffHeap,
+          int capacity,
+          FilterPredicate filter)
+  {
     this.convertTz = convertTz;
     this.datetimeRebaseMode = datetimeRebaseMode;
     this.int96RebaseMode = int96RebaseMode;
     MEMORY_MODE = useOffHeap ? MemoryMode.OFF_HEAP : MemoryMode.ON_HEAP;
     this.capacity = capacity;
+    this.filter = filter;
   }
 
 
@@ -151,7 +167,15 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           throws IOException, InterruptedException, UnsupportedOperationException {
     super.initialize(inputSplit, taskAttemptContext);
     ParquetInputSplit split = (ParquetInputSplit)inputSplit;
-    this.filePath = split.getPath().toString();
+    this.file = split.getPath();
+    this.filePath = file.toString();
+    FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());
+    if (fileSystem instanceof S3AFileSystem) {
+      s3aFileSystem = (S3AFileSystem) fileSystem;
+      awsS3Bucket = s3aFileSystem.getBucket();
+      s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
+      awsCredentials = S3AUtils.createAWSCredentialProviderSet(file.toUri(), taskAttemptContext.getConfiguration()).getCredentials();
+    }
     initializeInternal();
   }
 
@@ -204,16 +228,19 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     return (float) rowsReturned / totalRowCount;
   }
 
-  // Creates a columnar batch that includes the schema from the data files and the additional
-  // partition columns appended to the end of the batch.
-  // For example, if the data contains two columns, with 2 partition columns:
-  // Columns 0,1: data columns
-  // Column 2: partitionValues[0]
-  // Column 3: partitionValues[1]
-  private void initBatch(
-          MemoryMode memMode,
-          StructType partitionColumns,
-          InternalRow partitionValues) throws IOException {
+  public void setAwaitTimeout(int awaitTimeout) {
+    this.awaitTimeout = awaitTimeout;
+  }
+
+  public void setPrefetchBufferSize(int prefetchBufferSize) {
+    this.prefetchBufferSize = prefetchBufferSize;
+  }
+
+  public void setThreadNum(int threadNum) {
+    this.threadNum = threadNum;
+  }
+
+  private void recreateNativeReader() {
     if (nativeReader != null) {
       nativeReader.close();
     }
@@ -229,12 +256,35 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     wrapper.setThreadNum(1);
     wrapper.setBatchSize(capacity);
+    wrapper.setBufferSize(prefetchBufferSize);
+    wrapper.setThreadNum(threadNum);
+
+    if (s3aFileSystem != null) {
+      wrapper.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), "us-east-1", awsS3Bucket, s3aEndpoint);
+    }
+
+    if (filter != null) {
+      wrapper.addFilter(filter.toString());
+    }
+
     wrapper.createReader();
     wrapper.startReader(bool -> {});
 
     totalRowCount= 0;
-    nativeReader = new LakeSoulArrowReader(wrapper, 5000);
+    nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
+  }
 
+  // Creates a columnar batch that includes the schema from the data files and the additional
+  // partition columns appended to the end of the batch.
+  // For example, if the data contains two columns, with 2 partition columns:
+  // Columns 0,1: data columns
+  // Column 2: partitionValues[0]
+  // Column 3: partitionValues[1]
+  private void initBatch(
+          MemoryMode memMode,
+          StructType partitionColumns,
+          InternalRow partitionValues) throws IOException {
+    recreateNativeReader();
 
     if (partitionColumns != null) {
       if (memMode == MemoryMode.OFF_HEAP) {
@@ -286,7 +336,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       } else {
         totalRowCount += nextVectorSchemaRoot.getRowCount();
         if (totalRowCount % 100000 < capacity) {
-          System.out.println(totalRowCount);
+//          System.out.println(totalRowCount);
         }
         // fill nextVectorSchemaRoot into columnarBatch
         WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
@@ -316,9 +366,11 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     List<String[]> paths = requestedSchema.getPaths();
     for (int i = 0; i < requestedSchema.getFieldCount(); ++i) {
       Type t = requestedSchema.getFields().get(i);
-      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
-        throw new UnsupportedOperationException("Complex types not supported.");
-      }
+      System.out.println(t);
+
+//      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
+//        throw new UnsupportedOperationException("Complex types not supported.");
+//      }
 
       String[] colPath = paths.get(i);
       if (fileSchema.containsPath(colPath)) {
@@ -344,9 +396,23 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private NativeIOWrapper wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
 
+  private int prefetchBufferSize = 1;
+
+  private int threadNum = 1;
+
+  private int awaitTimeout = 5000;
+
   private String filePath;
   private VectorSchemaRoot nextVectorSchemaRoot;
 
+  private S3AFileSystem s3aFileSystem = null;
+  private String s3aEndpoint = null;
+
+  private AWSCredentials awsCredentials = null;
+
+  private String awsS3Bucket = null;
+
+  private FilterPredicate filter;
 }
 
 

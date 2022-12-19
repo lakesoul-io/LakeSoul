@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -77,8 +77,10 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
   private val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
-  private val nativeIOEnable =
-    sqlConf.getConf(NATIVE_IO_ENABLE)
+  private val nativeIOEnable = sqlConf.getConf(NATIVE_IO_ENABLE)
+  private val nativeIOPrefecherBufferSize = sqlConf.getConf(NATIVE_IO_PREFETCHER_BUFFER_SIZE)
+  private val nativeIOThreadNum = sqlConf.getConf(NATIVE_IO_THREAD_NUM)
+  private val nativeIOAwaitTimeout = sqlConf.getConf(NATIVE_IO_READER_AWAIT_TIMEOUT)
 
   override def buildReader(partitionedFile: PartitionedFile): PartitionReader[InternalRow] = ???
 
@@ -129,7 +131,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
       override def close(): Unit = {
         val current = System.nanoTime()
 //        println(s"fetch remain batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
-        println(s"fetch all batch using ${NANOSECONDS.toMillis(current - start)} ms, total next() time=${nextMetric}ms, other time=${NANOSECONDS.toMillis(current - start) - nextMetric}ms")
+//        println(s"fetch all batch using ${NANOSECONDS.toMillis(current - start)} ms, total next() time=${nextMetric}ms, other time=${NANOSECONDS.toMillis(current - start) - nextMetric}ms")
         vectorizedReader.close()
       }
     }
@@ -208,7 +210,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
       datetimeRebaseMode,
       int96RebaseMode,
     )
-    reader.initialize(split, hadoopAttemptContext)
+//    reader.initialize(split, hadoopAttemptContext)
     reader
   }
 
@@ -224,26 +226,41 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   RecordReader[Void,ColumnarBatch] =
   {
     val taskContext = Option(TaskContext.get())
-  val vectorizedReader = if (nativeIOEnable) {
-    new NativeVectorizedReader(
-      convertTz.orNull,
-      datetimeRebaseMode.toString,
-      int96RebaseMode.toString,
-      enableOffHeapColumnVector && taskContext.isDefined,
-      capacity
-    )
-  } else {
-    new VectorizedParquetRecordReader(
-      convertTz.orNull,
-      datetimeRebaseMode.toString,
-      int96RebaseMode.toString,
-      enableOffHeapColumnVector && taskContext.isDefined,
-      capacity)
-  }
+    val vectorizedReader = if (nativeIOEnable) {
+      val reader = if (pushed.isDefined) {
+        new NativeVectorizedReader(
+          convertTz.orNull,
+          datetimeRebaseMode.toString,
+          int96RebaseMode.toString,
+          enableOffHeapColumnVector && taskContext.isDefined,
+          capacity,
+          pushed.get
+      )} else {
+          new NativeVectorizedReader(
+            convertTz.orNull,
+            datetimeRebaseMode.toString,
+            int96RebaseMode.toString,
+            enableOffHeapColumnVector && taskContext.isDefined,
+            capacity
+          )
+      }
+      reader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
+      reader.setThreadNum(nativeIOThreadNum)
+      reader.setAwaitTimeout(nativeIOAwaitTimeout)
+      reader
+    } else {
+      new VectorizedParquetRecordReader(
+        convertTz.orNull,
+        datetimeRebaseMode.toString,
+        int96RebaseMode.toString,
+        enableOffHeapColumnVector && taskContext.isDefined,
+        capacity)
+    }
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema ${file.partitionValues}")
+    vectorizedReader.initialize(split, hadoopAttemptContext)
     vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
   }
 }

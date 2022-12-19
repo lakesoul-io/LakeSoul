@@ -29,6 +29,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column);
 
+    Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
+
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
 
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);

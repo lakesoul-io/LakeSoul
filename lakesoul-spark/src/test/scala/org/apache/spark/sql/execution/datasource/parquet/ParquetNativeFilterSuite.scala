@@ -141,7 +141,7 @@ class ParquetNativeFilterSuite
       SQLConf.PARQUET_FILTER_PUSHDOWN_TIMESTAMP_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_STARTSWITH_ENABLED.key -> "true",
-      NATIVE_IO_ENABLE.key -> "false",
+      NATIVE_IO_ENABLE.key -> "true",
       // Disable adding filters from constraints because it adds, for instance,
       // is-not-null to pushed filters, which makes it hard to test if the pushed
       // filter is expected or not (this had to be fixed with SPARK-13495).
@@ -188,14 +188,18 @@ class ParquetNativeFilterSuite
           assert(parquetFilters.convertibleFilters(sourceFilters) === pushedFilters)
           val pushedParquetFilters = pushedFilters.map { pred =>
             val maybeFilter = parquetFilters.createFilter(pred)
+            println("pred:" + pred.toString)
+            println("maybeFilter:" + maybeFilter.toString)
             assert(maybeFilter.isDefined, s"Couldn't generate filter predicate for $pred")
             maybeFilter.get
           }
+          println("pushedParquetFilters:" + pushedParquetFilters.hashCode())
           // Doesn't bother checking type parameters here (e.g. `Eq[Integer]`)
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
-          checker(stripSparkFilter(query), expected)
+          stripSparkFilter(query).show()
+//          checker(stripSparkFilter(query), expected)
         case op =>
           println(op)
           throw new AnalysisException("Can not match ParquetTable in the query.")
