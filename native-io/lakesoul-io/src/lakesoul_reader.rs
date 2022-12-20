@@ -529,4 +529,247 @@ mod tests {
         }
         Ok(())
     }
+
+    use parquet::arrow::{async_reader::ParquetRecordBatchStreamBuilder, ProjectionMask};
+    // use arrow::util::pretty::print_batches;
+    use futures::TryStreamExt;
+    use tokio::fs::File;
+    use datafusion::logical_expr::{col, lit, Expr, Operator};
+    use datafusion_common::{ScalarValue, Column};
+
+    async fn get_num_rows_of_file_with_filters(file_path: String, filters: Vec<Expr>) -> Result<usize> {
+        let reader_conf = LakeSoulReaderConfigBuilder::new()
+            .with_files(vec![
+                file_path])
+            .with_thread_num(1)
+            .with_batch_size(32)
+            .with_buffer_size(1)
+            .with_filters(filters)
+            .build();
+        let mut reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = ManuallyDrop::new(reader);
+        reader.start().await?;
+        let mut row_cnt: usize = 0;
+
+        while let Some(rb) = reader.next_rb().await {
+            // print_batches(std::slice::from_ref(&rb?))?;
+            row_cnt += &rb.unwrap().num_rows();
+        }
+
+        Ok(row_cnt)
+    }
+
+    #[tokio::test]
+    async fn test_expr_eq_neq() -> Result<()> {
+        let mut filters1: Vec<Expr> = vec![];
+        let v = ScalarValue::Utf8(Some("Amanda".to_string()));
+        let filter = col("first_name").eq(Expr::Literal(v));
+        filters1.push(filter);
+        let mut row_cnt1 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters1).await;
+        if let Ok(row_cnt) = result {
+            row_cnt1 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters2: Vec<Expr> = vec![];
+        let v = ScalarValue::Utf8(Some("Amanda".to_string()));
+        let filter = col("first_name").not_eq(Expr::Literal(v));
+        filters2.push(filter);
+
+        let mut row_cnt2 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters2).await;
+        if let Ok(row_cnt) = result {
+            row_cnt2 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        assert_eq!(row_cnt1 + row_cnt2, 1000);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expr_lteq_gt() -> Result<()> {
+        let mut filters1: Vec<Expr> = vec![];
+        let v = ScalarValue::Float64(Some(139177.2));
+        let filter = col("salary").lt_eq(Expr::Literal(v));
+        filters1.push(filter);
+
+        let mut row_cnt1 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters1).await;
+        if let Ok(row_cnt) = result {
+            row_cnt1 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters2: Vec<Expr> = vec![];
+        let v = ScalarValue::Float64(Some(139177.2));
+        let filter = col("salary").gt(Expr::Literal(v));
+        filters2.push(filter);
+
+        let mut row_cnt2 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters2).await;
+        if let Ok(row_cnt) = result {
+            row_cnt2 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters3: Vec<Expr> = vec![];
+        let filter = col("salary").is_null();
+        filters3.push(filter);
+
+        let mut row_cnt3 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters3).await;
+        if let Ok(row_cnt) = result {
+            row_cnt3 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        assert_eq!(row_cnt1 + row_cnt2, 1000 - row_cnt3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expr_null_notnull() -> Result<()> {
+        let mut filters1: Vec<Expr> = vec![];
+        let filter = col("cc").is_null();
+        filters1.push(filter);
+
+        let mut row_cnt1 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters1).await;
+        if let Ok(row_cnt) = result {
+            row_cnt1 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters2: Vec<Expr> = vec![];
+        let filter = col("cc").is_not_null();
+        filters2.push(filter);
+
+        let mut row_cnt2 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters2).await;
+        if let Ok(row_cnt) = result {
+            row_cnt2 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        assert_eq!(row_cnt1 + row_cnt2, 1000);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expr_or_and() -> Result<()> {
+        let mut filters1: Vec<Expr> = vec![];
+        let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
+        // let filter = col("first_name").eq(Expr::Literal(first_name)).and(col("last_name").eq(Expr::Literal(last_name)));
+        let filter = col("first_name").eq(Expr::Literal(first_name));
+
+        filters1.push(filter);
+        let mut row_cnt1 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters1).await;
+        if let Ok(row_cnt) = result {
+            row_cnt1 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+        // println!("{}", row_cnt1);
+
+        let mut filters2: Vec<Expr> = vec![];
+        let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
+        // let filter = col("first_name").eq(Expr::Literal(first_name)).and(col("last_name").eq(Expr::Literal(last_name)));
+        let filter = col("last_name").eq(Expr::Literal(last_name));
+
+        filters2.push(filter);
+        let mut row_cnt2 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters2).await;
+        if let Ok(row_cnt) = result {
+            row_cnt2 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters: Vec<Expr> = vec![];
+        let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
+        let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
+        let filter = col("first_name").eq(Expr::Literal(first_name)).and(col("last_name").eq(Expr::Literal(last_name)));
+
+        filters.push(filter);
+        let mut row_cnt3 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters).await;
+        if let Ok(row_cnt) = result {
+            row_cnt3 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters: Vec<Expr> = vec![];
+        let first_name = ScalarValue::Utf8(Some("Amanda".to_string()));
+        let last_name = ScalarValue::Utf8(Some("Jordan".to_string()));
+        let filter = col("first_name").eq(Expr::Literal(first_name)).or(col("last_name").eq(Expr::Literal(last_name)));
+
+        filters.push(filter);
+        let mut row_cnt4 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters).await;
+        if let Ok(row_cnt) = result {
+            row_cnt4 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        assert_eq!(row_cnt1 + row_cnt2 - row_cnt3, row_cnt4);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_expr_not() -> Result<()> {
+        let mut filters: Vec<Expr> = vec![];
+        let filter = col("salary").is_null();
+        filters.push(filter);
+        let mut row_cnt1 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters).await;
+        if let Ok(row_cnt) = result {
+            row_cnt1 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        let mut filters: Vec<Expr> = vec![];
+        let filter = Expr::not(col("salary").is_null());
+        filters.push(filter);
+        let mut row_cnt2 = 0;
+        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+                                                       filters).await;
+        if let Ok(row_cnt) = result {
+            row_cnt2 = row_cnt;
+        } else {
+            assert_eq!(0, 1);
+        }
+
+        assert_eq!(row_cnt1 + row_cnt2, 1000);
+
+        Ok(())
+    }
 }
