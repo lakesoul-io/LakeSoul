@@ -20,12 +20,12 @@ import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, caseInsensitiveResolution}
 import org.apache.spark.sql.catalyst.expressions.{EqualTo, Expression, Literal}
 import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
-import org.apache.spark.sql.execution.streaming.Sink
+import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
@@ -46,6 +46,7 @@ class LakeSoulDataSource
     with RelationProvider
     with CreatableRelationProvider
     with StreamSinkProvider
+    with StreamSourceProvider
     with TableProvider
     with Logging {
 
@@ -161,6 +162,39 @@ class LakeSoulDataSource
 
     lakeSoulTable
   }
+
+  override def sourceSchema(sqlContext: SQLContext, schema: Option[StructType], providerName: String, parameters: Map[String, String]): (String, StructType) = {
+    val path = parameters.getOrElse("path", {
+      throw LakeSoulErrors.pathNotSpecifiedException
+    })
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString("."))
+    val partitionDesc = parameters.get(LakeSoulOptions.PARTITION_DESC).get
+
+    def getSnapshotVersion(timeStamp: String): Int = {
+      if (timeStamp.equals("")) {
+        return 0
+      }
+      val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+      MetaVersion.getLastedVersionUptoTime(snapshot.getTableInfoOnly.table_id, partitionDesc, time / 1000)
+    }
+
+    snapshot.updateSnapshotForVersion(partitionDesc,
+      getSnapshotVersion(parameters.get(LakeSoulOptions.READ_START_TIME).get),
+      getSnapshotVersion(parameters.get(LakeSoulOptions.READ_END_TIME).get),
+      ReadType.INCREMENTAL_READ)
+    (LakeSoulSourceUtils.NAME, snapshot.snapshot.getTableInfo.schema)
+  }
+
+  override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
+    val path = parameters.getOrElse("path", {
+      throw LakeSoulErrors.pathNotSpecifiedException
+    })
+    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+      LakeSoulCatalog.showCurrentNamespace().mkString(".")).snapshot
+    new LakeSoulStreamingSource(sqlContext, metadataPath, Some(snapshot.getTableInfo.schema), providerName, parameters)
+  }
+
 }
 
 

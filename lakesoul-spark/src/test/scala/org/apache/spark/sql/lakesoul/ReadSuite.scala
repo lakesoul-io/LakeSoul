@@ -166,4 +166,63 @@ class ReadSuite extends QueryTest
       })
     }
   }
+
+  test("test stream read") {
+    withTable("tt") {
+      withTempDir(dir => {
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        withSQLConf(
+          LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
+          Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
+            .toDF("range", "hash", "op")
+            .write
+            .mode("append")
+            .format("lakesoul")
+            .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
+            .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
+            .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
+            .partitionBy("range")
+            .save(tablePath)
+          val lake = LakeSoulTable.forPath(tablePath)
+          val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
+            .toDF("range", "hash", "op")
+          Thread.sleep(2000)
+          lake.upsert(tableForUpsert)
+          val tableForUpsert1 = Seq(("range1", "hash1-1", "delete"), ("range2", "hash2-10", "delete"))
+            .toDF("range", "hash", "op")
+          Thread.sleep(2000)
+          val timeB = System.currentTimeMillis()
+          lake.upsert(tableForUpsert1)
+          val tableForUpsert2 = Seq(("range1", "hash1-13", "insert"), ("range2", "hash2-13", "update"))
+            .toDF("range", "hash", "op")
+          Thread.sleep(3000)
+          lake.upsert(tableForUpsert2)
+          val tableForUpsert3 = Seq(("range1", "hash1-15", "insert"), ("range2", "hash2-15", "update"))
+            .toDF("range", "hash", "op")
+          lake.upsert(tableForUpsert3)
+          Thread.sleep(1000)
+          val timeC = System.currentTimeMillis()
+          val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
+          val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
+          // Processing time zone time difference between docker and local
+          val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
+          val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionC)
+          val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
+          val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
+          val parDesc = "range=range1"
+//          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, ReadType.INCREMENTAL_READ)
+//          val data1 = lake1.toDF.select("range", "hash", "op").toDF().show()
+          val lake2 = spark.readStream.format("lakesoul")
+            .option(LakeSoulOptions.PARTITION_DESC, parDesc)
+            .option(LakeSoulOptions.READ_START_TIME, currentVersion)
+            .option(LakeSoulOptions.READ_END_TIME, endVersion)
+            .load(tablePath)
+//          println("===lake2===="+lake2.toDF().show())
+//          val data2 = lake2.toDF().select("range", "hash", "op").toDF().show()
+//          checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),
+//            ("range1", "hash1-13", "insert"), ("range1", "hash1-15", "insert")).toDF("range", "hash", "op"))
+        }
+      })
+    }
+  }
 }
