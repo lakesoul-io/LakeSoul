@@ -4,15 +4,15 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-datafusion = { version = "13.0.0", features = ["simd"] }
-object_store = { version = "0.5", features = ["aws"] }
+datafusion = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-13-parquet-prefetch", features = ["simd"] }
+object_store = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["aws"] }
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
 heapless = "0.7.16"
-arrow = "24.0.0"
-parquet = "24.0.0"
+arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["prettyprint"] }
+parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["async", "arrow"] }
 bytes = "1.1"
 futures = "0.3.25"
-datafusion-common = "13.0.0"
+datafusion-common = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-13-parquet-prefetch" }
