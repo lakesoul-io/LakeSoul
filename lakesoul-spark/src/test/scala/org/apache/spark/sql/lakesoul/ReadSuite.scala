@@ -217,6 +217,11 @@ class ReadSuite extends QueryTest
             .option(LakeSoulOptions.READ_START_TIME, currentVersion)
             .option(LakeSoulOptions.READ_END_TIME, endVersion)
             .load(tablePath)
+            .writeStream.format("console").start().awaitTermination()
+          Thread.sleep(1000)
+          val tableForUpsert4 = Seq(("range1", "hash1-16", "insert"), ("range2", "hash2-16", "update"))
+            .toDF("range", "hash", "op")
+          lake.upsert(tableForUpsert4)
 //          println("===lake2===="+lake2.toDF().show())
 //          val data2 = lake2.toDF().select("range", "hash", "op").toDF().show()
 //          checkAnswer(data1, Seq(("range1", "hash1-1", "delete"),

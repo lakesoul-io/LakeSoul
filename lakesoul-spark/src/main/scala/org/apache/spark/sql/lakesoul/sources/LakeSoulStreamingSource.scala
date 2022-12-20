@@ -22,14 +22,15 @@ package org.apache.spark.sql.lakesoul.sources
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.streaming.{LongOffset, Offset, Source}
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.{DataFrame, Dataset, SQLContext, SparkSession}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.{DataFrame, Dataset, SQLContext, SparkSession}
 
 class LakeSoulStreamingSource(sqlContext: SQLContext,
                               metadataPath: String,
@@ -60,7 +61,7 @@ class LakeSoulStreamingSource(sqlContext: SQLContext,
     val p = SparkUtil.makeQualifiedTablePath(new Path(path.get)).toString
     val lakesoul = new LakeSoulTable(sqlContext.sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
       SnapshotManagement(p, partitionDesc, startVersion, endVersion, ReadType.INCREMENTAL_READ))
-    Dataset.ofRows(sqlContext.sparkSession, lakesoul.toDF.logicalPlan)
+    Dataset.ofRows(sqlContext.sparkSession, LogicalRelation(lakeSoulTable.toBaseRelation,isStreaming = true))
   }
 
   override def stop(): Unit = {}

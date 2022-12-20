@@ -167,23 +167,24 @@ class LakeSoulDataSource
     val path = parameters.getOrElse("path", {
       throw LakeSoulErrors.pathNotSpecifiedException
     })
-    val snapshot = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
+    val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString,
       LakeSoulCatalog.showCurrentNamespace().mkString("."))
-    val partitionDesc = parameters.get(LakeSoulOptions.PARTITION_DESC).get
+    val partitionDesc = parameters.getOrElse(LakeSoulOptions.PARTITION_DESC, "")
+    val startVersion =
+      if(parameters.contains(LakeSoulOptions.READ_START_TIME))
+        getSnapshotVersion(parameters.get(LakeSoulOptions.READ_START_TIME).get, partitionDesc, snapshotManagement)
+      else 0
+    val endVersion = getSnapshotVersion(parameters.get(LakeSoulOptions.READ_END_TIME).get, partitionDesc, snapshotManagement)
+    snapshotManagement.updateSnapshotForVersion(partitionDesc, startVersion, endVersion, ReadType.INCREMENTAL_READ)
+    (LakeSoulSourceUtils.NAME, snapshotManagement.snapshot.getTableInfo.schema)
+  }
 
-    def getSnapshotVersion(timeStamp: String): Int = {
-      if (timeStamp.equals("")) {
-        return 0
-      }
-      val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
-      MetaVersion.getLastedVersionUptoTime(snapshot.getTableInfoOnly.table_id, partitionDesc, time / 1000)
+  protected def getSnapshotVersion(timeStamp: String, partitionDesc: String, sm: SnapshotManagement): Int = {
+    if (timeStamp.equals("")) {
+      return 0
     }
-
-    snapshot.updateSnapshotForVersion(partitionDesc,
-      getSnapshotVersion(parameters.get(LakeSoulOptions.READ_START_TIME).get),
-      getSnapshotVersion(parameters.get(LakeSoulOptions.READ_END_TIME).get),
-      ReadType.INCREMENTAL_READ)
-    (LakeSoulSourceUtils.NAME, snapshot.snapshot.getTableInfo.schema)
+    val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+    MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, time / 1000)
   }
 
   override def createSource(sqlContext: SQLContext, metadataPath: String, schema: Option[StructType], providerName: String, parameters: Map[String, String]): Source = {
