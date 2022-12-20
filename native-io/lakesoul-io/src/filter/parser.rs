@@ -8,19 +8,60 @@ impl Parser {
 
     pub fn parse(str: String) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(str);
-        println!("{} {} {}", op, left, right);
+        // println!("op: {}, left: {}, right: {}", op, left, right);
         match op.as_str() {
+            "not" => {
+                let inner = Parser::parse(right);
+                print!("{:?}", inner);
+                Expr::not(inner)
+            }
             "eq" => {
                 let column = col(left.as_str());
                 let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion 
                 let value = Expr::Literal(value); 
                 column.eq(value)
             }
+            "noteq" => {
+                let column = col(left.as_str());
+                let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion
+                let value = Expr::Literal(value);
+                column.not_eq(value)
+            }
             "or" => {
                 let left_expr = Parser::parse(left);
                 let right_expr = Parser::parse(right);
                 left_expr.or(right_expr)
             }
+            "and" => {
+                let left_expr = Parser::parse(left);
+                let right_expr = Parser::parse(right);
+                left_expr.and(right_expr)
+            }
+            "gt" => {
+                let column = col(left.as_str());
+                let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion
+                let value = Expr::Literal(value);
+                column.gt(value)
+            }
+            "gteq" => {
+                let column = col(left.as_str());
+                let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion
+                let value = Expr::Literal(value);
+                column.gt_eq(value)
+            }
+            "lt" => {
+                let column = col(left.as_str());
+                let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion
+                let value = Expr::Literal(value);
+                column.lt(value)
+            }
+            "lteq" => {
+                let column = col(left.as_str());
+                let value = ScalarValue::Utf8(Some(right)); // todo: datatype conversion
+                let value = Expr::Literal(value);
+                column.lt_eq(value)
+            }
+
             _ => 
                 Expr::Wildcard
         }
@@ -52,7 +93,11 @@ impl Parser {
             panic!("Invalid filter string");
         }
         let (left,right) = filter.split_at(left_offset);
-        (op.to_string(), left.to_string(), right[1..].to_string())
+        if op.eq("not") {
+            (op.to_string(), left.to_string(), right[0..].to_string())
+        } else {
+            (op.to_string(), left.to_string(), right[2..].to_string())
+        }
     }
 
 
@@ -67,6 +112,13 @@ mod tests {
     fn test_filter_parser() -> Result<(), String> {
         let s = String::from("or(lt(a.b.c, 2.0), gt(a.b.c, 3.0))");
         // let parser = Parser::new();
+        Parser::parse(s);
+        Ok(())
+    }
+
+    #[test]
+    fn test_filter_parser_not() -> Result<(), String> {
+        let s = String::from("not(eq(a.c, 2.9))");
         Parser::parse(s);
         Ok(())
     }

@@ -366,7 +366,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     List<String[]> paths = requestedSchema.getPaths();
     for (int i = 0; i < requestedSchema.getFieldCount(); ++i) {
       Type t = requestedSchema.getFields().get(i);
-      System.out.println(t);
+//      System.out.println(t);
 
 //      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
 //        throw new UnsupportedOperationException("Complex types not supported.");
