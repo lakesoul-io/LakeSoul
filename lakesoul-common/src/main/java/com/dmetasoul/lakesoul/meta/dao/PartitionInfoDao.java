@@ -187,8 +187,7 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select count(*) as total,max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d",
-                tableId, partitionDesc, utcMills);
+        String sql = String.format("select count(*) as total,max(version) as version from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp <= %d", tableId, partitionDesc, utcMills);
         int version = -1;
         int total = 0;
         try {
@@ -287,6 +286,11 @@ public class PartitionInfoDao {
         return getPartitionInfo(sql);
     }
 
+    public List<PartitionInfo> getPartitionsFromVersion(String tableId, String partitionDesc, int startVersion, int endVersion) {
+        String sql = String.format("select * from partition_info where table_id = '%s' and version >= %d and version <= %d", tableId, startVersion, endVersion);
+        return getPartitionInfos(sql);
+    }
+
     public List<String> getAllPartitionDescByTableId(String tableId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -306,6 +310,38 @@ public class PartitionInfoDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return rsList;
+    }
+
+    private List<PartitionInfo> getPartitionInfos(String sql) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        PartitionInfo partitionInfo = null;
+        List<PartitionInfo> partitions = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+
+            while (rs.next()) {
+                partitionInfo = new PartitionInfo();
+                partitionInfo.setTableId(rs.getString("table_id"));
+                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
+                partitionInfo.setVersion(rs.getInt("version"));
+                partitionInfo.setCommitOp(rs.getString("commit_op"));
+                Array snapshotArray = rs.getArray("snapshot");
+                List<UUID> uuidList = new ArrayList<>();
+                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
+                partitionInfo.setSnapshot(uuidList);
+                partitionInfo.setExpression(rs.getString("expression"));
+                partitions.add(partitionInfo);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return partitions;
     }
 
     private PartitionInfo getPartitionInfo(String sql) {
