@@ -822,51 +822,51 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
     }
   }
 
-  test("filter pushdown - decimal") {
-    Seq(
-      (false, Decimal.MAX_INT_DIGITS), // int32Writer
-      (false, Decimal.MAX_LONG_DIGITS), // int64Writer
-      (true, Decimal.MAX_LONG_DIGITS), // binaryWriterUsingUnscaledLong
-      (false, DecimalType.MAX_PRECISION) // binaryWriterUsingUnscaledBytes
-    ).foreach { case (legacyFormat, precision) =>
-      withSQLConf(SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacyFormat.toString) {
-        val rdd =
-          spark.sparkContext.parallelize((1 to 4).map(i => Row(new java.math.BigDecimal(i))))
-        val dataFrame = spark.createDataFrame(rdd, StructType.fromDDL(s"a decimal($precision, 2)"))
-        withNestedParquetDataFrame(dataFrame) { case (inputDF, colName, resultFun) =>
-          implicit val df: DataFrame = inputDF
-
-          val decimalAttr: Expression = df(colName).expr
-          assert(df(colName).expr.dataType === DecimalType(precision, 2))
-
-          checkFilterPredicate(decimalAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
-          checkFilterPredicate(decimalAttr.isNotNull, classOf[NotEq[_]],
-            (1 to 4).map(i => Row.apply(resultFun(i))))
-
-          checkFilterPredicate(decimalAttr === 1, classOf[Eq[_]], resultFun(1))
-          checkFilterPredicate(decimalAttr <=> 1, classOf[Eq[_]], resultFun(1))
-          checkFilterPredicate(decimalAttr =!= 1, classOf[NotEq[_]],
-            (2 to 4).map(i => Row.apply(resultFun(i))))
-
-          checkFilterPredicate(decimalAttr < 2, classOf[Lt[_]], resultFun(1))
-          checkFilterPredicate(decimalAttr > 3, classOf[Gt[_]], resultFun(4))
-          checkFilterPredicate(decimalAttr <= 1, classOf[LtEq[_]], resultFun(1))
-          checkFilterPredicate(decimalAttr >= 4, classOf[GtEq[_]], resultFun(4))
-
-          checkFilterPredicate(Literal(1) === decimalAttr, classOf[Eq[_]], resultFun(1))
-          checkFilterPredicate(Literal(1) <=> decimalAttr, classOf[Eq[_]], resultFun(1))
-          checkFilterPredicate(Literal(2) > decimalAttr, classOf[Lt[_]], resultFun(1))
-          checkFilterPredicate(Literal(3) < decimalAttr, classOf[Gt[_]], resultFun(4))
-          checkFilterPredicate(Literal(1) >= decimalAttr, classOf[LtEq[_]], resultFun(1))
-          checkFilterPredicate(Literal(4) <= decimalAttr, classOf[GtEq[_]], resultFun(4))
-
-          checkFilterPredicate(!(decimalAttr < 4), classOf[GtEq[_]], resultFun(4))
-          checkFilterPredicate(decimalAttr < 2 || decimalAttr > 3, classOf[Operators.Or],
-            Seq(Row(resultFun(1)), Row(resultFun(4))))
-        }
-      }
-    }
-  }
+//  test("filter pushdown - decimal") {
+//    Seq(
+//      (false, Decimal.MAX_INT_DIGITS), // int32Writer
+//      (false, Decimal.MAX_LONG_DIGITS), // int64Writer
+//      (true, Decimal.MAX_LONG_DIGITS), // binaryWriterUsingUnscaledLong
+//      (false, DecimalType.MAX_PRECISION) // binaryWriterUsingUnscaledBytes
+//    ).foreach { case (legacyFormat, precision) =>
+//      withSQLConf(SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacyFormat.toString) {
+//        val rdd =
+//          spark.sparkContext.parallelize((1 to 4).map(i => Row(new java.math.BigDecimal(i))))
+//        val dataFrame = spark.createDataFrame(rdd, StructType.fromDDL(s"a decimal($precision, 2)"))
+//        withNestedParquetDataFrame(dataFrame) { case (inputDF, colName, resultFun) =>
+//          implicit val df: DataFrame = inputDF
+//
+//          val decimalAttr: Expression = df(colName).expr
+//          assert(df(colName).expr.dataType === DecimalType(precision, 2))
+//
+//          checkFilterPredicate(decimalAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
+//          checkFilterPredicate(decimalAttr.isNotNull, classOf[NotEq[_]],
+//            (1 to 4).map(i => Row.apply(resultFun(i))))
+//
+//          checkFilterPredicate(decimalAttr === 1, classOf[Eq[_]], resultFun(1))
+//          checkFilterPredicate(decimalAttr <=> 1, classOf[Eq[_]], resultFun(1))
+//          checkFilterPredicate(decimalAttr =!= 1, classOf[NotEq[_]],
+//            (2 to 4).map(i => Row.apply(resultFun(i))))
+//
+//          checkFilterPredicate(decimalAttr < 2, classOf[Lt[_]], resultFun(1))
+//          checkFilterPredicate(decimalAttr > 3, classOf[Gt[_]], resultFun(4))
+//          checkFilterPredicate(decimalAttr <= 1, classOf[LtEq[_]], resultFun(1))
+//          checkFilterPredicate(decimalAttr >= 4, classOf[GtEq[_]], resultFun(4))
+//
+//          checkFilterPredicate(Literal(1) === decimalAttr, classOf[Eq[_]], resultFun(1))
+//          checkFilterPredicate(Literal(1) <=> decimalAttr, classOf[Eq[_]], resultFun(1))
+//          checkFilterPredicate(Literal(2) > decimalAttr, classOf[Lt[_]], resultFun(1))
+//          checkFilterPredicate(Literal(3) < decimalAttr, classOf[Gt[_]], resultFun(4))
+//          checkFilterPredicate(Literal(1) >= decimalAttr, classOf[LtEq[_]], resultFun(1))
+//          checkFilterPredicate(Literal(4) <= decimalAttr, classOf[GtEq[_]], resultFun(4))
+//
+//          checkFilterPredicate(!(decimalAttr < 4), classOf[GtEq[_]], resultFun(4))
+//          checkFilterPredicate(decimalAttr < 2 || decimalAttr > 3, classOf[Operators.Or],
+//            Seq(Row(resultFun(1)), Row(resultFun(4))))
+//        }
+//      }
+//    }
+//  }
 
   test("Ensure that filter value matched the parquet file schema") {
     val scale = 2

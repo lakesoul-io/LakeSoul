@@ -10,7 +10,7 @@ impl Parser {
 
     pub fn parse(filter_str: String, schema: &HashMap<String, String>) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
-        // println!("op: {}, left: {}, right: {}", op, left, right);
+        println!("op: {}, left: {}, right: {}", op, left, right);
         if right == "null" {
             println!("right=null");
             match op.as_str() {
@@ -95,7 +95,7 @@ impl Parser {
                 ')' => 
                     k -= 1,
                 ',' => 
-                    if k==0 {
+                    if k==0 && left_offset==0 {
                         left_offset = i
                     },
                 _ => {}
@@ -114,9 +114,15 @@ impl Parser {
 
     fn parse_literal(column: String, value:String, schema: &HashMap<String, String>) -> Expr {
         let datatype = schema.get(&column).unwrap();
-        match datatype.as_str() {
-            "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
-            _ => Expr::Literal(ScalarValue::Utf8(Some(value)))
+        if datatype.len() > 7 && &datatype[..7] == "decimal" {
+            Expr::Literal(ScalarValue::Decimal128(Some(value.parse::<i128>().unwrap()), 9, 2))
+        } else {
+            match datatype.as_str() {
+                "boolean" => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
+                "binary" => Expr::Literal(ScalarValue::Binary(Some(value.as_bytes().to_vec()))),
+                "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
+                _ => Expr::Literal(ScalarValue::Utf8(Some(value)))
+            }
         }
 
     }
