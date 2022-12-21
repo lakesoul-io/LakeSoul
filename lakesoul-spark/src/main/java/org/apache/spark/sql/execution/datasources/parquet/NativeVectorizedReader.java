@@ -36,6 +36,7 @@ import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
+import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
@@ -132,6 +133,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * The memory mode of the columnarBatch
    */
   private final MemoryMode MEMORY_MODE;
+  private StructType typeName;
 
   public NativeVectorizedReader(
           ZoneId convertTz,
@@ -366,11 +368,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     List<String[]> paths = requestedSchema.getPaths();
     for (int i = 0; i < requestedSchema.getFieldCount(); ++i) {
       Type t = requestedSchema.getFields().get(i);
-//      System.out.println(t);
 
-//      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
-//        throw new UnsupportedOperationException("Complex types not supported.");
-//      }
+      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
+        throw new UnsupportedOperationException("Complex types not supported.");
+      }
 
       String[] colPath = paths.get(i);
       if (fileSchema.containsPath(colPath)) {

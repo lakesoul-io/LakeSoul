@@ -178,7 +178,6 @@ class ParquetNativeFilterSuite
         DataSourceV2ScanRelation(_, scan: NativeParquetScan, _)) =>
           println("match case NativeParquetScan")
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
-          println(filters)
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
           assert(pushedFilters.nonEmpty, "No filter is pushed down")
@@ -188,18 +187,16 @@ class ParquetNativeFilterSuite
           assert(parquetFilters.convertibleFilters(sourceFilters) === pushedFilters)
           val pushedParquetFilters = pushedFilters.map { pred =>
             val maybeFilter = parquetFilters.createFilter(pred)
-            println("pred:" + pred.toString)
-            println("maybeFilter:" + maybeFilter.toString)
+            println("pred:" + pred.toString + ", maybeFilter:" + maybeFilter.toString)
             assert(maybeFilter.isDefined, s"Couldn't generate filter predicate for $pred")
             maybeFilter.get
           }
-          println("pushedParquetFilters:" + pushedParquetFilters.hashCode())
           // Doesn't bother checking type parameters here (e.g. `Eq[Integer]`)
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
-          stripSparkFilter(query).show()
-//          checker(stripSparkFilter(query), expected)
+//          stripSparkFilter(query).show()
+          checker(stripSparkFilter(query), expected)
         case op =>
           println(op)
           throw new AnalysisException("Can not match ParquetTable in the query.")
@@ -305,15 +302,15 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
         df.withColumnRenamed("temp", "a"),
         "a", // zero nesting
         (x: Any) => x),
-      (
-        df.withColumn("a", struct(df("temp") as "b")).drop("temp"),
-        "a.b", // one level nesting
-        (x: Any) => Row(x)),
-      (
-        df.withColumn("a", struct(struct(df("temp") as "c") as "b")).drop("temp"),
-        "a.b.c", // two level nesting
-        (x: Any) => Row(Row(x))
-      ),
+//      (
+//        df.withColumn("a", struct(df("temp") as "b")).drop("temp"),
+//        "a.b", // one level nesting
+//        (x: Any) => Row(x)),
+//      (
+//        df.withColumn("a", struct(struct(df("temp") as "c") as "b")).drop("temp"),
+//        "a.b.c", // two level nesting
+//        (x: Any) => Row(Row(x))
+//      ),
 //      (
 //        df.withColumnRenamed("temp", "a.b"),
 //        "`a.b`", // zero nesting with column name containing `dots`
@@ -574,7 +571,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
 
       val floatAttr = df(colName).expr
       assert(df(colName).expr.dataType === FloatType)
-      println("[1]")
+
       checkFilterPredicate(floatAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
       checkFilterPredicate(floatAttr.isNotNull, classOf[NotEq[_]],
         (1 to 4).map(i => Row.apply(resultFun(i))))
@@ -583,19 +580,19 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
       checkFilterPredicate(floatAttr <=> 1, classOf[Eq[_]], resultFun(1))
       checkFilterPredicate(floatAttr =!= 1, classOf[NotEq[_]],
         (2 to 4).map(i => Row.apply(resultFun(i))))
-      println("[2]")
+
       checkFilterPredicate(floatAttr < 2, classOf[Lt[_]], resultFun(1))
       checkFilterPredicate(floatAttr > 3, classOf[Gt[_]], resultFun(4))
       checkFilterPredicate(floatAttr <= 1, classOf[LtEq[_]], resultFun(1))
       checkFilterPredicate(floatAttr >= 4, classOf[GtEq[_]], resultFun(4))
-      println("[3]")
+
       checkFilterPredicate(Literal(1) === floatAttr, classOf[Eq[_]], resultFun(1))
       checkFilterPredicate(Literal(1) <=> floatAttr, classOf[Eq[_]], resultFun(1))
       checkFilterPredicate(Literal(2) > floatAttr, classOf[Lt[_]], resultFun(1))
       checkFilterPredicate(Literal(3) < floatAttr, classOf[Gt[_]], resultFun(4))
       checkFilterPredicate(Literal(1) >= floatAttr, classOf[LtEq[_]], resultFun(1))
       checkFilterPredicate(Literal(4) <= floatAttr, classOf[GtEq[_]], resultFun(4))
-      println("[4]")
+
       checkFilterPredicate(!(floatAttr < 4), classOf[GtEq[_]], resultFun(4))
       checkFilterPredicate(floatAttr < 2 || floatAttr > 3, classOf[Operators.Or],
         Seq(Row(resultFun(1)), Row(resultFun(4))))
