@@ -22,11 +22,12 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.{READ_TYPE, ReadType}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
+import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 
@@ -271,6 +272,27 @@ class CDCSuite
             ("range1", "hash1-13", "insert"), ("range1", "hash1-15", "insert")).toDF("range", "hash", "op"))
         }
       })
+    }
+  }
+
+  test("test stream read") {
+    withTable("tt") {
+      val tablePath = "file:///home/yongpeng/test_table/"
+      Thread.sleep(2000)
+      val timeB = System.currentTimeMillis()
+      val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
+      // Processing time zone time difference between docker and local
+      val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
+      val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
+      val parDesc = "range=range1"
+      spark.readStream.format("lakesoul")
+        .option(LakeSoulOptions.PARTITION_DESC, parDesc)
+        .option(LakeSoulOptions.READ_START_TIME, currentVersion)
+        .load(tablePath)
+        .writeStream.format("console")
+        .trigger(Trigger.ProcessingTime(1000))
+        .start()
+        .awaitTermination()
     }
   }
 }
