@@ -104,12 +104,14 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_single_column(
     builder: NonNull<ReaderConfigBuilder>,
-    column: *const c_char
+    column: *const c_char,
+    datatype: *const c_char,
 ) -> NonNull<ReaderConfigBuilder> {
     unsafe {
         // println!("[From Rust][lakesoul_config_builder_add_single_column], col={}", CStr::from_ptr(column).to_str().unwrap().to_string());
         let column = CStr::from_ptr(column).to_str().unwrap().to_string();
-        convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_column(column))
+        let datatype = CStr::from_ptr(datatype).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_column(column, datatype))
     }
 }
 

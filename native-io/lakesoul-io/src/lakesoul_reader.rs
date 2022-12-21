@@ -99,7 +99,7 @@ impl LakeSoulReaderConfigBuilder {
         self
     }
 
-    pub fn with_column(mut self, col: String) -> Self {
+    pub fn with_column(mut self, col: String, datatype: String) -> Self {
         self.config.columns.push(col);
         self
     }

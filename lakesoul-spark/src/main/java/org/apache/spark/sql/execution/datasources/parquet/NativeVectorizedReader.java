@@ -250,7 +250,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     // Initialize missing columns with nulls.
     for (int i = 0; i < missingColumns.length; i++) {
       if (!missingColumns[i]) {
-        wrapper.addColumn(sparkSchema.fields()[i].name());
+        wrapper.addColumn(sparkSchema.fields()[i].name(), sparkSchema.fields()[i].dataType().typeName());
       }
     }
 
