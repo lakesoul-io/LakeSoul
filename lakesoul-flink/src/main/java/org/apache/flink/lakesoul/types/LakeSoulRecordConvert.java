@@ -112,26 +112,26 @@ public class LakeSoulRecordConvert implements Serializable {
         if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            GenericRowData insert = (GenericRowData) convert(after, afterSchema, RowKind.INSERT);
+            RowData insert = convert(after, afterSchema, RowKind.INSERT);
             RowType rt = toFlinkRowType(afterSchema);
             insert.setRowKind(RowKind.INSERT);
             build.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
         } else if (op == Envelope.Operation.DELETE) {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
             Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            GenericRowData delete = (GenericRowData) convert(before, beforeSchema, RowKind.DELETE);
+            RowData delete = convert(before, beforeSchema, RowKind.DELETE);
             RowType rt = toFlinkRowType(beforeSchema);
             build.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
             delete.setRowKind(RowKind.DELETE);
         } else {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
             Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            GenericRowData beforeData = (GenericRowData) convert(before, beforeSchema, RowKind.UPDATE_BEFORE);
+            RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE);
             RowType beforeRT = toFlinkRowType(beforeSchema);
             beforeData.setRowKind(RowKind.UPDATE_BEFORE);
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            GenericRowData afterData = (GenericRowData) convert(after, afterSchema, RowKind.UPDATE_AFTER);
+            RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER);
             RowType afterRT = toFlinkRowType(afterSchema);
             afterData.setRowKind(RowKind.UPDATE_AFTER);
             if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
@@ -476,20 +476,27 @@ public class LakeSoulRecordConvert implements Serializable {
         switch (fieldSchema.type()) {
             case BOOLEAN:
                 writeBoolean(writer, index, fieldValue);
+                break;
             case INT8:
             case INT16:
             case INT32:
                 writeInt(writer, index, fieldValue);
+                break;
             case INT64:
                 writeLong(writer, index, fieldValue);
+                break;
             case FLOAT32:
                 writeFloat(writer, index, fieldValue);
+                break;
             case FLOAT64:
                 writeDouble(writer, index, fieldValue);
+                break;
             case STRING:
                 writeString(writer, index, fieldValue);
+                break;
             case BYTES:
                 writeBinary(writer, index, fieldValue);
+                break;
             default:
                 throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.type());
         }
@@ -533,24 +540,29 @@ public class LakeSoulRecordConvert implements Serializable {
             case Json.LOGICAL_NAME:
             case EnumSet.LOGICAL_NAME:
                 writeString(writer, index, fieldValue);
+                break;
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
                 writeTime(writer, index, fieldValue, fieldSchema);//time
+                break;
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:           //timestamp
                 writeTimeStamp(writer, index, fieldValue, fieldSchema);
+                break;
             case Decimal.LOGICAL_NAME:
                 writeDecimal(writer, index, fieldValue, fieldSchema);
+                break;
             case Date.SCHEMA_NAME:
                 writeDate(writer, index, fieldValue);//date
+                break;
             case Year.SCHEMA_NAME:
                 writeInt(writer, index, fieldValue);
+                break;
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
                 writeZonedTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
-            case Geometry.LOGICAL_NAME:
-            case Point.LOGICAL_NAME:
+                break;
             default:
                 throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.name());
         }

@@ -1,81 +1,53 @@
+/*
+ *
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *
+ */
+
 package org.apache.flink.lakesoul.test;
 
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
-import com.ververica.cdc.debezium.DebeziumDeserializationSchema;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.typeinfo.TypeHint;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.runtime.kryo.JavaSerializer;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.types.JsonDebeziumDeserializationSchema;
-import org.apache.flink.lakesoul.types.JsonSourceRecord;
+import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
+import org.apache.flink.lakesoul.types.BinarySourceRecord;
+import org.apache.flink.lakesoul.types.LakeSoulRecordConvert;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
-import org.apache.flink.table.data.StringData;
-import org.apache.flink.table.data.binary.BinaryRowData;
-import org.apache.flink.table.data.writer.BinaryRowWriter;
-import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.table.types.logical.VarCharType;
-import org.apache.flink.util.Collector;
 import org.junit.Test;
 
-import java.io.Serializable;
-import java.util.Arrays;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class FlinkSerdeTest {
-
-    static public class BinarySourceRecord implements Serializable {
-
-        public BinarySourceRecord(BinaryRowData rowData, RowType rowType) {
-            this.rowData = rowData;
-            this.rowType = rowType;
-        }
-
-        BinaryRowData rowData;
-        RowType rowType;
-
-        @Override
-        public String toString() {
-            return "BinarySourceRecord{" +
-                    "rowData=" + rowData +
-                    ", rowType=" + rowType.asSerializableString() +
-                    '}';
-        }
-    }
-
-    static class BinarySourceRecordDeserSchema implements DebeziumDeserializationSchema<BinarySourceRecord> {
-
-        @Override
-        public void deserialize(SourceRecord sourceRecord, Collector<BinarySourceRecord> collector) throws Exception {
-            BinaryRowData rowData = new BinaryRowData(2);
-            BinaryRowWriter writer = new BinaryRowWriter(rowData);
-            writer.writeInt(0, 999);
-            writer.writeString(1, StringData.fromString("test string"));
-            writer.complete();
-            RowType rowType = new RowType(Arrays.asList(
-                    new RowType.RowField("int_col", new IntType()),
-                    new RowType.RowField("string_col", new VarCharType())
-                    ));
-            collector.collect(new BinarySourceRecord(rowData, rowType));
-        }
-
-        @Override
-        public TypeInformation<BinarySourceRecord> getProducedType() {
-            return TypeInformation.of(new TypeHint<BinarySourceRecord>() {
-            });
-        }
-    }
 
     @Test
     public void Test() throws Exception {
         StreamExecutionEnvironment env;
+        Configuration conf = new Configuration();
+        conf.set(USE_CDC, true);
+        conf.set(SERVER_TIME_ZONE, "UTC");
         env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
         env.setParallelism(1);
         env.getConfig().registerTypeWithKryoSerializer(RowType.class, JavaSerializer.class);
+        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC), conf.getString(SERVER_TIME_ZONE));
 
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname("localhost")
@@ -87,7 +59,7 @@ public class FlinkSerdeTest {
                 .includeSchemaChanges(true)
                 .scanNewlyAddedTableEnabled(true)
                 .serverTimeZone("UTC")
-                .deserializer(new BinarySourceRecordDeserSchema());
+                .deserializer(new BinaryDebeziumDeserializationSchema(convert));
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
         DataStreamSource<BinarySourceRecord> source = env.fromSource(mySqlSource, WatermarkStrategy.noWatermarks(), "MySQL Source")
