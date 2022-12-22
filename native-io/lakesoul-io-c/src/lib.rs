@@ -121,7 +121,7 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
     filter: *const c_char
 ) -> NonNull<ReaderConfigBuilder> {
     unsafe {
-        println!("[JNI][Rust][lakesoul_config_builder_add_filter], col={}", CStr::from_ptr(filter).to_str().unwrap().to_string());
+        //println!("[JNI][Rust][lakesoul_config_builder_add_filter], col={}", CStr::from_ptr(filter).to_str().unwrap().to_string());
         let filter = CStr::from_ptr(filter).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_filter_str(filter))
     }

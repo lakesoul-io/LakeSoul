@@ -620,6 +620,8 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
             accessor = new DateAccessor((DateDayVector) vector);
         } else if (vector instanceof TimeStampMicroTZVector) {
             accessor = new TimestampAccessor((TimeStampMicroTZVector) vector);
+        } else if (vector instanceof TimeStampMicroVector) {
+            accessor = new TimestampMicroAccessor((TimeStampMicroVector) vector);
         } else if (vector instanceof MapVector) {
             MapVector mapVector = (MapVector) vector;
             accessor = new MapAccessor(mapVector);
@@ -897,6 +899,22 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
             return accessor.get(rowId);
         }
     }
+
+    private static class TimestampMicroAccessor extends ArrowVectorAccessor {
+
+        private final TimeStampMicroVector accessor;
+
+        TimestampMicroAccessor(TimeStampMicroVector vector) {
+            super(vector);
+            this.accessor = vector;
+        }
+
+        @Override
+        final long getLong(int rowId) {
+            return accessor.get(rowId);
+        }
+    }
+
 
     private static class ArrayAccessor extends ArrowVectorAccessor {
 

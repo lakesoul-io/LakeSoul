@@ -89,6 +89,8 @@ class ParquetV2FilterSuite
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
+
+          stripSparkFilter(query).show()
           checker(stripSparkFilter(query), expected)
 
         case _ =>
@@ -197,8 +199,7 @@ class ParquetNativeFilterSuite
 
 //          stripSparkFilter(query).show()
           checker(stripSparkFilter(query), expected)
-        case op =>
-          println(op)
+        case _ =>
           throw new AnalysisException("Can not match ParquetTable in the query.")
       }
     }
@@ -789,7 +790,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
           "2018-06-17 08:28:53.999")
         withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key ->
           ParquetOutputTimestampType.TIMESTAMP_MILLIS.toString) {
-          testTimestampPushdown(millisData, java8Api)
+          // millisecond not supported for org.apache.spark.sql.util.ArrowUtils.fromArrowType
+//          testTimestampPushdown(millisData, java8Api)
         }
 
         // spark.sql.parquet.outputTimestampType = TIMESTAMP_MICROS
@@ -822,51 +824,52 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
     }
   }
 
-//  test("filter pushdown - decimal") {
-//    Seq(
-//      (false, Decimal.MAX_INT_DIGITS), // int32Writer
-//      (false, Decimal.MAX_LONG_DIGITS), // int64Writer
+  test("filter pushdown - decimal") {
+    Seq(
+      (false, Decimal.MAX_INT_DIGITS), // int32Writer
+      (false, Decimal.MAX_LONG_DIGITS), // int64Writer
 //      (true, Decimal.MAX_LONG_DIGITS), // binaryWriterUsingUnscaledLong
-//      (false, DecimalType.MAX_PRECISION) // binaryWriterUsingUnscaledBytes
-//    ).foreach { case (legacyFormat, precision) =>
-//      withSQLConf(SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacyFormat.toString) {
-//        val rdd =
-//          spark.sparkContext.parallelize((1 to 4).map(i => Row(new java.math.BigDecimal(i))))
-//        val dataFrame = spark.createDataFrame(rdd, StructType.fromDDL(s"a decimal($precision, 2)"))
-//        withNestedParquetDataFrame(dataFrame) { case (inputDF, colName, resultFun) =>
-//          implicit val df: DataFrame = inputDF
-//
-//          val decimalAttr: Expression = df(colName).expr
-//          assert(df(colName).expr.dataType === DecimalType(precision, 2))
-//
-//          checkFilterPredicate(decimalAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
-//          checkFilterPredicate(decimalAttr.isNotNull, classOf[NotEq[_]],
-//            (1 to 4).map(i => Row.apply(resultFun(i))))
-//
-//          checkFilterPredicate(decimalAttr === 1, classOf[Eq[_]], resultFun(1))
-//          checkFilterPredicate(decimalAttr <=> 1, classOf[Eq[_]], resultFun(1))
-//          checkFilterPredicate(decimalAttr =!= 1, classOf[NotEq[_]],
-//            (2 to 4).map(i => Row.apply(resultFun(i))))
-//
-//          checkFilterPredicate(decimalAttr < 2, classOf[Lt[_]], resultFun(1))
-//          checkFilterPredicate(decimalAttr > 3, classOf[Gt[_]], resultFun(4))
-//          checkFilterPredicate(decimalAttr <= 1, classOf[LtEq[_]], resultFun(1))
-//          checkFilterPredicate(decimalAttr >= 4, classOf[GtEq[_]], resultFun(4))
-//
-//          checkFilterPredicate(Literal(1) === decimalAttr, classOf[Eq[_]], resultFun(1))
-//          checkFilterPredicate(Literal(1) <=> decimalAttr, classOf[Eq[_]], resultFun(1))
-//          checkFilterPredicate(Literal(2) > decimalAttr, classOf[Lt[_]], resultFun(1))
-//          checkFilterPredicate(Literal(3) < decimalAttr, classOf[Gt[_]], resultFun(4))
-//          checkFilterPredicate(Literal(1) >= decimalAttr, classOf[LtEq[_]], resultFun(1))
-//          checkFilterPredicate(Literal(4) <= decimalAttr, classOf[GtEq[_]], resultFun(4))
-//
-//          checkFilterPredicate(!(decimalAttr < 4), classOf[GtEq[_]], resultFun(4))
-//          checkFilterPredicate(decimalAttr < 2 || decimalAttr > 3, classOf[Operators.Or],
-//            Seq(Row(resultFun(1)), Row(resultFun(4))))
-//        }
-//      }
-//    }
-//  }
+      (false, DecimalType.MAX_PRECISION), // binaryWriterUsingUnscaledBytes
+      (false, Decimal.MAX_LONG_DIGITS+1)
+    ).foreach { case (legacyFormat, precision) =>
+      withSQLConf(SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacyFormat.toString) {
+        val rdd =
+          spark.sparkContext.parallelize((1 to 4).map(i => Row(new java.math.BigDecimal(i))))
+        val dataFrame = spark.createDataFrame(rdd, StructType.fromDDL(s"a decimal($precision, 2)"))
+        withNestedParquetDataFrame(dataFrame) { case (inputDF, colName, resultFun) =>
+          implicit val df: DataFrame = inputDF
+
+          val decimalAttr: Expression = df(colName).expr
+          assert(df(colName).expr.dataType === DecimalType(precision, 2))
+
+          checkFilterPredicate(decimalAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
+          checkFilterPredicate(decimalAttr.isNotNull, classOf[NotEq[_]],
+            (1 to 4).map(i => Row.apply(resultFun(i))))
+
+          checkFilterPredicate(decimalAttr === 1, classOf[Eq[_]], resultFun(1))
+          checkFilterPredicate(decimalAttr <=> 1, classOf[Eq[_]], resultFun(1))
+          checkFilterPredicate(decimalAttr =!= 1, classOf[NotEq[_]],
+            (2 to 4).map(i => Row.apply(resultFun(i))))
+
+          checkFilterPredicate(decimalAttr < 2, classOf[Lt[_]], resultFun(1))
+          checkFilterPredicate(decimalAttr > 3, classOf[Gt[_]], resultFun(4))
+          checkFilterPredicate(decimalAttr <= 1, classOf[LtEq[_]], resultFun(1))
+          checkFilterPredicate(decimalAttr >= 4, classOf[GtEq[_]], resultFun(4))
+
+          checkFilterPredicate(Literal(1) === decimalAttr, classOf[Eq[_]], resultFun(1))
+          checkFilterPredicate(Literal(1) <=> decimalAttr, classOf[Eq[_]], resultFun(1))
+          checkFilterPredicate(Literal(2) > decimalAttr, classOf[Lt[_]], resultFun(1))
+          checkFilterPredicate(Literal(3) < decimalAttr, classOf[Gt[_]], resultFun(4))
+          checkFilterPredicate(Literal(1) >= decimalAttr, classOf[LtEq[_]], resultFun(1))
+          checkFilterPredicate(Literal(4) <= decimalAttr, classOf[GtEq[_]], resultFun(4))
+
+          checkFilterPredicate(!(decimalAttr < 4), classOf[GtEq[_]], resultFun(4))
+          checkFilterPredicate(decimalAttr < 2 || decimalAttr > 3, classOf[Operators.Or],
+            Seq(Row(resultFun(1)), Row(resultFun(4))))
+        }
+      }
+    }
+  }
 
   test("Ensure that filter value matched the parquet file schema") {
     val scale = 2
@@ -905,112 +908,4 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
     }
   }
 
-  test("SPARK-6554: don't push down predicates which reference partition columns") {
-    import testImplicits._
-
-    withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = s"${dir.getCanonicalPath}/part=1"
-        (1 to 3).map(i => (i, i.toString)).toDF("a", "b").write.parquet(path)
-
-        // If the "part = 1" filter gets pushed down, this query will throw an exception since
-        // "part" is not a valid column in the actual Parquet file
-        checkAnswer(
-          spark.read.parquet(dir.getCanonicalPath).filter("part = 1"),
-          (1 to 3).map(i => Row(i, i.toString, 1)))
-      }
-    }
-  }
-
-  test("SPARK-10829: Filter combine partition key and attribute doesn't work in DataSource scan") {
-    import testImplicits._
-
-    withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = s"${dir.getCanonicalPath}/part=1"
-        (1 to 3).map(i => (i, i.toString)).toDF("a", "b").write.parquet(path)
-
-        // If the "part = 1" filter gets pushed down, this query will throw an exception since
-        // "part" is not a valid column in the actual Parquet file
-        checkAnswer(
-          spark.read.parquet(dir.getCanonicalPath).filter("a > 0 and (part = 0 or a > 1)"),
-          (2 to 3).map(i => Row(i, i.toString, 1)))
-      }
-    }
-  }
-
-  test("SPARK-12231: test the filter and empty project in partitioned DataSource scan") {
-    import testImplicits._
-
-    withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = s"${dir.getCanonicalPath}"
-        (1 to 3).map(i => (i, i + 1, i + 2, i + 3)).toDF("a", "b", "c", "d").
-          write.partitionBy("a").parquet(path)
-
-        // The filter "a > 1 or b < 2" will not get pushed down, and the projection is empty,
-        // this query will throw an exception since the project from combinedFilter expect
-        // two projection while the
-        val df1 = spark.read.parquet(dir.getCanonicalPath)
-
-        assert(df1.filter("a > 1 or b < 2").count() == 2)
-      }
-    }
-  }
-
-  test("SPARK-12231: test the new projection in partitioned DataSource scan") {
-    import testImplicits._
-
-    withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        val path = s"${dir.getCanonicalPath}"
-        (1 to 3).map(i => (i, i + 1, i + 2, i + 3)).toDF("a", "b", "c", "d").
-          write.partitionBy("a").parquet(path)
-
-        // test the generate new projection case
-        // when projects != partitionAndNormalColumnProjs
-
-        val df1 = spark.read.parquet(dir.getCanonicalPath)
-
-        checkAnswer(
-          df1.filter("a > 1 or b > 2").orderBy("a").selectExpr("a", "b", "c", "d"),
-          (2 to 3).map(i => Row(i, i + 1, i + 2, i + 3)))
-      }
-    }
-  }
-
-
-  test("Filter applied on merged Parquet schema with new column should work") {
-    import testImplicits._
-    withAllParquetReaders {
-      withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
-        SQLConf.PARQUET_SCHEMA_MERGING_ENABLED.key -> "true") {
-        withTempPath { dir =>
-          val path1 = s"${dir.getCanonicalPath}/table1"
-          (1 to 3).map(i => (i, i.toString)).toDF("a", "b").write.parquet(path1)
-          val path2 = s"${dir.getCanonicalPath}/table2"
-          (1 to 3).map(i => (i, i.toString)).toDF("c", "b").write.parquet(path2)
-
-          // No matter "c = 1" gets pushed down or not, this query should work without exception.
-          val df = spark.read.parquet(path1, path2).filter("c = 1").selectExpr("c", "b", "a")
-          checkAnswer(
-            df,
-            Row(1, "1", null))
-
-          val path3 = s"${dir.getCanonicalPath}/table3"
-          val dfStruct = sparkContext.parallelize(Seq((1, 1))).toDF("a", "b")
-          dfStruct.select(struct("a").as("s")).write.parquet(path3)
-
-          val path4 = s"${dir.getCanonicalPath}/table4"
-          val dfStruct2 = sparkContext.parallelize(Seq((1, 1))).toDF("c", "b")
-          dfStruct2.select(struct("c").as("s")).write.parquet(path4)
-
-          // No matter "s.c = 1" gets pushed down or not, this query should work without exception.
-          val dfStruct3 = spark.read.parquet(path3, path4).filter("s.c = 1")
-            .selectExpr("s")
-          checkAnswer(dfStruct3, Row(Row(null, 1)))
-        }
-      }
-    }
-  }
 }

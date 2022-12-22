@@ -11,9 +11,8 @@ impl Parser {
 
     pub fn parse(filter_str: String, schema: &HashMap<String, String>) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
-        println!("op: {}, left: {}, right: {}", op, left, right);
+        //println!("op: {}, left: {}, right: {}", op, left, right);
         if right == "null" {
-            println!("right=null");
             match op.as_str() {
                 "eq" => {
                     let column = col(left.as_str());
@@ -30,7 +29,7 @@ impl Parser {
             match op.as_str() {
                 "not" => {
                     let inner = Parser::parse(right, schema);
-                    print!("{:?}", inner);
+                    //print!("{:?}", inner);
                     Expr::not(inner)
                 }
                 "eq" => {
@@ -116,29 +115,33 @@ impl Parser {
     fn parse_literal(column: String, value:String, schema: &HashMap<String, String>) -> Expr {
         let datatype = schema.get(&column).unwrap();
         if datatype.len() > 7 && &datatype[..7] == "decimal" {
-            Expr::Literal(ScalarValue::Decimal128(Some(value.parse::<i128>().unwrap()), 9, 2))
+            let comma_offset = datatype.find(',').unwrap();
+            let precision = datatype[8..comma_offset].parse::<u8>().unwrap();
+            let scale = datatype[comma_offset+1..datatype.len()-1].parse::<u8>().unwrap();
+            if precision <= 18 {
+                Expr::Literal(ScalarValue::Decimal128(Some(value.parse::<i128>().unwrap()), precision, scale))
+            } else {
+                let binary_vec = Parser::parse_binary_array(value.as_str()).unwrap();
+                
+
+                let mut arr = [0u8;16];
+                for idx in (0..binary_vec.len()) {
+                    arr[idx + 16 - binary_vec.len()] = binary_vec[idx];
+                }
+                Expr::Literal(ScalarValue::Decimal128(Some(i128::from_be_bytes(arr)), precision, scale))
+            }
         } else {
             match datatype.as_str() {
                 "boolean" => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
-                "binary" => {
-                    let left_bracket_pos = value.find('[').unwrap_or(0);
-                    let right_bracket_pos = value.find(']').unwrap_or(0);
-                    if left_bracket_pos == 0 {
-                        Expr::Literal(ScalarValue::Binary(None))
-                    } else if left_bracket_pos + 1 == right_bracket_pos {
-                        Expr::Literal(ScalarValue::Binary(Some(Vec::<u8>::new())))
-                    } else {
-                        let value = value.as_str()[left_bracket_pos+1..right_bracket_pos].to_string().replace(" ", "")
-                            .split(",").collect::<Vec<&str>>().iter().map(|s| s.parse::<u8>().unwrap()).collect::<Vec<u8>>();
-                        Expr::Literal(ScalarValue::Binary(Some(value)))
-                    }
-                }
+                "binary" => Expr::Literal(ScalarValue::Binary(Parser::parse_binary_array(value.as_str()))),
                 "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
                 "double" => Expr::Literal(ScalarValue::Float64(Some(value.parse::<f64>().unwrap()))),
                 "byte" => Expr::Literal(ScalarValue::Int8(Some(value.parse::<i8>().unwrap()))),
                 "short" => Expr::Literal(ScalarValue::Int16(Some(value.parse::<i16>().unwrap()))),
                 "integer" => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
                 "long" => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
+                "date" => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
+                "timestamp" => Expr::Literal(ScalarValue::TimestampMicrosecond(Some(value.parse::<i64>().unwrap()), None)),
                 "string" => {
                     // value will be wrapped by Binary("value")
                     let value = value.as_str()[8..value.len()-2].to_string();
@@ -148,6 +151,30 @@ impl Parser {
             }
         }
 
+    }
+
+    fn parse_binary_array(value: &str) -> Option<Vec<u8>>{
+        let left_bracket_pos = value.find('[').unwrap_or(0);
+        let right_bracket_pos = value.find(']').unwrap_or(0);
+        if left_bracket_pos == 0 {
+            None
+        } else if left_bracket_pos + 1 == right_bracket_pos {
+            Some(Vec::<u8>::new())
+        } else {
+            Some(value[left_bracket_pos+1..right_bracket_pos].to_string().replace(" ", "")
+                .split(",")
+                .collect::<Vec<&str>>()
+                .iter()
+                .map(|s| s.parse::<i16>().unwrap())
+                .map(|s:i16| 
+                    if s < 0 {
+                        (s + 256) as u8
+                    } else {
+                        s as u8
+                    }
+                )
+                .collect::<Vec<u8>>())
+        }
     }
 
 

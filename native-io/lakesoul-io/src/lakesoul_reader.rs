@@ -125,10 +125,8 @@ impl LakeSoulReaderConfigBuilder {
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
         // self.config.filters = filters;
-        println!("with_filter_str, {}", filter_str);
         let expr = FilterParser::parse(filter_str, &self.config.schema);
         self.config.filters.push(expr);
-        println!("{:?}", self.config.schema);
         self
     }
 

@@ -87,7 +87,6 @@ public class NativeIOWrapper implements AutoCloseable {
     public void addFilter(String filter){
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
-            System.out.println("[JNI][JAVA]addFilter "+filter);
             Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, filter);
             readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(readerConfigBuilder, ptr);
         }
