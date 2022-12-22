@@ -49,7 +49,7 @@ pub struct LakeSoulReaderConfig {
     // selecting columns
     columns: Vec<String>,
     schema: HashMap<String, String>,
-    
+
     // filtering predicates
     filters: Vec<Expr>,
     batch_size: usize,
