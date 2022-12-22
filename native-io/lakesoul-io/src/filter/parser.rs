@@ -121,6 +121,16 @@ impl Parser {
                 "boolean" => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
                 "binary" => Expr::Literal(ScalarValue::Binary(Some(value.as_bytes().to_vec()))),
                 "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
+                "double" => Expr::Literal(ScalarValue::Float64(Some(value.parse::<f64>().unwrap()))),
+                "byte" => Expr::Literal(ScalarValue::Int8(Some(value.parse::<i8>().unwrap()))),
+                "short" => Expr::Literal(ScalarValue::Int16(Some(value.parse::<i16>().unwrap()))),
+                "integer" => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
+                "long" => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
+                "string" => {
+                    // value will be wrapped by Binary("value")
+                    let value = value.as_str()[8..value.len()-2].to_string();
+                    Expr::Literal(ScalarValue::Utf8(Some(value)))
+                }
                 _ => Expr::Literal(ScalarValue::Utf8(Some(value)))
             }
         }

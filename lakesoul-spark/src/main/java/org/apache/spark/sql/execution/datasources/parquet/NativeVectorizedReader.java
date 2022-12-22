@@ -266,7 +266,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     if (filter != null) {
-      wrapper.addFilter(filter.toString());
+      wrapper.addFilter(filterEncode(filter));
     }
 
     wrapper.createReader();
@@ -274,6 +274,10 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     totalRowCount= 0;
     nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
+  }
+
+  private String filterEncode(FilterPredicate filter) {
+    return filter.toString();
   }
 
   // Creates a columnar batch that includes the schema from the data files and the additional
