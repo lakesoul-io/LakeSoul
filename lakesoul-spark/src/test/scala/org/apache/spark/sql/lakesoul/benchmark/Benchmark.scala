@@ -13,7 +13,7 @@ object Benchmark {
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
 
-  val url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+  val url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
@@ -73,11 +73,6 @@ object Benchmark {
       .option("dbtable", table).option("user", mysqlUserName).option("password", mysqlPassword).load()
     val lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
-//        jdbcDF.printSchema()
-//        lakesoulDF.printSchema()
-
-//        jdbcDF.show(false)
-//        lakesoulDF.show(false)
     println(printLine + table + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }
 }
