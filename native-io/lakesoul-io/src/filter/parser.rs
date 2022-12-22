@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use datafusion::logical_expr::{col, lit, Expr, Operator};
+use datafusion::physical_expr::unicode_expressions::left;
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {
@@ -119,7 +120,19 @@ impl Parser {
         } else {
             match datatype.as_str() {
                 "boolean" => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
-                "binary" => Expr::Literal(ScalarValue::Binary(Some(value.as_bytes().to_vec()))),
+                "binary" => {
+                    let left_bracket_pos = value.find('[').unwrap_or(0);
+                    let right_bracket_pos = value.find(']').unwrap_or(0);
+                    if left_bracket_pos == 0 {
+                        Expr::Literal(ScalarValue::Binary(None))
+                    } else if left_bracket_pos + 1 == right_bracket_pos {
+                        Expr::Literal(ScalarValue::Binary(Some(Vec::<u8>::new())))
+                    } else {
+                        let value = value.as_str()[left_bracket_pos+1..right_bracket_pos].to_string().replace(" ", "")
+                            .split(",").collect::<Vec<&str>>().iter().map(|s| s.parse::<u8>().unwrap()).collect::<Vec<u8>>();
+                        Expr::Literal(ScalarValue::Binary(Some(value)))
+                    }
+                }
                 "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
                 "double" => Expr::Literal(ScalarValue::Float64(Some(value.parse::<f64>().unwrap()))),
                 "byte" => Expr::Literal(ScalarValue::Int8(Some(value.parse::<i8>().unwrap()))),
@@ -142,6 +155,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::result::Result;
     use crate::filter::Parser;
 
@@ -149,14 +163,27 @@ mod tests {
     fn test_filter_parser() -> Result<(), String> {
         let s = String::from("or(lt(a.b.c, 2.0), gt(a.b.c, 3.0))");
         // let parser = Parser::new();
-        Parser::parse(s);
+        // Parser::parse(s);
         Ok(())
     }
 
     #[test]
     fn test_filter_parser_not() -> Result<(), String> {
         let s = String::from("not(eq(a.c, 2.9))");
-        Parser::parse(s);
+        // Parser::parse(s);
+        Ok(())
+    }
+
+    #[test]
+    fn test_filter_parser_binary() -> Result<(), String> {
+        let mut schema= HashMap::<String, String>::new();
+        schema.insert("a".to_string(), "binary".to_string());
+        let s = String::from("eq(a, Binary{0 reused bytes, null})");
+        Parser::parse(s, &schema);
+        let s = String::from("eq(a, Binary{0 reused bytes, []})");
+        Parser::parse(s, &schema);
+        let s = String::from("eq(a, Binary{3 reused bytes, [49, 50, 51]})");
+        Parser::parse(s, &schema);
         Ok(())
     }
 }
