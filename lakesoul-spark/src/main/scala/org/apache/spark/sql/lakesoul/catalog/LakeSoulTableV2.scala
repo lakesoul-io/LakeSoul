@@ -136,10 +136,8 @@ case class LakeSoulTableV2(spark: SparkSession,
           }
         })
     }
-
     val newOptions = options.asCaseSensitiveMap().asScala ++
       mergeOperatorInfo.getOrElse(Map.empty[String, String])
-
     LakeSoulScanBuilder(spark, fileIndex, schema(), dataSchema,
       new CaseInsensitiveStringMap(newOptions.asJava), snapshot.getTableInfo)
   }
@@ -149,9 +147,9 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   /**
-    * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
-    * paths.
-    */
+   * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
+   * paths.
+   */
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
@@ -203,7 +201,7 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // to this data source relation. This is the behavior for InsertInto
         val spark = SparkSession.active
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, spark)))
+          session, LogicalRelation(SparkUtil.createRelation(Nil, snapshotManagement, spark)))
       }
     }
   }

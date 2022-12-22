@@ -41,14 +41,16 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              conditionString: String,
                              force: Boolean,
                              mergeOperatorInfo: Map[String, String],
-                             hiveTableName: String = "")
+                             hiveTableName: String = "",
+                             hivePartitionName: String = ""
+                            )
   extends RunnableCommand with PredicateHelper with Logging {
 
 
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
                                  partitionInfo: PartitionInfo): Boolean = {
-    partitionInfo.read_files.length >=1
+    partitionInfo.read_files.length >= 1
   }
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
@@ -65,7 +67,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
-    if(scan.isInstanceOf[ParquetScan]){
+    if (scan.isInstanceOf[ParquetScan]) {
       throw LakeSoulErrors.CompactionException(table_name = table.name())
     }
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
@@ -97,8 +99,14 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
       Utils.tryWithSafeFinally({
         spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
-        spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
-        spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+        if(hivePartitionName.nonEmpty){
+          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($hivePartitionName)")
+          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($hivePartitionName) location '${path.toString}/$partitionStr'")
+        }else{
+          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
+          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+        }
+
       }) {
         spark.sessionState.catalogManager.setCurrentCatalog(currentCatalog)
       }

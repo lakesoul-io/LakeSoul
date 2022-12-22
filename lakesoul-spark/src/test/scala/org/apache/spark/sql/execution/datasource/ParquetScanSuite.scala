@@ -102,7 +102,7 @@ class ParquetScanSuite extends QueryTest
     })
   }
 
-  test("It should use OnePartitionMergeBucketScan when reading one compacted partition") {
+  test("It should use ParquetScan when reading one compacted partition") {
     withTempDir(dir => {
       val tablePath = dir.getCanonicalPath
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3))
@@ -119,7 +119,7 @@ class ParquetScanSuite extends QueryTest
       val plan = table.toDF.queryExecution.toString()
 
       logInfo(plan)
-      assert(plan.contains("OnePartitionMergeBucketScan"))
+      assert(plan.contains("ParquetScan"))
 
     })
   }

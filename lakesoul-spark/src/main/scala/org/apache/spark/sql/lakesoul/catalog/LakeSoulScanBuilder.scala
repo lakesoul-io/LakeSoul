@@ -121,8 +121,12 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       parquetScan(partitionFilters, dataFilters)
     }
     else if (onlyOnePartition) {
-      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+        parquetScan(partitionFilters, dataFilters)
+      } else {
+        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
+          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      }
     }
     else {
       if (sparkSession.sessionState.conf

@@ -1,19 +1,3 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
@@ -32,12 +16,10 @@ import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
 import java.util.TimeZone
-import scala.language.implicitConversions
 
-class CDCSuite
-  extends QueryTest
-    with SharedSparkSession
-    with LakeSoulTestUtils {
+class ReadSuite extends QueryTest
+  with SharedSparkSession
+  with LakeSoulTestUtils {
 
   import testImplicits._
 
@@ -71,91 +53,7 @@ class CDCSuite
     SnapshotManagement(path)
   }
 
-  test("test cdc with MultiPartitionMergeScan ") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
-        Seq(("range1", "hash1", "insert"), ("range2", "hash2", "insert"), ("range3", "hash2", "insert"),
-          ("range4", "hash2", "insert"), ("range4", "hash4", "insert"), ("range3", "hash3", "insert"))
-          .toDF("range", "hash", "op")
-          .write
-          .mode("append")
-          .format("lakesoul")
-          .option("rangePartitions", "range")
-          .option("hashPartitions", "hash")
-          .option("hashBucketNum", "2")
-          .option("lakesoul_cdc_change_column", "op")
-          .partitionBy("range", "op")
-          .save(tablePath)
-        val lake = LakeSoulTable.forPath(tablePath);
-        val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
-          .toDF("range", "hash", "op")
-        lake.upsert(tableForUpsert)
-        val data1 = spark.read.format("lakesoul").load(tablePath)
-        val data2 = data1.select("range", "hash", "op")
-        checkAnswer(data2, Seq(("range2", "hash2", "insert"), ("range3", "hash2", "insert"), ("range4", "hash2", "insert"), ("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
-      })
-    }
-  }
-  test("test cdc with OnePartitionMergeBucketScan ") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
-        Seq(("range1", "hash1", "insert"), ("range1", "hash2", "insert"), ("range1", "hash3", "insert"), ("range1", "hash4", "insert"), ("range1", "hash5", "insert"))
-          .toDF("range", "hash", "op")
-          .write
-          .mode("append")
-          .format("lakesoul")
-          .option("rangePartitions", "range")
-          .option("hashPartitions", "hash")
-          .option("hashBucketNum", "2")
-          .option("lakesoul_cdc_change_column", "op")
-          .partitionBy("range", "op")
-          .save(tablePath)
-        val lake = LakeSoulTable.forPath(tablePath);
-        val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range1", "hash3", "update"), ("range1", "hash5", "insert"))
-          .toDF("range", "hash", "op")
-        lake.upsert(tableForUpsert)
-        val data1 = spark.read.format("lakesoul").load(tablePath)
-        val data2 = data1.select("range", "hash", "op")
-        checkAnswer(data2, Seq(("range1", "hash2", "insert"), ("range1", "hash3", "update"), ("range1", "hash4", "insert"), ("range1", "hash5", "insert")).toDF("range", "hash", "op"))
-      })
-    }
-  }
-
-  test("test cdc with MultiPartitionMergeBucketScan ") {
-    withTable("tt") {
-      withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
-        withSQLConf(
-          LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
-          Seq(("range1", "hash1", "insert"), ("range1", "hash2", "insert"), ("range1", "hash3", "insert"), ("range2", "hash3", "insert"), ("range2", "hash4", "insert"))
-            .toDF("range", "hash", "op")
-            .write
-            .mode("append")
-            .format("lakesoul")
-            .option("rangePartitions", "range")
-            .option("hashPartitions", "hash")
-            .option("hashBucketNum", "2")
-            .option("lakesoul_cdc_change_column", "op")
-            .partitionBy("range", "op")
-            .save(tablePath)
-          val lake = LakeSoulTable.forPath(tablePath);
-          val tableForUpsert = Seq(("range1", "hash1", "update"), ("range1", "hash3", "update"), ("range2", "hash1", "insert"), ("range2", "hash3", "update"))
-            .toDF("range", "hash", "op")
-          lake.upsert(tableForUpsert)
-          val tableForUpsert1 = Seq(("range1", "hash1", "delete"), ("range1", "hash4", "update"), ("range2", "hash4", "insert"), ("range2", "hash3", "delete"))
-            .toDF("range", "hash", "op")
-          lake.upsert(tableForUpsert1)
-          val data1 = spark.read.format("lakesoul").load(tablePath)
-          val data2 = data1.select("range", "hash", "op")
-          checkAnswer(data2, Seq(("range1", "hash2", "insert"), ("range2", "hash1", "insert"), ("range1", "hash3", "update"), ("range2", "hash4", "insert"), ("range1", "hash4", "update")).toDF("range", "hash", "op"))
-        }
-      })
-    }
-  }
-
-  test("test cdc with snapshot") {
+  test("test snapshot read") {
     withTable("tt") {
       withTempDir(dir => {
         val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
@@ -169,8 +67,7 @@ class CDCSuite
             .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-            .option("lakesoul_cdc_change_column", "op")
-            .partitionBy("range", "op")
+            .partitionBy("range")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-5", "insert"),
@@ -188,7 +85,6 @@ class CDCSuite
           val tableForUpsert2 = Seq(("range1", "hash1-3", "insert"), ("range2", "hash2-3", "insert"))
             .toDF("range", "hash", "op")
           lake.upsert(tableForUpsert2)
-
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
           // Processing time zone time difference between docker and local
           val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionA)
@@ -203,14 +99,14 @@ class CDCSuite
             .option(LakeSoulOptions.READ_TYPE, ReadType.SNAPSHOT_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
-          checkAnswer(data1, Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
-          checkAnswer(data2, Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data1, Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
+          checkAnswer(data2, Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert")).toDF("range", "hash", "op"))
         }
       })
     }
   }
 
-  test("test cdc with incremental") {
+  test("test incremental read") {
     withTable("tt") {
       withTempDir(dir => {
         val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
@@ -224,8 +120,7 @@ class CDCSuite
             .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-            .option("lakesoul_cdc_change_column", "op")
-            .partitionBy("range", "op")
+            .partitionBy("range")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
@@ -237,7 +132,6 @@ class CDCSuite
           Thread.sleep(2000)
           val timeB = System.currentTimeMillis()
           lake.upsert(tableForUpsert1)
-
           val tableForUpsert2 = Seq(("range1", "hash1-13", "insert"), ("range2", "hash2-13", "update"))
             .toDF("range", "hash", "op")
           Thread.sleep(3000)
@@ -247,7 +141,6 @@ class CDCSuite
           lake.upsert(tableForUpsert3)
           Thread.sleep(1000)
           val timeC = System.currentTimeMillis()
-
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           // Processing time zone time difference between docker and local
