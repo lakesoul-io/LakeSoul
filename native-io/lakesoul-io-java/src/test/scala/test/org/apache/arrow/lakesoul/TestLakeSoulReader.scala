@@ -50,7 +50,7 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
 
 
 
-        wrapper.free_lakesoul_reader()
+        wrapper.close()
     }
 
 //    test("test LakeSoulArrowReader with multi file") {

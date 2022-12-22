@@ -7,7 +7,7 @@ import org.apache.arrow.vector.VectorSchemaRoot
 
 import scala.concurrent.ExecutionContext.Implicits._
 import scala.concurrent.duration.DurationInt
-import scala.concurrent.{Await, Future, Promise}
+import scala.concurrent.{Await, Future, Promise, TimeoutException}
 
 case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
                                timeout: Int = 2000) extends AutoCloseable{
@@ -50,11 +50,21 @@ case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
             finish()
           }
         },  consumerSchema.memoryAddress, consumerArray.memoryAddress)
-        Await.result(p.future, timeout milli) match {
-          case Some(_) => true
-          case _ => {
+        try {
+          Await.result(p.future, timeout milli) match {
+            case Some(_) => true
+            case _ => {
+              false
+            }
+          }
+        } catch {
+          case e: TimeoutException => {
+            println(s"wrapper.nextBatch running exceed $timeout mills; exit")
+            System.exit(1209)
             false
           }
+          case ex: Throwable =>println("found a unknown exception"+ ex)
+          false
         }
       } else {
         false
@@ -73,6 +83,6 @@ case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
   }
 
   override def close(): Unit = {
-    wrapper.free_lakesoul_reader()
+    wrapper.close()
   }
 }

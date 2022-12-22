@@ -199,7 +199,7 @@ trait NativeIOReaderTests
   test("[Large file test]without hash_key and range_key") {
     withTempDir { dir =>
       val tablePath = dir.toString
-      val testSrcFilePath = "/Users/ceng/base-0-0.parquet"    // ccf data_contest base file
+      val testSrcFilePath = "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"    // ccf data_contest base file
       val df = spark
         .read
         .format("parquet")
@@ -213,21 +213,46 @@ trait NativeIOReaderTests
       println("write lakesoul table done")
       val start = System.nanoTime()
 //      val table = spark.read.format("lakesoul").load(tablePath)
-      val loop=10
-      for (_ <- 1 to loop) {
+      spark.sparkContext.getConf.set("spark.dmetasoul.lakesoul.native.io.prefetch.buffer.size", "64")
+      val loop=20
+      for (i <- 1 to loop) {
+        println(i)
         assert(spark.read.format("lakesoul")
           .load(tablePath)
           .select("*")
-          .where(col("uuid").isNotNull
-              and col("ip").isNotNull
-              and col("hostname").isNotNull
-              and col("requests").isNotNull
-              and col("name").isNotNull
-              and col("job").isNotNull
-              and col("city").isNotNull
-              and col("phonenum").isNotNull
+          .where(
+            col("str0").isNotNull
+              and col("str1").isNotNull
+              and col("str2").isNotNull
+              and col("str3").isNotNull
+              and col("str4").isNotNull
+              and col("str5").isNotNull
+              and col("str6").isNotNull
+              and col("str7").isNotNull
+              and col("str8").isNotNull
+              and col("str9").isNotNull
+              and col("str10").isNotNull
+              and col("str11").isNotNull
+              and col("str12").isNotNull
+              and col("str13").isNotNull
+              and col("str14").isNotNull
+              and col("int0").isNotNull
+              and col("int1").isNotNull
+              and col("int2").isNotNull
+              and col("int3").isNotNull
+              and col("int4").isNotNull
+              and col("int5").isNotNull
+              and col("int6").isNotNull
+              and col("int7").isNotNull
+              and col("int8").isNotNull
+              and col("int9").isNotNull
+              and col("int10").isNotNull
+              and col("int11").isNotNull
+              and col("int12").isNotNull
+              and col("int13").isNotNull
+              and col("int14").isNotNull
           )
-          .count()==10000000)
+          .count()==2592000)
         sql("CLEAR CACHE")
       }
 
@@ -253,45 +278,7 @@ trait NativeIOReaderTests
         .save(tablePath)
       println("write lakesoul table done")
       //      val table = spark.read.format("lakesoul").load(tablePath)
-      for (_ <- 1 to 2) {
-        assert(spark.read.format("lakesoul")
-          .load(tablePath)
-          .select("*")
-          .where(col("uuid").isNotNull
-            and col("ip").isNotNull
-            and col("hostname").isNotNull
-            and col("requests").isNotNull
-            and col("name").isNotNull
-            and col("job").isNotNull
-            and col("city").isNotNull
-            and col("phonenum").isNotNull
-          )
-          .count()==10000000)
-        sql("CLEAR CACHE")
-      }
-
-    }
-  }
-
-  test("[Large file test]with hash_key") {
-    withTempDir { dir =>
-      val tablePath = dir.toString
-      val testSrcFilePath = "/Users/ceng/base-0-0.parquet"    // ccf data_contest base file
-      val df = spark
-        .read
-        .format("parquet")
-        .load(testSrcFilePath)
-        .toDF()
-      df
-        .write
-        .format("lakesoul")
-        .mode("Overwrite")
-        .option("hashPartitions","uuid")
-        .option("hashBucketNum",2)
-        .save(tablePath)
-      println("write lakesoul table done")
-      //      val table = spark.read.format("lakesoul").load(tablePath)
-      for (_ <- 1 to 2) {
+      for (_ <- 1 to 10) {
         assert(spark.read.format("lakesoul")
           .load(tablePath)
           .select("*")
@@ -384,10 +371,11 @@ trait NativeIOReaderTests
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
       .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9002")
       .config("fs.s3a.endpoint", "http://localhost:9002")
-      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")
+//      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")
+      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
 
     val spark = builder.getOrCreate()
-    println(spark.sessionState.conf.getConfString("spark.hadoop.fs.s3a.endpoint"))
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
 //    withTempDir { dir =>
 //      val tablePath = dir.toString
       val df = spark
@@ -418,6 +406,7 @@ class NativeIOReaderSuite
     session.conf.set("spark.sql.parquet.columnarReaderBatchSize", 8192)
     session.conf.set("spark.master", "local[3]")
     session.conf.set("spark.default.parallelism","2")
+//    session.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, false)
     session.sparkContext.setLogLevel("ERROR")
 
     session

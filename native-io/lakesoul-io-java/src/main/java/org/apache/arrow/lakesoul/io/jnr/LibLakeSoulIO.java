@@ -52,4 +52,6 @@ public interface LibLakeSoulIO {
     void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, JavaCallback callback);
 
     void free_lakesoul_reader(Pointer reader);
+
+    void free_tokio_runtime(Pointer runtime);
 }

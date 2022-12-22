@@ -117,9 +117,9 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
       override def get(): ColumnarBatch = {
         count+= 1
-        if (count % 100 == 0) {
+        if (count % 10 == 0) {
           val current = System.nanoTime()
-//          println(s"fetch 100 batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
+//          println(s"fetch 10 batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
           multiBatchBefore = current
         }
         val start = System.nanoTime()

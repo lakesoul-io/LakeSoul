@@ -161,7 +161,7 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
     value: *const c_char,
 ) -> NonNull<ReaderConfigBuilder> {
     unsafe {
-        println!("Setting object_store_option:{}={}", CStr::from_ptr(key).to_str().unwrap().to_string(), CStr::from_ptr(value).to_str().unwrap().to_string());
+        // println!("Setting object_store_option:{}={}", CStr::from_ptr(key).to_str().unwrap().to_string(), CStr::from_ptr(value).to_str().unwrap().to_string());
         let key = CStr::from_ptr(key).to_str().unwrap().to_string();
         let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_object_store_option(key, value))
@@ -338,9 +338,9 @@ pub extern "C" fn create_tokio_runtime_from_builder(
 
 
 #[no_mangle]
-pub extern "C" fn free_tokio_runtime(mut reader: NonNull<Result<Reader>>) {
+pub extern "C" fn free_tokio_runtime(mut runtime: NonNull<Result<TokioRuntime>>) {
     unsafe {
-        
+        // runtime.as_mut().free::<Runtime>();
     }
 }
 

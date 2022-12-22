@@ -40,6 +40,7 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
+import scala.Int;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -256,7 +257,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       }
     }
 
-    wrapper.setThreadNum(1);
     wrapper.setBatchSize(capacity);
     wrapper.setBufferSize(prefetchBufferSize);
     wrapper.setThreadNum(threadNum);
@@ -271,6 +271,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     wrapper.createReader();
     wrapper.startReader(bool -> {});
+
 
     totalRowCount= 0;
     nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
@@ -345,6 +346,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 //          System.out.println(totalRowCount);
         }
         // fill nextVectorSchemaRoot into columnarBatch
+//        ColumnVector[] resultColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
         WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
         WritableColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
         System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);

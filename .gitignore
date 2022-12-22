@@ -11,6 +11,7 @@
 .DS_Store
 *.iml
 /native-io/lakesoul-io-java/target/
+/aws-test/target/
 /native-io/Cargo.lock
 /native-io/lakesoul-io-java/.idea/
 dependency-reduced-pom.xml

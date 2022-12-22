@@ -1,0 +1,1 @@
+docker run --net lakesoul-compose-huazeng-local-env_default --rm -t -v /home/huazeng/large_file.parquet:/opt/spark/work-dir/large.parquet swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2 aws --no-sign-request --endpoint-url http://minio:9000 s3 cp /opt/spark/work-dir/large.parquet s3://ccf-datalake-contest/large.parquet

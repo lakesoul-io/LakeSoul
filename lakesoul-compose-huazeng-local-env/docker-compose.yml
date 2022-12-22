@@ -1,0 +1,29 @@
+version: '3'
+
+services:
+  lakesoul-meta-db:
+    image: swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: lakesoul_test
+      POSTGRES_USER: lakesoul_test
+      POSTGRES_DB: lakesoul_test
+    volumes:
+      - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
+      - ./meta_cleanup.sql:/meta_cleanup.sql
+
+  minio:
+    image: swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/bitnami-minio:2022.8.22-debian-11-r1
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_DEFAULT_BUCKETS: ccf-datalake-contest:public
+      MINIO_ROOT_USER: minioadmin1
+      MINIO_ROOT_PASSWORD: minioadmin1
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    hostname: minio
