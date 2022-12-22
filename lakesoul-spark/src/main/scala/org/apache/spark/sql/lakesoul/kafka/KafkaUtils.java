@@ -1,6 +1,7 @@
-package org.apache.spark.sql.lakesoul.kafka.utils;
+package org.apache.spark.sql.lakesoul.kafka;
 
 import org.apache.avro.generic.GenericRecord;
+import org.apache.commons.lang.StringUtils;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.DescribeTopicsResult;
 import org.apache.kafka.clients.admin.KafkaAdminClient;
@@ -17,34 +18,40 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Pattern;
 
-public class KafkaSchemaRegistryUtils {
+public class KafkaUtils {
 
-    private static Properties props = new Properties();
-    static {
-        props.put("bootstrap.servers", "localhost:9092");
-        props.put("group.id", "Test");
-        props.put("enable.auto.commit", false);//注意这里设置为手动提交方式
+    private KafkaConsumer consumer;
+    private AdminClient kafkaClient;
+
+    public KafkaUtils(String bootstrapServers, String schemaRegistryUrl) {
+
+        Properties props = new Properties();
+        props.put("bootstrap.servers", bootstrapServers);
+        props.put("group.id", "LakeSoulKafkaUtils");
+        props.put("enable.auto.commit", false);
         props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        props.put("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
-        // 添加schema服务的地址，用于获取schema
-        props.put("schema.registry.url", "http://localhost:8081");
+        if (StringUtils.isNotBlank(schemaRegistryUrl)) {
+            props.put("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
+            props.put("schema.registry.url", schemaRegistryUrl);
+        } else {
+            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        }
+
+        consumer = new KafkaConsumer(props);
+        kafkaClient = KafkaAdminClient.create(props);
     }
 
-    static KafkaConsumer<String, GenericRecord> consumer = new KafkaConsumer<>(props);
-    static AdminClient client = KafkaAdminClient.create(props);
-
-    public static Set<String> kafkaListTopics(String pattern){
+    public Set<String> kafkaListTopics(String pattern){
 
         Set topics = null;
         try {
             // 获取 topic 列表
-            topics = client.listTopics().names().get();
+            topics = kafkaClient.listTopics().names().get();
         } catch (InterruptedException e) {
             e.printStackTrace();
         } catch (ExecutionException e) {
             e.printStackTrace();
         }
-//        System.out.println(topics);
         Set<String> rsSet = new HashSet<>();
         for (Object topic : topics) {
             if (Pattern.matches(pattern, topic.toString())) {
@@ -54,11 +61,11 @@ public class KafkaSchemaRegistryUtils {
         return rsSet;
     }
 
-    public static Map<String, String> getTopicMsg(String topicPattern) {
+    public Map<String, String> getTopicMsg(String topicPattern) {
         Map<String, String> rsMap = new HashMap<>();
         Set<String> topics = kafkaListTopics(topicPattern);
 
-        DescribeTopicsResult describeTopicsResult = client.describeTopics(topics);
+        DescribeTopicsResult describeTopicsResult = kafkaClient.describeTopics(topics);
         Map<String, KafkaFuture<TopicDescription>> stringKafkaFutureMap = describeTopicsResult.values();
 
         for (String topic : topics) {
@@ -73,9 +80,9 @@ public class KafkaSchemaRegistryUtils {
                     if (current >= 1) {
                         consumer.seek(topicPartition, current-1);
                         ConsumerRecords<String, GenericRecord> records = consumer.poll(Duration.ofSeconds(1));
-                        for (ConsumerRecord<String, GenericRecord> record : records) {
+                        for (ConsumerRecord record : records) {
                             rsMap.put(topic, record.value().toString());
-//                            System.out.printf("offset = %d, key = %s, value = %s%n", record.offset(), record.key(), record.value());
+                            //System.out.printf("offset = %d, key = %s, value = %s%n", record.offset(), record.key(), record.value());
                         }
                         break;
                     }
@@ -87,9 +94,5 @@ public class KafkaSchemaRegistryUtils {
             }
         }
         return rsMap;
-    }
-
-    public static void main(String[] args) {
-        System.out.println(getTopicMsg("test.*"));
     }
 }
