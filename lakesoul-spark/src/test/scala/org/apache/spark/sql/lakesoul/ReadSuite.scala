@@ -201,13 +201,6 @@ class ReadSuite extends QueryTest
               .toDF("id", "range", "hash", "op")
             Thread.sleep(3000)
             lake.upsert(tableForUpsert2)
-            val tableForUpsert3 = Seq((11, "range1", "hash1-15", "insert"), (12, "range2", "hash2-15", "update"))
-              .toDF("id", "range", "hash", "op")
-            lake.upsert(tableForUpsert3)
-            val tableForUpsert4 = Seq((13, "range1", "hash1-16", "insert"), (14, "range2", "hash2-16", "update"))
-              .toDF("id", "range", "hash", "op")
-            Thread.sleep(3000)
-            lake.upsert(tableForUpsert4)
             Thread.sleep(3000)
           }
         })
@@ -229,12 +222,22 @@ class ReadSuite extends QueryTest
       val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
       val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
       val parDesc = "range=range1"
+      var count = 0
       val query = spark.readStream.format("lakesoul")
         .option(LakeSoulOptions.PARTITION_DESC, parDesc)
         .option(LakeSoulOptions.READ_START_TIME, currentVersion)
         .load(tablePath)
       query
-        .writeStream.format("console")
+        .writeStream.foreachBatch { (query: DataFrame, _: Long) => {
+        count += 1
+        val data = query.select("*")
+        if (count == 1) {
+          checkAnswer(data, Seq((3, "hash1-2", "update", "range1"), (4, "hash1-5", "insert", "range1")).toDF("id", "range", "hash", "op"))
+        } else if (count == 2) {
+          checkAnswer(data, Seq((7, "hash1-1", "delete", "range1")).toDF("id", "range", "hash", "op"))
+        }
+      }
+      }
         .trigger(Trigger.ProcessingTime(1000))
         .start()
         .awaitTermination()
