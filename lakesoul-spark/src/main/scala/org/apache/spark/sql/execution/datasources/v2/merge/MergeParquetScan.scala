@@ -326,7 +326,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     } else {
       val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
       val startVersion = MetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, options.get(LakeSoulOptions.PARTITION_DESC), startTime / 1000)
-      LongOffset(0L)
+      LongOffset(startVersion)
     }
   }
 
@@ -344,8 +344,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
-    println("startVersion : " + start)
-    println("endVersion : " + end)
     snapshotManagement.updateSnapshotForVersion(options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""), start.toString.toInt, end.toString.toInt, ReadType.INCREMENTAL_READ)
     partitions(true).toArray
   }

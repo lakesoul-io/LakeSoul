@@ -274,25 +274,4 @@ class CDCSuite
       })
     }
   }
-
-  test("test stream read") {
-    withTable("tt") {
-      val tablePath = "file:///home/yongpeng/test_table/"
-      Thread.sleep(2000)
-      val timeB = System.currentTimeMillis()
-      val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
-      // Processing time zone time difference between docker and local
-      val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
-      val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
-      val parDesc = "range=range1"
-      spark.readStream.format("lakesoul")
-        .option(LakeSoulOptions.PARTITION_DESC, parDesc)
-        .option(LakeSoulOptions.READ_START_TIME, currentVersion)
-        .load(tablePath)
-        .writeStream.format("console")
-        .trigger(Trigger.ProcessingTime(1000))
-        .start()
-        .awaitTermination()
-    }
-  }
 }
