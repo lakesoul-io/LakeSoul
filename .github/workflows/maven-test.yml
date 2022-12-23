@@ -45,7 +45,7 @@ jobs:
     - name: Init PG
       run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
     - name: Build with Maven
-      run: mvn -B clean test --file pom.xml -pl lakesoul-spark -am
+      run: mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
     - name: Upload Test Report
       uses: actions/upload-artifact@v3
       with:

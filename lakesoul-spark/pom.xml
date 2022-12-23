@@ -17,6 +17,7 @@
         <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.2.14</scalatest.version>
+        <mysql.version>8.0.30</mysql.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -122,6 +123,12 @@
             <version>${spark.version}</version>
             <scope>test</scope>
             <classifier>tests</classifier>
+        </dependency>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>${mysql.version}</version>
+            <scope>test</scope>
         </dependency>
 
     </dependencies>

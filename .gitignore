@@ -8,3 +8,4 @@
 *.iml
 dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/
+/script/benchmark/work-dir/*.jar
