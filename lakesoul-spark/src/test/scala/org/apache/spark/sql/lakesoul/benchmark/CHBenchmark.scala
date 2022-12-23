@@ -1,3 +1,22 @@
+/*
+ *
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *
+ */
+
 package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
@@ -29,7 +48,7 @@ object CHBenchmark {
   val query_21 = "SELECT su_name, count(*) AS numwait FROM `supplier`, `order_line` l1, `oorder`, `stock`, `nation` WHERE ol_o_id = o_id AND ol_w_id = o_w_id AND ol_d_id = o_d_id AND ol_w_id = s_w_id AND ol_i_id = s_i_id AND mod((s_w_id * s_i_id),10000) = su_suppkey AND l1.ol_delivery_d > o_entry_d AND NOT EXISTS (SELECT * FROM `order_line` l2 WHERE l2.ol_o_id = l1.ol_o_id AND l2.ol_w_id = l1.ol_w_id AND l2.ol_d_id = l1.ol_d_id AND l2.ol_delivery_d > l1.ol_delivery_d) AND su_nationkey = n_nationkey AND n_name = 'Germany' GROUP BY su_name ORDER BY numwait DESC, su_name"
   val query_22 = "SELECT substring(c_state,1,1) AS country, count(*) AS numcust, sum(c_balance) AS totacctbal FROM `customer` WHERE substring(c_phone from 1 for 1) IN ('1', '2', '3', '4', '5', '6', '7') AND c_balance > (SELECT avg(c_balance) FROM `customer` WHERE c_balance > 0.00 AND substring(c_phone from 1 for 1) IN ('1', '2', '3', '4', '5', '6', '7')) AND NOT EXISTS (SELECT * FROM `oorder` WHERE o_c_id = c_id AND o_w_id = c_w_id AND o_d_id = c_d_id) GROUP BY substring(c_state, 1, 1) ORDER BY substring(c_state,1,1)"
 
-  val queryMap = Map("query_1" -> query_1, "query_2" -> query_2, "query_3" -> query_3, "query_4" -> query_4, "query_5" -> query_5, "query_6" -> query_6,
+  val queryMap: Map[String, String] = Map("query_1" -> query_1, "query_2" -> query_2, "query_3" -> query_3, "query_4" -> query_4, "query_5" -> query_5, "query_6" -> query_6,
     "query_7" -> query_7, "query_8" -> query_8, "query_9" -> query_9, "query_10" -> query_10, "query_11" -> query_11, "query_12" -> query_12,
     "query_13" -> query_13, "query_14" -> query_14, "query_16" -> query_16, "query_17" -> query_17, "query_18" -> query_18, "query_19" -> query_19,
     "query_20" -> query_20, "query_21" -> query_21, "query_22" -> query_22)
@@ -41,7 +60,7 @@ object CHBenchmark {
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
 
-  val url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+  val url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
@@ -75,22 +94,23 @@ object CHBenchmark {
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
+      .config("spark.default.parallelism", "16")
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    if (args.length >= 7 ) {
+    if (args.length >= 7) {
       hostname = args(1)
       dbName = args(2)
       mysqlUserName = args(3)
       mysqlPassword = args(4)
       mysqlPort = args(5).toInt
-      serverTimeZone =  args(6)
+      serverTimeZone = args(6)
     }
 
     spark.sql("use " + dbName)
 
-//    queryTest(spark, query_18, "query_18")
+    //    queryTest(spark, query_18, "query_18")
 
     println(splitLine)
     queryMap.foreach(k => queryTest(spark, k._2, k._1))
@@ -117,21 +137,14 @@ object CHBenchmark {
   }
 
   def verifyQuery(spark: SparkSession, query: String, queryNum: String): Unit = {
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
-      .load()
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16").load()
     val lakesoulDF = spark.sql(query)
-
-    //    jdbcDF.printSchema()
-    //    lakesoulDF.printSchema()
-
-    //    jdbcDF.show()
-    //    lakesoulDF.show()
     println(printLine + queryNum + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }
 
   def verifyQuery1(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16")
       .load()
       .withColumn("avg_qty", format_number(col("avg_qty"), 1))
       .withColumn("sum_qty", format_number(col("sum_qty"), 0))
@@ -144,43 +157,31 @@ object CHBenchmark {
 
   def verifyQuery8(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16")
       .load()
       .withColumn("mkt_share", format_number(col("mkt_share"), 6))
 
     val lakesoulDF = spark.sql(query)
       .withColumn("mkt_share", format_number(col("mkt_share"), 6))
-
-    //    jdbcDF.printSchema()
-    //    lakesoulDF.printSchema()
-    //
-    //    jdbcDF.show(false)
-    //    lakesoulDF.show(false)
 
     println(printLine + queryNum + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }
 
   def verifyQuery11(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16")
       .load()
       .withColumn("ordercount", format_number(col("ordercount"), 0))
 
     val lakesoulDF = spark.sql(query)
       .withColumn("ordercount", format_number(col("ordercount"), 0))
-
-    //    jdbcDF.printSchema()
-    //    lakesoulDF.printSchema()
-
-    //    jdbcDF.show(false)
-    //    lakesoulDF.show(false)
 
     println(printLine + queryNum + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }
 
   def verifyQuery12(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16")
       .load()
       .withColumn("high_line_count", format_number(col("high_line_count"), 0))
       .withColumn("low_line_count", format_number(col("low_line_count"), 0))
@@ -188,30 +189,18 @@ object CHBenchmark {
     val lakesoulDF = spark.sql(query)
       .withColumn("high_line_count", format_number(col("high_line_count"), 0))
       .withColumn("low_line_count", format_number(col("low_line_count"), 0))
-
-    //    jdbcDF.printSchema()
-    //    lakesoulDF.printSchema()
-
-    //    jdbcDF.show(false)
-    //    lakesoulDF.show(false)
 
     println(printLine + queryNum + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }
 
   def verifyQuery14(spark: SparkSession, query: String, queryNum: String): Unit = {
     import org.apache.spark.sql.functions.format_number
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword)
+    val jdbcDF = spark.read.format("jdbc").option("driver", "com.mysql.jdbc.Driver").option("url", url).option("dbtable", "(" + query.replace("LIKE", "LIKE binary") + ") as t").option("user", mysqlUserName).option("password", mysqlPassword).option("numPartitions", "16")
       .load()
       .withColumn("promo_revenue", format_number(col("promo_revenue"), 8))
 
     val lakesoulDF = spark.sql(query)
       .withColumn("promo_revenue", format_number(col("promo_revenue"), 8))
-
-    //    jdbcDF.printSchema()
-    //    lakesoulDF.printSchema()
-
-    //    jdbcDF.show(false)
-    //    lakesoulDF.show(false)
 
     println(printLine + queryNum + " result: " + (jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0) + printLine)
   }

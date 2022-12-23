@@ -28,7 +28,7 @@ import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
-import org.apache.flink.lakesoul.types.JsonSourceRecord;
+import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -120,7 +120,7 @@ public class FlinkCDCMultiTableTest {
     @Test
     public void test() throws Exception {
 
-        MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
+        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
             .hostname("localhost")
             .port(3306)
             .databaseList("test_cdc") // set captured // database
@@ -135,14 +135,14 @@ public class FlinkCDCMultiTableTest {
 
         LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(context);
 
-        DataStreamSource<JsonSourceRecord> source = builder.buildMultiTableSource();
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource();
 
-        Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
+        Tuple2<DataStream<BinarySourceRecord>, DataStream<BinarySourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
 
-        DataStream<JsonSourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
 
-        DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
-        DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
+        DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        DataStreamSink<BinarySourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
         env.execute("test");
 
 //        StreamGraph sg = env.getStreamGraph();

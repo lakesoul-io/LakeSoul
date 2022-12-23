@@ -8,7 +8,8 @@ LakeSoul implements incremental upserts for both row and column and allows concu
 
 More detailed features please refer to our doc page: [Documentations](https://www.dmetasoul.com/en/docs/lakesoul/intro/)
 
-![Build and Test](https://github.com/meta-soul/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
+![Maven Test](https://github.com/meta-soul/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
+![Flink CDC Test](https://github.com/meta-soul/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
 
 # Quick Start
 Follow the [Quick Start](https://www.dmetasoul.com/en/docs/lakesoul/Getting%20Started/setup-local-env/) to quickly set up a test env.
@@ -51,6 +52,10 @@ Checkout the [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https:
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
     - [ ] Merge Into SQL with match on non-pk
     - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
+  - [ ] Incremental and Snapshot Query
+    - [x] Snapshot Query (#103)
+    - [x] Incremental Query (#103)
+    - [ ] Incremental Streaming
 * Flink Integration ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
   - [x] Flink CDC
@@ -60,6 +65,7 @@ Checkout the [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https:
     - [x] Support multiple source tables with different schemas (#84)
 * Hive Integration
   - [x] Export to Hive partition after compaction
+  - [x] Apache Kyuubi (Hive JDBC) Integration
 * Realtime Data Warehousing
   - [x] CDC ingestion
   - [x] Time Travel (Snapshot read)

@@ -1,3 +1,22 @@
+/*
+ *
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *
+ */
+
 package org.apache.spark.sql.lakesoul.benchmark
 
 import org.apache.spark.sql.SparkSession
@@ -13,7 +32,7 @@ object Benchmark {
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
 
-  val url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+  val url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
@@ -47,17 +66,18 @@ object Benchmark {
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
+      .config("spark.default.parallelism", "16")
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    if (args.length >= 6 ) {
+    if (args.length >= 6) {
       hostname = args(0)
       dbName = args(1)
       mysqlUserName = args(2)
       mysqlPassword = args(3)
       mysqlPort = args(4).toInt
-      serverTimeZone =  args(5)
+      serverTimeZone = args(5)
     }
 
     spark.sql("use " + dbName)
@@ -69,8 +89,13 @@ object Benchmark {
   }
 
   def verifyQuery(spark: SparkSession, table: String): Unit = {
-    val jdbcDF = spark.read.format("jdbc").option("driver","com.mysql.jdbc.Driver").option("url", url)
-      .option("dbtable", table).option("user", mysqlUserName).option("password", mysqlPassword).load()
+    val jdbcDF = spark.read.format("jdbc")
+      .option("driver", "com.mysql.jdbc.Driver")
+      .option("url", url)
+      .option("dbtable", table)
+      .option("user", mysqlUserName)
+      .option("numPartitions", "16")
+      .option("password", mysqlPassword).load()
     val lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
     val result = jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0

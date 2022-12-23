@@ -27,7 +27,7 @@ import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
-import org.apache.flink.lakesoul.types.JsonSourceRecord;
+import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
@@ -41,7 +41,6 @@ import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.*;
-
 
 public class MysqlCdc {
 
@@ -115,7 +114,7 @@ public class MysqlCdc {
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
         conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
-        MySqlSourceBuilder<JsonSourceRecord> sourceBuilder = MySqlSource.<JsonSourceRecord>builder()
+        MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                                                                         .hostname(host)
                                                                         .port(port)
                                                                         .databaseList(dbName) // set captured database
@@ -129,12 +128,12 @@ public class MysqlCdc {
         context.sourceBuilder = sourceBuilder;
         context.conf = conf;
         LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(context);
-        DataStreamSource<JsonSourceRecord> source = builder.buildMultiTableSource();
-        Tuple2<DataStream<JsonSourceRecord>, DataStream<JsonSourceRecord>> streams =
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource();
+        Tuple2<DataStream<BinarySourceRecord>, DataStream<BinarySourceRecord>> streams =
                 builder.buildCDCAndDDLStreamsFromSource(source);
-        DataStream<JsonSourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
-        DataStreamSink<JsonSourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
-        DataStreamSink<JsonSourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
+        DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        DataStreamSink<BinarySourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
         env.execute("LakeSoul CDC Sink From MySQL Database " + dbName);
     }
 }
