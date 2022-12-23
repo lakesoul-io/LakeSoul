@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 table_num=$(cat ./properties | grep -v '^#' | grep table_num= |awk -F'=' '{print $2}')
 row_num=$(cat ./properties | grep -v '^#' | grep row_num= |awk -F'=' '{print $2}')

@@ -46,6 +46,7 @@ jobs:
       - name: Deploy cluster
         run: |
           cd ./docker/lakesoul-docker-compose-env
+          docker compose pull -q
           docker compose up -d
           sleep 10s
       - name: Pull spark image
@@ -63,7 +64,7 @@ jobs:
         run: |
           cd ./script/benchmark
           python 1_create_table.py
-          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 3m
       - name: Accuracy verification task
         run: |
@@ -74,7 +75,7 @@ jobs:
           cd ./script/benchmark
           python3 3_add_column.py
           python3 delete_data.py
-          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 3m
       - name: Accuracy verification task
         run: |
@@ -94,7 +95,7 @@ jobs:
           cd ./script/benchmark
           python3 6_drop_column.py
           python3 delete_data.py
-          docker exec -i lakesoul-docker-compose-env-mysql-1 sh /2_insert_table_data.sh
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 3m
       - name: Accuracy verification task
         run: |

@@ -41,8 +41,8 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin1
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-      interval: 30s
-      timeout: 20s
+      interval: 3s
+      timeout: 5s
       retries: 3
     hostname: minio
 
