@@ -2,7 +2,7 @@ name: CI with flink cdc Test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "flink-serde-opt" ]
 
 jobs:
   build:
