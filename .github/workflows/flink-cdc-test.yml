@@ -46,7 +46,7 @@ jobs:
       - name: Deploy cluster
         run: |
           cd ./docker/lakesoul-docker-compose-env
-          docker compose --log-level ERROR up -d
+          docker compose up -d
           sleep 10s
       - name: Pull spark image
         run: |
