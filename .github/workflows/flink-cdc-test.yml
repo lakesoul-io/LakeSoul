@@ -37,7 +37,7 @@ jobs:
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
           echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
-          echo "SPARK_TEST_JAR_NAME=$(echo $SPARK_JAR_NAME | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+          echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
       - name: Copy built jar to work-dir
         run: |
           cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/benchmark/work-dir
