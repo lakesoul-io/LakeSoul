@@ -45,8 +45,9 @@ services:
       timeout: 20s
       retries: 3
     hostname: minio
+
   jobmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:lakesoul-flink-cdc-2.1.1
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
     ports:
       - "8081:8081"
     command: jobmanager
@@ -64,9 +65,11 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+    volumes:
+      - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
 
   taskmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:lakesoul-flink-cdc-2.1.1
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
     depends_on:
       - jobmanager
     command: taskmanager

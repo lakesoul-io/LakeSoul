@@ -24,6 +24,14 @@ jobs:
         run: |
           git lfs fetch
           git lfs checkout
+      - name: Build with Maven
+        run: |
+          mvn -B clean package -f pom.xml -DskipTests
+      - name: Copy builded jar to work-dir
+        run: |
+          cp ./lakesoul-flink/target/lakesoul-flink-*-flink-*-SNAPSHOT.jar ./script/benchmark/work-dir
+          cp ./lakesoul-spark/target/lakesoul-spark-*-spark-*-SNAPSHOT.jar ./script/benchmark/work-dir
+          cp ./lakesoul-spark/target/lakesoul-spark-*-spark-*-SNAPSHOT-tests.jar ./script/benchmark/work-dir
       - name: Deploy cluster
         run: |
           cd ./docker/lakesoul-docker-compose-env
@@ -38,10 +46,7 @@ jobs:
           sleep 20s
       - name: Download spark task
         run: |
-          cd ./script/benchmark
-          cd ./work-dir
-          if [ ! -e lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar ]; then wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT-tests.jar; fi
-          if [ ! -e lakesoul-spark-2.1.1-spark-3.1.2.jar ]; then wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.1.1-spark-3.1.2.jar; fi
+          cd ./script/benchmark/work-dir
           if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
       - name: Cerate table and insert data
         run: |
