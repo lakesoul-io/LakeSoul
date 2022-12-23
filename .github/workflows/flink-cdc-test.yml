@@ -19,6 +19,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql
+          pip install cryptography
           sudo apt-get install -y git-lfs
       - name: Git LFS checkout
         run: |
@@ -27,7 +28,7 @@ jobs:
       - name: Build with Maven
         run: |
           mvn -B clean package -f pom.xml -DskipTests
-      - name: Copy builded jar to work-dir
+      - name: Copy built jar to work-dir
         run: |
           cp ./lakesoul-flink/target/lakesoul-flink-*-flink-*-SNAPSHOT.jar ./script/benchmark/work-dir
           cp ./lakesoul-spark/target/lakesoul-spark-*-spark-*-SNAPSHOT.jar ./script/benchmark/work-dir
