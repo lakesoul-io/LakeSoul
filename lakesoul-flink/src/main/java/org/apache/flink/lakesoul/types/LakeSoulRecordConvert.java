@@ -186,7 +186,6 @@ public class LakeSoulRecordConvert implements Serializable {
     public RowType toFlinkRowType(Schema schema) {
         int arity = schema.fields().size();
         if (useCDC) ++arity;
-        StringBuilder sb = new StringBuilder();
         String[] colNames = new String[arity];
         LogicalType[] colTypes = new LogicalType[arity];
         List<Field> fieldNames = schema.fields();
@@ -194,18 +193,12 @@ public class LakeSoulRecordConvert implements Serializable {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
             colTypes[i] = convertToLogical(item.schema());
-            sb.append(colNames[i] + ":" + colTypes[i].toString());
         }
         if (useCDC) {
             colNames[arity - 1] = "rowKinds";
             colTypes[arity - 1] = new VarCharType(Integer.MAX_VALUE);
-            sb.append(colNames[arity - 1] + ":" + colTypes[arity - 1].toString());
         }
-        try {
-            return RowType.of(colTypes, colNames);
-        } catch (NullPointerException e) {
-            throw new NullPointerException(e.getMessage() + "[" + sb + "]");
-        }
+        return RowType.of(colTypes, colNames);
     }
 
     public LogicalType convertToLogical(Schema fieldSchema) {
