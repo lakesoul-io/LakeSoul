@@ -401,6 +401,10 @@ public class LakeSoulRecordConvert implements Serializable {
             Field field = fieldNames.get(i);
             String fieldName = field.name();
             Object fieldValue = struct.getWithoutDefault(fieldName);
+            if (fieldValue == null) {
+                writer.setNullAt(i);
+                continue;
+            }
             Schema fieldSchema = schema.field(fieldName).schema();
             sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema, serverTimeZone);
         }

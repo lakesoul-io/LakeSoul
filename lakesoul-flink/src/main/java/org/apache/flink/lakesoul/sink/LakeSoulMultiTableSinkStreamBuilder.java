@@ -22,6 +22,8 @@ package org.apache.flink.lakesoul.sink;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.runtime.kryo.JavaSerializer;
 import org.apache.flink.configuration.Configuration;
@@ -42,6 +44,9 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
+
+import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -67,10 +72,18 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStreamSource<BinarySourceRecord> buildMultiTableSource() {
+        context.env.setRestartStrategy(RestartStrategies.fixedDelayRestart(
+                3, // number of restart attempts
+                Time.of(10, TimeUnit.SECONDS) // delay
+        ));
         context.env.getConfig().registerTypeWithKryoSerializer(RowType.class, JavaSerializer.class);
         context.sourceBuilder.includeSchemaChanges(true);
         context.sourceBuilder.scanNewlyAddedTableEnabled(true);
         context.sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(this.convert));
+        Properties jdbcProperties = new Properties();
+        jdbcProperties.put("allowPublicKeyRetrieval", "true");
+        jdbcProperties.put("useSSL", "false");
+        context.sourceBuilder.jdbcProperties(jdbcProperties);
         mySqlSource = context.sourceBuilder.build();
         return context.env
                 .fromSource(this.mySqlSource, WatermarkStrategy.noWatermarks(), "MySQL Source")
