@@ -90,6 +90,8 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+    volumes:
+      - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
 
 networks:
   default:
