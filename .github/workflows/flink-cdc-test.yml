@@ -32,7 +32,7 @@ jobs:
           git lfs checkout
       - name: Build with Maven
         run: |
-          mvn -B clean package -f pom.xml -DskipTests
+          mvn -q -B clean package -f pom.xml -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
@@ -46,11 +46,11 @@ jobs:
       - name: Deploy cluster
         run: |
           cd ./docker/lakesoul-docker-compose-env
-          docker compose up -d
+          docker compose --log-level ERROR up -d
           sleep 10s
       - name: Pull spark image
         run: |
-            docker pull swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2
+            docker pull -q swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/spark:v3.1.2
       - name: Start flink task
         run: |
           docker exec -id lakesoul-docker-compose-env-jobmanager-1 flink run -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC
@@ -58,7 +58,7 @@ jobs:
       - name: Download mysql driver jar
         run: |
           cd ./script/benchmark/work-dir
-          if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
+          if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget -q https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
       - name: Create table and insert data
         run: |
           cd ./script/benchmark

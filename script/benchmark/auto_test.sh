@@ -80,7 +80,7 @@ function insert_data_into_tables
 function insert_data_into_tables_pass_db_info
 {
   echo "====== Inserting data into tables ======"
-  for((i=0;i<$table_num;i++));do ./mysql_random_data_insert -h $host -u $user -p$password --max-threads=10 $db random_table_$i $row_num ;done
+  for((i=0;i<$table_num;i++));do ./mysql_random_data_insert --no-progress -h $host -u $user -p$password --max-threads=10 $db random_table_$i $row_num ;done
   echo "====== Data has been inserted successfully! ======"
 }
 
