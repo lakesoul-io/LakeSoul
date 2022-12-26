@@ -1,3 +1,20 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
 package org.apache.spark.sql.lakesoul.kafka
 
 import com.alibaba.fastjson.JSONObject
@@ -74,7 +91,7 @@ object KafkaStream {
       val schema = resultDF.schema
 
       var lakeSoulSchema = new StructType()
-      schema.foreach( f => f.dataType match {
+      schema.foreach(f => f.dataType match {
         case _: StructType => lakeSoulSchema = lakeSoulSchema.add(f.name, DataTypes.StringType, true)
         case _ => lakeSoulSchema = lakeSoulSchema.add(f.name, f.dataType, true)
       })
@@ -126,7 +143,7 @@ object KafkaStream {
     }
 
     if (!dbManager.isNamespaceExists(namespace)) {
-      dbManager.createNewNamespace(namespace, null ,"");
+      dbManager.createNewNamespace(namespace, new JSONObject(), "")
     }
 
     val getTopicMsg = kafkaUtils.getTopicMsg _
@@ -152,7 +169,7 @@ object KafkaStream {
           createTableIfNoExists(topicAndSchema)
         }
 
-        for(topic <- topicAndSchema.keySet) {
+        for (topic <- topicAndSchema.keySet) {
           val path = warehouse + "/" + namespace + "/" + topic
           val topicDF = batchDF.filter(col("topic").equalTo(topic))
           if (!topicDF.rdd.isEmpty()) {
