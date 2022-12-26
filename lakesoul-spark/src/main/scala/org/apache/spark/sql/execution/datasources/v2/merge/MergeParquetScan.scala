@@ -491,7 +491,7 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
                                  bucketNum: Int): Seq[MergeFilePartition] = {
     val groupByPartition = partitionedFiles.groupBy(_.rangeKey)
 
-    //    assert(groupByPartition.size != 1)
+    assert(groupByPartition.size != 1)
 
     var i = 0
     val partitions = new ArrayBuffer[MergeFilePartition]
