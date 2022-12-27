@@ -1,4 +1,4 @@
 [workspace]
-members = ["lakesoul-io", "lakesoul-io-c", "parquet_poc"]
+members = ["lakesoul-io", "lakesoul-io-c"]
 
 [profile.release]
