@@ -17,9 +17,6 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
 
         val wrapper = new NativeIOWrapper()
         wrapper.initialize()
-//        val filePath = "test/table/table_test/gender=Female/part-00000-ca90c62a-fbde-4068-a513-2d8cf1f5c819.c000.snappy.parquet"
-
-//        wrapper.addFile(String.join("/",System.getenv("HOME"),filePath))
         val filePath = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
         wrapper.addFile(filePath);
         wrapper.setThreadNum(2)
@@ -53,28 +50,4 @@ case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with 
         wrapper.close()
     }
 
-//    test("test LakeSoulArrowReader with multi file") {
-//        val wrapper = new ArrowCDataWrapper()
-//        wrapper.initializeConfigBuilder()
-//        //        wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io/test/test.snappy.parquet")
-//        val filePath = "test/table/table_test/gender=Female/part-00000-ca90c62a-fbde-4068-a513-2d8cf1f5c819.c000.snappy.parquet"
-//        wrapper.addFile(String.join("/",System.getenv("HOME"),filePath))
-//        wrapper.setThreadNum(2)
-//        wrapper.createReader()
-//        wrapper.startReader(_=>{})
-//        val reader = LakeSoulArrowReader(
-//            wrapper=wrapper
-//        )
-//        var cnt=0
-//        while (reader.hasNext) {
-//            Await.ready(reader.next(), 1000 milli).onComplete {
-//                case Success(Some(vectorSchemaRoot: VectorSchemaRoot)) =>
-//                    cnt += 1
-//                    println("[From Java][Java Suite Test] VectorSchemaRoot Counter=" + cnt)
-//                case Success(None) =>
-//                    println("[From Java][Java Suite Test] End of reader")
-//            }
-//        }
-//
-//    }
 }

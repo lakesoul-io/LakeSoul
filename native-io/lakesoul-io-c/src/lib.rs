@@ -203,9 +203,8 @@ pub extern "C" fn create_lakesoul_reader_from_config(
     let config: LakeSoulReaderConfig = from_opaque(config);
     let runtime: Runtime = from_opaque(runtime);
     let result = match LakeSoulReader::new(config) {
-        Ok(reader) => unsafe{
-            Result::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime))
-        }
+        Ok(reader) => 
+            Result::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime)),
         Err(e) => Result::<Reader>::error(format!("{}", e).as_str()),
     };
     convert_to_nonnull(result)
@@ -338,10 +337,7 @@ pub extern "C" fn create_tokio_runtime_from_builder(
 
 
 #[no_mangle]
-pub extern "C" fn free_tokio_runtime(mut runtime: NonNull<Result<TokioRuntime>>) {
-    unsafe {
-        // runtime.as_mut().free::<Runtime>();
-    }
+pub extern "C" fn free_tokio_runtime(runtime: NonNull<Result<TokioRuntime>>) {
 }
 
 #[cfg(test)]

@@ -1,16 +1,7 @@
 use atomic_refcell::AtomicRefCell;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
-use std::mem::ManuallyDrop;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-
-use std::time::Instant; 
-use std::future::Future;
-
-
-use std::future::Ready;
-
 use derivative::Derivative;
 
 
@@ -18,24 +9,21 @@ pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::RecordBatchStream;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
-use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use object_store::aws::{AmazonS3Builder};
 use object_store::RetryConfig;
 
 use futures::StreamExt;
-use futures::stream::{Map, Buffered, Stream};
+use futures::stream::Stream;
 use core::pin::Pin;
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 // use tokio_stream::StreamExt;
 
-use crate::merge_logic::merge_partitioned_file::MergePartitionedFile;
 use crate::filter::Parser as FilterParser;
 
 #[derive(Derivative)]
@@ -43,7 +31,6 @@ use crate::filter::Parser as FilterParser;
 pub struct LakeSoulReaderConfig {
     // files to read
     files: Vec<String>,
-    merge_files: Vec<MergePartitionedFile>,
     // primary key column names
     primary_keys: Vec<String>,
     // selecting columns
@@ -86,16 +73,6 @@ impl LakeSoulReaderConfigBuilder {
         self
     }
 
-    pub fn with_merge_file(mut self, file: MergePartitionedFile) -> Self {
-        self.config.merge_files.push(file);
-        self
-    }
-
-    pub fn with_merge_files(mut self, files: Vec<MergePartitionedFile>) -> Self {
-        self.config.merge_files = files;
-        self
-    }
-
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
         self
@@ -124,7 +101,6 @@ impl LakeSoulReaderConfigBuilder {
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        // self.config.filters = filters;
         let expr = FilterParser::parse(filter_str, &self.config.schema);
         self.config.filters.push(expr);
         self
@@ -217,7 +193,6 @@ impl LakeSoulReader {
             .with_allow_http(true)
             .build();
         runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store.unwrap()));
-        // println!("{:?}", config.object_store_options);
         Ok(())
     }
 
@@ -243,14 +218,12 @@ impl LakeSoulReader {
             df = df.select_columns(&cols)?;
         }
         df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
-        // self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
-        // println!("{}", self.config.buffer_size);
+        
         self.stream = Box::new(MaybeUninit::new(
             Box::pin(
                 df.execute_stream().await?
             .map(std::future::ready).buffered(self.config.buffer_size))
         ));
-        // let buffered_stream:Box<MaybeUninit<Buffered<_>>> = Box::new(MaybeUninit::new(df.execute_stream().await?));
         
         Ok(())
     }
@@ -324,9 +297,6 @@ mod tests {
     async fn test_reader_local() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                // "/Users/ceng/base-0-0.parquet"
-                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                //"/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                 "/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                 .to_string()])
             .with_thread_num(1)
@@ -338,16 +308,12 @@ mod tests {
         static mut row_cnt: usize = 0;
 
         while let Some(rb) = reader.next_rb().await {
-            // print_batches(std::slice::from_ref(&record_batch?))?;
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
                 row_cnt = row_cnt + num_rows;
                 println!("{}", row_cnt);
             }
         }
-        // unsafe{
-        //     ManuallyDrop::drop(&mut reader);
-        // }
         Ok(())
     }
 
@@ -355,7 +321,6 @@ mod tests {
     fn test_reader_local_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                // "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
                 "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
@@ -376,7 +341,6 @@ mod tests {
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    // print_batches(std::slice::from_ref(&rb.unwrap())).unwrap();
                     let num_rows = &rb.unwrap().num_rows();
                     unsafe {
                         row_cnt = row_cnt + num_rows;
@@ -402,7 +366,6 @@ mod tests {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
                 "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
                     .to_string(),
             ])
             .with_thread_num(1)
@@ -428,8 +391,6 @@ mod tests {
                         row_cnt = row_cnt + num_rows;
                         println!("{}", row_cnt);
                     }
-                    // println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
-                    // print_batches(std::slice::from_ref(&rb)).unwrap();
 
                     tx.send(false).unwrap();
                 }
@@ -449,15 +410,7 @@ mod tests {
     async fn test_reader_s3() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                // "s3://lakesoul-test-s3/base-0-0.parquet"
-                // "s3://lakesoul-test-s3/large_file.parquet"
                 "file:/home/changhuiy/temp_data/parquet_benchmark/large_file_for_native_io_rgc20.parquet"
-                // "s3://lakesoul-test-s3/large_file_for_native_io_rgc20.parquet"
-                // "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io_rgc20.parquet"
-                // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "/Users/ceng/base-0-0.parquet"
                 .to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -468,12 +421,6 @@ mod tests {
             .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
             .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
             .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9000"))
-            // .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            // .with_object_store_option(String::from("fs.s3.access.key"), String::from("WWCTQNZDHWMVZMJY9QJN"))
-            // .with_object_store_option(String::from("fs.s3.access.secret"), String::from("YoVuuQ9Qx7KYuODRyhWFqFxvEKKPQLjIaAm3aTam"))
-            // .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            // .with_object_store_option(String::from("fs.s3.bucket"), String::from("dmetasoul-bucket"))
-            // .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://obs.cn-southwest-2.myhuaweicloud.com"))
             .build();
         let mut reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
@@ -501,11 +448,6 @@ mod tests {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
                 "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io_rgc20.parquet"
-                // "s3://lakesoul-test-s3/large_file.parquet"
-                // "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"
-                // "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "s3://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                // "/Users/ceng/base-0-0.parquet"
                 .to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -516,12 +458,6 @@ mod tests {
             .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
             .with_object_store_option(String::from("fs.s3.bucket"), String::from("dmetasoul-bucket"))
             .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://obs.cn-southwest-2.myhuaweicloud.com"))
-            // .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            // .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
-            // .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
-            // .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            // .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
-            // .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9002"))
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         println!("{}", reader.config.buffer_size);
@@ -541,17 +477,12 @@ mod tests {
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    // print_batches(std::slice::from_ref(&rb.unwrap())).unwrap();
                     let num_rows = &rb.unwrap().num_rows();
                     unsafe {
                         row_cnt = row_cnt + num_rows;
                         println!("{}", row_cnt);
                     }
-                    // println!("time cost: {:?} ms", start.elapsed().as_millis());// ms
-                    // async {
-                    //     sleep(Duration::from_millis(150)).await;
 
-                    // };
                     thread::sleep(Duration::from_millis(20));
                     tx.send(false).unwrap();
 

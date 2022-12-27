@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use datafusion::logical_expr::{col, lit, Expr, Operator};
-use datafusion::physical_expr::unicode_expressions::left;
+use datafusion::logical_expr::{col, Expr};
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {
@@ -125,7 +124,7 @@ impl Parser {
                 
 
                 let mut arr = [0u8;16];
-                for idx in (0..binary_vec.len()) {
+                for idx in 0..binary_vec.len() {
                     arr[idx + 16 - binary_vec.len()] = binary_vec[idx];
                 }
                 Expr::Literal(ScalarValue::Decimal128(Some(i128::from_be_bytes(arr)), precision, scale))

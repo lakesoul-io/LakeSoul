@@ -69,43 +69,6 @@ public class ArrowJavaReader {
         } catch (Exception e) {
             e.printStackTrace();
         }
-//        ScanOptions options = new ScanOptions(/*batchSize*/ 1024);
-//        try (
-//                BufferAllocator allocator = new RootAllocator();
-//                DatasetFactory datasetFactory = new FileSystemDatasetFactory(allocator, NativeMemoryPool.getDefault(), FileFormat.PARQUET, uri);
-//                Dataset dataset = datasetFactory.finish();
-//                Scanner scanner = dataset.newScan(options)
-//        ) {
-//            Schema schema = scanner.schema();
-//
-//            scanner.scan().forEach(scanTask-> {
-//                VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
-//                VectorLoader loader = new VectorLoader(root);
-//                try (ScanTask.BatchIterator iterator = scanTask.execute()) {
-//                    int cnt = 0;
-//                    int batchNum = 0;
-//                    while (iterator.hasNext()) {
-//                        try (ArrowRecordBatch batch = iterator.next()) {
-//                            System.out.println(batch);
-//                            cnt += batch.getLength();
-//                            batchNum += 1;
-//                            System.out.println(batch.getLength());
-//                            loader.load(batch);
-//                            System.out.println(root.contentToTSVString());
-//                        }
-//                    }
-//                    System.out.println(batchNum);
-//                    System.out.println(cnt);
-//                } catch (IOException e) {
-//                    e.printStackTrace();
-//                } catch (Exception e) {
-//                    throw new RuntimeException(e);
-//                }
-//            });
-//            System.out.println(schema);
-//            allocator.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//        }
+
     }
 }
