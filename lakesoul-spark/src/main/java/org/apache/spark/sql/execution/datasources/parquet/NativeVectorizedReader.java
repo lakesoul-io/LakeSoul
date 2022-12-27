@@ -20,7 +20,6 @@ import com.amazonaws.auth.AWSCredentials;
 import org.apache.arrow.lakesoul.io.NativeIOWrapper;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3AUtils;
@@ -36,11 +35,9 @@ import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
-import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.vectorized.NativeIOUtils;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
-import scala.Int;
+import org.apache.spark.sql.vectorized.NativeIOUtils;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -209,8 +206,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   @Override
   public boolean nextKeyValue() throws IOException {
-//    resultBatch();
-
     if (returnColumnarBatch) return nextBatch();
 
     if (batchIdx >= numBatched) {

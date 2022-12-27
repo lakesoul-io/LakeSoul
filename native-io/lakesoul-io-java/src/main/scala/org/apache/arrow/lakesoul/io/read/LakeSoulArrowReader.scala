@@ -13,14 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.arrow.lakesoul.io.read
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 
-import scala.concurrent.ExecutionContext.Implicits._
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise, TimeoutException}
 
@@ -40,12 +41,12 @@ case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
     }
   }
 
-  val allocator =
+  val allocator: BufferAllocator =
     ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
   val provider = new CDataDictionaryProvider()
 
 
-  val iterator = new Iterator[Option[VectorSchemaRoot]] {
+  val iterator: Iterator[Option[VectorSchemaRoot]] = new Iterator[Option[VectorSchemaRoot]] {
     var vsrFuture:Future[Option[VectorSchemaRoot]] = _
     private var finished = false
 

@@ -13,20 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.arrow.lakesoul.io;
 
-import jnr.ffi.LibraryLoader;
-import jnr.ffi.LibraryOption;
-import jnr.ffi.ObjectReferenceManager;
-import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
+import jnr.ffi.*;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
-
-
 
 public class NativeIOWrapper implements AutoCloseable {
     protected Pointer readerConfigBuilder = null;
@@ -35,7 +31,7 @@ public class NativeIOWrapper implements AutoCloseable {
     protected Pointer tokioRuntimeBuilder = null;
     protected Pointer tokioRuntime = null;
     protected final LibLakeSoulIO libLakeSoulIO;
-    protected final ObjectReferenceManager referenceManager;
+    protected final ObjectReferenceManager<Callback> referenceManager;
     protected final boolean useJavaReader;
 
     protected final ArrowJavaReader.ArrowJavaReaderBuilder arrowJavaReaderBuilder;
@@ -43,12 +39,11 @@ public class NativeIOWrapper implements AutoCloseable {
 
     public static boolean isMac() {
         String OS = System.getProperty("os.name").toLowerCase();
-        return (OS.indexOf("mac") >= 0);
+        return (OS.contains("mac"));
 
     }
     public NativeIOWrapper() {
         this(false);
-//        this(true);
     }
 
     public NativeIOWrapper(boolean useJavaReader){
@@ -106,7 +101,6 @@ public class NativeIOWrapper implements AutoCloseable {
             readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(readerConfigBuilder, ptr);
         }
     }
-
 
     public void setThreadNum(int threadNum){
         if (!useJavaReader) {
@@ -172,7 +166,6 @@ public class NativeIOWrapper implements AutoCloseable {
                 libLakeSoulIO.free_tokio_runtime(tokioRuntime);
             }
         }
-
     }
 
     public static final class Callback implements LibLakeSoulIO.JavaCallback {
@@ -180,7 +173,7 @@ public class NativeIOWrapper implements AutoCloseable {
         public Consumer<Boolean> callback;
         public long array_ptr;
         private Pointer key;
-        private ObjectReferenceManager referenceManager;
+        private ObjectReferenceManager<Callback> referenceManager;
 
         public Callback(Consumer<Boolean> callback) {
             this(callback, 0L);
@@ -191,7 +184,7 @@ public class NativeIOWrapper implements AutoCloseable {
             this.array_ptr = array_ptr;
         }
 
-        public Callback(Consumer<Boolean> callback, ObjectReferenceManager referenceManager) {
+        public Callback(Consumer<Boolean> callback, ObjectReferenceManager<Callback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = null;
@@ -221,7 +214,6 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-
     public void nextBatch(Consumer<Boolean> callback, long schemaAddr, long arrayAddr){
         Callback nativeCallback = new Callback(callback, referenceManager);
         nativeCallback.registerReferenceKey();
@@ -232,10 +224,5 @@ public class NativeIOWrapper implements AutoCloseable {
             // disable native for testing
             arrowJavaReader.nextRecordBatch(schemaAddr, arrayAddr, nativeCallback);
         }
-
-        // next_record_batch will time out when gc is called  before invoking callback
-//        System.gc();
-
     }
-
 }

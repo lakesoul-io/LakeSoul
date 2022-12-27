@@ -1,9 +1,5 @@
 package jnr.ffi;
 
-import jnr.ffi.LibraryLoader;
-import jnr.ffi.Memory;
-import jnr.ffi.Pointer;
-import jnr.ffi.Runtime;
 import jnr.ffi.annotations.Delegate;
 import jnr.ffi.types.size_t;
 
