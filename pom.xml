@@ -9,6 +9,7 @@
         <module>lakesoul-common</module>
         <module>lakesoul-spark</module>
         <module>lakesoul-flink</module>
+        <module>native-io/lakesoul-io-java</module>
     </modules>
     <packaging>pom</packaging>
     <name>LakeSoul POM</name>

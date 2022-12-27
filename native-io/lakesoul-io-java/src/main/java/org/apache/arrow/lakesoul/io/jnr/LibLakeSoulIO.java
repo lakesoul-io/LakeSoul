@@ -1,0 +1,70 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.arrow.lakesoul.io.jnr;
+
+import jnr.ffi.Memory;
+import jnr.ffi.Pointer;
+import jnr.ffi.Runtime;
+import jnr.ffi.annotations.Delegate;
+
+public interface LibLakeSoulIO {
+
+    static Pointer buildStringPointer(LibLakeSoulIO lib, String s) {
+        Pointer str = Memory.allocate(Runtime.getRuntime(lib), s.length());
+        str.put(0, s.getBytes(),0,s.length());
+
+        return str;
+    }
+
+    Pointer new_tokio_runtime_builder();
+
+    Pointer tokio_runtime_builder_set_thread_num(Pointer builder, int thread_num);
+
+    Pointer create_tokio_runtime_from_builder(Pointer builder);
+
+    Pointer new_lakesoul_reader_config_builder();
+
+    Pointer lakesoul_config_builder_add_single_file(Pointer builder, Pointer file);
+
+    Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column, Pointer datatype);
+
+    Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
+
+    Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
+
+    Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);
+
+    Pointer lakesoul_config_builder_set_batch_size(Pointer builder, int batch_size);
+    Pointer lakesoul_config_builder_set_buffer_size(Pointer builder, int buffer_size);
+
+    Pointer create_lakesoul_reader_config_from_builder(Pointer builder);
+
+    Pointer create_lakesoul_reader_from_config(Pointer config, Pointer runtime);
+
+    public static interface JavaCallback { // type representing callback
+        @Delegate
+        void invoke(boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+    }
+
+    void start_reader(Pointer reader, JavaCallback callback);
+
+    void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, JavaCallback callback);
+
+    void free_lakesoul_reader(Pointer reader);
+
+    void free_tokio_runtime(Pointer runtime);
+}

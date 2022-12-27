@@ -25,7 +25,7 @@ import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
@@ -94,6 +94,8 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
   override def build(): Scan = {
+    //check and redo commit before read
+    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
     var files: Seq[DataFileInfo] = Seq.empty
 
@@ -142,8 +144,14 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
 
   def parquetScan(partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Scan = {
-    ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-      readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
+      NativeParquetScan(
+        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else {
+      ParquetScan(
+        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    }
   }
-
 }
