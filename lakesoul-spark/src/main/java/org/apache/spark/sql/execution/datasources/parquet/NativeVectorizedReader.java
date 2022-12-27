@@ -334,14 +334,9 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     if (nativeReader.hasNext()) {
       nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
       if (nextVectorSchemaRoot == null) {
-        System.out.println("nextVectorSchemaRoot not ready");
+        throw new IOException("nextVectorSchemaRoot not ready");
       } else {
         totalRowCount += nextVectorSchemaRoot.getRowCount();
-        if (totalRowCount % 100000 < capacity) {
-//          System.out.println(totalRowCount);
-        }
-        // fill nextVectorSchemaRoot into columnarBatch
-//        ColumnVector[] resultColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
         WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
         WritableColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
         System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
@@ -354,13 +349,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
   }
-
-//  private ColumnVector[] concatBatchVectorWithPartitionVectors(ColumnVector[] batchVectors){
-//    ColumnVector[] descColumnVectors = new ColumnVector[batchVectors.length + partitionColumnVectors.length];
-//    System.arraycopy(batchVectors, 0, descColumnVectors, 0, batchVectors.length);
-//    System.arraycopy(partitionColumnVectors, 0, descColumnVectors, batchVectors.length,  partitionColumnVectors.length);
-//    return descColumnVectors;
-//  }
 
   private void initializeInternal() throws IOException, UnsupportedOperationException {
     // Check that the requested schema is supported.

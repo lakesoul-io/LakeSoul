@@ -54,10 +54,9 @@ trait NativeIOReaderTests
     LakeSoulCatalog.cleanMeta()
   }
 
+  val projectDir =  "/path/to/project/"
   val testSrcFilePath =
-    "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-//    "s3a://lakesoul-test-s3/part-00002-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-  val testDeltaFilePath = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+    projectDir + "/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
   val testParquetRowCount = 1000
   val testParquetColNum = 12
   val testHashBucketNum = String.valueOf(1)
@@ -67,7 +66,7 @@ trait NativeIOReaderTests
   test("[NativeIOWrapper]Read local file") {
     val wrapper = new NativeIOWrapper()
     wrapper.initialize()
-    wrapper.addFile("/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
+    wrapper.addFile(projectDir + "/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet")
 //    wrapper.setThreadNum(2)
     wrapper.setBatchSize(10)
     wrapper.setBufferSize(1)
@@ -90,7 +89,6 @@ trait NativeIOReaderTests
           assert(batch.numRows() == 10)
           cnt += 1
         case None =>
-//          assert(false)
       }
     }
   }
@@ -122,7 +120,6 @@ trait NativeIOReaderTests
           assert(batch.numRows() <= 8192)
           cnt += 1
         case None =>
-        //          assert(false)
       }
     }
   }
@@ -192,7 +189,7 @@ trait NativeIOReaderTests
   test("[Large file test]without hash_key and range_key") {
     withTempDir { dir =>
       val tablePath = dir.toString
-      val testSrcFilePath = "/Users/ceng/PycharmProjects/write_parquet/large_file.parquet"    // ccf data_contest base file
+      val testSrcFilePath = "/path/to/file.parquet"    // ccf data_contest base file
       val df = spark
         .read
         .format("parquet")
