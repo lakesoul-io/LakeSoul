@@ -12,12 +12,13 @@ import scala.concurrent.duration.DurationInt
 import scala.util.Success
 
 case class TestLakeSoulReader() extends org.scalatest.funsuite.AnyFunSuite with org.scalatest.BeforeAndAfterAll with org.scalatest.BeforeAndAfterEach{
+    val projectDir = "/path/to/project/"
 
     test("test ArrowCDataWrapper constructor with single file") {
 
         val wrapper = new NativeIOWrapper()
         wrapper.initialize()
-        val filePath = "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
+        val filePath = projectDir + "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
         wrapper.addFile(filePath);
         wrapper.setThreadNum(2)
         wrapper.createReader()

@@ -287,9 +287,6 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
-    pub fn hello(&self) {
-    }
-
     fn get_runtime(&self) -> Arc<Runtime> {
         self.runtime.clone()
     }
@@ -307,13 +304,17 @@ mod tests {
     use super::*;
     use datafusion::arrow::util::pretty::print_batches;
     use std::sync::mpsc::sync_channel;
+    use std::mem::ManuallyDrop;
+    use std::time::Instant;
+    use tokio::runtime::Builder;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
+        let project_dir = "/path/to/project/";
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                .to_string()])
+                vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
+                ])
             .with_thread_num(1)
             .with_batch_size(256)
             .build();
@@ -334,10 +335,10 @@ mod tests {
 
     #[test]
     fn test_reader_local_blocked() -> Result<()> {
+        let project_dir = "/path/to/project/";
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/Users/ceng/Documents/GitHub/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
-                    .to_string(),
+                vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
             ])
             .with_thread_num(16)
             .with_batch_size(1)
@@ -380,7 +381,7 @@ mod tests {
     fn test_reader_partition() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "/Users/ceng/part-00003-68b546de-5cc6-4abb-a8a9-f6af2e372791-c000.snappy.parquet"
+                "/path/to/file.parquet"
                     .to_string(),
             ])
             .with_thread_num(1)
@@ -425,17 +426,17 @@ mod tests {
     async fn test_reader_s3() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "file:/home/changhuiy/temp_data/parquet_benchmark/large_file_for_native_io_rgc20.parquet"
+                "s3://path/to/file.parquet"
                 .to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
             .with_buffer_size(64)
             .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("minioadmin1"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("minioadmin1"))
+            .with_object_store_option(String::from("fs.s3.access.key"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("fs.s3.access.key"))
             .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("lakesoul-test-s3"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://localhost:9000"))
+            .with_object_store_option(String::from("fs.s3.bucket"), String::from("fs.s3.bucket"))
+            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("fs.s3.endpoint"))
             .build();
         let mut reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
@@ -462,17 +463,17 @@ mod tests {
     fn test_reader_s3_blocked() -> Result<()> {
         let reader_conf = LakeSoulReaderConfigBuilder::new()
             .with_files(vec![
-                "s3://dmetasoul-bucket/yuchanghui/fsspec_benchmark/large_file_for_native_io_rgc20.parquet"
+                "s3://path/to/file.parquet"
                 .to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
             .with_buffer_size(16)
             .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("WWCTQNZDHWMVZMJY9QJN"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("YoVuuQ9Qx7KYuODRyhWFqFxvEKKPQLjIaAm3aTam"))
+            .with_object_store_option(String::from("fs.s3.access.key"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("fs.s3.access.key"))
             .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("dmetasoul-bucket"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("http://obs.cn-southwest-2.myhuaweicloud.com"))
+            .with_object_store_option(String::from("fs.s3.bucket"), String::from("fs.s3.bucket"))
+            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("fs.s3.endpoint"))
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         println!("{}", reader.config.buffer_size);
@@ -550,7 +551,7 @@ mod tests {
         let filter = col("first_name").eq(Expr::Literal(v));
         filters1.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters1).await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
@@ -564,7 +565,7 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters2).await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
@@ -585,7 +586,7 @@ mod tests {
         filters1.push(filter);
 
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters1).await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
@@ -599,7 +600,7 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters2).await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
@@ -612,7 +613,7 @@ mod tests {
         filters3.push(filter);
 
         let mut row_cnt3 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters3).await;
         if let Ok(row_cnt) = result {
             row_cnt3 = row_cnt;
@@ -632,7 +633,7 @@ mod tests {
         filters1.push(filter);
 
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters1).await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
@@ -645,7 +646,7 @@ mod tests {
         filters2.push(filter);
 
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters2).await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
@@ -667,7 +668,7 @@ mod tests {
 
         filters1.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters1).await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
@@ -683,7 +684,7 @@ mod tests {
 
         filters2.push(filter);
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters2).await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
@@ -698,7 +699,7 @@ mod tests {
 
         filters.push(filter);
         let mut row_cnt3 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters).await;
         if let Ok(row_cnt) = result {
             row_cnt3 = row_cnt;
@@ -713,7 +714,7 @@ mod tests {
 
         filters.push(filter);
         let mut row_cnt4 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters).await;
         if let Ok(row_cnt) = result {
             row_cnt4 = row_cnt;
@@ -732,7 +733,7 @@ mod tests {
         let filter = col("salary").is_null();
         filters.push(filter);
         let mut row_cnt1 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters).await;
         if let Ok(row_cnt) = result {
             row_cnt1 = row_cnt;
@@ -744,7 +745,7 @@ mod tests {
         let filter = Expr::not(col("salary").is_null());
         filters.push(filter);
         let mut row_cnt2 = 0;
-        let result = get_num_rows_of_file_with_filters("file:/home/yuchanghui/syl_code/LakeSoul/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet".to_string(),
+        let result = get_num_rows_of_file_with_filters("/path/to/file.parquet".to_string(),
                                                        filters).await;
         if let Ok(row_cnt) = result {
             row_cnt2 = row_cnt;
