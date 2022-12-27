@@ -190,8 +190,6 @@ impl Parser {
                 .collect::<Vec<u8>>())
         }
     }
-
-
 }
 
 #[cfg(test)]
