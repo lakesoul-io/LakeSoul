@@ -5,10 +5,6 @@
 /derby.log
 /.metals/
 /.vscode/
-/arrow/.idea/
-/arrow/target/
-/arrow-c-data-jni/target/
-.DS_Store
 *.iml
 /native-io/lakesoul-io-java/target/
 /aws-test/target/
@@ -16,3 +12,7 @@
 /native-io/lakesoul-io-java/.idea/
 dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/
+dependency-reduced-pom.xml
+/lakesoul-spark/spark-warehouse/
+/script/benchmark/work-dir/*.jar
+*.DS_Store

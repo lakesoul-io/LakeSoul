@@ -23,6 +23,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
@@ -59,7 +60,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     val table_id = "table_" + UUID.randomUUID().toString
     val table_info = TableInfo(table_namespace, Some(table_path), table_id)
     val partition_arr = Array(
-      PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
+      PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 0)
     )
     new Snapshot(table_info, partition_arr, true)
   }
@@ -86,9 +87,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, partitionVersion: Int): Unit = {
+  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): Unit = {
     lockInterruptibly {
-      currentSnapshot.setPartitionDescAndVersion(partitionDesc, partitionVersion)
+      currentSnapshot.setPartitionDescAndVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
     }
   }
 
@@ -108,13 +109,13 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-    * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
-    * be recorded for this table, and all other tables will be read
-    * at a snapshot that is pinned on the first access.
-    *
-    * @note This uses thread-local variable to make the active transaction visible. So do not use
-    *       multi-threaded code in the provided thunk.
-    */
+   * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
+   * be recorded for this table, and all other tables will be read
+   * at a snapshot that is pinned on the first access.
+   *
+   * @note This uses thread-local variable to make the active transaction visible. So do not use
+   *       multi-threaded code in the provided thunk.
+   */
   def withNewTransaction[T](thunk: TransactionCommit => T): T = {
     try {
       val tc = startTransaction()
@@ -126,9 +127,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-    * Checks whether this table only accepts appends. If so it will throw an error in operations that
-    * can remove data such as DELETE/UPDATE/MERGE.
-    */
+   * Checks whether this table only accepts appends. If so it will throw an error in operations that
+   * can remove data such as DELETE/UPDATE/MERGE.
+   */
   def assertRemovable(): Unit = {
     if (LakeSoulConfig.IS_APPEND_ONLY.fromTableInfo(snapshot.getTableInfo)) {
       throw LakeSoulErrors.modifyAppendOnlyTableException
@@ -149,9 +150,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 object SnapshotManagement {
 
   /**
-    * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
-    * in reconstructing.
-    */
+   * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
+   * in reconstructing.
+   */
   private val snapshotManagementCache = {
     val expireMin = if (SparkSession.getActiveSession.isDefined) {
       SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)
@@ -205,7 +206,18 @@ object SnapshotManagement {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, partitionVersion)
+      sm.updateSnapshotForVersion(partitionDesc, 0, partitionVersion, ReadType.SNAPSHOT_READ)
+      apply(qualifiedPath)
+    } else {
+      throw new AnalysisException("table not exitst in the path;")
+    }
+  }
+
+  def apply(path: String, partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): SnapshotManagement = {
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
+      val sm = apply(qualifiedPath)
+      sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")

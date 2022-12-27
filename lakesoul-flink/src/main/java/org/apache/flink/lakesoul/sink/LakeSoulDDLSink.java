@@ -24,17 +24,15 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
 import org.apache.flink.api.java.utils.ParameterTool;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions;
-import org.apache.flink.lakesoul.types.JsonSourceRecord;
-import org.apache.flink.lakesoul.types.SourceRecordJsonSerde;
+import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 
-public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
+public class LakeSoulDDLSink extends RichSinkFunction<BinarySourceRecord> {
     private static final String ddlField = "ddl";
     private static final String historyField = "historyRecord";
     private static final String source = "source";
@@ -42,15 +40,16 @@ public class LakeSoulDDLSink extends RichSinkFunction<JsonSourceRecord> {
 
 
     @Override
-    public void invoke(JsonSourceRecord value, Context context) throws Exception {
-        Struct val = (Struct) value.getValue(SourceRecordJsonSerde.getInstance()).value();
+    public void invoke(BinarySourceRecord value, Context context) throws Exception {
+        Struct val = (Struct) value.getDDLStructValue().value();
         String history = val.getString(historyField);
         JSONObject jso = (JSONObject) JSON.parse(history);
         String ddlval = jso.getString(ddlField).toLowerCase();
         Struct sourceItem = (Struct) val.get(source);
         String tablename = sourceItem.getString(table);
         ParameterTool pt = (ParameterTool) getRuntimeContext().getExecutionConfig().getGlobalJobParameters();
-        List<String> excludeTablesList = Arrays.asList(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(), LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.defaultValue()).split(","));
+        List<String> excludeTablesList = Arrays.asList(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(),
+                LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.defaultValue()).split(","));
         HashSet<String> excludeTables = new HashSet<>(excludeTablesList);
         MysqlDBManager mysqlDbManager = new MysqlDBManager(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
                                             pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),

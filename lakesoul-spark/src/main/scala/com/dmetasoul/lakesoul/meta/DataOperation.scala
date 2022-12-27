@@ -17,14 +17,19 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp
+import org.apache.curator.shaded.com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
+
 import java.util
 import java.util.UUID
-
 import scala.collection.{JavaConverters, mutable}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
+import scala.util.control.Breaks
+import scala.util.control.Breaks.break
+
 object DataOperation extends Logging {
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfo]): Array[DataFileInfo] = {
@@ -63,18 +68,18 @@ object DataOperation extends Logging {
         )
       }
     }
-    if(file_arr_buf.length>1){
-      for(i <- Range(file_arr_buf.size-1,-1,-1)){
-        if(file_arr_buf(i).file_op.equals("del")) {
+    if (file_arr_buf.length > 1) {
+      for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
+        if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
-        }else{
-          if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path)){
+        } else {
+          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
       }
       file_res_arr_buf.reverse
-    }else{
+    } else {
       file_arr_buf.filter(_.file_op.equals("add"))
     }
   }
@@ -82,12 +87,11 @@ object DataOperation extends Logging {
   def getSinglePartitionDataInfo(table_id: String, partition_desc: String, version: Int): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
     val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
-
     val dupCheck = new mutable.HashSet[String]()
-    val dataCommitInfoList =  MetaVersion.dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
-    dataCommitInfoList.foreach( data_commit_info => {
+    val dataCommitInfoList = MetaVersion.dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
+    dataCommitInfoList.foreach(data_commit_info => {
       val fileOps = data_commit_info.getFileOps.asScala.toArray
-      fileOps.foreach( file => {
+      fileOps.foreach(file => {
         file_arr_buf += DataFileInfo(
           data_commit_info.getPartitionDesc,
           file.getPath(),
@@ -99,19 +103,96 @@ object DataOperation extends Logging {
       })
     })
 
-    if(file_arr_buf.length>1){
-      for(i <- Range(file_arr_buf.size-1,-1,-1)){
-        if(file_arr_buf(i).file_op.equals("del")) {
+    if (file_arr_buf.length > 1) {
+      for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
+        if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
-        }else{
-          if(dupCheck.size==0 || !dupCheck.contains(file_arr_buf(i).path) ){
+        } else {
+          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
       }
       file_res_arr_buf.reverse
-    }else{
+    } else {
       file_arr_buf.filter(_.file_op.equals("add"))
+    }
+  }
+
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startVersion: Int, endVersion:Int, readType: String): ArrayBuffer[DataFileInfo] = {
+    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
+      getSinglePartitionIncrementalDataInfos(table_id, partition_desc, startVersion,endVersion)
+    } else {
+      getSinglePartitionDataInfo(table_id, partition_desc, endVersion)
+    }
+  }
+
+  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersion: Int,endVersion:Int): ArrayBuffer[DataFileInfo] = {
+    var preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
+    var compactionUUIDs = new mutable.LinkedHashSet[UUID]()
+    var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
+    var updated: Boolean = false
+    val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitions(table_id, partition_desc, startVersion,endVersion).asScala.toArray
+    if (dataCommitInfoList.size < 2) {
+      println("It is the latest version")
+      return new ArrayBuffer[DataFileInfo]()
+    }
+    val loop = new Breaks()
+    loop.breakable{
+      for (dataItem <- dataCommitInfoList) {
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersion != dataItem.getVersion) {
+          updated = true
+          loop.break()
+        }
+        if (startVersion == dataItem.getVersion) {
+          preVersionUUIDs ++= dataItem.getSnapshot.asScala
+        } else {
+          if ("CompactionCommit".equals(dataItem.getCommitOp)) {
+            compactionUUIDs ++= dataItem.getSnapshot.asScala
+          } else {
+            incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
+          }
+        }
+      }
+    }
+    if (updated) {
+      println("Incremental query could not have update just for compaction merge and append")
+      new ArrayBuffer[DataFileInfo]()
+    } else {
+      val tmpUUIDs = incrementalAllUUIDs -- preVersionUUIDs
+      val resultUUID = tmpUUIDs -- compactionUUIDs
+      val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val dupCheck = new mutable.HashSet[String]()
+      val dataCommitInfoList = MetaVersion.dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
+      dataCommitInfoList.foreach(data_commit_info => {
+        val fileOps = data_commit_info.getFileOps.asScala.toArray
+        fileOps.foreach(file => {
+          file_arr_buf += DataFileInfo(
+            data_commit_info.getPartitionDesc,
+            file.getPath(),
+            file.getFileOp(),
+            file.getSize(),
+            data_commit_info.getTimestamp(),
+            file.getFileExistCols()
+          )
+        })
+      })
+
+      if (file_arr_buf.length > 1) {
+        for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
+          if (file_arr_buf(i).file_op.equals("del")) {
+            dupCheck.add(file_arr_buf(i).path)
+          } else {
+            if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+              file_res_arr_buf += file_arr_buf(i)
+            }
+          }
+        }
+        file_res_arr_buf.reverse
+      } else {
+        file_arr_buf.filter(_.file_op.equals("add"))
+      }
     }
   }
 
@@ -146,7 +227,7 @@ object DataOperation extends Logging {
 
   }
 
-  def dropDataInfoData(table_id: String, range: String, commit_id:UUID): Unit = {
+  def dropDataInfoData(table_id: String, range: String, commit_id: UUID): Unit = {
     MetaVersion.dbManager.deleteDataCommitInfo(table_id, range, commit_id)
   }
 
@@ -154,5 +235,5 @@ object DataOperation extends Logging {
     MetaVersion.dbManager.deleteDataCommitInfo(table_id)
   }
 
-
 }
+

@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
-import com.dmetasoul.lakesoul.meta.MetaCommit
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -124,8 +123,12 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       parquetScan(partitionFilters, dataFilters)
     }
     else if (onlyOnePartition) {
-      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+        parquetScan(partitionFilters, dataFilters)
+      } else {
+        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
+          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      }
     }
     else {
       if (sparkSession.sessionState.conf

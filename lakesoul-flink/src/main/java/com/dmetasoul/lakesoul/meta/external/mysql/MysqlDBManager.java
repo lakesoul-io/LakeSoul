@@ -98,7 +98,7 @@ public class MysqlDBManager implements ExternalDBManager {
 
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver("com.mysql.jdbc.Driver");
-        String url = "jdbc:mysql://" + host + ":" + port + "/" + dbName + "?useSSL=false";
+        String url = "jdbc:mysql://" + host + ":" + port + "/" + dbName + "?useSSL=false&allowPublicKeyRetrieval=true";
         dataBaseProperty.setUrl(url);
         dataBaseProperty.setUsername(user);
         dataBaseProperty.setPassword(passwd);
