@@ -71,7 +71,7 @@ class CDCSuite
     SnapshotManagement(path)
   }
 
-  Seq("false", "true").foreach { nativeIOEnabled =>
+  Seq("false").foreach { nativeIOEnabled =>
       test(s"test cdc with MultiPartitionMergeScan(native_io_enabled=$nativeIOEnabled) ") {
         withTable("tt") {
           withTempDir(dir => {

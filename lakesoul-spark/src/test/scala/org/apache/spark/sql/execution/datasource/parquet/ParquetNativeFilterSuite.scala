@@ -143,7 +143,7 @@ class ParquetNativeFilterSuite
       SQLConf.PARQUET_FILTER_PUSHDOWN_TIMESTAMP_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_STARTSWITH_ENABLED.key -> "true",
-      NATIVE_IO_ENABLE.key -> "true",
+      NATIVE_IO_ENABLE.key -> "false",
       // Disable adding filters from constraints because it adds, for instance,
       // is-not-null to pushed filters, which makes it hard to test if the pushed
       // filter is expected or not (this had to be fixed with SPARK-13495).
@@ -156,8 +156,6 @@ class ParquetNativeFilterSuite
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
         DataSourceV2ScanRelation(_, scan: ParquetScan, _)) =>
-          println("match case ParquetScan")
-          println(filters)
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
