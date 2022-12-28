@@ -8,8 +8,9 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 
 # 使用教程
 [CDC 入湖教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/flink-cdc-sink/): LakeSoul 通过 Flink CDC 实现 MySQL 整库同步，支持自动建表、自动 DDL 变更、严格一次（exactly once）保证。
-[多流合并教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/mutil-stream-merge/)：LakeSoul 原生支持多个具有相同主键的流（其余列可以不同）自动合并到同一张表，消除 Join.
-[非全字段更新教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/partial-field-update--MergeOperator/)：LakeSoul 使用 Merge UDF 自定义 Merge 逻辑的用法示例。
+[多流合并构建宽表教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/mutil-stream-merge/)：LakeSoul 原生支持多个具有相同主键的流（其余列可以不同）自动合并到同一张表，消除 Join.
+[数据更新 (Upsert) 和 Merge UDF 使用教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/upsert-and-merge-udf/)：LakeSoul 使用 Merge UDF 自定义 Merge 逻辑的用法示例。
+[快照相关功能用法教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/snapshot-manage/): LakeSoul 快照读、回滚、清理等功能用法。
 
 # 使用文档
 

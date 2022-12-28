@@ -19,8 +19,8 @@ Please find tutorials in doc site:
 [Tutorials](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/consume-cdc-via-spark-streaming/)
 
 * Checkout [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/flink-cdc-sink/) on how to sync an entire MySQL database into LakeSoul in realtime, with auto table creation, auto DDL sync and exactly once guarantee.
-* Checkout [Multi Stream Merge Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/mutil-stream-merge/) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
-* Checkout [Non Full Field Update Usage Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/partial-field-update--MergeOperator/) as an example on how to use Merge UDF to customize merge logic.
+* Checkout [Multi Stream Merge and Build Wide Table Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/mutil-stream-merge/) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
+* Checkout [Upsert Data and Merge UDF Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/upsert-and-merge-udf/) on how to upsert data and Merge UDF to customize merge logic.
 * Checkout [Snapshot API Usage](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/snapshot-manage/) on how to do snapshot read (time travel), snapshot rollback and cleanup.
 
 # Usage Documentations
