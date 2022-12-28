@@ -167,7 +167,8 @@ pub extern "C" fn lakesoul_config_builder_set_buffer_size(
     buffer_size: c_size_t,
 ) -> NonNull<ReaderConfigBuilder> {
     // println!("Setting batch_size={} for lakesoul_config_builder", batch_size);
-    convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder).with_buffer_size(buffer_size))
+    convert_to_opaque(from_opaque::<ReaderConfigBuilder, LakeSoulReaderConfigBuilder>(builder))
+    // .with_buffer_size(buffer_size))
 }
 
 #[no_mangle]

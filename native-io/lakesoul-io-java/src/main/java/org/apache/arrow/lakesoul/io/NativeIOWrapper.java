@@ -72,6 +72,7 @@ public class NativeIOWrapper implements AutoCloseable {
         readerConfigBuilder = libLakeSoulIO.new_lakesoul_reader_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
         setBufferSize(1);
+        setBatchSize(2048);
         setThreadNum(2);
     }
 
