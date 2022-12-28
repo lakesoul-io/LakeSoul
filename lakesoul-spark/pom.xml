@@ -20,14 +20,21 @@
         <kafka.client.version>3.3.1</kafka.client.version>
         <schema.registry.version>7.3.1</schema.registry.version>
         <avro.version>1.11.1</avro.version>
+        <mysql.version>8.0.30</mysql.version>
         <local.scope>provided</local.scope>
     </properties>
 
     <dependencies>
+        <!-- lakesoul deps -->
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
             <version>2.1.0-SNAPSHOT</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-io-java</artifactId>
+            <version>2.1.1-alpha-SNAPSHOT</version>
         </dependency>
 
         <!-- scala deps -->
@@ -36,14 +43,12 @@
             <artifactId>scala-library</artifactId>
             <version>${scala.version}</version>
             <scope>${local.scope}</scope>
-
         </dependency>
         <dependency>
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-compiler</artifactId>
             <version>${scala.version}</version>
             <scope>${local.scope}</scope>
-
         </dependency>
         <dependency>
             <groupId>org.scala-lang</groupId>
@@ -80,6 +85,14 @@
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
+
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-aws</artifactId>
+            <version>2.10.1</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql-kafka-0-10_2.12</artifactId>
@@ -182,13 +195,16 @@
             <classifier>tests</classifier>
         </dependency>
 
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>${mysql.version}</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
-        <sourceDirectory>src/main/scala</sourceDirectory>
-        <testSourceDirectory>src/test/scala</testSourceDirectory>
-        <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
-        <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -238,6 +254,10 @@
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <recompileMode>all</recompileMode>
+<!--                    <compileOrder>JavaThenScala</compileOrder>-->
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.scalatest</groupId>
@@ -298,6 +318,19 @@
                     </relocations>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
         </plugins>
     </build>
 </project>

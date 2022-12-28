@@ -106,4 +106,40 @@ object LakeSoulSQLConf {
         """.stripMargin)
       .intConf
       .createWithDefault(10)
+
+  val NATIVE_IO_ENABLE: ConfigEntry[Boolean] =
+    buildConf("native.io.scan.enable")
+      .doc(
+        """
+           |If ture, org.apache.spark.sql.execution.datasources.parquet.NativeVectorizedReader.NativeVectorizedReader will be used instead of org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
+        """.stripMargin)
+      .booleanConf
+      .createWithDefault(false)
+
+  val NATIVE_IO_PREFETCHER_BUFFER_SIZE: ConfigEntry[Int] =
+    buildConf("native.io.prefetch.buffer.size")
+      .doc(
+        """
+           |If NATIVE_IO_ENABLE=true, NATIVE_IO_PREFETCHER_BUFFER_SIZE of batches will be buffered while native-io prefetching
+        """.stripMargin)
+      .intConf
+      .createWithDefault(1)
+
+  val NATIVE_IO_THREAD_NUM: ConfigEntry[Int] =
+    buildConf("native.io.thread.num")
+      .doc(
+        """
+          |If NATIVE_IO_ENABLE=true, tokio::runtime::Runtime will be build with NATIVE_IO_THREAD_NUM thread_num
+        """.stripMargin)
+      .intConf
+      .createWithDefault(1)
+
+  val NATIVE_IO_READER_AWAIT_TIMEOUT: ConfigEntry[Int] =
+    buildConf("native.io.await.timeout")
+      .doc(
+        """
+          |If NATIVE_IO_ENABLE=true, timeout for each iterate will be set to NATIVE_IO_READER_AWAIT_TIMEOUT mills
+        """.stripMargin)
+      .intConf
+      .createWithDefault(3000)
 }

@@ -190,7 +190,7 @@ public class DBManager {
         List<PartitionInfo> singlePartitionAllVersionList = getOnePartitionVersions(tableId, partitionDesc);
         Map<Long, PartitionInfo> timestampToPartition = new HashMap<>();
         List<PartitionInfo> filterPartition = new ArrayList<>();
-        for(PartitionInfo p : singlePartitionAllVersionList) {
+        for (PartitionInfo p : singlePartitionAllVersionList) {
             long curTimestamp = p.getTimestamp();
             timestampToPartition.put(curTimestamp, p);
             if (curTimestamp > utcMills) {
@@ -610,6 +610,14 @@ public class DBManager {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         List<UUID> commitList = partitionInfo.getSnapshot();
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
+    }
+
+    public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion, int endVersion) {
+        return partitionInfoDao.getPartitionsFromVersion(tableId, partitionDesc, startVersion, endVersion);
+    }
+
+    public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc, List<UUID> dataCommitUUIDs) {
+        return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
     public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
