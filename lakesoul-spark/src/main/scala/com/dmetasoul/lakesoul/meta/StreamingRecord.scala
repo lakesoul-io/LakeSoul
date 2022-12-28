@@ -20,31 +20,38 @@ import scala.collection.mutable.ArrayBuffer
 
 object StreamingRecord {
 
+  val dbManager = new DBManager()
+
   def getStreamingInfo(tableId: String): (String, Long) = {
-    ("", -1L)
+    val streamingInfo = dbManager.getStreamingInfoByTableId(tableId)
+    (streamingInfo.getQueryId, streamingInfo.getBatchId)
   }
 
   def getBatchId(tableId: String, queryId: String): Long = {
-    1
+    dbManager.getStreamingInfoByTableIdAndQueryId(tableId, queryId).getBatchId
   }
 
-
   def updateStreamingInfo(tableId: String, queryId: String, batchId: Long, timestamp: Long): Unit = {
+    dbManager.updateStreamingInfo(tableId, queryId, batchId, timestamp)
   }
 
   def deleteStreamingInfoByTableId(tableId: String): Unit = {
+    dbManager.deleteStreamingInfoByTableId(tableId)
   }
 
   def deleteStreamingInfoByTimestamp(tableId: String, expireTimestamp: Long): Unit = {
-//    val expireInfo = getTimeoutStreamingInfo(tableId, expireTimestamp)
-//    expireInfo.foreach(info => deleteStreamingInfo(info._1, info._2))
+    val expireInfo = getTimeoutStreamingInfo(tableId, expireTimestamp)
+    expireInfo.foreach(info => deleteStreamingInfo(info._1, info._2))
   }
 
   private def getTimeoutStreamingInfo(tableId: String, expireTimestamp: Long): Seq[(String, String)] = {
-    new ArrayBuffer[(String, String)]()
+    val streamingRecords = new ArrayBuffer[(String, String)]()
+    dbManager.getTimeoutStreamingInfo(tableId, expireTimestamp).forEach(streamingInfo => streamingRecords.append((streamingInfo.getTableId, streamingInfo.getQueryId)))
+    streamingRecords
   }
 
   private def deleteStreamingInfo(tableId: String, query_id: String): Unit = {
+    dbManager.deleteStreamingInfoByTableIdAndQueryId(tableId, query_id)
   }
 
 }

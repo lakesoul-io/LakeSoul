@@ -22,7 +22,7 @@ object MetaUtils extends Logging {
 
   lazy val DEFAULT_RANGE_PARTITION_VALUE: String = "-5"
 
-  var DATA_BASE: String = "test_lakesoul_meta";;
+  var DATA_BASE: String = "test_lakesoul_meta"
 
   lazy val MAX_COMMIT_ATTEMPTS: Int = 5
   lazy val DROP_TABLE_WAIT_SECONDS: Int = 1
