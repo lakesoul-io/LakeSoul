@@ -15,7 +15,7 @@ import scala.runtime.Nothing$
 
 class ArrowColumnVectorSuite extends SparkFunSuite with BeforeAndAfter{
 
-  val rowCnt = 10000000 * 8 * 5
+  val rowCnt = 10000
 
 
   var arrowColumnVector:ArrowColumnVector = _
