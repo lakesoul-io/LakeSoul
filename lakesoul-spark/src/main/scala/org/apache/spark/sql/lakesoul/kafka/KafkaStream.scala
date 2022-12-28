@@ -22,20 +22,23 @@ import com.dmetasoul.lakesoul.meta.DBManager
 import io.confluent.kafka.schemaregistry.client.{CachedSchemaRegistryClient, SchemaRegistryClient}
 import io.confluent.kafka.serializers.AbstractKafkaAvroDeserializer
 import org.apache.avro.generic.GenericRecord
+import org.apache.commons.lang.time.DateFormatUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.apache.spark.sql.functions.{callUDF, col, from_json}
+import org.apache.spark.sql.functions.{callUDF, col, from_json, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.{DataTypes, StructType}
 
 import java.util
-import java.util.UUID
+import java.util.{Date, UUID}
+import scala.util.Try
 
 object KafkaStream {
 
   val KAFKA_TABLE_PREFIX = "table_"
+  val LAKESOUL_PARTITION_COLUMN = "lakesoul_dt"
   var dbManager = new DBManager()
 
   var brokers = "localhost:9092"
@@ -44,6 +47,7 @@ object KafkaStream {
   var checkpointPath = "/Users/dudongfeng/work/docker_compose/checkpoint/"
   var namespace = "default"
   var kafkaOffset = "latest"
+  var autoAddPartition = false
   var schemaRegistryURL = "http://localhost:8081"
   var withSchemaRegistry = false
 
@@ -60,7 +64,11 @@ object KafkaStream {
       val tableExists = dbManager.isTableExistsByTableName(tableName, namespace)
       if (!tableExists) {
         val tableId = KAFKA_TABLE_PREFIX + UUID.randomUUID().toString
-        dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), "")
+        if (autoAddPartition) {
+          dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), LAKESOUL_PARTITION_COLUMN + ";")
+        } else {
+          dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), "")
+        }
       } else {
         val tableId = dbManager.shortTableName(tableName, namespace)
         dbManager.updateTableSchema(tableId.getTableId(), schema);
@@ -113,10 +121,11 @@ object KafkaStream {
     checkpointPath = args(3)
     namespace = args(4)
     kafkaOffset = args(5)
+    autoAddPartition = Try(args(6).toBoolean).getOrElse(false)
 
-    if (args.length >= 7) {
+    if (args.length >= 8) {
       withSchemaRegistry = true
-      schemaRegistryURL = args(6)
+      schemaRegistryURL = args(7)
     }
 
     val builder = SparkSession.builder()
@@ -163,6 +172,7 @@ object KafkaStream {
     multiTopicData.writeStream.queryName("demo").foreachBatch {
       (batchDF: DataFrame, _: Long) => {
 
+        val lakeSoulDt = DateFormatUtils.format(new Date(), "yyyyMMddHH")
         val topicList = kafkaUtils.kafkaListTopics(topicPattern)
         if (topicList.size() > topicAndSchema.keySet.size) {
           topicAndSchema = topicValueToSchema(spark, getTopicMsg(topicPattern))
@@ -173,10 +183,24 @@ object KafkaStream {
           val path = warehouse + "/" + namespace + "/" + topic
           val topicDF = batchDF.filter(col("topic").equalTo(topic))
           if (!topicDF.rdd.isEmpty()) {
-            topicDF.show(false)
-            val rows = topicDF.withColumn("payload", from_json(col("value"), topicAndSchema.get(topic).get))
+            val rows = topicDF
+              .withColumn("payload", from_json(col("value"), topicAndSchema.get(topic).get))
               .selectExpr("payload.*")
-            rows.write.mode("append").format("lakesoul").option("mergeSchema", "true").save(path)
+            if (autoAddPartition) {
+              val rowsWithDt = rows.withColumn(LAKESOUL_PARTITION_COLUMN, lit(lakeSoulDt))
+              rowsWithDt.write
+                .mode("append")
+                .format("lakesoul")
+                .option("rangePartitions", LAKESOUL_PARTITION_COLUMN)
+                .option("mergeSchema", "true")
+                .save(path)
+            } else {
+              rows.write
+                .mode("append")
+                .format("lakesoul")
+                .option("mergeSchema", "true")
+                .save(path)
+            }
           }
         }
       }
