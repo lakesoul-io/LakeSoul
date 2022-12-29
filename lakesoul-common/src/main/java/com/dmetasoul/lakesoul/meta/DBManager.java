@@ -161,6 +161,10 @@ public class DBManager {
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
         return partitionInfoDao.getLastedVersionUptoTime(tableId, partitionDesc, utcMills);
     }
+    public long getLastedVersionTimestampUptoTime(String tableId, String partitionDesc, long utcMills) {
+        return partitionInfoDao.getLastedVersionTimestampUptoTime(tableId, partitionDesc, utcMills);
+    }
+
 
     public List<String> getDeleteFilePath(String tableId, String partitionDesc, long utcMills) {
         List<DataFileOp> fileOps = new ArrayList<>();
@@ -614,6 +618,10 @@ public class DBManager {
 
     public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion, int endVersion) {
         return partitionInfoDao.getPartitionsFromVersion(tableId, partitionDesc, startVersion, endVersion);
+    }
+
+    public List<PartitionInfo> getIncrementalPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp, long endTimestamp) {
+        return partitionInfoDao.getPartitionsFromTimestamp(tableId, partitionDesc, startTimestamp, endTimestamp);
     }
 
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc, List<UUID> dataCommitUUIDs) {

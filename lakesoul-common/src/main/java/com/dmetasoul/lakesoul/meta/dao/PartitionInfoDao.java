@@ -183,6 +183,33 @@ public class PartitionInfoDao {
         return getPartitionInfo(sql);
     }
 
+    public long getLastedTimestamp(String tableId, String partitionDesc) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "";
+        if (null == partitionDesc || "".equals(partitionDesc)) {
+           sql = String.format("select max(timestamp) as timestamp from partition_info where table_id = '%s'", tableId);
+        }else{
+            sql = String.format("select max(timestamp) as timestamp from partition_info where table_id = '%s' and partition_desc = '%s'", tableId, partitionDesc);
+        }
+        long timestamp = -1;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                timestamp = rs.getLong("timestamp");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return timestamp;
+    }
+
+
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -208,6 +235,33 @@ public class PartitionInfoDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return version;
+    }
+
+    public long getLastedVersionTimestampUptoTime(String tableId, String partitionDesc, long utcMills) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select count(*) as total,max(timestamp) as timestamp from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp < %d", tableId, partitionDesc, utcMills);
+        long timestamp = 0L;
+        int total = 0;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                total = rs.getInt("total");
+                if (total == 0) {
+                    break;
+                } else {
+                    timestamp = rs.getLong("timestamp");
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return timestamp;
     }
 
     public List<PartitionInfo> getPartitionVersions(String tableId, String partitionDesc) {
@@ -290,6 +344,10 @@ public class PartitionInfoDao {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d and version <= %d", tableId, partitionDesc, startVersion, endVersion);
         return getPartitionInfos(sql);
     }
+    public List<PartitionInfo> getPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp, long endTimestamp) {
+        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp >= %d and timestamp <= %d", tableId, partitionDesc, startTimestamp, endTimestamp);
+        return getPartitionInfos(sql);
+    }
 
     public List<String> getAllPartitionDescByTableId(String tableId) {
         Connection conn = null;
@@ -329,6 +387,7 @@ public class PartitionInfoDao {
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
+                partitionInfo.setTimestamp(rs.getLong("timestamp"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
