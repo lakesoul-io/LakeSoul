@@ -24,6 +24,14 @@
         <local.scope>provided</local.scope>
     </properties>
 
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <name>Confluent</name>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
+
     <dependencies>
         <!-- lakesoul deps -->
         <dependency>
