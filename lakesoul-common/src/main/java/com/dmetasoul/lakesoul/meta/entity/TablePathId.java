@@ -22,11 +22,25 @@ public class TablePathId {
 
     private String tableId;
 
+    private String tableNamespace;
+
     public TablePathId() {}
 
     public TablePathId(String tablePath, String tableId) {
+        this(tablePath, tableId, "default");
+    }
+    public TablePathId(String tablePath, String tableId, String tableNamespace) {
         this.tablePath = tablePath;
         this.tableId = tableId;
+        this.tableNamespace = tableNamespace;
+    }
+
+    public void setTableNamespace(String tableNamespace) {
+        this.tableNamespace = tableNamespace;
+    }
+
+    public String getTableNamespace() {
+        return tableNamespace;
     }
 
     public String getTablePath() {

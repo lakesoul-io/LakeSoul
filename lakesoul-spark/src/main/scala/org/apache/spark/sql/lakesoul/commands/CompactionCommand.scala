@@ -20,18 +20,19 @@ import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
+import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
+import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
+import org.apache.spark.util.Utils
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable
@@ -40,14 +41,16 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              conditionString: String,
                              force: Boolean,
                              mergeOperatorInfo: Map[String, String],
-                             hiveTableName: String = "")
+                             hiveTableName: String = "",
+                             hivePartitionName: String = ""
+                            )
   extends LeafRunnableCommand with PredicateHelper with Logging {
 
 
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
                                  partitionInfo: PartitionInfo): Boolean = {
-    partitionInfo.read_files.length >=1
+    partitionInfo.read_files.length >= 1
   }
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
@@ -64,7 +67,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
-    if(scan.isInstanceOf[ParquetScan]){
+    if (scan.isInstanceOf[ParquetScan]) {
       throw LakeSoulErrors.CompactionException(table_name = table.name())
     }
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
@@ -92,8 +95,21 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.commit(newFiles, newReadFiles)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
-      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
-      SparkUtil.spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+      val spark = SparkSession.active
+      val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
+      Utils.tryWithSafeFinally({
+        spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
+        if(hivePartitionName.nonEmpty){
+          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($hivePartitionName)")
+          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($hivePartitionName) location '${path.toString}/$partitionStr'")
+        }else{
+          spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
+          spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
+        }
+
+      }) {
+        spark.sessionState.catalogManager.setCurrentCatalog(currentCatalog)
+      }
     }
 
     logInfo("=========== Compaction Success!!! ===========")

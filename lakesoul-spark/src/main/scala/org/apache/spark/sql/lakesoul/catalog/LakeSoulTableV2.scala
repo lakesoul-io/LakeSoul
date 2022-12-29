@@ -46,6 +46,19 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   val path = SparkUtil.makeQualifiedTablePath(path_orig)
 
+  val namespace: String =
+    tableIdentifier match {
+      case None => LakeSoulCatalog.showCurrentNamespace().mkString(".")
+      case Some(tableIdentifier) =>
+        val idx = tableIdentifier.lastIndexOf('.')
+        if (idx == -1) {
+          LakeSoulCatalog.showCurrentNamespace().mkString(".")
+        } else {
+          tableIdentifier.substring(0, idx)
+        }
+    }
+
+
   private lazy val (rootPath, partitionFilters) =
     if (catalogTable.isDefined) {
       // Fast path for reducing path munging overhead
@@ -56,7 +69,7 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   // The loading of the SnapshotManagement is lazy in order to reduce the amount of FileSystem calls,
   // in cases where we will fallback to the V1 behavior.
-  lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath)
+  lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath, namespace)
 
   //  def getTableIdentifierIfExists: Option[TableIdentifier] = tableIdentifier.map(
   //    spark.sessionState.sqlParser.parseTableIdentifier)
@@ -123,10 +136,8 @@ case class LakeSoulTableV2(spark: SparkSession,
           }
         })
     }
-
     val newOptions = options.asCaseSensitiveMap().asScala ++
       mergeOperatorInfo.getOrElse(Map.empty[String, String])
-
     LakeSoulScanBuilder(spark, fileIndex, schema(), dataSchema,
       new CaseInsensitiveStringMap(newOptions.asJava), snapshot.getTableInfo)
   }
@@ -136,9 +147,9 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   /**
-    * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
-    * paths.
-    */
+   * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
+   * paths.
+   */
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)

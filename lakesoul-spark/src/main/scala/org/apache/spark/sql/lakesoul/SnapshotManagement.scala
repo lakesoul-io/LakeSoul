@@ -19,33 +19,26 @@ package org.apache.spark.sql.lakesoul
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
-
-import java.util.UUID
-import java.util.concurrent.TimeUnit
-import java.lang
-import java.io.File
 import org.apache.hadoop.fs.Path
-import org.apache.spark.api.java
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper
-import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
-import org.apache.spark.sql.functions._
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
-import org.apache.spark.sql.sources.BaseRelation
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.apache.spark.sql.{AnalysisException, DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.{AnalysisException, SparkSession}
 
-import scala.collection.JavaConverters._
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
-
-class SnapshotManagement(path: String) extends Logging {
+class SnapshotManagement(path: String, namespace: String) extends Logging {
 
   val table_path: String = path
+
+  val table_namespace: String = namespace
 
   lazy private val lock = new ReentrantLock()
 
@@ -54,7 +47,7 @@ class SnapshotManagement(path: String) extends Logging {
   def snapshot: Snapshot = currentSnapshot
 
   private def createSnapshot: Snapshot = {
-    val table_info = MetaVersion.getTableInfo(table_path)
+    val table_info = MetaVersion.getTableInfo(table_namespace, table_path)
     val partition_info_arr = MetaVersion.getAllPartitionInfo(table_info.table_id)
 
     if (table_info.table_schema.isEmpty) {
@@ -65,15 +58,16 @@ class SnapshotManagement(path: String) extends Logging {
 
   private def initSnapshot: Snapshot = {
     val table_id = "table_" + UUID.randomUUID().toString
-    val table_info = TableInfo(Some(table_path), table_id)
+    val table_info = TableInfo(table_namespace, Some(table_path), table_id)
     val partition_arr = Array(
-      PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE,0)
+      PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 0)
     )
     new Snapshot(table_info, partition_arr, true)
   }
 
 
   private def getCurrentSnapshot: Snapshot = {
+
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
@@ -93,9 +87,9 @@ class SnapshotManagement(path: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, partitionVersion: Int): Unit = {
+  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): Unit = {
     lockInterruptibly {
-      currentSnapshot.setPartitionDescAndVersion(partitionDesc, partitionVersion)
+      currentSnapshot.setPartitionDescAndVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
     }
   }
 
@@ -105,7 +99,7 @@ class SnapshotManagement(path: String) extends Logging {
       MetaVersion.getTableInfo(table_path)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
-      TableInfo(Some(table_path), table_id)
+      TableInfo(table_namespace, Some(table_path), table_id)
     }
   }
 
@@ -115,13 +109,13 @@ class SnapshotManagement(path: String) extends Logging {
   }
 
   /**
-    * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
-    * be recorded for this table, and all other tables will be read
-    * at a snapshot that is pinned on the first access.
-    *
-    * @note This uses thread-local variable to make the active transaction visible. So do not use
-    *       multi-threaded code in the provided thunk.
-    */
+   * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
+   * be recorded for this table, and all other tables will be read
+   * at a snapshot that is pinned on the first access.
+   *
+   * @note This uses thread-local variable to make the active transaction visible. So do not use
+   *       multi-threaded code in the provided thunk.
+   */
   def withNewTransaction[T](thunk: TransactionCommit => T): T = {
     try {
       val tc = startTransaction()
@@ -133,26 +127,9 @@ class SnapshotManagement(path: String) extends Logging {
   }
 
   /**
-    * using with part merge.
-    *
-    * @note This uses thread-local variable to make the active transaction visible. So do not use
-    *       multi-threaded code in the provided thunk.
-    */
-  def withNewPartMergeTransaction[T](thunk: PartMergeTransactionCommit => T): T = {
-    try {
-      //      updateSnapshot()
-      val tc = new PartMergeTransactionCommit(this)
-      PartMergeTransactionCommit.setActive(tc)
-      thunk(tc)
-    } finally {
-      PartMergeTransactionCommit.clearActive()
-    }
-  }
-
-  /**
-    * Checks whether this table only accepts appends. If so it will throw an error in operations that
-    * can remove data such as DELETE/UPDATE/MERGE.
-    */
+   * Checks whether this table only accepts appends. If so it will throw an error in operations that
+   * can remove data such as DELETE/UPDATE/MERGE.
+   */
   def assertRemovable(): Unit = {
     if (LakeSoulConfig.IS_APPEND_ONLY.fromTableInfo(snapshot.getTableInfo)) {
       throw LakeSoulErrors.modifyAppendOnlyTableException
@@ -173,12 +150,17 @@ class SnapshotManagement(path: String) extends Logging {
 object SnapshotManagement {
 
   /**
-    * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
-    * in reconstructing.
-    */
+   * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
+   * in reconstructing.
+   */
   private val snapshotManagementCache = {
+    val expireMin = if (SparkSession.getActiveSession.isDefined) {
+      SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)
+    } else {
+      LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE.defaultValue.get
+    }
     val builder = CacheBuilder.newBuilder()
-      .expireAfterAccess(60, TimeUnit.MINUTES)
+      .expireAfterWrite(expireMin, TimeUnit.SECONDS)
       .removalListener((removalNotification: RemovalNotification[String, SnapshotManagement]) => {
         val snapshotManagement = removalNotification.getValue
         try snapshotManagement.snapshot catch {
@@ -187,13 +169,12 @@ object SnapshotManagement {
         }
       })
 
-    builder.maximumSize(5).build[String, SnapshotManagement]()
+    builder.maximumSize(64).build[String, SnapshotManagement]()
   }
 
   def forTable(spark: SparkSession, tableName: TableIdentifier): SnapshotManagement = {
-    val catalog = spark.sessionState.catalog
-    val catalogTable = catalog.getTableMetadata(tableName).location
-    apply(new Path(catalogTable))
+    val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(tableName)
+    apply(new Path(path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toString)))
   }
 
   def forTable(dataPath: File): SnapshotManagement = {
@@ -202,12 +183,16 @@ object SnapshotManagement {
 
   def apply(path: Path): SnapshotManagement = apply(path.toString)
 
-  def apply(path: String): SnapshotManagement = {
+  def apply(path: Path, namespace: String): SnapshotManagement = apply(path.toString, namespace)
+
+  def apply(path: String): SnapshotManagement = apply(path, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+
+  def apply(path: String, namespace: String): SnapshotManagement = {
     try {
       val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
       snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
+          new SnapshotManagement(qualifiedPath, namespace)
         }
       })
     } catch {
@@ -215,29 +200,27 @@ object SnapshotManagement {
         throw e.getCause
     }
   }
+
   //no cache just for snapshot
   def apply(path: String, partitionDesc: String, partitionVersion: Int): SnapshotManagement = {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
-      sm.updateSnapshotForVersion(partitionDesc, partitionVersion)
+      sm.updateSnapshotForVersion(partitionDesc, 0, partitionVersion, ReadType.SNAPSHOT_READ)
       apply(qualifiedPath)
     } else {
       throw new AnalysisException("table not exitst in the path;")
     }
   }
 
-  def getSM(path: String): SnapshotManagement = {
-    try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
-      snapshotManagementCache.get(path, () => {
-        AnalysisHelper.allowInvokingTransformsInAnalyzer {
-          new SnapshotManagement(qualifiedPath)
-        }
-      })
-    } catch {
-      case e: com.google.common.util.concurrent.UncheckedExecutionException =>
-        throw e.getCause
+  def apply(path: String, partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): SnapshotManagement = {
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
+      val sm = apply(qualifiedPath)
+      sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
+      apply(qualifiedPath)
+    } else {
+      throw new AnalysisException("table not exitst in the path;")
     }
   }
 

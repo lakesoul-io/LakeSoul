@@ -17,7 +17,7 @@ After connected to the pg DB, execute the following statement to create a databa
 create database test_lakesoul_meta ;
 ```
 
-Then you could init pg database of LakeSoul by `script/meta_init.cql`.
+Then you could init pg database of LakeSoul by `script/meta_init.sql`.
 
   ```
   PGPASSWORD=yugabyte psql -h localhost -p 5433 -U yugabyte -f script/meta_init.sql

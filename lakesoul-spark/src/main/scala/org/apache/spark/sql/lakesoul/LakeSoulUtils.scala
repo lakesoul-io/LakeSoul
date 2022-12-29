@@ -23,17 +23,17 @@ import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
-import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
+import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
-import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 
 object LakeSoulUtils extends PredicateHelper {
 
@@ -48,17 +48,6 @@ object LakeSoulUtils extends PredicateHelper {
     Class.forName(className, true, Utils.getContextOrSparkClassLoader)
   }
 
-  /** return async class */
-  def getAsyncClass(className: String): (Boolean, Class[_]) = {
-    try {
-      val cls = Class.forName(className, true, Utils.getContextOrSparkClassLoader)
-      (true, cls)
-    } catch {
-      case e: ClassNotFoundException => (false, null)
-      case e: Exception => throw e
-    }
-  }
-
   /** Check whether this table is a LakeSoulTableRel based on information from the Catalog. */
   def isLakeSoulTable(table: CatalogTable): Boolean = LakeSoulSourceUtils.isLakeSoulTable(table.provider)
 
@@ -66,12 +55,18 @@ object LakeSoulUtils extends PredicateHelper {
     * Check whether the provided table name is a lakesoul table based on information from the Catalog.
     */
   def isLakeSoulTable(spark: SparkSession, tableName: TableIdentifier): Boolean = {
-    val catalog = spark.sessionState.catalog
-    val tableIsNotTemporaryTable = !catalog.isTempView(tableName)
-    val tableExists =
-      (tableName.database.isEmpty || catalog.databaseExists(tableName.database.get)) &&
-        catalog.tableExists(tableName)
-    tableIsNotTemporaryTable && tableExists && isLakeSoulTable(catalog.getTableMetadata(tableName))
+    if (spark.sessionState.catalog.isTempView(tableName)) {
+      false
+    } else spark.sessionState.catalogManager.currentCatalog match {
+      case catalog: LakeSoulCatalog =>
+        catalog
+          .getTableLocation(
+            Identifier.of(Array(
+              tableName.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))),
+              tableName.table))
+          .isDefined
+      case _ => false
+    }
   }
 
   /** Check if the provided path is the root or the children of a lakesoul table. */
@@ -245,27 +240,24 @@ object LakeSoulTableProperties {
 
   val lakeSoulCDCChangePropKey = "lakesoul_cdc_change_column"
 
-  val extraTblProps = Set(lakeSoulCDCChangePropKey)
+  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey)
 
   def isLakeSoulTableProperty(name: String): Boolean = {
     extraTblProps.contains(name)
   }
 }
-object LakeSoulTableForCdc{
-  def getLakeSoulTableFilterForCDC(tif:TableInfo):Filter={
-    val name=getLakeSoulTableCdcColumnName(tif)
-    Not(EqualTo(name.get,"delete"))
+
+object LakeSoulTableForCdc {
+  def getLakeSoulTableFilterForCDC(tif: TableInfo): Filter = {
+    val name = getLakeSoulTableCdcColumnName(tif)
+    Not(EqualTo(name.get, "delete"))
   }
-  def isLakeSoulCdcTable(tif:TableInfo):Boolean={
+
+  def isLakeSoulCdcTable(tif: TableInfo): Boolean = {
     tif.configuration.contains(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
-  def getLakeSoulTableCdcColumnName(tif:TableInfo):Option[String]={
-    tif.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
-  }
-}
 
-class MergeOpLong extends MergeOperator[Long] {
-  override def mergeData(input: Seq[Long]): Long = {
-    input.sum
+  def getLakeSoulTableCdcColumnName(tif: TableInfo): Option[String] = {
+    tif.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
   }
 }

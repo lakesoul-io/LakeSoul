@@ -21,6 +21,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
+import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.lakesoul.{PartitionFilter, Snapshot, SnapshotManagement}
 
 import java.util.concurrent.TimeUnit
@@ -28,17 +29,20 @@ import java.util.concurrent.TimeUnit
 object DropTableCommand {
 
   val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
+
   def run(snapshot: Snapshot): Unit = {
-       dropTable(snapshot)
+    dropTable(snapshot)
   }
+
   def dropTable(snapshot: Snapshot): Unit = {
     val tableInfo = snapshot.getTableInfo
+    val table_namespace = tableInfo.namespace
     val table_id = tableInfo.table_id
     val table_path = tableInfo.table_path_s
     val short_table_name = tableInfo.short_table_name
-    MetaVersion.deleteTableInfo(table_path.get, table_id)
+    MetaVersion.deleteTableInfo(table_path.get, table_id, table_namespace)
     if (short_table_name.isDefined) {
-      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get)
+      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get, table_namespace)
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
     MetaVersion.dropPartitionInfoByTableId(table_id)
@@ -47,7 +51,7 @@ object DropTableCommand {
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
     val fs = path.getFileSystem(sessionHadoopConf)
     SnapshotManagement.invalidateCache(table_path.get)
-    fs.delete(path, true);
+    fs.delete(path, true)
   }
 }
 
@@ -75,6 +79,26 @@ object DropPartitionCommand extends PredicateHelper {
   def dropPartition(table_name: String, table_id: String, range_value: String): Unit = {
     //just add partition version with non-value snapshot;not delete related datainfo for SCD
     MetaVersion.dropPartitionInfoByRangeId(table_id, range_value)
+  }
+
+
+}
+
+object CleanupPartitionDataCommand extends PredicateHelper {
+  def run(snapshot: Snapshot, partitionDesc: String, endTime: Long): Unit = {
+    val tableInfo = snapshot.getTableInfo
+    val table_id = tableInfo.table_id
+    val table_path = tableInfo.table_path_s
+    val deleteFiles = MetaVersion.cleanMetaUptoTime(table_id, partitionDesc, endTime)
+    if (null != deleteFiles && deleteFiles.length > 0) {
+      val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
+      val path = new Path(table_path.get)
+      val fs = path.getFileSystem(sessionHadoopConf)
+      for (item <- deleteFiles) {
+        fs.delete(new Path(item), true)
+      }
+      SnapshotManagement.invalidateCache(table_path.get)
+    }
   }
 
 

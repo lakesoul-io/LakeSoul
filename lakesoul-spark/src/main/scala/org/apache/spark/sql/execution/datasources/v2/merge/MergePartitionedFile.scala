@@ -83,6 +83,9 @@ case class MergeFilePartition(index: Int, files: Array[Array[MergePartitionedFil
       case (host, numBytes) => host
     }.toArray
   }
+  override def toString: String = {
+    s"index: $index, files: ${files.foreach(f=>f.foreach(f=>f.toString))}, isSingleFile: $isSingleFile"
+  }
 }
 
 

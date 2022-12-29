@@ -25,7 +25,7 @@ class UpdateSQLSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   test("explain") {
     append(Seq((2, 2)).toDF("key", "value"), "key" :: Nil)
-    val df = sql(s"EXPLAIN UPDATE lakesoul.`$tempPath/key=2` SET key = 1, value = 2 WHERE key = 2")
+    val df = sql("EXPLAIN UPDATE lakesoul.default.`" + tempPath + "` SET key = 1, value = 2 WHERE key = 2")
     val outputs = df.collect().map(_.mkString).mkString
     assert(outputs.contains("lakesoul") && outputs.contains("UpdateCommand"))
     // no change should be made by explain

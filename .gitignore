@@ -6,3 +6,13 @@
 /.metals/
 /.vscode/
 *.iml
+/native-io/lakesoul-io-java/target/
+/aws-test/target/
+/native-io/Cargo.lock
+/native-io/lakesoul-io-java/.idea/
+dependency-reduced-pom.xml
+/lakesoul-spark/spark-warehouse/
+dependency-reduced-pom.xml
+/lakesoul-spark/spark-warehouse/
+/script/benchmark/work-dir/*.jar
+*.DS_Store

@@ -31,7 +31,7 @@ import java.util.concurrent.CountDownLatch
 /**
   * This Suite tests the behavior of LakeSoul commands when a schema altering commit is run after the
   * command completes analysis but before the command starts the transaction. We want to make sure
-  * That we do not corrupt tables.
+  * that we do not corrupt tables.
   */
 class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
 

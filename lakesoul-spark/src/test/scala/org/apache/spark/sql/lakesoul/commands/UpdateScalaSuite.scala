@@ -17,7 +17,7 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul
-import com.dmetasoul.lakesoul.tables.{LakeSoulTable}
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.{Row, functions}
@@ -35,7 +35,7 @@ class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
     spark.read.format("lakesoul").load(tempPath).cache()
     spark.read.format("lakesoul").load(tempPath).collect()
 
-    executeUpdate(s"lakesoul.`$tempPath`", set = "key = 3")
+    executeUpdate(s"lakesoul.default.`$tempPath`", set = "key = 3")
     checkAnswer(spark.read.format("lakesoul").load(tempPath), Row(3, 2) :: Row(3, 4) :: Nil)
   }
 
@@ -88,7 +88,7 @@ class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
         case tableName :: Nil => tableName -> None
         case tableName :: alias :: Nil =>
           val ordinary = (('a' to 'z') ++ ('A' to 'Z') ++ ('0' to '9')).toSet
-          if (alias.forall(ordinary.contains(_))) {
+          if (alias.forall(ordinary.contains _)) {
             tableName -> Some(alias)
           } else {
             tableName + " " + alias -> None
@@ -106,13 +106,13 @@ class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
       val (tableNameOrPath, optionalAlias) = parse(target)
       val isPath: Boolean = tableNameOrPath.startsWith("lakesoul.")
       val table = if (isPath) {
-        val path = tableNameOrPath.stripPrefix("lakesoul.`").stripSuffix("`")
+        val path = tableNameOrPath.stripPrefix("lakesoul.default.`").stripSuffix("`")
         lakesoul.tables.LakeSoulTable.forPath(spark, path)
       } else {
         new LakeSoulTable(spark.table(tableNameOrPath),
           SnapshotManagement(tableNameOrPath))
       }
-      optionalAlias.map(table.as(_)).getOrElse(table)
+      optionalAlias.map(table.as).getOrElse(table)
     }
 
     val setColumns = set.map { assign =>

@@ -33,8 +33,9 @@ public class TableInfoDao {
         return getTableInfo(sql);
     }
 
-    public TableInfo selectByTableName(String tableName) {
-        String sql = String.format("select * from table_info where table_name = '%s'", tableName);
+    public TableInfo selectByTableNameAndNameSpace(String tableName, String namespace) {
+        String sql = String.format("select * from table_info where table_name = '%s'" +
+                                   " and table_namespace='%s'", tableName, namespace);
         return getTableInfo(sql);
     }
 
@@ -70,6 +71,7 @@ public class TableInfoDao {
                 tableInfo.setTableSchema(rs.getString("table_schema"));
                 tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
                 tableInfo.setPartitions(rs.getString("partitions"));
+                tableInfo.setTableNamespace(rs.getString("table_namespace"));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -85,14 +87,15 @@ public class TableInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions) " +
-                    "values (?, ?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions, table_namespace) " +
+                    "values (?, ?, ?, ?, ?, ?, ?)");
             pstmt.setString(1, tableInfo.getTableId());
             pstmt.setString(2, tableInfo.getTableName());
             pstmt.setString(3, tableInfo.getTablePath());
             pstmt.setString(4, tableInfo.getTableSchema());
             pstmt.setString(5, DBUtil.jsonToString(tableInfo.getProperties()));
             pstmt.setString(6, tableInfo.getPartitions());
+            pstmt.setString(7, tableInfo.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
             result = false;
@@ -183,5 +186,21 @@ public class TableInfoDao {
             DBConnector.closeConn(pstmt, conn);
         }
         return result;
+    }
+
+    public void clean() {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = "delete from table_info;";
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            pstmt.execute();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(pstmt, conn);
+        }
     }
 }
