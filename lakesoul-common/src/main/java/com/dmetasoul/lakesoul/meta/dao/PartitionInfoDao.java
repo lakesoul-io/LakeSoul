@@ -189,8 +189,8 @@ public class PartitionInfoDao {
         ResultSet rs = null;
         String sql = "";
         if (null == partitionDesc || "".equals(partitionDesc)) {
-           sql = String.format("select max(timestamp) as timestamp from partition_info where table_id = '%s'", tableId);
-        }else{
+            sql = String.format("select max(timestamp) as timestamp from partition_info where table_id = '%s'", tableId);
+        } else {
             sql = String.format("select max(timestamp) as timestamp from partition_info where table_id = '%s' and partition_desc = '%s'", tableId, partitionDesc);
         }
         long timestamp = -1;
@@ -344,8 +344,9 @@ public class PartitionInfoDao {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d and version <= %d", tableId, partitionDesc, startVersion, endVersion);
         return getPartitionInfos(sql);
     }
+
     public List<PartitionInfo> getPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp, long endTimestamp) {
-        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp >= %d and timestamp <= %d", tableId, partitionDesc, startTimestamp, endTimestamp);
+        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp >= %d and timestamp < %d", tableId, partitionDesc, startTimestamp, endTimestamp);
         return getPartitionInfos(sql);
     }
 

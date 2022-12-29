@@ -23,12 +23,20 @@ object StreamingRecord {
   val dbManager = new DBManager()
 
   def getStreamingInfo(tableId: String): (String, Long) = {
-    val streamingInfo = dbManager.getStreamingInfoByTableId(tableId)
-    (streamingInfo.getQueryId, streamingInfo.getBatchId)
+    try {
+      val streamingInfo = dbManager.getStreamingInfoByTableId(tableId)
+      (streamingInfo.getQueryId, streamingInfo.getBatchId)
+    } catch {
+      case e: Exception => ("", -1L)
+    }
   }
 
   def getBatchId(tableId: String, queryId: String): Long = {
-    dbManager.getStreamingInfoByTableIdAndQueryId(tableId, queryId).getBatchId
+    try {
+      dbManager.getStreamingInfoByTableIdAndQueryId(tableId, queryId).getBatchId
+    } catch {
+      case e: Exception => -1L
+    }
   }
 
   def updateStreamingInfo(tableId: String, queryId: String, batchId: Long, timestamp: Long): Unit = {

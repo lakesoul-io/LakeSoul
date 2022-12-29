@@ -36,7 +36,7 @@ public class StreamingRecordInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into streaming_record_info (table_id, query_id, batch_id,timestamp) values (?, ?, ?,?)");
+            pstmt = conn.prepareStatement("insert into streaming_record_info (table_id, query_id, batch_id,timestamp) values (?, ?, ?, ?)");
             pstmt.setString(1, streamingRecordInfo.getTableId());
             pstmt.setString(2, streamingRecordInfo.getQueryId());
             pstmt.setLong(3, streamingRecordInfo.getBatchId());

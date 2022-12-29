@@ -45,7 +45,7 @@ object MetaCommit extends Logging {
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(table_info.range_column + ";" + table_info.hash_column)
     val json = new JSONObject()
-    table_info.configuration.foreach(x => json.put(x._1,x._2))
+    table_info.configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", table_info.bucket_num.toString)
     tableInfo.setProperties(json)
     if (table_info.short_table_name.isDefined) {
@@ -63,7 +63,9 @@ object MetaCommit extends Logging {
       javaPartitionInfoList.add(partitionInfo)
     }
     info.setListPartition(javaPartitionInfoList)
-
+    if (meta_info.query_id.nonEmpty && meta_info.batch_id >= 0) {
+      StreamingRecord.updateStreamingInfo(table_info.table_id, meta_info.query_id, meta_info.batch_id, System.currentTimeMillis())
+    }
     var result = addDataInfo(meta_info)
     if (result) {
       result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)

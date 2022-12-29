@@ -160,9 +160,14 @@ public class DBManager {
         return partitionInfoDao.getPartitionVersions(tableId, partitionDesc);
     }
 
+    public long getLastedTimestamp(String tableId, String partitionDesc) {
+        return partitionInfoDao.getLastedTimestamp(tableId, partitionDesc);
+    }
+
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
         return partitionInfoDao.getLastedVersionUptoTime(tableId, partitionDesc, utcMills);
     }
+
     public long getLastedVersionTimestampUptoTime(String tableId, String partitionDesc, long utcMills) {
         return partitionInfoDao.getLastedVersionTimestampUptoTime(tableId, partitionDesc, utcMills);
     }

@@ -419,7 +419,7 @@ object LakeSoulTable {
     forPath(sparkSession, path, partitionDesc, partitionVersion)
   }
 
-  /** snapshot read
+  /** Snapshot read to endTime
    */
   def forPath(path: String, partitionDesc: String, endTime: String, readType: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
@@ -472,14 +472,12 @@ object LakeSoulTable {
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)
-      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, startTime / 1000) else 0
-      val endVersion = MetaVersion.getLastedVersionUptoTime(sm.getTableInfoOnly.table_id, partitionDesc, endTime / 1000)
-      if (endVersion < 0) {
+      if (endTime < 0) {
         println("No version found in Table before time")
         null
       } else {
         new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
-          SnapshotManagement(p, partitionDesc, startVersion, endVersion, readType))
+          SnapshotManagement(p, partitionDesc, startTime / 1000, endTime / 1000, readType))
       }
 
     } else {

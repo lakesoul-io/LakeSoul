@@ -131,7 +131,7 @@ class LakeSoulDataSource
     if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
     val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path))
 
-    def getSnapshotOptions(options: CaseInsensitiveStringMap): (String, Int, Int, String) = {
+    def getSnapshotOptions(options: CaseInsensitiveStringMap): (String, Long, Long, String) = {
       val partitionDesc = if (options.containsKey(LakeSoulOptions.PARTITION_DESC)) {
         options.get(LakeSoulOptions.PARTITION_DESC)
       } else {
@@ -140,17 +140,17 @@ class LakeSoulDataSource
 
       val readType = options.getOrDefault(LakeSoulOptions.READ_TYPE, ReadType.FULL_READ)
 
-      def getSnapshotVersion(timeStamp: String): Int = {
+      def getSnapshotTimestamp(timeStamp: String): Long = {
         if (timeStamp.equals("")) {
           return 0
         }
         val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
-        MetaVersion.getLastedVersionUptoTime(lakeSoulTable.snapshotManagement.getTableInfoOnly.table_id, partitionDesc, time / 1000)
+        time / 1000
       }
 
-      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
-      var endVersion = getSnapshotVersion(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
-      endVersion = if (endVersion == 0) Int.MaxValue else endVersion
+      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) getSnapshotTimestamp(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
+      var endVersion = getSnapshotTimestamp(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
+      endVersion = if (endVersion == 0) Long.MaxValue else endVersion
       (partitionDesc, startVersion, endVersion, readType)
     }
 

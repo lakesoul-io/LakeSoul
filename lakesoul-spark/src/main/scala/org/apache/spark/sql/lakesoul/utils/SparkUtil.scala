@@ -60,10 +60,10 @@ object SparkUtil {
 
   def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean ={
     val (partitionDesc,startPartitionVersion,endPartitionVersion,incremental)=snapshotManagement.snapshot.getPartitionDescAndVersion
-    if(endPartitionVersion != -1 && !partitionDesc.equals("")){
-      true
-    }else{
+    if(endPartitionVersion == -1L && partitionDesc.equals("")){
       false
+    }else{
+      true
     }
   }
 

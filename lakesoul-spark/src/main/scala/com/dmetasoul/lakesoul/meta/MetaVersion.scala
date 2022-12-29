@@ -176,11 +176,26 @@ object MetaVersion {
 
   }
 
+  def getLastedTimestamp(table_id: String, range_value: String): Long = {
+    dbManager.getLastedTimestamp(table_id, range_value)
+  }
+
   def getLastedVersionUptoTime(table_id: String, range_value: String, utcMills: Long): Int = {
     dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
   }
+
   def getLastedVersionTimestampUptoTime(table_id: String, range_value: String, utcMills: Long): Long = {
-    dbManager.getLastedVersionTimestampUptoTime(table_id, range_value, utcMills)
+    if (range_value == null || "".equals(range_value)) {
+      val partitions = dbManager.getAllPartitionInfo(table_id)
+      var preVersionTimestamp = 0L
+      partitions.forEach(partition => {
+        val currentTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, utcMills)
+        preVersionTimestamp = Math.max(currentTimestamp, preVersionTimestamp)
+      })
+      preVersionTimestamp
+    } else {
+      dbManager.getLastedVersionTimestampUptoTime(table_id, range_value, utcMills)
+    }
   }
 
   /*
