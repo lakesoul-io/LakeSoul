@@ -171,7 +171,6 @@ object KafkaStream {
 
     multiTopicData.writeStream.queryName("demo").foreachBatch {
       (batchDF: DataFrame, _: Long) => {
-
         val lakeSoulDt = DateFormatUtils.format(new Date(), "yyyyMMddHH")
         val topicList = kafkaUtils.kafkaListTopics(topicPattern)
         if (topicList.size() > topicAndSchema.keySet.size) {

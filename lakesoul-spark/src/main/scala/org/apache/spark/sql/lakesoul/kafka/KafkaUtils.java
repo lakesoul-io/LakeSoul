@@ -62,7 +62,7 @@ public class KafkaUtils {
 
         Set topics = null;
         try {
-            // 获取 topic 列表
+            // get topic list
             topics = kafkaClient.listTopics().names().get();
         } catch (InterruptedException e) {
             e.printStackTrace();
@@ -99,7 +99,6 @@ public class KafkaUtils {
                         ConsumerRecords<String, GenericRecord> records = consumer.poll(Duration.ofSeconds(1));
                         for (ConsumerRecord record : records) {
                             rsMap.put(topic, record.value().toString());
-                            //System.out.printf("offset = %d, key = %s, value = %s%n", record.offset(), record.key(), record.value());
                         }
                         break;
                     }
