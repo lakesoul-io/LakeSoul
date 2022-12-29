@@ -444,8 +444,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
             columnUpdates(field) = oldField.copy(name = rename.newName()) -> pos
 
           case other =>
-            throw new UnsupportedOperationException("Unrecognized column change " +
-              s"${other.getClass}. You may be running an out of date LakeSoul version.")
+            throw LakeSoulErrors.operationNotSupportedException("Unrecognized column change " + other.getClass)
         }
 
       case (t, _) if t == classOf[SetLocation] =>
@@ -534,7 +533,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
 
   override def renameTable(oldIdent: Identifier, newIdent: Identifier): Unit = {
-    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename table")
+    throw LakeSoulErrors.operationNotSupportedException("LakeSoul currently doesn't support rename table")
   }
 
   override def listNamespaces(namespace: Array[String]): Array[Array[String]] = {
@@ -560,7 +559,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   }
 
   override def alterNamespace(namespace: Array[String], changes: NamespaceChange*): Unit = {
-    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename namespace")
+    throw LakeSoulErrors.operationNotSupportedException("LakeSoul currently doesn't support rename namespace")
   }
 
 

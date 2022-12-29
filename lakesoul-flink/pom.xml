@@ -13,7 +13,6 @@
     <version>2.1.0-flink-1.14-SNAPSHOT</version>
     <properties>
         <flink.version>1.14.5</flink.version>
-        <spark.version>3.1.2</spark.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>

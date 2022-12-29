@@ -112,27 +112,19 @@ trait DDLUsingPathTests extends QueryTest
     val ex = intercept[AnalysisException] {
       spark.table(s"lakesoul.`$ns`.`/path/to/lakesoul`")
     }
-    assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns./path/to/lakesoul"))
+    assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns.`/path/to/lakesoul`"))
     if (ns == "default") {
       val ex2 = intercept[AnalysisException] {
         spark.read.format("lakesoul").load("/path/to/lakesoul")
       }
       assert(ex2.getMessage.contains(s"doesn't exist"))
     }
-<<<<<<< HEAD
-    assert(ex.getMessage.contains("Table file:/path/to/lakesoul doesn't exist."))
-=======
->>>>>>> main
 
     withSQLConf(SQLConf.RUN_SQL_ON_FILES.key -> "false") {
       val ex = intercept[AnalysisException] {
         spark.table(s"lakesoul.`$ns`.`/path/to/lakesoul`")
       }
-<<<<<<< HEAD
-      assert(ex.getMessage.contains("Table or view not found: lakesoul.`/path/to/lakesoul`"))
-=======
-      assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns./path/to/lakesoul"))
->>>>>>> main
+      assert(ex.getMessage.contains(s"Table or view not found: lakesoul.$ns.`/path/to/lakesoul`"))
     }
   }
 
