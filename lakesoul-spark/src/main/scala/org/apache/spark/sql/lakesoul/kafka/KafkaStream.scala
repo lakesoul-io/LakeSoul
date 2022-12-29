@@ -43,8 +43,8 @@ object KafkaStream {
 
   var brokers = "localhost:9092"
   var topicPattern = "test.*"
-  var warehouse = "/Users/dudongfeng/work/zehy/kafka"
-  var checkpointPath = "/Users/dudongfeng/work/docker_compose/checkpoint/"
+  var warehouse = "/tmp/lakesoul/data/"
+  var checkpointPath = "/tmp/lakesoul/checkpoint/"
   var namespace = "default"
   var kafkaOffset = "latest"
   var autoAddPartition = false
@@ -130,7 +130,6 @@ object KafkaStream {
 
     val builder = SparkSession.builder()
       .appName("LakeSoul_Kafka_Stream_Demo")
-      .master("local[4]")
       .config("spark.sql.warehouse.dir", warehouse)
       .config("spark.sql.session.timeZone", "Asia/Shanghai")
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
@@ -180,6 +179,7 @@ object KafkaStream {
 
         for (topic <- topicAndSchema.keySet) {
           val path = warehouse + "/" + namespace + "/" + topic
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
           val topicDF = batchDF.filter(col("topic").equalTo(topic))
           if (!topicDF.rdd.isEmpty()) {
             val rows = topicDF
@@ -192,13 +192,13 @@ object KafkaStream {
                 .format("lakesoul")
                 .option("rangePartitions", LAKESOUL_PARTITION_COLUMN)
                 .option("mergeSchema", "true")
-                .save(path)
+                .save(tablePath)
             } else {
               rows.write
                 .mode("append")
                 .format("lakesoul")
                 .option("mergeSchema", "true")
-                .save(path)
+                .save(tablePath)
             }
           }
         }
