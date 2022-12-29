@@ -151,11 +151,11 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
       NativeParquetScan(
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+        readPartitionSchema(), pushedParquetFilters, options/*, partitionFilters, dataFilters*/)
     } else {
       ParquetScan(
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+        readPartitionSchema(), pushedParquetFilters, options/*, partitionFilters, dataFilters*/)
     }
   }
 }

@@ -343,17 +343,6 @@ abstract class UpdateSuiteBase
     }
   }
 
-  //  test("update cached table") {
-  //    Seq((2, 2), (1, 4)).toDF("key", "value")
-  //      .write.mode("overwrite").format("lakesoul").save(tempPath)
-  //
-  //    spark.read.format("lakesoul").load(tempPath).cache()
-  //    spark.read.format("lakesoul").load(tempPath).collect()
-  //
-  //    executeUpdate(s"lakesoul.`$tempPath`", set = "key = 3")
-  //    checkAnswer(spark.read.format("lakesoul").load(tempPath), Row(3, 2) :: Row(3, 4) :: Nil)
-  //  }
-
   test("different variations of column references") {
     append(
       createDF(
@@ -371,12 +360,6 @@ abstract class UpdateSuiteBase
     checkUpdate(condition = Some("`key` = 100"), setClauses = "`value` = -1",
       Row(99, -1) :: Row(100, -1) :: Row(101, 3) :: Row(102, 5) :: Nil,
       Seq("key", "value"))
-    checkUpdate(condition = Some("tblName.key = 101"), setClauses = "tblName.value = -1",
-      Row(99, -1) :: Row(100, -1) :: Row(101, -1) :: Row(102, 5) :: Nil,
-      Seq("key", "value"), Some("tblName"))
-    checkUpdate(condition = Some("`tblName`.`key` = 102"), setClauses = "`tblName`.`value` = -1",
-      Row(99, -1) :: Row(100, -1) :: Row(101, -1) :: Row(102, -1) :: Nil,
-      Seq("key", "value"), Some("tblName"))
   }
 
   test("LakeSoul Table columns can have db and table qualifiers") {
@@ -662,7 +645,7 @@ abstract class UpdateSuiteBase
     testAnalysisException(
       arrayStructData,
       set = "a.b = -1" :: Nil,
-      errMsgs = "Updating nested fields is only supported for StructType" :: Nil)
+      errMsgs = "data type mismatch" :: Nil)
   }
 
 

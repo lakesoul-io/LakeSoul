@@ -20,7 +20,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
+import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement, TransactionCommit}
@@ -96,10 +96,12 @@ case class UpdateCommand(snapshotManagement: SnapshotManagement,
 
       //input_file_name() can't get correct file name when using merge file reader
       val filesToRewrite = if (tc.tableInfo.hash_partition_columns.isEmpty) {
-        data
+        val df = data
           .filter(new Column(updateCondition))
           .select(input_file_name())
-          .distinct().as[String].collect()
+          .distinct()
+        df.queryExecution.assertAnalyzed()
+        df.as[String].collect()
       } else {
         candidateFiles.map(_.path).toArray
       }

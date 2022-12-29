@@ -18,7 +18,7 @@ package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Alias, AnsiCast, Cast, CreateStruct, Expression, GetStructField, NamedExpression, UpCast}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AnsiCast, Cast, CreateStruct, Expression, GetMapValue, GetStructField, NamedExpression, UpCast}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.LogicalRelation
@@ -79,8 +79,17 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
       }
 
     case u@UpdateTable(table, assignments, condition) if u.childrenResolved =>
-      val (cols, expressions) = assignments.map(a =>
-        a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+      val (cols, expressions) = assignments.map(a => {
+        val key = a.key match {
+          case n: NamedExpression =>
+            n
+          case field: GetStructField =>
+            Alias(field, field.extractFieldName)()
+          case field =>
+            Alias(field, field.toString())()
+        }
+        key -> a.value
+      }).unzip
       val newTarget = table.transformUp { case LakeSoulRelationV2(v2r) => v2r }
       val indices = newTarget.collect {
         case LakeSoulTableRelationV2(tbl) => tbl

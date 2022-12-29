@@ -84,14 +84,16 @@ class UpsertSuiteBase extends QueryTest
                                     filter: String,
                                     colNames: Seq[String],
                                     tableName: Option[String] = None): Unit = {
-    executeUpsert(df, condition, tableName.getOrElse(tempPath))
+    if (df != null) {
+      executeUpsert(df, condition, tableName.getOrElse(tempPath))
+    }
 
-    val starDF = readLakeSoulTable(tempPath)
+    val lakesoulDF = readLakeSoulTable(tempPath)
       .filter(filter)
       .select(colNames.map(col): _*)
       .persist()
-    starDF.show()
-    checkAnswer(starDF, expectedResults)
+    lakesoulDF.show()
+    checkAnswer(lakesoulDF, expectedResults)
   }
 
 
@@ -556,8 +558,8 @@ class UpsertSuiteBase extends QueryTest
           Seq((20201102, 4567, 42, 456, 4), (20201102, 2345, 22, 234, 2), (20201102, 3456, 32, 345, 3))
             .toDF("range", "age", "hash2", "name", "hash1"),
           None,
-          Row(20201102, 1, 12, 1, 11, null) :: Row(20201102, 2, 22, null, 234, 2345) :: Row(20201102, 3, 32, 3, 345, 3456) :: Row(20201102, 4, 42, 4, 456, 4567) :: Nil,
-          "range=20201102",
+          Row(20201102, 1, 12, 1, 11, null) :: Row(20201102, 3, 32, 3, 345, 3456) :: Row(20201102, 4, 42, 4, 456, 4567) :: Nil,
+          "range=20201102 and value IS NOT NULL",
           Seq("range", "hash1", "hash2", "value", "name", "age"))
       }
 
@@ -614,8 +616,8 @@ class UpsertSuiteBase extends QueryTest
           Seq(("20201102", "4567", "42", "456", "4"), ("20201102", "2345", "22", "234", "2"), ("20201102", "3456", "32", "345", "3"))
             .toDF("range", "age", "hash2", "name", "hash1"),
           None,
-          Row("20201102", "1", "12", "1", "11", null) :: Row("20201102", "2", "22", null, "234", "2345") :: Row("20201102", "3", "32", "3", "345", "3456") :: Row("20201102", "4", "42", "4", "456", "4567") :: Nil,
-          "range='20201102'",
+          Row("20201102", "1", "12", "1", "11", null) :: Row("20201102", "3", "32", "3", "345", "3456") :: Row("20201102", "4", "42", "4", "456", "4567") :: Nil,
+          "range='20201102' and value IS NOT NULL",
           Seq("range", "hash1", "hash2", "value", "name", "age"))
       }
 

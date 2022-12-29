@@ -401,7 +401,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
            """.stripMargin)
 
 
-      val e = intercept[UnsupportedOperationException] {
+      val e = intercept[AnalysisException] {
         sql(s"ALTER TABLE tbl RENAME TO newTbl")
       }
       assert(e.getMessage.contains("LakeSoul currently doesn't support rename table"))
