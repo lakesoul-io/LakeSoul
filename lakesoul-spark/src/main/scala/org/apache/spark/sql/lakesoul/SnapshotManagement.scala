@@ -18,7 +18,6 @@ package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
-import javolution.util.ReentrantLock
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -33,6 +32,7 @@ import org.apache.spark.sql.{AnalysisException, SparkSession}
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 class SnapshotManagement(path: String, namespace: String) extends Logging {
 

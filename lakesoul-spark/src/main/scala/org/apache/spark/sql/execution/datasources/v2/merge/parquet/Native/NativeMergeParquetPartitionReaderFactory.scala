@@ -17,11 +17,12 @@
 package org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native
 
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._
+import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat, ParquetInputSplit}
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat}
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -135,7 +136,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     }
   }
 
-  private def createParquetVectorizedReader(split: ParquetInputSplit,
+  private def createParquetVectorizedReader(split: FileSplit,
                                      partitionValues: InternalRow,
                                      hadoopAttemptContext: TaskAttemptContextImpl,
                                      pushed: Option[FilterPredicate],
@@ -175,7 +176,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
   private def buildReaderBase[T](file: MergePartitionedFile,
                                  buildReaderFunc: (
-                                   ParquetInputSplit, InternalRow, TaskAttemptContextImpl,
+                                   FileSplit, InternalRow, TaskAttemptContextImpl,
                                      Option[FilterPredicate], Option[ZoneId],
                                      RebaseSpec,
                                      RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
@@ -183,10 +184,9 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
     val filePath = new Path(new URI(file.filePath))
     val split =
-      new org.apache.parquet.hadoop.ParquetInputSplit(
+      new FileSplit(
         filePath,
         file.start,
-        file.start + file.length,
         file.length,
         Array.empty,
         null)

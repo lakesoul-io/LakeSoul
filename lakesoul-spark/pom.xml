@@ -199,7 +199,6 @@
             <artifactId>spark-hive_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>test</scope>
-            <classifier>tests</classifier>
         </dependency>
 
         <dependency>

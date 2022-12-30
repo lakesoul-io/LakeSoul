@@ -16,11 +16,12 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapreduce.{JobID, RecordReader, TaskAttemptID, TaskID, TaskType}
+import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.hadoop.mapreduce._
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat, ParquetInputSplit}
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat}
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -28,13 +29,9 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.connector.read.PartitionReader
+import org.apache.spark.sql.execution.datasources.parquet.{NativeVectorizedReader, ParquetFilters, VectorizedParquetRecordReader}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedFile, RecordReaderIterator}
-import org.apache.spark.sql.execution.datasources.parquet.{NativeVectorizedReader, ParquetFilters, SpecificParquetRecordReaderBase, VectorizedParquetRecordReader}
-import org.apache.spark.sql.execution.datasources.v2.PartitionReaderWithPartitionValues
-import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
@@ -141,7 +138,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private def buildReaderBase[T](
                                   file: PartitionedFile,
                                   buildReaderFunc: (
-                                    ParquetInputSplit, PartitionedFile, TaskAttemptContextImpl,
+                                    FileSplit, PartitionedFile, TaskAttemptContextImpl,
                                       Option[FilterPredicate], Option[ZoneId],
                                       RebaseSpec,
                                       RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
@@ -149,10 +146,9 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
     val filePath = new Path(new URI(file.filePath))
     val split =
-      new org.apache.parquet.hadoop.ParquetInputSplit(
+      new FileSplit(
         filePath,
         file.start,
-        file.start + file.length,
         file.length,
         Array.empty,
         null)
@@ -217,7 +213,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   }
 
   private def createParquetVectorizedReader(
-                                             split: ParquetInputSplit,
+                                             split: FileSplit,
                                              file: PartitionedFile,
                                              hadoopAttemptContext: TaskAttemptContextImpl,
                                              pushed: Option[FilterPredicate],
