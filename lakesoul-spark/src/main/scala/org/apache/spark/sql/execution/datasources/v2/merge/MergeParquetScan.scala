@@ -324,9 +324,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     if (!options.containsKey(LakeSoulOptions.READ_START_TIME)) {
       LongOffset(0L)
     } else {
-      val startTimestamp = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
-//      val startVersion = MetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, options.get(LakeSoulOptions.PARTITION_DESC), startTimestamp / 1000)
-      LongOffset(startTimestamp / 1000)
+      val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
+      LongOffset(startTime / 1000)
     }
   }
 
@@ -339,15 +338,13 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = this
 
   override def latestOffset: Offset = {
-//    val endTimestamp = MetaVersion.getLastedTimestamp(tableInfo.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
-    val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC,""))
+    val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
     LongOffset(endTimestamp)
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
-    println(start +"********"+end)
-//    val startTimestamp = MetaVersion.getLastedTimestampByVersion(snapshotManagement.getTableInfoOnly.table_id,options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""),start.toString.toInt)
-//    val endTimestamp = MetaVersion.getLastedTimestampByVersion(snapshotManagement.getTableInfoOnly.table_id,options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""),end.toString.toInt)
+    println("start : " + start)
+    println("end   : " + end)
     snapshotManagement.updateSnapshotForVersion(options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""), start.toString.toLong, end.toString.toLong, ReadType.INCREMENTAL_READ)
     partitions(true).toArray
   }
@@ -381,7 +378,7 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
                                  bucketNum: Int): Seq[MergeFilePartition] = {
     val groupByPartition = partitionedFiles.groupBy(_.rangeKey)
 
-//    assert(groupByPartition.size == 1)
+    assert(groupByPartition.size == 1)
 
     val fileWithBucketId = groupByPartition.head._2
       .groupBy(_.fileBucketId).map(f => (f._1, f._2.toArray))

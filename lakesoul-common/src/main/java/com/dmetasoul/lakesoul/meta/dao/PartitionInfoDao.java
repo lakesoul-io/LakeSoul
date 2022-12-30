@@ -209,7 +209,6 @@ public class PartitionInfoDao {
         return timestamp;
     }
 
-
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
         Connection conn = null;
         PreparedStatement pstmt = null;

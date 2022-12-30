@@ -178,7 +178,7 @@ class ReadSuite extends QueryTest
             Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
               .toDF("id", "range", "hash", "op")
               .write
-              .mode("overwrite")
+              .mode("append")
               .format("lakesoul")
               .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
               .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
@@ -190,18 +190,19 @@ class ReadSuite extends QueryTest
               .toDF("id", "range", "hash", "op")
             Thread.sleep(3000)
             lake.upsert(tableForUpsert)
+            val time = System.currentTimeMillis()
             val testStreamRead = new TestStreamRead
-            testStreamRead.setTablePath(tablePath)
+            testStreamRead.setTablePath(tablePath,time)
             testStreamRead.start()
             val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
               .toDF("id", "range", "hash", "op")
-            Thread.sleep(3000)
+//            Thread.sleep(3000)
             lake.upsert(tableForUpsert1)
             val tableForUpsert2 = Seq((9, "range1", "hash1-13", "insert"), (10, "range2", "hash2-13", "update"))
               .toDF("id", "range", "hash", "op")
             Thread.sleep(3000)
             lake.upsert(tableForUpsert2)
-            Thread.sleep(3000)
+            Thread.sleep(30000)
           }
         })
       }
@@ -210,19 +211,20 @@ class ReadSuite extends QueryTest
 
   class TestStreamRead extends Thread {
     private var tablePath: String = ""
-
-    def setTablePath(path: String): Unit = {
+    private var startTime: Long = 0
+    def setTablePath(path: String, startTime: Long): Unit = {
       this.tablePath = path
+      this.startTime = startTime
     }
 
     override def run(): Unit = {
-      val timeB = System.currentTimeMillis()
-      val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
+      val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(startTime)
       // Processing time zone time difference between docker and local
       val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
       val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
       val parDesc = "range=range1"
       var count = 0
+      Thread.sleep(1000)
       val query = spark.readStream.format("lakesoul")
         .option(LakeSoulOptions.PARTITION_DESC, parDesc)
         .option(LakeSoulOptions.READ_START_TIME, currentVersion)
@@ -231,12 +233,12 @@ class ReadSuite extends QueryTest
       query
         .writeStream.foreachBatch { (query: DataFrame, _: Long) => {
         count += 1
-        val data = query.select("*").show()
-//        if (count == 1) {
-//          checkAnswer(data, Seq((3, "hash1-2", "update", "range1"), (4, "hash1-5", "insert", "range1")).toDF("id", "range", "hash", "op"))
-//        } else if (count == 2) {
-//          checkAnswer(data, Seq((7, "hash1-1", "delete", "range1")).toDF("id", "range", "hash", "op"))
-//        }
+        val data = query.select("*")
+        if (count == 1) {
+          checkAnswer(data, Seq((3, "hash1-2", "update", "range1"), (4, "hash1-5", "insert", "range1")).toDF("id", "range", "hash", "op"))
+        } else if (count == 2) {
+          checkAnswer(data, Seq((7, "hash1-1", "delete", "range1")).toDF("id", "range", "hash", "op"))
+        }
       }
       }
         .trigger(Trigger.ProcessingTime(1000))
