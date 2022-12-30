@@ -20,6 +20,7 @@ import jnr.ffi.Runtime;
 import jnr.ffi.*;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -40,8 +41,22 @@ public class NativeIOWrapper implements AutoCloseable {
     public static boolean isMac() {
         String OS = System.getProperty("os.name").toLowerCase();
         return (OS.contains("mac"));
-
     }
+
+    public static boolean isNativeIOLibExist() {
+        Map<LibraryOption, Object> libraryOptions = new HashMap<>();
+        libraryOptions.put(LibraryOption.LoadNow, true);
+        libraryOptions.put(LibraryOption.IgnoreError, true);
+
+        String ext = ".dylib";
+        if (!isMac()) {
+            ext = ".so";
+        }
+
+        String libName = String.join("/", System.getenv("LakeSoulLib"),"liblakesoul_io_c" + ext);
+        return new File(libName).exists();
+    }
+
     public NativeIOWrapper() {
         this(false);
     }
