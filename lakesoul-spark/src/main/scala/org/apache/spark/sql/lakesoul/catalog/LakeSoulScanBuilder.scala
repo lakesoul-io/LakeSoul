@@ -67,6 +67,8 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     parquetFilters.convertibleFilters(pushedDataFilters).toArray
   }
 
+  override def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = dataFilters
+
   override protected val supportsNestedSchemaPruning: Boolean = true
 
   //note: hash partition columns must be last
