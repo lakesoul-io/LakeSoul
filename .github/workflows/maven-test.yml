@@ -5,7 +5,7 @@ name: CI with Maven Test
 
 on:
   push:
-    branches: [ "main", "github_workflow_with_native_io"]
+    branches: [ "main"]
 
 jobs:
   build:
