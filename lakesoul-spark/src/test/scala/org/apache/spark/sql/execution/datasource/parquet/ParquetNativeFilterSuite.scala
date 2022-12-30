@@ -1,5 +1,6 @@
 package org.apache.spark.sql.execution.datasource.parquet
 
+import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.parquet.filter2.predicate.FilterApi._
 import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, UserDefinedByInstance, Column => _}
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate, Operators}
@@ -89,8 +90,6 @@ class ParquetV2FilterSuite
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
-
-          stripSparkFilter(query)
           checker(stripSparkFilter(query), expected)
 
         case _ =>
@@ -143,7 +142,7 @@ class ParquetNativeFilterSuite
       SQLConf.PARQUET_FILTER_PUSHDOWN_TIMESTAMP_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_STARTSWITH_ENABLED.key -> "true",
-      NATIVE_IO_ENABLE.key -> "false",
+      NATIVE_IO_ENABLE.key -> NativeIOWrapper.isNativeIOLibExist.toString,
       // Disable adding filters from constraints because it adds, for instance,
       // is-not-null to pushed filters, which makes it hard to test if the pushed
       // filter is expected or not (this had to be fixed with SPARK-13495).

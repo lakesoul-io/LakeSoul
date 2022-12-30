@@ -44,8 +44,14 @@ jobs:
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
       run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+    - uses: actions-rs/cargo@v1
+    - name: Compile Native-IO
+      run: cd native-io && cargo +nightly build --release --all-features --package lakesoul-io-c
     - name: Build with Maven
-      run: mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
+      run: LakeSoulLib=/home/runner/work/LakeSoul/LakeSoul/native-io/target/release mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
     - name: Upload Test Report
       uses: actions/upload-artifact@v3
       with:
