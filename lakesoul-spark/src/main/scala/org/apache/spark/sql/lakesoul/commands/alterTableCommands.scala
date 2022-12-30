@@ -20,7 +20,8 @@ import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.plans.logical.IgnoreCachedData
 import org.apache.spark.sql.connector.catalog.TableChange.{AddColumn, After, ColumnPosition, First}
 import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetSchemaConverter}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
@@ -163,7 +164,7 @@ case class AlterTableAddColumnsCommand(
     }
 
     SchemaUtils.checkColumnNameDuplication(newSchema, "in adding columns")
-    ParquetSchemaConverter.checkFieldNames(newSchema)
+    DataSourceUtils.checkFieldNames(new ParquetFileFormat, newSchema)
 
     val newTableInfo = tableInfo.copy(table_schema = newSchema.json)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
@@ -365,7 +366,7 @@ case class AlterTableReplaceColumnsCommand(
       .asInstanceOf[StructType]
 
     SchemaUtils.checkColumnNameDuplication(newSchema, "in replacing columns")
-    ParquetSchemaConverter.checkFieldNames(newSchema)
+    DataSourceUtils.checkFieldNames(new ParquetFileFormat(), newSchema)
 
     val newTableInfo = tableInfo.copy(table_schema = newSchema.json)
     tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)

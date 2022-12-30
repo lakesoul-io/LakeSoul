@@ -400,7 +400,7 @@ abstract class UpdateSuiteBase
       var ae = intercept[AnalysisException] {
         executeUpdate("table", set = "column_doesnt_exist = 'San Francisco'", where = "t = 'a'")
       }
-      assert(ae.message.contains("cannot resolve"))
+      assert(ae.message.contains("does not exist"))
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
         executeUpdate(lakeSoulTable = "table", set = "S = 1, T = 'b'", where = "T = 'a'")
@@ -414,18 +414,18 @@ abstract class UpdateSuiteBase
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "S = 1", where = "t = 'a'")
         }
-        assert(ae.message.contains("cannot resolve"))
+        assert(ae.message.contains("does not exist"))
 
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "S = 1, s = 'b'", where = "s = 1")
         }
-        assert(ae.message.contains("cannot resolve"))
+        assert(ae.message.contains("does not exist"))
 
         // unresolved column in condition
         ae = intercept[AnalysisException] {
           executeUpdate(lakeSoulTable = "table", set = "s = 1", where = "T = 'a'")
         }
-        assert(ae.message.contains("cannot resolve"))
+        assert(ae.message.contains("does not exist"))
       }
     }
   }

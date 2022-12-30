@@ -55,7 +55,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     bucketScan: BucketParquetScan,
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -78,7 +78,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@OnePartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -118,7 +118,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@MultiPartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.

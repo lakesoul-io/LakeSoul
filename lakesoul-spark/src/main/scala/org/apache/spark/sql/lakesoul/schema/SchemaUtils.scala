@@ -19,7 +19,7 @@ package org.apache.spark.sql.lakesoul.schema
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetSchemaConverter}
 import org.apache.spark.sql.functions.{col, struct}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.types._
@@ -966,7 +966,12 @@ object SchemaUtils {
     * columns have these characters.
     */
   def checkFieldNames(names: Seq[String]): Unit = {
-    names.foreach(ParquetSchemaConverter.checkFieldName)
+    val format = new ParquetFileFormat
+    names.foreach {n =>
+      if (!format.supportFieldName(n)) {
+        throw LakeSoulErrors.invalidColumnName(n)
+      }
+    }
     // The method checkFieldNames doesn't have a valid regex to search for '\n'. That should be
     // fixed in Apache Spark, and we can remove this additional check here.
     names.find(_.contains("\n")).foreach(col => throw LakeSoulErrors.invalidColumnName(col))

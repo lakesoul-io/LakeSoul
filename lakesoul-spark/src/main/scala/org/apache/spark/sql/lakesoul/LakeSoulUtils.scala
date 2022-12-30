@@ -217,7 +217,7 @@ object LakeSoulFullTable {
 object LakeSoulTableRelationV2 {
   def unapply(plan: LogicalPlan): Option[LakeSoulTableV2] = plan match {
     case DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) => Some(table)
-    case DataSourceV2ScanRelation(DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _), _, _) => Some(table)
+    case DataSourceV2ScanRelation(DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _), _, _, _) => Some(table)
     case _ => None
   }
 }

@@ -36,6 +36,7 @@ import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
@@ -337,8 +338,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         throw new IOException("nextVectorSchemaRoot not ready");
       } else {
         totalRowCount += nextVectorSchemaRoot.getRowCount();
-        WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
-        WritableColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
+        ColumnVector[] nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+        ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
         System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
 
         columnarBatch = new ColumnarBatch(resultColumnVector, nextVectorSchemaRoot.getRowCount());

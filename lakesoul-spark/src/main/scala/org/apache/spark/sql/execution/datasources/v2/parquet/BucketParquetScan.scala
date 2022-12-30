@@ -84,7 +84,7 @@ case class BucketParquetScan(sparkSession: SparkSession,
       new SerializableConfiguration(hadoopConf))
 
     ParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, pushedFilters,
+      dataSchema, readDataSchema, readPartitionSchema, pushedFilters, None,
       new ParquetOptions(options.asCaseSensitiveMap.asScala.toMap, sparkSession.sessionState.conf)
     )
   }
@@ -101,10 +101,6 @@ case class BucketParquetScan(sparkSession: SparkSession,
   override def description(): String = {
     super.description() + ", PushedFilters: " + seqToString(pushedFilters)
   }
-
-  override def withFilters(partitionFilters: Seq[Expression],
-                           dataFilters: Seq[Expression]): FileScan =
-    this.copy(partitionFilters = partitionFilters, dataFilters = dataFilters)
 
   override def partitions: Seq[FilePartition] = {
     val selectedPartitions = fileIndex.listFiles(partitionFilters, dataFilters)

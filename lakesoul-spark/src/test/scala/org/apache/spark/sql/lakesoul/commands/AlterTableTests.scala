@@ -386,51 +386,6 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
     }
   }
 
-  ddlTest("ADD COLUMNS - an invalid column name") { ns =>
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
-      val ex = intercept[AnalysisException] {
-        sql(s"ALTER TABLE $tableName ADD COLUMNS (`a column name with spaces` long)")
-      }
-      assert(ex.getMessage.contains("contains invalid character(s)"))
-    }
-  }
-
-  ddlTest("ADD COLUMNS - an invalid column name (nested)") { ns =>
-    val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df, ns) { tableName =>
-
-      val ex = intercept[AnalysisException] {
-        sql(s"ALTER TABLE $tableName ADD COLUMNS (struct.`a column name with spaces` long)")
-      }
-      assert(ex.getMessage.contains("contains invalid character(s)"))
-    }
-  }
-
-  //  ddlTest("ADD COLUMNS - special column names") {
-  //    val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-  //      .withColumn("z.z", struct("v1", "v2"))
-  //    withLakeSoulTable(df) { tableName =>
-  //
-  //      checkDatasetUnorderly(
-  //        spark.table(tableName).as[(Int, String, (Int, String))],
-  //        (1, "a", (1, "a")), (2, "b", (2, "b")))
-  //
-  //      sql(s"ALTER TABLE $tableName ADD COLUMNS (`x.x` long, `z.z`.`y.y` double)")
-  //
-  //      val snapshotManagement = getSnapshotManagement(tableName)
-  //      assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
-  //        .add("v1", "integer").add("v2", "string")
-  //        .add("z.z", new StructType()
-  //          .add("v1", "integer").add("v2", "string").add("y.y", "double"))
-  //        .add("x.x", "long"))
-  //
-  //      checkDatasetUnorderly(
-  //        spark.table(tableName).as[(Int, String, (Int, String, Option[Double]), Option[Long])],
-  //        (1, "a", (1, "a", None), None), (2, "b", (2, "b", None), None))
-  //    }
-  //  }
-
   test("ADD COLUMNS - with positions") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
     withLakeSoulTable(df, "default") { tableName =>

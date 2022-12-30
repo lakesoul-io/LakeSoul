@@ -28,8 +28,8 @@ import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1Write, WriteBuilder}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
-import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.{DataSource, DataSourceUtils, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
@@ -123,7 +123,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     val withDb = verifyTableAndSolidify(tableDesc, None)
 
-    ParquetSchemaConverter.checkFieldNames(tableDesc.schema)
+    DataSourceUtils.checkFieldNames(new ParquetFileFormat(), tableDesc.schema)
     CreateTableCommand(
       withDb,
       existingLocation.map(SparkUtil.makeQualifiedPath(_).toString),
@@ -263,8 +263,9 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case IdentityTransform(FieldReference(Seq(col))) =>
         identityCols += col
 
-      case BucketTransform(numBuckets, FieldReference(Seq(col))) =>
-        bucketSpec = Some(BucketSpec(numBuckets, col :: Nil, Nil))
+      case BucketTransform(numBuckets, col, sortCol) =>
+        bucketSpec = Some(BucketSpec(numBuckets, col.map(_.fieldNames.mkString(".")),
+          sortCol.map(_.fieldNames.mkString("."))))
 
       case _ =>
         throw LakeSoulErrors.operationNotSupportedException(s"Partitioning by expressions")
@@ -527,7 +528,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     LakeSoulCatalog.namespaceExists(namespace)
   }
 
-  override def dropNamespace(namespace: Array[String]): Boolean = {
+  override def dropNamespace(namespace: Array[String], cascade: Boolean): Boolean = {
     LakeSoulCatalog.dropNamespace(namespace)
   }
 

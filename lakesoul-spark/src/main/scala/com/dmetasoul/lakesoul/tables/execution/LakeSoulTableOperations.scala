@@ -19,7 +19,7 @@ package com.dmetasoul.lakesoul.tables.execution
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteFromTable, LakeSoulUpsert, UpdateTable}
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.commands._
@@ -38,7 +38,7 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   protected def sparkSession: SparkSession = self.toDF.sparkSession
 
   protected def executeDelete(condition: Option[Expression]): Unit = {
-    val delete = DeleteFromTable(self.toDF.queryExecution.analyzed, condition)
+    val delete = DeleteFromTable(self.toDF.queryExecution.analyzed, condition.getOrElse(Literal.TrueLiteral))
     toDataset(sparkSession, delete)
   }
 

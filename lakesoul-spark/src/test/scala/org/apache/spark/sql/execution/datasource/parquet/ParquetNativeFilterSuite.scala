@@ -71,7 +71,7 @@ class ParquetV2FilterSuite
 
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
@@ -90,7 +90,7 @@ class ParquetV2FilterSuite
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
 
-          stripSparkFilter(query).show()
+          stripSparkFilter(query)
           checker(stripSparkFilter(query), expected)
 
         case _ =>
@@ -155,7 +155,7 @@ class ParquetNativeFilterSuite
 
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
@@ -175,7 +175,7 @@ class ParquetNativeFilterSuite
 
           checker(stripSparkFilter(query), expected)
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _, _)) =>
           println("match case NativeParquetScan")
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray

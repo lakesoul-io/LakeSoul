@@ -72,7 +72,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
         d
       } else if (indices.size == 1 && !indices.head.snapshotManagement.snapshot.isFirstCommit) {
         // It is a well-defined LakeSoul table with a schema
-        LakeSoulDelete(newTarget, condition)
+        LakeSoulDelete(newTarget, Some(condition))
       } else {
         // Not a well-defined LakeSoul table
         throw LakeSoulErrors.notALakeSoulSourceException("DELETE", Some(d))
