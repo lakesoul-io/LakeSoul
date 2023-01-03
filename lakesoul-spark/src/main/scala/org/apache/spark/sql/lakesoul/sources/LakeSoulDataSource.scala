@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -145,7 +144,6 @@ class LakeSoulDataSource
           return 0
         }
         val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
-        //TODO startTime必须大于起始时间
         time / 1000
       }
 
