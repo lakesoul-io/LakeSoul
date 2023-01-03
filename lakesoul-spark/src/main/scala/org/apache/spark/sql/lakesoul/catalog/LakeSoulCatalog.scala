@@ -501,7 +501,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     }
   }
 
-  // todo: invalid on spark v3.1.2
   override def listTables(namespaces: Array[String]): Array[Identifier] = {
     LakeSoulCatalog.listTables(namespaces)
   }
@@ -510,7 +509,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   // Namespace
   //=============
 
-  // todo: invalid on spark v3.1.2
   override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
     LakeSoulCatalog.createNamespace(namespaces)
   }
