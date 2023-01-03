@@ -20,7 +20,6 @@
 
 pub mod lakesoul_reader;
 mod filter;
-pub mod sorted_merge_reader;
 pub mod sorted_stream_merger;
 pub mod merge_traits;
 pub mod non_unique_fetcher;
