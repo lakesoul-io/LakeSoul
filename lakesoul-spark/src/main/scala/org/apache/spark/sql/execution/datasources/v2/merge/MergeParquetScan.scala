@@ -325,7 +325,14 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       LongOffset(0L)
     } else {
       val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
-      LongOffset(startTime / 1000)
+      //TODO startTime必须大于起始时间
+      val LatesTimestamp = MetaVersion.getLastedTimestamp(options.get(LakeSoulOptions.READ_START_TIME), options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+      if (startTime > LatesTimestamp) {
+        //
+        LongOffset(0L)
+      } else {
+        LongOffset(startTime / 1000)
+      }
     }
   }
 

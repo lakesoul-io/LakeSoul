@@ -27,7 +27,6 @@ public class DBFactory {
     private static volatile TablePathIdDao tablePathIdDao;
     private static volatile DataCommitInfoDao dataCommitInfoDao;
     private static volatile PartitionInfoDao partitionInfoDao;
-    private static volatile StreamingRecordInfoDao streamingRecordInfoDao;
 
     private DBFactory(){}
 
@@ -95,16 +94,5 @@ public class DBFactory {
             }
         }
         return partitionInfoDao;
-    }
-
-    public static StreamingRecordInfoDao getStreamingRecordInfoDao() {
-        if (streamingRecordInfoDao == null) {
-            synchronized (StreamingRecordInfoDao.class) {
-                if (streamingRecordInfoDao == null) {
-                    streamingRecordInfoDao = new StreamingRecordInfoDao();
-                }
-            }
-        }
-        return streamingRecordInfoDao;
     }
 }

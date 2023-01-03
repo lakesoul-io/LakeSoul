@@ -60,10 +60,3 @@ create table if not exists partition_info (
     expression text,
     primary key(table_id, partition_desc, version)
 );
-
-create table if not exists streaming_record_info (
-    table_id text,
-    query_id text,
-    batch_id bigint,
-    timestamp bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision)
-);

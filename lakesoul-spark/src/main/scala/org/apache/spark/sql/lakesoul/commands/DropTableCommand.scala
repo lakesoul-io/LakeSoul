@@ -46,7 +46,6 @@ object DropTableCommand {
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
     MetaVersion.dropPartitionInfoByTableId(table_id)
-    StreamingRecord.deleteStreamingInfoByTableId(table_id)
     DataOperation.dropDataInfoData(table_id)
     val path = new Path(table_path.get)
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()

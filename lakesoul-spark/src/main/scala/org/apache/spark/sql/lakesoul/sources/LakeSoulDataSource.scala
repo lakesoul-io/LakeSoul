@@ -145,6 +145,7 @@ class LakeSoulDataSource
           return 0
         }
         val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+        //TODO startTime必须大于起始时间
         time / 1000
       }
 

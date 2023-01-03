@@ -16,50 +16,22 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import scala.collection.mutable.ArrayBuffer
+import java.util.UUID
 
 object StreamingRecord {
 
   val dbManager = new DBManager()
 
-  def getStreamingInfo(tableId: String): (String, Long) = {
-    try {
-      val streamingInfo = dbManager.getStreamingInfoByTableId(tableId)
-      (streamingInfo.getQueryId, streamingInfo.getBatchId)
-    } catch {
-      case e: Exception => ("", -1L)
-    }
-  }
-
   def getBatchId(tableId: String, queryId: String): Long = {
     try {
-      dbManager.getStreamingInfoByTableIdAndQueryId(tableId, queryId).getBatchId
+      val commitId = dbManager.selectByTableId(tableId).getCommitId
+      if(commitId.getMostSignificantBits.equals(UUID.fromString(queryId).getMostSignificantBits)) {
+        commitId.getLeastSignificantBits
+      }else {
+        -1L
+      }
     } catch {
       case e: Exception => -1L
     }
   }
-
-  def updateStreamingInfo(tableId: String, queryId: String, batchId: Long, timestamp: Long): Unit = {
-    dbManager.updateStreamingInfo(tableId, queryId, batchId, timestamp)
-  }
-
-  def deleteStreamingInfoByTableId(tableId: String): Unit = {
-    dbManager.deleteStreamingInfoByTableId(tableId)
-  }
-
-  def deleteStreamingInfoByTimestamp(tableId: String, expireTimestamp: Long): Unit = {
-    val expireInfo = getTimeoutStreamingInfo(tableId, expireTimestamp)
-    expireInfo.foreach(info => deleteStreamingInfo(info._1, info._2))
-  }
-
-  private def getTimeoutStreamingInfo(tableId: String, expireTimestamp: Long): Seq[(String, String)] = {
-    val streamingRecords = new ArrayBuffer[(String, String)]()
-    dbManager.getTimeoutStreamingInfo(tableId, expireTimestamp).forEach(streamingInfo => streamingRecords.append((streamingInfo.getTableId, streamingInfo.getQueryId)))
-    streamingRecords
-  }
-
-  private def deleteStreamingInfo(tableId: String, query_id: String): Unit = {
-    dbManager.deleteStreamingInfoByTableIdAndQueryId(tableId, query_id)
-  }
-
 }

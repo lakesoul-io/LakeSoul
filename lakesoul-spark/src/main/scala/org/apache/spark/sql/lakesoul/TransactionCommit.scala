@@ -294,7 +294,7 @@ trait Transaction extends TransactionalWrite with Logging {
           filter_files ++= changeFiles
 
           if (filter_files.nonEmpty) {
-            val addUUID = UUID.randomUUID()
+            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
             add_file_arr_buf += DataCommitInfo(
               tableInfo.table_id,
               range_key,
@@ -315,7 +315,7 @@ trait Transaction extends TransactionalWrite with Logging {
           val changeFiles = addFiles.union(expireFilesWithDeleteOp)
             .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
           if (changeFiles.nonEmpty) {
-            val addUUID = UUID.randomUUID()
+            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
             add_file_arr_buf += DataCommitInfo(
               tableInfo.table_id,
               range_key,
@@ -353,5 +353,15 @@ trait Transaction extends TransactionalWrite with Logging {
       committed = true
     }
     snapshotManagement.updateSnapshot()
+  }
+
+  def getCommitIdByBatchIdAndQueryId(batch_id: Long, query_id: String): UUID = {
+    if("".equals(query_id)) {
+      UUID.randomUUID()
+    }else{
+      val queryUUID = UUID.fromString(query_id)
+      val highBits = queryUUID.getMostSignificantBits
+      new UUID(highBits, batch_id)
+    }
   }
 }

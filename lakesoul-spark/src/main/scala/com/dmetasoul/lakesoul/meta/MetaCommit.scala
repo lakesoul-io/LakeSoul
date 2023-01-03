@@ -63,9 +63,6 @@ object MetaCommit extends Logging {
       javaPartitionInfoList.add(partitionInfo)
     }
     info.setListPartition(javaPartitionInfoList)
-    if (meta_info.query_id.nonEmpty && meta_info.batch_id >= 0) {
-      StreamingRecord.updateStreamingInfo(table_info.table_id, meta_info.query_id, meta_info.batch_id, System.currentTimeMillis())
-    }
     var result = addDataInfo(meta_info)
     if (result) {
       result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)

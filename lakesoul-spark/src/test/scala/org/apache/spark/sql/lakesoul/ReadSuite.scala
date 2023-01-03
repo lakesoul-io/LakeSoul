@@ -202,7 +202,7 @@ class ReadSuite extends QueryTest
               .toDF("id", "range", "hash", "op")
             Thread.sleep(3000)
             lake.upsert(tableForUpsert2)
-            Thread.sleep(30000)
+            Thread.sleep(3000)
           }
         })
       }

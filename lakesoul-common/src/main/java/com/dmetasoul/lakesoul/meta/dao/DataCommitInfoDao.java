@@ -65,7 +65,7 @@ public class DataCommitInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         if (commitIdList.size() < 1) {
-            return ;
+            return;
         }
         String uuidListString = DBUtil.changeUUIDListToString(commitIdList);
         String sql = String.format("delete from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
@@ -120,6 +120,34 @@ public class DataCommitInfoDao {
         ResultSet rs = null;
         String sql = String.format("select * from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
                 "commit_id = '%s'", tableId, partitionDesc, commitId);
+        DataCommitInfo dataCommitInfo = null;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                dataCommitInfo = new DataCommitInfo();
+                dataCommitInfo.setTableId(rs.getString("table_id"));
+                dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
+                dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
+                dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
+                dataCommitInfo.setCommitOp(rs.getString("commit_op"));
+                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
+                dataCommitInfo.setCommitted(rs.getBoolean("committed"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return dataCommitInfo;
+    }
+
+    public DataCommitInfo selectByTableId(String tableId) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select * from data_commit_info where table_id = '%s' order by timestamp DESC LIMIT 1", tableId);
         DataCommitInfo dataCommitInfo = null;
         try {
             conn = DBConnector.getConn();

@@ -37,7 +37,6 @@ public class DBManager {
     private final TablePathIdDao tablePathIdDao;
     private final DataCommitInfoDao dataCommitInfoDao;
     private final PartitionInfoDao partitionInfoDao;
-    private final StreamingRecordInfoDao streamingRecordInfoDao;
 
     public DBManager() {
         namespaceDao = DBFactory.getNamespaceDao();
@@ -46,7 +45,6 @@ public class DBManager {
         tablePathIdDao = DBFactory.getTablePathIdDao();
         dataCommitInfoDao = DBFactory.getDataCommitInfoDao();
         partitionInfoDao = DBFactory.getPartitionInfoDao();
-        streamingRecordInfoDao = DBFactory.getStreamingRecordInfoDao();
     }
 
     public boolean isNamespaceExists(String table_namespace) {
@@ -631,6 +629,10 @@ public class DBManager {
         return partitionInfoDao.getPartitionsFromTimestamp(tableId, partitionDesc, startTimestamp, endTimestamp);
     }
 
+    public DataCommitInfo selectByTableId(String tableId) {
+        return dataCommitInfoDao.selectByTableId(tableId);
+    }
+
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc, List<UUID> dataCommitUUIDs) {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
@@ -725,29 +727,5 @@ public class DBManager {
         tablePathIdDao.clean();
         tableNameIdDao.clean();
         partitionInfoDao.clean();
-    }
-
-    public StreamingRecordInfo getStreamingInfoByTableId(String tableId) {
-        return streamingRecordInfoDao.selectByTableId(tableId);
-    }
-
-    public StreamingRecordInfo getStreamingInfoByTableIdAndQueryId(String tableId, String queryId) {
-        return streamingRecordInfoDao.selectByTableIdAndQueryId(tableId, queryId);
-    }
-
-    public List<StreamingRecordInfo> getTimeoutStreamingInfo(String tableId, long timestamp) {
-        return streamingRecordInfoDao.selectByTableIdAndTimeStamp(tableId, timestamp);
-    }
-
-    public void updateStreamingInfo(String tableId, String queryId, long batchId, long timestamp) {
-        streamingRecordInfoDao.updateStreamingRecordInfo(tableId, queryId, batchId, timestamp);
-    }
-
-    public void deleteStreamingInfoByTableId(String tableId) {
-        streamingRecordInfoDao.deleteStreamingRecordInfoByTableId(tableId);
-    }
-
-    public void deleteStreamingInfoByTableIdAndQueryId(String tableId, String queryId) {
-        streamingRecordInfoDao.deleteStreamingRecordInfoByTableIdAndQueryId(tableId, queryId);
     }
 }
