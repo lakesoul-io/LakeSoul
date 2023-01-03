@@ -343,6 +343,10 @@ public class PartitionInfoDao {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d and version <= %d", tableId, partitionDesc, startVersion, endVersion);
         return getPartitionInfos(sql);
     }
+    public List<PartitionInfo> getOnePartition(String tableId, String partitionDesc) {
+        String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' limit 1", tableId, partitionDesc);
+        return getPartitionInfos(sql);
+    }
 
     public List<PartitionInfo> getPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp, long endTimestamp) {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and timestamp >= %d and timestamp < %d", tableId, partitionDesc, startTimestamp, endTimestamp);
