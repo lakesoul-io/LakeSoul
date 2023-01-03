@@ -17,10 +17,11 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp
-import org.apache.curator.shaded.com.google.common.collect.Lists
+import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
+import org.json4s.JsonDSL.int2jvalue
 
 import java.util
 import java.util.UUID
@@ -145,14 +146,16 @@ object DataOperation extends Logging {
     var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
     var updated: Boolean = false
     val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp).asScala.toArray
-    if (dataCommitInfoList.size < 2) {
-      println("It is the latest version")
-      return new ArrayBuffer[DataFileInfo]()
-    }
+//    if (dataCommitInfoList.size < 2) {
+//      println("It is the latest version")
+//      return new ArrayBuffer[DataFileInfo]()
+//    }
+    var count: Int = 0
     val loop = new Breaks()
     loop.breakable {
       for (dataItem <- dataCommitInfoList) {
-        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem.getTimestamp) {
+        count += 1
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem.getTimestamp && count != 1) {
           updated = true
           loop.break()
         }

@@ -624,6 +624,9 @@ public class DBManager {
     public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion, int endVersion) {
         return partitionInfoDao.getPartitionsFromVersion(tableId, partitionDesc, startVersion, endVersion);
     }
+    public List<PartitionInfo> getOnePartition(String tableId, String partitionDesc) {
+        return partitionInfoDao.getOnePartition(tableId, partitionDesc);
+    }
 
     public List<PartitionInfo> getIncrementalPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp, long endTimestamp) {
         return partitionInfoDao.getPartitionsFromTimestamp(tableId, partitionDesc, startTimestamp, endTimestamp);
