@@ -224,7 +224,6 @@ class ReadSuite extends QueryTest
       val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
       val parDesc = "range=range1"
       var count = 0
-      Thread.sleep(1000)
       val query = spark.readStream.format("lakesoul")
         .option(LakeSoulOptions.PARTITION_DESC, parDesc)
         .option(LakeSoulOptions.READ_START_TIME, currentVersion)
@@ -241,7 +240,7 @@ class ReadSuite extends QueryTest
         }
       }
       }
-        .trigger(Trigger.ProcessingTime(1000))
+        .trigger(Trigger.ProcessingTime(2000))
         .start()
         .awaitTermination()
     }

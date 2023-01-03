@@ -325,12 +325,11 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       LongOffset(0L)
     } else {
       val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
-      //TODO startTime必须大于起始时间
-      val LatesTimestamp = MetaVersion.getLastedTimestamp(options.get(LakeSoulOptions.READ_START_TIME), options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
-      if (startTime > LatesTimestamp) {
-        //
-        LongOffset(0L)
+      val latesTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+      if (startTime / 1000 < latesTimestamp) {
+        LongOffset(startTime / 1000)
       } else {
+        //TODO 抛出异常
         LongOffset(startTime / 1000)
       }
     }
@@ -350,8 +349,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
-    println("start : " + start)
-    println("end   : " + end)
     snapshotManagement.updateSnapshotForVersion(options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""), start.toString.toLong, end.toString.toLong, ReadType.INCREMENTAL_READ)
     partitions(true).toArray
   }
