@@ -23,11 +23,11 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3AUtils;
+import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.hadoop.ParquetInputSplit;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -115,9 +115,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    *
    * When this is set, the code will branch early on in the RecordReader APIs. There is no shared
    * code between the path that uses the MR decoders and the vectorized ones.
-   *
-   * TODOs:
-   *  - Implement v2 page formats (just make sure we create the correct decoders).
    */
   private ColumnarBatch columnarBatch;
 
@@ -132,7 +129,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * The memory mode of the columnarBatch
    */
   private final MemoryMode MEMORY_MODE;
-  private StructType typeName;
 
   public NativeVectorizedReader(
           ZoneId convertTz,
@@ -167,7 +163,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   public void initialize(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
           throws IOException, InterruptedException, UnsupportedOperationException {
     super.initialize(inputSplit, taskAttemptContext);
-    ParquetInputSplit split = (ParquetInputSplit)inputSplit;
+    FileSplit split = (FileSplit) inputSplit;
     this.file = split.getPath();
     this.filePath = file.toString();
     FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());

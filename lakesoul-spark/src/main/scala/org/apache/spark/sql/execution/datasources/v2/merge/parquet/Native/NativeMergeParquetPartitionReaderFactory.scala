@@ -17,11 +17,12 @@
 package org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native
 
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._
+import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat, ParquetInputSplit}
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat}
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -68,9 +69,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
   private val enableOffHeapColumnVector = sqlConf.offHeapColumnVectorEnabled
-  private val enableVectorizedReader: Boolean = sqlConf.parquetVectorizedReaderEnabled &&
-    resultSchema.forall(_.dataType.isInstanceOf[AtomicType])
-  private val enableRecordFilter: Boolean = sqlConf.parquetRecordFilterEnabled
   private val timestampConversion: Boolean = sqlConf.isParquetINT96TimestampConversion
   private val capacity = sqlConf.parquetVectorizedReaderBatchSize
   private val enableParquetFilterPushDown: Boolean = sqlConf.parquetFilterPushDown
@@ -135,7 +133,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     }
   }
 
-  private def createParquetVectorizedReader(split: ParquetInputSplit,
+  private def createParquetVectorizedReader(split: FileSplit,
                                      partitionValues: InternalRow,
                                      hadoopAttemptContext: TaskAttemptContextImpl,
                                      pushed: Option[FilterPredicate],
@@ -144,13 +142,24 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                      int96RebaseSpec: RebaseSpec): RecordReader[Void,ColumnarBatch] = {
     val taskContext = Option(TaskContext.get())
     val vectorizedReader = if (nativeIOEnable) {
-      val reader = new NativeVectorizedReader(
-        convertTz.orNull,
-        datetimeRebaseSpec.mode.toString,
-        int96RebaseSpec.mode.toString,
-        enableOffHeapColumnVector && taskContext.isDefined,
-        capacity
-      )
+      val reader = if (pushed.isDefined) {
+        new NativeVectorizedReader(
+          convertTz.orNull,
+          datetimeRebaseSpec.mode.toString,
+          int96RebaseSpec.mode.toString,
+          enableOffHeapColumnVector && taskContext.isDefined,
+          capacity,
+          pushed.get
+        )
+      } else {
+        new NativeVectorizedReader(
+          convertTz.orNull,
+          datetimeRebaseSpec.mode.toString,
+          int96RebaseSpec.mode.toString,
+          enableOffHeapColumnVector && taskContext.isDefined,
+          capacity
+        )
+      }
       reader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
       reader.setThreadNum(nativeIOThreadNum)
       reader.setAwaitTimeout(nativeIOAwaitTimeout)
@@ -175,7 +184,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
   private def buildReaderBase[T](file: MergePartitionedFile,
                                  buildReaderFunc: (
-                                   ParquetInputSplit, InternalRow, TaskAttemptContextImpl,
+                                   FileSplit, InternalRow, TaskAttemptContextImpl,
                                      Option[FilterPredicate], Option[ZoneId],
                                      RebaseSpec,
                                      RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
@@ -183,10 +192,9 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
     val filePath = new Path(new URI(file.filePath))
     val split =
-      new org.apache.parquet.hadoop.ParquetInputSplit(
+      new FileSplit(
         filePath,
         file.start,
-        file.start + file.length,
         file.length,
         Array.empty,
         null)
@@ -222,7 +230,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     // have different writers.
     // Define isCreatedByParquetMr as function to avoid unnecessary parquet footer reads.
     def isCreatedByParquetMr: Boolean =
-      footerFileMetaData.getCreatedBy().startsWith("parquet-mr")
+      footerFileMetaData.getCreatedBy.startsWith("parquet-mr")
 
     val convertTz =
       if (timestampConversion && !isCreatedByParquetMr) {
