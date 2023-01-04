@@ -31,6 +31,9 @@ import org.apache.spark.sql.execution.datasources.parquet.{ParquetReadSupport, P
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.MergeParquetPartitionReaderFactory
 import org.apache.spark.sql.execution.streaming.LongOffset
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergeParquetPartitionReaderFactory
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.{DefaultMergeOp, MergeOperator}
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.{MergeFilePartitionReaderFactory, MergeParquetPartitionReaderFactory}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
@@ -196,8 +199,14 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val defaultMergeOp = Class.forName(defaultMergeOpInfoString, true, Utils.getContextOrSparkClassLoader).getConstructors()(0)
       .newInstance()
       .asInstanceOf[MergeOperator[Any]]
-    MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
-      dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp)
+    val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
+    if (nativeIOEnable) {
+      NativeMergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+        dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp)
+    } else {
+      MergeParquetPartitionReaderFactory(sparkSession.sessionState.conf, broadcastedConf,
+        dataSchema, readDataSchema, readPartitionSchema, newFilters, mergeOperatorInfo, defaultMergeOp)
+    }
   }
 
   protected def seqToString(seq: Seq[Any]): String = seq.mkString("[", ", ", "]")
@@ -216,6 +225,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
   override def planInputPartitions(): Array[InputPartition] = {
     partitions(false).toArray
+    logInfo("[Debug][huazeng]on org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan.planInputPartitions")
+    partitions.toArray
   }
 
   protected def partitions(isStreaming: Boolean): Seq[MergeFilePartition] = {
@@ -316,7 +327,10 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     }
   }
 
-  override def toBatch: Batch = this
+  override def toBatch: Batch = {
+    logInfo("[Debug][huazeng]on org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan.toBatch")
+    this
+  }
 
   override def readSchema(): StructType =
     StructType(readDataSchema.fields ++ readPartitionSchema.fields)

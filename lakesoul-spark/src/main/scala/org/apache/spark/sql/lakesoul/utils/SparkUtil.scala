@@ -41,7 +41,7 @@ import scala.collection.JavaConverters._
 object SparkUtil {
 
   def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
-   val allPatition= snapshot.getPartitionInfoArray.map(part =>
+   val allPartition = snapshot.getPartitionInfoArray.map(part =>
         PartitionFilterInfo(
           part.range_value,
           MetaUtils.getPartitionMapFromKey(part.range_value),
@@ -49,7 +49,7 @@ object SparkUtil {
 
     val spark = SparkSession.active
     import spark.implicits._
-    spark.sparkContext.parallelize(allPatition).toDF.persist()
+    spark.sparkContext.parallelize(allPartition).toDF.persist()
   }
 
   def allDataInfo(snapshot: Snapshot): Array[DataFileInfo] = {
