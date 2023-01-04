@@ -15,8 +15,6 @@
  */
 
 use atomic_refcell::AtomicRefCell;
-use derivative::Derivative;
-use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
@@ -24,11 +22,7 @@ pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::logical_expr::Expr;
-use datafusion::prelude::{SessionConfig, SessionContext};
-use object_store::aws::AmazonS3Builder;
-use object_store::RetryConfig;
+use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
 use datafusion::physical_plan::RecordBatchStream;
@@ -38,177 +32,22 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::filter::Parser as FilterParser;
-
-#[derive(Derivative)]
-#[derivative(Default)]
-pub struct LakeSoulReaderConfig {
-    // files to read
-    files: Vec<String>,
-    // primary key column names
-    primary_keys: Vec<String>,
-    // selecting columns
-    columns: Vec<String>,
-    schema: HashMap<String, String>,
-
-    // filtering predicates
-    filters: Vec<Expr>,
-    batch_size: usize,
-
-    // object store related configs
-    object_store_options: HashMap<String, String>,
-
-    // tokio runtime related configs
-    #[derivative(Default(value = "2"))]
-    thread_num: usize,
-}
-
-pub struct LakeSoulReaderConfigBuilder {
-    config: LakeSoulReaderConfig,
-}
-
-impl LakeSoulReaderConfigBuilder {
-    pub fn new() -> Self {
-        LakeSoulReaderConfigBuilder {
-            config: LakeSoulReaderConfig::default(),
-        }
-    }
-
-    pub fn with_file(mut self, file: String) -> Self {
-        self.config.files.push(file);
-        self
-    }
-
-    pub fn with_files(mut self, files: Vec<String>) -> Self {
-        self.config.files = files;
-        self
-    }
-
-    pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
-        self.config.primary_keys = pks;
-        self
-    }
-
-    pub fn with_column(mut self, col: String, datatype: String) -> Self {
-        self.config.columns.push(String::from(&col));
-        self.config.schema.insert(String::from(&col), datatype);
-        self
-    }
-
-    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
-        self.config.batch_size = batch_size;
-        self
-    }
-
-    pub fn with_columns(mut self, cols: Vec<String>) -> Self {
-        self.config.columns = cols;
-        self
-    }
-
-    pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, &self.config.schema);
-        self.config.filters.push(expr);
-        self
-    }
-
-    pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
-        self.config.filters = filters;
-        self
-    }
-
-    pub fn with_object_store_option(mut self, key: String, value: String) -> Self {
-        self.config.object_store_options.insert(key, value);
-        self
-    }
-
-    pub fn with_thread_num(mut self, thread_num: usize) -> Self {
-        self.config.thread_num = thread_num;
-        self
-    }
-
-    pub fn build(self) -> LakeSoulReaderConfig {
-        self.config
-    }
-}
+use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
-    config: LakeSoulReaderConfig,
+    config: LakeSoulIOConfig,
     stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
 }
 
 impl LakeSoulReader {
-    pub fn new(config: LakeSoulReaderConfig) -> Result<Self> {
-        let sess_ctx = LakeSoulReader::create_session_context(&config)?;
+    pub fn new(config: LakeSoulIOConfig) -> Result<Self> {
+        let sess_ctx = create_session_context(&config)?;
         Ok(LakeSoulReader {
             sess_ctx,
             config,
             stream: Box::new_uninit(),
         })
-    }
-
-    fn check_fs_type_enabled(config: &LakeSoulReaderConfig, fs_name: &str) -> bool {
-        if let Some(fs_enabled) = config
-            .object_store_options
-            .get(format!("fs.{}.enabled", fs_name).as_str())
-        {
-            return match fs_enabled.parse::<bool>() {
-                Ok(enabled) => enabled,
-                _ => false,
-            };
-        }
-        false
-    }
-
-    fn register_s3_object_store(config: &LakeSoulReaderConfig, runtime: &RuntimeEnv) -> Result<()> {
-        if !LakeSoulReader::check_fs_type_enabled(config, "s3") {
-            return Ok(());
-        }
-        let key = config.object_store_options.get("fs.s3.access.key");
-        let secret = config.object_store_options.get("fs.s3.access.secret");
-        let region = config.object_store_options.get("fs.s3.region");
-        let bucket = config.object_store_options.get("fs.s3.bucket");
-
-        if region == None {
-            return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-                "missing fs.s3.region".to_string(),
-            )));
-        }
-
-        if bucket == None {
-            return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-                "missing fs.s3.bucket".to_string(),
-            )));
-        }
-
-        let endpoint = config.object_store_options.get("fs.s3.endpoint");
-        let retry_config = RetryConfig {
-            backoff: Default::default(),
-            max_retries: 4,
-            retry_timeout: Default::default(),
-        };
-        let s3_store = AmazonS3Builder::new()
-            .with_access_key_id(key.unwrap())
-            .with_secret_access_key(secret.unwrap())
-            .with_region(region.unwrap())
-            .with_bucket_name(bucket.unwrap())
-            .with_endpoint(endpoint.unwrap())
-            .with_retry(retry_config)
-            .with_allow_http(true)
-            .build();
-        runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store.unwrap()));
-        Ok(())
-    }
-
-    fn create_session_context(config: &LakeSoulReaderConfig) -> Result<SessionContext> {
-        let sess_conf = SessionConfig::default().with_batch_size(config.batch_size);
-        let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
-
-        // register object store(s)
-        LakeSoulReader::register_s3_object_store(config, &runtime)?;
-
-        // create session context
-        Ok(SessionContext::with_config_rt(sess_conf, Arc::new(runtime)))
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -289,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
         let project_dir = "/path/to/project/";
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
                 vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
                 ])
@@ -314,7 +153,7 @@ mod tests {
     #[test]
     fn test_reader_local_blocked() -> Result<()> {
         let project_dir = "/path/to/project/";
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
                 vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
             ])
@@ -355,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_reader_partition() -> Result<()> {
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec!["/path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -370,7 +209,6 @@ mod tests {
         static mut ROW_CNT: usize = 0;
         loop {
             let (tx, rx) = sync_channel(1);
-            let start = Instant::now();
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
@@ -397,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reader_s3() -> Result<()> {
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -430,7 +268,7 @@ mod tests {
     use std::thread;
     #[test]
     fn test_reader_s3_blocked() -> Result<()> {
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
@@ -478,11 +316,12 @@ mod tests {
         Ok(())
     }
 
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use datafusion::logical_expr::{col, Expr};
     use datafusion_common::ScalarValue;
 
     async fn get_num_rows_of_file_with_filters(file_path: String, filters: Vec<Expr>) -> Result<usize> {
-        let reader_conf = LakeSoulReaderConfigBuilder::new()
+        let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![file_path])
             .with_thread_num(1)
             .with_batch_size(32)

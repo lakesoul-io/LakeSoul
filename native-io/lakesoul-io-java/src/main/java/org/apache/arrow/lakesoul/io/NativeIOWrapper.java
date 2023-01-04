@@ -44,16 +44,12 @@ public class NativeIOWrapper implements AutoCloseable {
     }
 
     public static boolean isNativeIOLibExist() {
-        Map<LibraryOption, Object> libraryOptions = new HashMap<>();
-        libraryOptions.put(LibraryOption.LoadNow, true);
-        libraryOptions.put(LibraryOption.IgnoreError, true);
-
         String ext = ".dylib";
         if (!isMac()) {
             ext = ".so";
         }
 
-        String libName = String.join("/", System.getenv("LakeSoulLib"),"liblakesoul_io_c" + ext);
+        String libName = String.join("/", System.getenv("LakeSoulLib"), "liblakesoul_io_c" + ext);
         return new File(libName).exists();
     }
 
@@ -61,7 +57,7 @@ public class NativeIOWrapper implements AutoCloseable {
         this(false);
     }
 
-    public NativeIOWrapper(boolean useJavaReader){
+    public NativeIOWrapper(boolean useJavaReader) {
 
         Map<LibraryOption, Object> libraryOptions = new HashMap<>();
         libraryOptions.put(LibraryOption.LoadNow, true);
@@ -72,7 +68,7 @@ public class NativeIOWrapper implements AutoCloseable {
             ext = ".so";
         }
 
-        String libName = String.join("/", System.getenv("LakeSoulLib"),"liblakesoul_io_c" + ext); // platform specific name for liblakesoul_io_c
+        String libName = String.join("/", System.getenv("LakeSoulLib"), "liblakesoul_io_c" + ext); // platform specific name for liblakesoul_io_c
         libLakeSoulIO = LibraryLoader.loadLibrary(
                 LibLakeSoulIO.class,
                 libraryOptions,
@@ -83,15 +79,16 @@ public class NativeIOWrapper implements AutoCloseable {
         this.useJavaReader = useJavaReader;
         arrowJavaReaderBuilder = new ArrowJavaReader.ArrowJavaReaderBuilder();
     }
-    public void initialize(){
-        readerConfigBuilder = libLakeSoulIO.new_lakesoul_reader_config_builder();
+
+    public void initialize() {
+        readerConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
         setBufferSize(1);
         setBatchSize(2048);
         setThreadNum(2);
     }
 
-    public void addFile(String file){
+    public void addFile(String file) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, file);
@@ -101,7 +98,7 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void addColumn(String column, String datatype){
+    public void addColumn(String column, String datatype) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer columnPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
@@ -110,7 +107,7 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void addFilter(String filter){
+    public void addFilter(String filter) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, filter);
@@ -118,14 +115,14 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void setThreadNum(int threadNum){
+    public void setThreadNum(int threadNum) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_thread_num(readerConfigBuilder, threadNum);
         }
     }
 
-    public void setBatchSize(int batchSize){
+    public void setBatchSize(int batchSize) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_batch_size(readerConfigBuilder, batchSize);
@@ -134,14 +131,14 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void setBufferSize(int bufferSize){
+    public void setBufferSize(int bufferSize) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_buffer_size(readerConfigBuilder, bufferSize);
         }
     }
 
-    public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint){
+    public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint) {
         setObjectStoreOption("fs.s3.enabled", "true");
         setObjectStoreOption("fs.s3.access.key", accessKey);
         setObjectStoreOption("fs.s3.access.secret", accessSecret);
@@ -150,7 +147,7 @@ public class NativeIOWrapper implements AutoCloseable {
         setObjectStoreOption("fs.s3.endpoint", endpoint);
     }
 
-    public void setObjectStoreOption(String key, String value){
+    public void setObjectStoreOption(String key, String value) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer ptrKey = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, key);
@@ -159,7 +156,7 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void createReader(){
+    public void createReader() {
         if (!useJavaReader) {
             assert tokioRuntimeBuilder != null;
             assert readerConfigBuilder != null;
@@ -211,7 +208,7 @@ public class NativeIOWrapper implements AutoCloseable {
         }
 
         public void removerReferenceKey() {
-            if (key!= null) {
+            if (key != null) {
                 referenceManager.remove(key);
             }
         }
@@ -230,7 +227,7 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void nextBatch(Consumer<Boolean> callback, long schemaAddr, long arrayAddr){
+    public void nextBatch(Consumer<Boolean> callback, long schemaAddr, long arrayAddr) {
         Callback nativeCallback = new Callback(callback, referenceManager);
         nativeCallback.registerReferenceKey();
         if (!useJavaReader) {

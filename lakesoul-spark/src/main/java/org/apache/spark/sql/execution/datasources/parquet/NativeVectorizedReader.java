@@ -386,7 +386,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private NativeIOWrapper wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
 
-  private int prefetchBufferSize = 1;
+  private int prefetchBufferSize = 2;
 
   private int threadNum = 1;
 
