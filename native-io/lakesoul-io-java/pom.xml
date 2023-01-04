@@ -22,6 +22,7 @@
         <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.1.0</scalatest.version>
         <javacpp.version>1.5.7</javacpp.version>
+        <spark.version>3.1.2</spark.version>
     </properties>
 
 
@@ -107,6 +108,13 @@
             <groupId>com.github.jnr</groupId>
             <artifactId>jnr-ffi</artifactId>
             <version>2.2.12</version>
+        </dependency>
+
+        <!--        spark deps-->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
         </dependency>
 
     </dependencies>

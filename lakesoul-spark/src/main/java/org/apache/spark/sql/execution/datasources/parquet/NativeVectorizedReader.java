@@ -36,6 +36,7 @@ import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
@@ -249,9 +250,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     // Initialize missing columns with nulls.
     for (int i = 0; i < missingColumns.length; i++) {
       if (!missingColumns[i]) {
-        wrapper.addColumn(sparkSchema.fields()[i].name(), sparkSchema.fields()[i].dataType().typeName());
+        wrapper.addColumn(sparkSchema.fields()[i].name());
       }
     }
+
+    String schemaJson = NativeIOUtils.convertStructTypeToArrowJson(sparkSchema, convertTz == null ? "" : convertTz.toString());
+    wrapper.addSchema(schemaJson);
 
     wrapper.setBatchSize(capacity);
     wrapper.setBufferSize(prefetchBufferSize);
