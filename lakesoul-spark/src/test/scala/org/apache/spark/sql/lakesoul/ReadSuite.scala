@@ -196,7 +196,6 @@ class ReadSuite extends QueryTest
             testStreamRead.start()
             val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
               .toDF("id", "range", "hash", "op")
-//            Thread.sleep(3000)
             lake.upsert(tableForUpsert1)
             val tableForUpsert2 = Seq((9, "range1", "hash1-13", "insert"), (10, "range2", "hash2-13", "update"))
               .toDF("id", "range", "hash", "op")
