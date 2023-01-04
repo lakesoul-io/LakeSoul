@@ -35,6 +35,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
+import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo, TimestampFormatter}
 import org.apache.spark.sql.types.StructType
@@ -329,8 +330,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       if (startTime / 1000 < latesTimestamp) {
         LongOffset(startTime / 1000)
       } else {
-        //TODO 抛出异常
-        LongOffset(startTime / 1000)
+        throw LakeSoulErrors.illegalStreamReadStartTime(options.get(LakeSoulOptions.READ_START_TIME))
       }
     }
   }

@@ -608,6 +608,10 @@ object LakeSoulErrors {
           $plan
        """.stripMargin)
   }
+
+  def illegalStreamReadStartTime(readStartTime: String): Throwable = {
+    new AnalysisException(s"streamRead start time `$readStartTime` need to be less than latest timestamp")
+  }
 }
 
 
