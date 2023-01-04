@@ -26,11 +26,11 @@ use std::sync::Arc;
 pub use arrow::array::{export_array_into_raw, StructArray};
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 
-use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use tokio::runtime::{Builder, Runtime};
 
 use lakesoul_io::lakesoul_reader::{
-    ArrowResult, LakeSoulIOConfig, LakeSoulReader, RecordBatch, SyncSendableMutableLakeSoulReader,
+    ArrowResult, LakeSoulReader, RecordBatch, SyncSendableMutableLakeSoulReader,
 };
 
 #[repr(C)]

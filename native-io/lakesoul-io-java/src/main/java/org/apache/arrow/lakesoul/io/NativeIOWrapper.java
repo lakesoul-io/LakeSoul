@@ -139,16 +139,15 @@ public class NativeIOWrapper implements AutoCloseable {
     }
 
     public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint) {
-        setObjectStoreOption("fs.s3.enabled", "true");
-        setObjectStoreOption("fs.s3.access.key", accessKey);
-        setObjectStoreOption("fs.s3.access.secret", accessSecret);
-        setObjectStoreOption("fs.s3.region", region);
-        setObjectStoreOption("fs.s3.bucket", bucketName);
-        setObjectStoreOption("fs.s3.endpoint", endpoint);
+        setObjectStoreOption("fs.s3a.access.key", accessKey);
+        setObjectStoreOption("fs.s3a.access.secret", accessSecret);
+        setObjectStoreOption("fs.s3a.endpoint.region", region);
+        setObjectStoreOption("fs.s3a.bucket", bucketName);
+        setObjectStoreOption("fs.s3a.endpoint", endpoint);
     }
 
     public void setObjectStoreOption(String key, String value) {
-        if (!useJavaReader) {
+        if (!useJavaReader && value != null && !value.isEmpty()) {
             assert readerConfigBuilder != null;
             Pointer ptrKey = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, key);
             Pointer ptrValue = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);

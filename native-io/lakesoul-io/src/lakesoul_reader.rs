@@ -41,8 +41,8 @@ pub struct LakeSoulReader {
 }
 
 impl LakeSoulReader {
-    pub fn new(config: LakeSoulIOConfig) -> Result<Self> {
-        let sess_ctx = create_session_context(&config)?;
+    pub fn new(mut config: LakeSoulIOConfig) -> Result<Self> {
+        let sess_ctx = create_session_context(&mut config)?;
         Ok(LakeSoulReader {
             sess_ctx,
             config,
@@ -127,38 +127,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
-        let project_dir = "/path/to/project/";
+        let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
+                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
                 ])
             .with_thread_num(1)
             .with_batch_size(256)
             .build();
         let mut reader = LakeSoulReader::new(reader_conf)?;
-        let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
-        static mut ROW_CNT: usize = 0;
+        let mut row_cnt: usize = 0;
 
         while let Some(rb) = reader.next_rb().await {
             let num_rows = &rb.unwrap().num_rows();
-            unsafe {
-                ROW_CNT = ROW_CNT + num_rows;
-                println!("{}", ROW_CNT);
-            }
+            row_cnt = row_cnt + num_rows;
         }
+        assert_eq!(row_cnt, 1000);
         Ok(())
     }
 
     #[test]
     fn test_reader_local_blocked() -> Result<()> {
-        let project_dir = "/path/to/project/";
+        let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                vec![project_dir, "native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"].concat()
+                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(16)
-            .with_batch_size(1)
+            .with_batch_size(128)
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
@@ -188,6 +185,9 @@ mod tests {
             if done {
                 break;
             }
+        }
+        unsafe {
+            assert_eq!(ROW_CNT, 1000);
         }
         Ok(())
     }
@@ -239,14 +239,13 @@ mod tests {
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
-            .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("fs.s3.bucket"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("fs.s3.endpoint"))
+            .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.access.secret"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
+            .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
+            .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
             .build();
-        let mut reader = LakeSoulReader::new(reader_conf)?;
+        let reader = LakeSoulReader::new(reader_conf)?;
         let mut reader = ManuallyDrop::new(reader);
         reader.start().await?;
         static mut ROW_CNT: usize = 0;
@@ -272,12 +271,11 @@ mod tests {
             .with_files(vec!["s3://path/to/file.parquet".to_string()])
             .with_thread_num(1)
             .with_batch_size(8192)
-            .with_object_store_option(String::from("fs.s3.enabled"), String::from("true"))
-            .with_object_store_option(String::from("fs.s3.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3.access.secret"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3.region"), String::from("us-east-1"))
-            .with_object_store_option(String::from("fs.s3.bucket"), String::from("fs.s3.bucket"))
-            .with_object_store_option(String::from("fs.s3.endpoint"), String::from("fs.s3.endpoint"))
+            .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.access.secret"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
+            .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
+            .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()

@@ -76,23 +76,25 @@ impl Write for InMemBuf {
 }
 
 impl MultiPartAsyncWriter {
-    pub async fn new(config: LakeSoulIOConfig) -> Result<Self> {
+    pub async fn new(mut config: LakeSoulIOConfig) -> Result<Self> {
         if config.files.len() != 1 {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
-        let sess_ctx = create_session_context(&config)?;
+        let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files[0];
         let (object_store, path) = match Url::parse(file_name.as_str()) {
-            Ok(url) => Ok((sess_ctx
-                .runtime_env()
-                .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
-                Path::from(url.path()))
-            ),
-            Err(ParseError::RelativeUrlWithoutBase) => Ok((sess_ctx
-                .runtime_env()
-                .object_store(ObjectStoreUrl::local_filesystem())?,
-                Path::from(file_name.as_str()))
-            ),
+            Ok(url) => Ok((
+                sess_ctx
+                    .runtime_env()
+                    .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
+                Path::from(url.path()),
+            )),
+            Err(ParseError::RelativeUrlWithoutBase) => Ok((
+                sess_ctx
+                    .runtime_env()
+                    .object_store(ObjectStoreUrl::local_filesystem())?,
+                Path::from(file_name.as_str()),
+            )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
@@ -155,22 +157,51 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow_schema::Schema;
     use datafusion::error::Result;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::borrow::Borrow;
+    use std::fs::File;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_parquet_async_write() -> Result<()> {
         let col = Arc::new(Int64Array::from_iter_values([1, 2, 3])) as ArrayRef;
         let to_write = RecordBatch::try_from_iter([("col", col)])?;
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir
+            .into_path()
+            .join("test.parquet")
+            .into_os_string()
+            .into_string()
+            .unwrap();
         let writer_conf = LakeSoulIOConfigBuilder::new()
-            .with_files(vec!["file:/tmp/test.parquet".to_string()])
+            .with_files(vec![path.clone()])
             .with_thread_num(2)
             .with_batch_size(256)
+            .with_max_row_group_size(1)
             .with_schema_json(serde_json::to_string::<Schema>(to_write.schema().borrow()).unwrap())
             .build();
         let mut async_writer = MultiPartAsyncWriter::new(writer_conf).await?;
         async_writer.write_record_batch(&to_write).await?;
         async_writer.flush_and_shutdown().await?;
+
+        let file = File::open(path)?;
+        let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 1024).unwrap();
+
+        let actual_batch = record_batch_reader
+            .next()
+            .expect("No batch found")
+            .expect("Unable to get batch");
+
+        assert_eq!(to_write.schema(), actual_batch.schema());
+        assert_eq!(to_write.num_columns(), actual_batch.num_columns());
+        assert_eq!(to_write.num_rows(), actual_batch.num_rows());
+        for i in 0..to_write.num_columns() {
+            let expected_data = to_write.column(i).data();
+            let actual_data = actual_batch.column(i).data();
+
+            assert_eq!(expected_data, actual_data);
+        }
+
         Ok(())
     }
 }

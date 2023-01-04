@@ -14,17 +14,18 @@
  * limitations under the License.
  */
 
-use datafusion::logical_expr::Expr;
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::prelude::{SessionConfig, SessionContext};
 pub use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::{SessionConfig, SessionContext};
+use derivative::Derivative;
 use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
-use crate::filter::Parser as FilterParser;
-use derivative::Derivative;
+use std::collections::HashMap;
+use std::sync::Arc;
+use url::Url;
 
 #[derive(Derivative)]
 #[derivative(Default)]
@@ -141,51 +142,83 @@ impl LakeSoulIOConfigBuilder {
     }
 }
 
+/// First check envs for credentials, region and endpoint.
+/// Second check fs.s3a.xxx, to keep compatible with hadoop s3a.
+/// If no region is provided, default to us-east-1.
+/// Bucket name would be retrieved from file names.
+/// Currently only one s3 object store with one bucket is supported.
 pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
-    let key = config.object_store_options.get("fs.s3.access.key");
-    let secret = config.object_store_options.get("fs.s3.access.secret");
-    let region = config.object_store_options.get("fs.s3.region");
-    let bucket = config.object_store_options.get("fs.s3.bucket");
+    let key = std::env::var("AWS_ACCESS_KEY_ID")
+        .ok()
+        .or_else(|| config.object_store_options.get("fs.s3a.access.key").cloned());
+    let secret = std::env::var("AWS_ACCESS_KEY_ID")
+        .ok()
+        .or_else(|| config.object_store_options.get("fs.s3a.access.secret").cloned());
+    let region = std::env::var("AWS_REGION").ok().or_else(|| {
+        std::env::var("AWS_DEFAULT_REGION")
+            .ok()
+            .or_else(|| config.object_store_options.get("fs.s3a.endpoint.region").cloned())
+    });
+    let endpoint = std::env::var("AWS_ENDPOINT")
+        .ok()
+        .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
+    let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
 
-    if region == None {
+    if bucket.is_none() {
         return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-            "missing fs.s3.region".to_string(),
+            "missing fs.s3a.bucket".to_string(),
         )));
     }
 
-    if bucket == None {
-        return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
-            "missing fs.s3.bucket".to_string(),
-        )));
-    }
-
-    let endpoint = config.object_store_options.get("fs.s3.endpoint");
-    let retry_config = RetryConfig {
-        backoff: Default::default(),
-        max_retries: 4,
-        retry_timeout: Default::default(),
-    };
-    let s3_store = AmazonS3Builder::new()
-        .with_access_key_id(key.unwrap())
-        .with_secret_access_key(secret.unwrap())
-        .with_region(region.unwrap())
-        .with_bucket_name(bucket.unwrap())
-        .with_endpoint(endpoint.unwrap())
+    let retry_config = RetryConfig::default();
+    let mut s3_store_builder = AmazonS3Builder::new()
+        .with_region(region.unwrap_or("us-east-1".to_string()))
+        .with_bucket_name(bucket.clone().unwrap())
         .with_retry(retry_config)
-        .with_allow_http(true)
-        .build();
-    runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store.unwrap()));
+        .with_allow_http(true);
+    match (key, secret) {
+        (Some(k), Some(s)) => {
+            s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
+        }
+        _ => {}
+    }
+    if let Some(ep) = endpoint {
+        s3_store_builder = s3_store_builder.with_endpoint(ep);
+    }
+    let s3_store = s3_store_builder.build()?;
+    runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store));
     Ok(())
 }
 
-pub fn create_session_context(config: &LakeSoulIOConfig) -> Result<SessionContext> {
+pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
     let sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
     let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 
     // register object store(s)
-    // register_s3_object_store(config, &runtime)?;
+    for file_name in &config.files {
+        let url = Url::parse(file_name.as_str());
+        let s3_registered = match url {
+            Ok(url) => {
+                if url.scheme() == "s3" || url.scheme() == "s3a" {
+                    if !config.object_store_options.contains_key("fs.s3a.bucket") {
+                        config
+                            .object_store_options
+                            .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
+                    }
+                    register_s3_object_store(config, &runtime)?;
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        };
+        if s3_registered {
+            break;
+        }
+    }
 
     // create session context
     Ok(SessionContext::with_config_rt(sess_conf, Arc::new(runtime)))
