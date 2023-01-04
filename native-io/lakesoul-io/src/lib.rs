@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #![feature(new_uninit)]
+#![feature(get_mut_unchecked)]
 
 pub mod lakesoul_reader;
-mod filter;
+pub mod filter;
+pub mod lakesoul_writer;
+pub mod lakesoul_io_config;

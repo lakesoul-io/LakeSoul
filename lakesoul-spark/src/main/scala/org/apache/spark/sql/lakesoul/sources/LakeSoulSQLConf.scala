@@ -123,7 +123,16 @@ object LakeSoulSQLConf {
            |If NATIVE_IO_ENABLE=true, NATIVE_IO_PREFETCHER_BUFFER_SIZE of batches will be buffered while native-io prefetching
         """.stripMargin)
       .intConf
-      .createWithDefault(1)
+      .createWithDefault(2)
+
+  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: ConfigEntry[Int] =
+    buildConf("native.io.write.max.rowgroup.size")
+      .doc(
+        """
+          |If NATIVE_IO_ENABLE=true, NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE of rows will be used to write a new row group
+      """.stripMargin)
+      .intConf
+      .createWithDefault(250000)
 
   val NATIVE_IO_THREAD_NUM: ConfigEntry[Int] =
     buildConf("native.io.thread.num")
