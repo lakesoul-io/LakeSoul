@@ -124,7 +124,7 @@ case class EmptyParquetScan(sparkSession: SparkSession,
 
   override def deserializeOffset(json: String): Offset = LongOffset(json.toLong)
 
-  override def commit(end: Offset): Unit = {println("empty commit: "+end)}
+  override def commit(end: Offset): Unit = {}
 
   override def stop(): Unit = {}
 
@@ -132,12 +132,10 @@ case class EmptyParquetScan(sparkSession: SparkSession,
 
   override def latestOffset: Offset = {
     val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC,""))
-    println("empty latest:"+endTimestamp)
     LongOffset(endTimestamp)
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition]  = {
-    println("empty: "+start +"="+end)
     snapshotManagement.updateSnapshotForVersion(options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""), start.toString.toLong, end.toString.toLong, ReadType.INCREMENTAL_READ)
     partitions.toArray
   }
