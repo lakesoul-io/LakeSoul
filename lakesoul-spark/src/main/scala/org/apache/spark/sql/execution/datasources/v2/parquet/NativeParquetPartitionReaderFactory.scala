@@ -15,10 +15,11 @@
  */
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
+
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapred.FileSplit
-import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.hadoop.mapreduce._
+import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
 import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat}
@@ -34,15 +35,12 @@ import org.apache.spark.sql.execution.datasources.{DataSourceUtils, PartitionedF
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.{AtomicType, StructType}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import java.net.URI
 import java.time.ZoneId
-import java.util.concurrent.TimeUnit.NANOSECONDS
-
-
 
 /**
   * A factory used to create Parquet readers.
@@ -62,11 +60,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                                filters: Array[Filter])
   extends NativeFilePartitionReaderFactory with Logging{
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
-  private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
   private val enableOffHeapColumnVector = sqlConf.offHeapColumnVectorEnabled
-  private val enableVectorizedReader: Boolean = sqlConf.parquetVectorizedReaderEnabled &&
-    resultSchema.forall(_.dataType.isInstanceOf[AtomicType])
-  private val enableRecordFilter: Boolean = sqlConf.parquetRecordFilterEnabled
   private val timestampConversion: Boolean = sqlConf.isParquetINT96TimestampConversion
   private val capacity = sqlConf.parquetVectorizedReaderBatchSize
   private val enableParquetFilterPushDown: Boolean = sqlConf.parquetFilterPushDown
@@ -102,34 +96,17 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
     new PartitionReader[ColumnarBatch] {
       var count = 0
-      var multiBatchBefore = System.nanoTime()
-      var start = System.nanoTime()
-      var nextMetric = 0.0
-      var getMetric = 0.0
       override def next(): Boolean = {
-        val start = System.nanoTime()
         val ret = vectorizedReader.nextKeyValue()
-        nextMetric += NANOSECONDS.toMillis(System.nanoTime() - start)
         ret
       }
 
       override def get(): ColumnarBatch = {
-        count+= 1
-        if (count % 10 == 0) {
-          val current = System.nanoTime()
-//          println(s"fetch 10 batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
-          multiBatchBefore = current
-        }
-        val start = System.nanoTime()
         val ret = vectorizedReader.getCurrentValue
-        getMetric += NANOSECONDS.toMillis(System.nanoTime() - start)
         ret
       }
 
       override def close(): Unit = {
-        val current = System.nanoTime()
-//        println(s"fetch remain batch using ${NANOSECONDS.toMillis(current - multiBatchBefore)} ms")
-//        println(s"fetch all batch using ${NANOSECONDS.toMillis(current - start)} ms, total next() time=${nextMetric}ms, other time=${NANOSECONDS.toMillis(current - start) - nextMetric}ms")
         vectorizedReader.close()
       }
     }
@@ -182,7 +159,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
     // have different writers.
     // Define isCreatedByParquetMr as function to avoid unnecessary parquet footer reads.
     def isCreatedByParquetMr: Boolean =
-      footerFileMetaData.getCreatedBy().startsWith("parquet-mr")
+      footerFileMetaData.getCreatedBy.startsWith("parquet-mr")
 
     val convertTz =
       if (timestampConversion && !isCreatedByParquetMr) {
@@ -208,7 +185,6 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
       datetimeRebaseSpec,
       int96RebaseSpec,
     )
-//    reader.initialize(split, hadoopAttemptContext)
     reader
   }
 
@@ -220,7 +196,6 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                              convertTz: Option[ZoneId],
                                              datetimeRebaseSpec: RebaseSpec,
                                              int96RebaseSpec: RebaseSpec):
-//  NativeVectorizedReader =
   RecordReader[Void,ColumnarBatch] =
   {
     val taskContext = Option(TaskContext.get())

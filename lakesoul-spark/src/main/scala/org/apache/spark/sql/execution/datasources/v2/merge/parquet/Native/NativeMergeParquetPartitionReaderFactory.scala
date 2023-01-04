@@ -145,13 +145,24 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                      int96RebaseSpec: RebaseSpec): RecordReader[Void,ColumnarBatch] = {
     val taskContext = Option(TaskContext.get())
     val vectorizedReader = if (nativeIOEnable) {
-      val reader = new NativeVectorizedReader(
-        convertTz.orNull,
-        datetimeRebaseSpec.mode.toString,
-        int96RebaseSpec.mode.toString,
-        enableOffHeapColumnVector && taskContext.isDefined,
-        capacity
-      )
+      val reader = if (pushed.isDefined) {
+        new NativeVectorizedReader(
+          convertTz.orNull,
+          datetimeRebaseSpec.mode.toString,
+          int96RebaseSpec.mode.toString,
+          enableOffHeapColumnVector && taskContext.isDefined,
+          capacity,
+          pushed.get
+        )
+      } else {
+        new NativeVectorizedReader(
+          convertTz.orNull,
+          datetimeRebaseSpec.mode.toString,
+          int96RebaseSpec.mode.toString,
+          enableOffHeapColumnVector && taskContext.isDefined,
+          capacity
+        )
+      }
       reader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
       reader.setThreadNum(nativeIOThreadNum)
       reader.setAwaitTimeout(nativeIOAwaitTimeout)
@@ -222,7 +233,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     // have different writers.
     // Define isCreatedByParquetMr as function to avoid unnecessary parquet footer reads.
     def isCreatedByParquetMr: Boolean =
-      footerFileMetaData.getCreatedBy().startsWith("parquet-mr")
+      footerFileMetaData.getCreatedBy.startsWith("parquet-mr")
 
     val convertTz =
       if (timestampConversion && !isCreatedByParquetMr) {

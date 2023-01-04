@@ -47,11 +47,11 @@ lakesoul.pg.password=yugabyte
 You can use customized database configuration information here.
 
 ## Install an Apache Spark environment
-You could download spark distribution from https://spark.apache.org/downloads.html , and please choose spark version 3.1.2.
+You could download spark distribution from https://spark.apache.org/downloads.html , and please choose spark version.
 
 After unpacking spark package, you could find LakeSoul distribution jar from https://github.com/meta-soul/LakeSoul/releases. Download the tar.gz file corresponding to your spark version and put it into `jars` directory of your spark environment:
 ```bash
-tar xf lakesoul-2.0.0-spark-3.1.2-jars.tar.gz -C $SPARK_HOME/jars
+tar xf lakesoul-2.0.0-spark-${SPARK_VERSION}-jars.tar.gz -C $SPARK_HOME/jars
 ```
 
 ## Start spark-shell for testing LakeSoul
