@@ -32,8 +32,6 @@ import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_o
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.MergeParquetPartitionReaderFactory
 import org.apache.spark.sql.execution.streaming.LongOffset
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.Native.NativeMergeParquetPartitionReaderFactory
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.{DefaultMergeOp, MergeOperator}
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.{MergeFilePartitionReaderFactory, MergeParquetPartitionReaderFactory}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
@@ -224,9 +222,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   }
 
   override def planInputPartitions(): Array[InputPartition] = {
-    partitions(false).toArray
     logInfo("[Debug][huazeng]on org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan.planInputPartitions")
-    partitions.toArray
+    partitions(false).toArray
   }
 
   protected def partitions(isStreaming: Boolean): Seq[MergeFilePartition] = {

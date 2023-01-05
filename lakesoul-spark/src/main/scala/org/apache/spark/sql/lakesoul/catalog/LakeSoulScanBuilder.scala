@@ -25,8 +25,7 @@ import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, EmptyParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan, EmptyParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
