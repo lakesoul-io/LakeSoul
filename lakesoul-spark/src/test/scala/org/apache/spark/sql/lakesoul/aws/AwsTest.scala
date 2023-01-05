@@ -34,7 +34,6 @@ object AwsTest {
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-    spark.sparkContext.addJar("/opt/spark/jars/lakesoul-common-2.1.0-SNAPSHOT.jar")
 
     val df = spark
       .read

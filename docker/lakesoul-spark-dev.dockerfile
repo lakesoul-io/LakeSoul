@@ -38,7 +38,7 @@ RUN python -m pip config set global.index-url https://mirrors.aliyun.com/pypi/si
 ARG SPARK_FILE="https://ks3-cn-beijing.ksyuncs.com/dmetasoul-bucket/releases/spark/spark-3.1.2-bin-free-265f9ad4ee.tgz"
 RUN mkdir -p /opt/spark && wget ${SPARK_FILE} && tar xf `basename ${SPARK_FILE}` -C /opt/spark --strip-components 1 && rm -f `basename ${SPARK_FILE}`
 ENV SPARK_HOME /opt/spark
-COPY --from=build /opt/LakeSoul/lakesoul-spark/target/lakesoul-spark-2.1.0-spark-3.1.2-SNAPSHOT.jar /opt/spark/jars
+COPY --from=build /opt/LakeSoul/lakesoul-spark/target/lakesoul-spark-2.2.0-spark-3.1.2.jar /opt/spark/jars
 ENV SPARK_CONF_DIR /opt/spark/conf
 ENV PYTHONPATH=$SPARK_HOME/python:$PYTHONPATH
 RUN mkdir -p /opt/spark/conf
