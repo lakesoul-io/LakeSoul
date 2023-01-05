@@ -42,7 +42,7 @@ class DelayedCommitProtocol(jobId: String,
     with Serializable with Logging {
 
   // Track the list of files added by a task, only used on the executors.
-  @transient private var addedFiles: ArrayBuffer[(Map[String, String], String)] = _
+  @transient private var addedFiles: ArrayBuffer[(List[(String, String)], String)] = _
   @transient val addedStatuses = new ArrayBuffer[DataFileInfo]
 
   val timestampPartitionPattern = "yyyy-MM-dd HH:mm:ss[.S]"
@@ -62,7 +62,7 @@ class DelayedCommitProtocol(jobId: String,
   }
 
   override def setupTask(taskContext: TaskAttemptContext): Unit = {
-    addedFiles = new ArrayBuffer[(Map[String, String], String)]
+    addedFiles = new ArrayBuffer[(List[(String, String)], String)]
   }
 
   protected def getFileName(taskContext: TaskAttemptContext, ext: String): String = {
@@ -74,7 +74,7 @@ class DelayedCommitProtocol(jobId: String,
     f"part-$split%05d-$uuid$ext"
   }
 
-  protected def parsePartitions(dir: String): Map[String, String] = {
+  protected def parsePartitions(dir: String): List[(String, String)] = {
     // TODO: timezones?
     // TODO: enable validatePartitionColumns?
     val dateFormatter = DateFormatter()
@@ -93,14 +93,7 @@ class DelayedCommitProtocol(jobId: String,
           timestampFormatter)
         ._1
         .get
-    parsedPartition
-      .columnNames
-      .zip(
-        parsedPartition
-          .literals
-          .map(l => Cast(l, StringType).eval())
-          .map(Option(_).map(_.toString).orNull))
-      .toMap
+    parsedPartition.columnNames.zip(parsedPartition.literals.map(l => Cast(l, StringType).eval()).map(Option(_).map(_.toString).orNull)).toList
   }
 
   /** Generates a string created of `randomPrefixLength` alphanumeric characters. */
@@ -110,7 +103,7 @@ class DelayedCommitProtocol(jobId: String,
 
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
     val filename = getFileName(taskContext, ext)
-    val partitionValues = dir.map(parsePartitions).getOrElse(Map.empty[String, String])
+    val partitionValues = dir.map(parsePartitions).getOrElse(List.empty[(String, String)])
     val relativePath = randomPrefixLength.map { prefixLength =>
       getRandomPrefix(prefixLength) // Generate a random prefix as a first choice
     }.orElse {
@@ -138,7 +131,7 @@ class DelayedCommitProtocol(jobId: String,
 
         val filePath = new Path(new URI(f._2))
         val stat = fs.getFileStatus(filePath)
-        DataFileInfo(MetaUtils.getPartitionKeyFromMap(f._1),fs.makeQualified(filePath).toString, "add", stat.getLen, stat.getModificationTime)
+        DataFileInfo(MetaUtils.getPartitionKeyFromList(f._1),fs.makeQualified(filePath).toString, "add", stat.getLen, stat.getModificationTime)
       }
 
       new TaskCommitMessage(statuses)

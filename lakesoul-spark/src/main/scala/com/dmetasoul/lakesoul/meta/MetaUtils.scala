@@ -29,11 +29,11 @@ object MetaUtils extends Logging {
   lazy val PART_MERGE_FILE_MINIMUM_NUM:Int = 5
 
   /** get partition key string from scala Map */
-  def getPartitionKeyFromMap(cols: Map[String, String]): String = {
+  def getPartitionKeyFromList(cols: List[(String, String)]): String = {
     if (cols.isEmpty) {
       DEFAULT_RANGE_PARTITION_VALUE
     } else {
-      cols.toList.sorted.map(list => {
+      cols.map(list => {
         list._1 + "=" + list._2
       }).mkString(",")
     }
