@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.MetaCommit
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -26,17 +25,20 @@ import org.apache.spark.sql.connector.catalog.{Table, TableProvider}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.streaming.Sink
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TimestampFormatter}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.json4s.jackson.Serialization
 import org.json4s.{Formats, NoTypeHints}
+
+import java.util.TimeZone
 
 class LakeSoulDataSource
   extends DataSourceRegister
@@ -101,7 +103,8 @@ class LakeSoulDataSource
       new LakeSoulOptions(parameters, sqlContext.sparkSession.sessionState.conf),
       parameters.filterKeys(LakeSoulTableProperties.isLakeSoulTableProperty),
       data).run(sqlContext.sparkSession)
-    SparkUtil.createRelation(Nil, snapshot_manage, SparkUtil.spark)
+    val spark = SparkSession.active
+    SparkUtil.createRelation(Nil, snapshot_manage, spark)
   }
 
 
@@ -125,10 +128,38 @@ class LakeSoulDataSource
     val options = new CaseInsensitiveStringMap(properties)
     val path = options.get("path")
     if (path == null) throw LakeSoulErrors.pathNotSpecifiedException
-    LakeSoulTableV2(SparkSession.active, new Path(path))
+    val lakeSoulTable = LakeSoulTableV2(SparkSession.active, new Path(path))
+
+    def getSnapshotOptions(options: CaseInsensitiveStringMap): (String, Long, Long, String) = {
+      val partitionDesc = if (options.containsKey(LakeSoulOptions.PARTITION_DESC)) {
+        options.get(LakeSoulOptions.PARTITION_DESC)
+      } else {
+        ""
+      }
+
+      val readType = options.getOrDefault(LakeSoulOptions.READ_TYPE, ReadType.FULL_READ)
+
+      def getSnapshotTimestamp(timeStamp: String): Long = {
+        if (timeStamp.equals("")) {
+          return 0
+        }
+        val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+        time / 1000
+      }
+
+      val startVersion = if (readType.equals(ReadType.INCREMENTAL_READ)) getSnapshotTimestamp(options.getOrDefault(LakeSoulOptions.READ_START_TIME, "")) else 0
+      var endVersion = getSnapshotTimestamp(options.getOrDefault(LakeSoulOptions.READ_END_TIME, ""))
+      endVersion = if (endVersion == 0) Long.MaxValue else endVersion
+      (partitionDesc, startVersion, endVersion, readType)
+    }
+
+    if (options.containsKey(LakeSoulOptions.READ_TYPE)) {
+      val snapshotOptions = getSnapshotOptions(options)
+      lakeSoulTable.snapshotManagement.updateSnapshotForVersion(snapshotOptions._1, snapshotOptions._2, snapshotOptions._3, snapshotOptions._4)
+    }
+
+    lakeSoulTable
   }
-
-
 }
 
 
@@ -145,25 +176,25 @@ object LakeSoulDataSource extends Logging {
   }
 
   /**
-    * For LakeSoulTableRel, we allow certain magic to be performed through the paths that are provided by users.
-    * Normally, a user specified path should point to the root of a LakeSoulTableRel. However, some users
-    * are used to providing specific partition values through the path, because of how expensive it
-    * was to perform partition discovery before. We treat these partition values as logical partition
-    * filters, if a table does not exist at the provided path.
-    *
-    * In addition, we allow users to provide time travel specifications through the path. This is
-    * provided after an `@` symbol after a path followed by a time specification in
-    * `yyyyMMddHHmmssSSS` format, or a version number preceded by a `v`.
-    *
-    * This method parses these specifications and returns these modifiers only if a path does not
-    * really exist at the provided path. We first parse out the time travel specification, and then
-    * the partition filters. For example, a path specified as:
-    * /some/path/partition=1@v1234
-    * will be parsed into `/some/path` with filters `partition=1` and a time travel spec of version
-    * 1234.
-    *
-    * @return A tuple of the root path of the LakeSoulTableRel, partition filters, and time travel options
-    */
+   * For LakeSoulTableRel, we allow certain magic to be performed through the paths that are provided by users.
+   * Normally, a user specified path should point to the root of a LakeSoulTableRel. However, some users
+   * are used to providing specific partition values through the path, because of how expensive it
+   * was to perform partition discovery before. We treat these partition values as logical partition
+   * filters, if a table does not exist at the provided path.
+   *
+   * In addition, we allow users to provide time travel specifications through the path. This is
+   * provided after an `@` symbol after a path followed by a time specification in
+   * `yyyyMMddHHmmssSSS` format, or a version number preceded by a `v`.
+   *
+   * This method parses these specifications and returns these modifiers only if a path does not
+   * really exist at the provided path. We first parse out the time travel specification, and then
+   * the partition filters. For example, a path specified as:
+   * /some/path/partition=1@v1234
+   * will be parsed into `/some/path` with filters `partition=1` and a time travel spec of version
+   * 1234.
+   *
+   * @return A tuple of the root path of the LakeSoulTableRel, partition filters, and time travel options
+   */
   def parsePathIdentifier(spark: SparkSession,
                           path: String): (Path, Seq[(String, String)]) = {
 
@@ -198,9 +229,9 @@ object LakeSoulDataSource extends Logging {
 
 
   /**
-    * Verifies that the provided partition filters are valid and returns the corresponding
-    * expressions.
-    */
+   * Verifies that the provided partition filters are valid and returns the corresponding
+   * expressions.
+   */
   def verifyAndCreatePartitionFilters(userPath: String,
                                       snapshot: Snapshot,
                                       partitionFilters: Seq[(String, String)]): Seq[Expression] = {

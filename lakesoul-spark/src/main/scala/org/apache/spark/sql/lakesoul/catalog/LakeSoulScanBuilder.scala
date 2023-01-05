@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
-import com.dmetasoul.lakesoul.meta.MetaCommit
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -26,7 +25,7 @@ import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{BucketParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan, EmptyParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
@@ -80,7 +79,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       case 0 => expressions.Literal(true)
       case _ => LakeSoulSourceUtils.translateFilters(filters)
     }
-
     predicts
   }
 
@@ -95,6 +93,8 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
   override def build(): Scan = {
+    //check and redo commit before read
+    //MetaCommit.checkAndRedoCommit(fileIndex.snapshotManagement.snapshot)
 
     var files: Seq[DataFileInfo] = Seq.empty
 
@@ -103,7 +103,9 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
       tableInfo.range_partition_columns, sparkSession)
 
-    if (SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)) {
+    val isPartitionVersionRead = SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)
+
+    if (isPartitionVersionRead) {
       files = fileIndex.getFileInfoForPartitionVersion()
     } else {
       files = fileIndex.getFileInfo(filters)
@@ -117,13 +119,19 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
-
-    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.isEmpty) {
+    if (fileInfo.isEmpty) {
+      EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan(partitionFilters, dataFilters)
     }
     else if (onlyOnePartition) {
-      OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+        parquetScan(partitionFilters, dataFilters)
+      } else {
+        OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
+          readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
+      }
     }
     else {
       if (sparkSession.sessionState.conf
@@ -139,8 +147,14 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
 
   def parquetScan(partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Scan = {
-    ParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-      readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
+      NativeParquetScan(
+        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else {
+      ParquetScan(
+        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    }
   }
-
 }

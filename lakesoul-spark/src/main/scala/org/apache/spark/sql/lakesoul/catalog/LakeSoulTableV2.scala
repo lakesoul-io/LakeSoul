@@ -115,7 +115,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
+      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE,MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA
@@ -136,10 +136,8 @@ case class LakeSoulTableV2(spark: SparkSession,
           }
         })
     }
-
     val newOptions = options.asCaseSensitiveMap().asScala ++
       mergeOperatorInfo.getOrElse(Map.empty[String, String])
-
     LakeSoulScanBuilder(spark, fileIndex, schema(), dataSchema,
       new CaseInsensitiveStringMap(newOptions.asJava), snapshot.getTableInfo)
   }
@@ -149,9 +147,9 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   /**
-    * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
-    * paths.
-    */
+   * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
+   * paths.
+   */
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)
@@ -201,8 +199,9 @@ private class WriteIntoTableBuilder(snapshotManagement: SnapshotManagement,
         // TODO: Push this to Apache Spark
         // Re-cache all cached plans(including this relation itself, if it's cached) that refer
         // to this data source relation. This is the behavior for InsertInto
+        val spark = SparkSession.active
         session.sharedState.cacheManager.recacheByPlan(
-          session, LogicalRelation(SparkUtil.createRelation(Nil,snapshotManagement, SparkUtil.spark)))
+          session, LogicalRelation(SparkUtil.createRelation(Nil, snapshotManagement, spark)))
       }
     }
   }

@@ -55,6 +55,7 @@ create table if not exists partition_info (
     partition_desc text,
     version int,
     commit_op text,
+    timestamp bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
     snapshot UUID [],
     expression text,
     primary key(table_id, partition_desc, version)

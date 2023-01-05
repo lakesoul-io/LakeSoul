@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.utils._
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
@@ -28,20 +29,30 @@ class Snapshot(table_info: TableInfo,
                partition_info_arr: Array[PartitionInfo],
                is_first_commit: Boolean = false
               ) {
-  private var partitionDesc:String = ""
-  private var partitionVersion:Int = -1
-  def setPartitionDescAndVersion(parDesc:String,parVer:Int): Unit ={
+  private var partitionDesc: String = ""
+  private var startPartitionTimestamp: Long = -1
+  private var endPartitionTimestamp: Long = -1
+  private var readType: String = ReadType.FULL_READ
+
+  def setPartitionDescAndVersion(parDesc: String, startParVer: Long, endParVer: Long, readType: String): Unit = {
     this.partitionDesc = parDesc
-    this.partitionVersion = parVer
+    this.startPartitionTimestamp = startParVer
+    this.endPartitionTimestamp = endParVer
+    this.readType = readType
   }
-  def getPartitionDescAndVersion:(String,Int)={
-    (this.partitionDesc,this.partitionVersion)
+
+  def getPartitionDescAndVersion: (String, Long, Long, String) = {
+    (this.partitionDesc, this.startPartitionTimestamp, this.endPartitionTimestamp, this.readType)
   }
+
   def getTableName: String = table_info.table_path_s.get
+
   def getTableInfo: TableInfo = table_info
+
   def sizeInBytes(filters: Seq[Expression] = Nil): Long = {
     PartitionFilter.filesForScan(this, filters).map(_.size).sum
   }
+
   /** Return the underlying Spark `FileFormat` of the LakeSoulTableRel. */
   def fileFormat: FileFormat = new ParquetFileFormat()
 

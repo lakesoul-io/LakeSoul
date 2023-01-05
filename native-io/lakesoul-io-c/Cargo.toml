@@ -1,0 +1,12 @@
+[package]
+name = "lakesoul-io-c"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lakesoul-io = { path = "../lakesoul-io" }
+arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["ffi"] }
+tokio = { version = "1", features = ["full"] }

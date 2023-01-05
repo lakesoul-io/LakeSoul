@@ -39,34 +39,36 @@ import scala.collection.JavaConverters._
 
 
 object SparkUtil {
-  lazy val spark: SparkSession = SparkSession.builder().enableHiveSupport().getOrCreate()
-  import spark.implicits._
 
   def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
-   val allPatition= snapshot.getPartitionInfoArray.map(part =>
+   val allPartition = snapshot.getPartitionInfoArray.map(part =>
         PartitionFilterInfo(
           part.range_value,
           MetaUtils.getPartitionMapFromKey(part.range_value),
           part.version))
 
-    spark.sparkContext.parallelize(allPatition).toDF().persist()
+    val spark = SparkSession.active
+    import spark.implicits._
+    spark.sparkContext.parallelize(allPartition).toDF.persist()
   }
 
   def allDataInfo(snapshot: Snapshot): Array[DataFileInfo] = {
+    val spark = SparkSession.active
     import spark.implicits._
     spark.sparkContext.parallelize(DataOperation.getTableDataInfo(snapshot.getPartitionInfoArray)).toDS().persist().as[DataFileInfo].collect()
   }
 
   def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean ={
-    val (partitionDesc,partitionVersion)=snapshotManagement.snapshot.getPartitionDescAndVersion
-    if(partitionVersion != -1 && !partitionDesc.equals("")){
-      true
-    }else{
+    val (partitionDesc,startPartitionVersion,endPartitionVersion,incremental)=snapshotManagement.snapshot.getPartitionDescAndVersion
+    if(endPartitionVersion == -1L && partitionDesc.equals("")){
       false
+    }else{
+      true
     }
   }
 
   def makeQualifiedTablePath(tablePath: Path): Path = {
+    val spark = SparkSession.active
     tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
   }
 
@@ -79,12 +81,14 @@ object SparkUtil {
       case Array(ns) => ns
       case _ => LakeSoulCatalog.showCurrentNamespace()(0)
     }
+    val spark = SparkSession.active
     val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
     makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.name()))
   }
 
   def getDefaultTablePath(table: TableIdentifier): Path = {
     val namespace = table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))
+    val spark = SparkSession.active
     val warehousePath = spark.sessionState.conf.getConf(StaticSQLConf.WAREHOUSE_PATH)
     makeQualifiedTablePath(new Path(new Path(warehousePath, namespace), table.table))
   }
@@ -114,7 +118,8 @@ object SparkUtil {
     } else {
       files
     }
-  val table_name=snapmnt.table_path
+    val spark = SparkSession.active
+    val table_name = snapmnt.table_path
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapmnt, skipFiles)
     val table = LakeSoulTableV2(
       spark,

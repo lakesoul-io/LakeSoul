@@ -22,7 +22,7 @@ import org.apache.spark.sql.connector.expressions._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.scalatest.BeforeAndAfter
@@ -34,6 +34,7 @@ import scala.collection.JavaConverters._
 trait DataFrameWriterV2Tests
   extends QueryTest
     with SharedSparkSession
+    with LakeSoulSQLCommandTest
     with BeforeAndAfter {
 
   import testImplicits._

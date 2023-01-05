@@ -57,10 +57,10 @@ class LakeSoulSink(sqlContext: SQLContext,
       }
 
       val tableInfo = tc.tableInfo
-//      if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
-//        logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
-//        return
-//      }
+      if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
+        logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
+        return
+      }
 
       // Streaming sinks can't blindly overwrite schema.
       updateMetadata(
