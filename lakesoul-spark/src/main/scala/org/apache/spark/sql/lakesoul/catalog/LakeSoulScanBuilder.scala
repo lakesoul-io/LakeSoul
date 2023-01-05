@@ -24,7 +24,7 @@ import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan}
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
@@ -72,7 +72,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   override protected val supportsNestedSchemaPruning: Boolean = true
 
   //note: hash partition columns must be last
-  def mergeReadDataSchema(): StructType = {
+  private def mergeReadDataSchema(): StructType = {
     StructType((readDataSchema() ++ tableInfo.hash_partition_schema).distinct)
   }
 
@@ -82,7 +82,9 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
     var files: Seq[DataFileInfo] = Seq.empty
 
-    if (SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)) {
+    val isPartitionVersionRead = SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)
+
+    if (isPartitionVersionRead) {
       files = fileIndex.getFileInfoForPartitionVersion()
     } else {
       files = fileIndex.matchingFiles(partitionFilters, dataFilters)
@@ -96,8 +98,10 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
-
-    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.isEmpty) {
+    if (fileInfo.isEmpty) {
+      EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan()
     }
     else if (onlyOnePartition) {
@@ -121,7 +125,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
 
-  def parquetScan(): Scan = {
+  private def parquetScan(): Scan = {
     if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
       NativeParquetScan(
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),

@@ -16,35 +16,22 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import scala.collection.mutable.ArrayBuffer
+import java.util.UUID
 
 object StreamingRecord {
 
-  def getStreamingInfo(tableId: String): (String, Long) = {
-    ("", -1L)
-  }
+  val dbManager = new DBManager()
 
   def getBatchId(tableId: String, queryId: String): Long = {
-    1
+    try {
+      val commitId = dbManager.selectByTableId(tableId).getCommitId
+      if (commitId.getMostSignificantBits.equals(UUID.fromString(queryId).getMostSignificantBits)) {
+        commitId.getLeastSignificantBits
+      } else {
+        -1L
+      }
+    } catch {
+      case _: Exception => -1L
+    }
   }
-
-
-  def updateStreamingInfo(tableId: String, queryId: String, batchId: Long, timestamp: Long): Unit = {
-  }
-
-  def deleteStreamingInfoByTableId(tableId: String): Unit = {
-  }
-
-  def deleteStreamingInfoByTimestamp(tableId: String, expireTimestamp: Long): Unit = {
-//    val expireInfo = getTimeoutStreamingInfo(tableId, expireTimestamp)
-//    expireInfo.foreach(info => deleteStreamingInfo(info._1, info._2))
-  }
-
-  private def getTimeoutStreamingInfo(tableId: String, expireTimestamp: Long): Seq[(String, String)] = {
-    new ArrayBuffer[(String, String)]()
-  }
-
-  private def deleteStreamingInfo(tableId: String, query_id: String): Unit = {
-  }
-
 }

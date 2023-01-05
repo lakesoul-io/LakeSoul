@@ -22,13 +22,12 @@ import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
 import org.apache.spark.sql.connector.write._
-import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulDataSource, LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
@@ -44,7 +43,7 @@ case class LakeSoulTableV2(spark: SparkSession,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
   extends Table with SupportsWrite with SupportsRead {
 
-  val path = SparkUtil.makeQualifiedTablePath(path_orig)
+  val path: Path = SparkUtil.makeQualifiedTablePath(path_orig)
 
   val namespace: String =
     tableIdentifier match {
@@ -70,9 +69,6 @@ case class LakeSoulTableV2(spark: SparkSession,
   // The loading of the SnapshotManagement is lazy in order to reduce the amount of FileSystem calls,
   // in cases where we will fallback to the V1 behavior.
   lazy val snapshotManagement: SnapshotManagement = SnapshotManagement(rootPath, namespace)
-
-  //  def getTableIdentifierIfExists: Option[TableIdentifier] = tableIdentifier.map(
-  //    spark.sessionState.sqlParser.parseTableIdentifier)
 
   override def name(): String = catalogTable.map(_.identifier.unquotedString)
     .orElse(tableIdentifier)
@@ -115,7 +111,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, V1_BATCH_WRITE, OVERWRITE_DYNAMIC,
-      OVERWRITE_BY_FILTER, TRUNCATE
+      OVERWRITE_BY_FILTER, TRUNCATE ,MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA

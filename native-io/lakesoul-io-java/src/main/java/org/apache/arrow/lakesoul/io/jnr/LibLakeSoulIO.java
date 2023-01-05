@@ -36,7 +36,7 @@ public interface LibLakeSoulIO {
 
     Pointer create_tokio_runtime_from_builder(Pointer builder);
 
-    Pointer new_lakesoul_reader_config_builder();
+    Pointer new_lakesoul_io_config_builder();
 
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, Pointer file);
 
@@ -55,7 +55,7 @@ public interface LibLakeSoulIO {
 
     Pointer create_lakesoul_reader_from_config(Pointer config, Pointer runtime);
 
-    public static interface JavaCallback { // type representing callback
+    interface JavaCallback { // type representing callback
         @Delegate
         void invoke(boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
     }

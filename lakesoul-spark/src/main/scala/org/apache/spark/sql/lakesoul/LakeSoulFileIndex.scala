@@ -25,7 +25,7 @@ import org.apache.spark.sql.lakesoul.LakeSoulFileIndexUtils._
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, SparkSession}
-import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 
 import scala.collection.mutable
 

@@ -171,6 +171,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       s3aFileSystem = (S3AFileSystem) fileSystem;
       awsS3Bucket = s3aFileSystem.getBucket();
       s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
+      s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
       awsCredentials = S3AUtils.createAWSCredentialProviderSet(file.toUri(), taskAttemptContext.getConfiguration()).getCredentials();
     }
     initializeInternal();
@@ -253,8 +254,9 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     wrapper.setBufferSize(prefetchBufferSize);
     wrapper.setThreadNum(threadNum);
 
+
     if (s3aFileSystem != null) {
-      wrapper.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), "us-east-1", awsS3Bucket, s3aEndpoint);
+      wrapper.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), s3aRegion, awsS3Bucket, s3aEndpoint);
     }
 
     if (filter != null) {
@@ -383,7 +385,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private NativeIOWrapper wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
 
-  private int prefetchBufferSize = 1;
+  private int prefetchBufferSize = 2;
 
   private int threadNum = 1;
 
@@ -394,6 +396,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   private S3AFileSystem s3aFileSystem = null;
   private String s3aEndpoint = null;
+  private String s3aRegion = null;
 
   private AWSCredentials awsCredentials = null;
 
