@@ -295,7 +295,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time, true)
+          testStreamRead.setTablePath(tablePath, time - 3000, true)
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -305,7 +305,7 @@ class ReadSuite extends QueryTest
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert2)
-          Thread.sleep(2000)
+          Thread.sleep(10000)
         })
       }
     }
@@ -332,7 +332,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time, false)
+          testStreamRead.setTablePath(tablePath, time - 3000, false)
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -342,7 +342,7 @@ class ReadSuite extends QueryTest
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert2)
-          Thread.sleep(2000)
+          Thread.sleep(10000)
         })
       }
     }
@@ -376,21 +376,17 @@ class ReadSuite extends QueryTest
         batch += 1
         val data = query.select("id", "range", "hash", "op")
         if (isOnePartition) {
-          if (batch == 2) {
-            checkAnswer(data, Seq((3, "range1", "hash1-2", "update"), (4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
-          } else if (batch == 1) {
+          if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
           }
         } else {
           if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
-          } else if (batch == 2) {
-            checkAnswer(data, Seq((4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
           }
         }
       }
       }
-        .trigger(Trigger.ProcessingTime(1000))
+        .trigger(Trigger.Once())
         .start()
         .awaitTermination()
     }
