@@ -87,7 +87,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     }
   }
 
-  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): Unit = {
+  def updateSnapshotForVersion(partitionDesc: String, startPartitionVersion: Long, endPartitionVersion: Long, readType: String): Unit = {
     lockInterruptibly {
       currentSnapshot.setPartitionDescAndVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
     }
@@ -202,7 +202,7 @@ object SnapshotManagement {
   }
 
   //no cache just for snapshot
-  def apply(path: String, partitionDesc: String, partitionVersion: Int): SnapshotManagement = {
+  def apply(path: String, partitionDesc: String, partitionVersion: Long): SnapshotManagement = {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
@@ -213,7 +213,7 @@ object SnapshotManagement {
     }
   }
 
-  def apply(path: String, partitionDesc: String, startPartitionVersion: Int, endPartitionVersion: Int, readType: String): SnapshotManagement = {
+  def apply(path: String, partitionDesc: String, startPartitionVersion: Long, endPartitionVersion: Long, readType: String): SnapshotManagement = {
     val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
