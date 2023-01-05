@@ -115,7 +115,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, //BATCH_WRITE, OVERWRITE_DYNAMIC,
-      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE
+      V1_BATCH_WRITE, OVERWRITE_BY_FILTER, TRUNCATE,MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA

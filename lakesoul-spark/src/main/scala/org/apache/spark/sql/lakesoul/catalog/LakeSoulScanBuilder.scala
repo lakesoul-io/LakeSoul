@@ -25,7 +25,7 @@ import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan, EmptyParquetScan}
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
@@ -79,7 +79,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       case 0 => expressions.Literal(true)
       case _ => LakeSoulSourceUtils.translateFilters(filters)
     }
-
     predicts
   }
 
@@ -104,7 +103,9 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
       tableInfo.range_partition_columns, sparkSession)
 
-    if (SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)) {
+    val isPartitionVersionRead = SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)
+
+    if (isPartitionVersionRead) {
       files = fileIndex.getFileInfoForPartitionVersion()
     } else {
       files = fileIndex.getFileInfo(filters)
@@ -118,8 +119,10 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
-
-    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.isEmpty) {
+    if (fileInfo.isEmpty) {
+      EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan(partitionFilters, dataFilters)
     }
     else if (onlyOnePartition) {

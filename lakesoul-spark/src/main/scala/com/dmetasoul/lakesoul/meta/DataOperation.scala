@@ -17,10 +17,11 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp
-import org.apache.curator.shaded.com.google.common.collect.Lists
+import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
+import org.json4s.JsonDSL.int2jvalue
 
 import java.util
 import java.util.UUID
@@ -119,32 +120,46 @@ object DataOperation extends Logging {
     }
   }
 
-  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startVersion: Int, endVersion:Int, readType: String): ArrayBuffer[DataFileInfo] = {
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
     if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
-      getSinglePartitionIncrementalDataInfos(table_id, partition_desc, startVersion,endVersion)
+      if (null == partition_desc || "".equals(partition_desc)) {
+        val partitions = MetaVersion.dbManager.getAllPartitionInfo(table_id)
+        val files_all_partitions_buf = new ArrayBuffer[DataFileInfo]()
+        partitions.forEach(partition => {
+          val preVersionTimestamp = MetaVersion.dbManager.getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, startTimestamp)
+          files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition.getPartitionDesc, preVersionTimestamp, endTimestamp)
+        })
+        files_all_partitions_buf
+      } else {
+        val preVersionTimestamp = MetaVersion.dbManager.getLastedVersionTimestampUptoTime(table_id, partition_desc, startTimestamp)
+        getSinglePartitionIncrementalDataInfos(table_id, partition_desc, preVersionTimestamp, endTimestamp)
+      }
     } else {
-      getSinglePartitionDataInfo(table_id, partition_desc, endVersion)
+      val version = MetaVersion.dbManager.getLastedVersionUptoTime(table_id, partition_desc, endTimestamp)
+      getSinglePartitionDataInfo(table_id, partition_desc, version)
     }
   }
 
-  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersion: Int,endVersion:Int): ArrayBuffer[DataFileInfo] = {
+  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersionTimestamp: Long, endVersionTimestamp: Long): ArrayBuffer[DataFileInfo] = {
     var preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
     var compactionUUIDs = new mutable.LinkedHashSet[UUID]()
     var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
     var updated: Boolean = false
-    val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitions(table_id, partition_desc, startVersion,endVersion).asScala.toArray
-    if (dataCommitInfoList.size < 2) {
-      println("It is the latest version")
-      return new ArrayBuffer[DataFileInfo]()
-    }
+    val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp).asScala.toArray
+//    if (dataCommitInfoList.size < 2) {
+//      println("It is the latest version")
+//      return new ArrayBuffer[DataFileInfo]()
+//    }
+    var count: Int = 0
     val loop = new Breaks()
-    loop.breakable{
+    loop.breakable {
       for (dataItem <- dataCommitInfoList) {
-        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersion != dataItem.getVersion) {
+        count += 1
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem.getTimestamp && count != 1) {
           updated = true
           loop.break()
         }
-        if (startVersion == dataItem.getVersion) {
+        if (startVersionTimestamp == dataItem.getTimestamp) {
           preVersionUUIDs ++= dataItem.getSnapshot.asScala
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
