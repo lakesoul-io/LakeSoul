@@ -55,6 +55,10 @@ object AnalysisHelper {
   case class FakeLogicalPlan(expr: Expression, children: Seq[LogicalPlan])
     extends LogicalPlan {
     override def output: Seq[Attribute] = Nil
+
+    override protected def withNewChildrenInternal(newChildren: IndexedSeq[LogicalPlan]): LogicalPlan = {
+      copy(children = newChildren)
+    }
   }
 
 }

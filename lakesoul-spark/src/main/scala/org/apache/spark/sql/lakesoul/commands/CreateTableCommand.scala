@@ -22,7 +22,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
@@ -51,7 +51,7 @@ case class CreateTableCommand(var table: CatalogTable,
                               operation: TableCreationModes.CreationMode = TableCreationModes.Create,
                               tableByPath: Boolean = false,
                               lakeSoulCatalog: LakeSoulCatalog)
-  extends RunnableCommand
+  extends LeafRunnableCommand
     with Logging {
 
   override def run(sparkSession: SparkSession): Seq[Row] = {

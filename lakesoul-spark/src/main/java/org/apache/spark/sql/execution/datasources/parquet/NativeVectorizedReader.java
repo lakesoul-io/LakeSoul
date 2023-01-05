@@ -23,11 +23,11 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3AUtils;
+import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.hadoop.ParquetInputSplit;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -36,6 +36,7 @@ import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
@@ -114,9 +115,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    *
    * When this is set, the code will branch early on in the RecordReader APIs. There is no shared
    * code between the path that uses the MR decoders and the vectorized ones.
-   *
-   * TODOs:
-   *  - Implement v2 page formats (just make sure we create the correct decoders).
    */
   private ColumnarBatch columnarBatch;
 
@@ -131,7 +129,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * The memory mode of the columnarBatch
    */
   private final MemoryMode MEMORY_MODE;
-  private StructType typeName;
 
   public NativeVectorizedReader(
           ZoneId convertTz,
@@ -166,7 +163,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   public void initialize(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
           throws IOException, InterruptedException, UnsupportedOperationException {
     super.initialize(inputSplit, taskAttemptContext);
-    ParquetInputSplit split = (ParquetInputSplit)inputSplit;
+    FileSplit split = (FileSplit) inputSplit;
     this.file = split.getPath();
     this.filePath = file.toString();
     FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());
@@ -339,8 +336,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         throw new IOException("nextVectorSchemaRoot not ready");
       } else {
         totalRowCount += nextVectorSchemaRoot.getRowCount();
-        WritableColumnVector[] nativeColumnVector = NativeIOUtils.asArrayWritableColumnVector(nextVectorSchemaRoot);
-        WritableColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
+        ColumnVector[] nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+        ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
         System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
 
         columnarBatch = new ColumnarBatch(resultColumnVector, nextVectorSchemaRoot.getRowCount());

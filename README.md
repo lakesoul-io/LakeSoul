@@ -47,10 +47,10 @@ Please find usage documentations in doc site:
   - [x] Compaction
 * Data Warehousing
   - [x] CDC stream ingestion with auto ddl sync
-  - [ ] Incremental and Snapshot Query
+  - [x] Incremental and Snapshot Query
     - [x] Snapshot Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
     - [x] Incremental Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
-    - [ ] Incremental Streaming Source
+    - [x] Incremental Streaming Source ([#130](https://github.com/meta-soul/LakeSoul/issues/130))
   - [ ] Materialized View
     - [ ] Incremental MV Build
     - [ ] Auto query rewrite
@@ -64,6 +64,8 @@ Please find usage documentations in doc site:
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
     - [ ] Merge Into SQL with match on non-pk
     - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
+  - [x] Multiple Spark Versions Support
+    - [x] Support Spark 3.3, 3.2 and 3.1
 * Flink Integration and CDC Ingestion ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
   - [x] Flink CDC

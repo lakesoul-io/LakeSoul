@@ -21,7 +21,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils._
@@ -201,7 +201,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
   protected def verifyNewMetadata(table_info: TableInfo): Unit = {
     SchemaUtils.checkColumnNameDuplication(table_info.schema, "in the TableInfo update")
-    ParquetSchemaConverter.checkFieldNames(SchemaUtils.explodeNestedFieldNames(table_info.data_schema))
+    DataSourceUtils.checkFieldNames(snapshot.fileFormat, table_info.data_schema)
   }
 
 

@@ -210,7 +210,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
              |ALTER TABLE $tableName ADD COLUMNS (m.key.mkv3 long)
          """.stripMargin)
       }
-      assert(ex.getMessage.contains("Cannot add"))
+      assert(ex.getMessage.contains("is not a struct"))
 
       ex = intercept[AnalysisException] {
         sql(
@@ -218,7 +218,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
              |ALTER TABLE $tableName ADD COLUMNS (m.key.mkv3 long)
          """.stripMargin)
       }
-      assert(ex.getMessage.contains("Cannot add"))
+      assert(ex.getMessage.contains("is not a struct"))
     }
   }
 
@@ -300,7 +300,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
              |ALTER TABLE $tableName ADD COLUMNS (m.mkv3 long)
            """.stripMargin)
       }
-      assert(ex.getMessage.contains("Cannot add"))
+      assert(ex.getMessage.contains("is not a struct"))
     }
   }
 
@@ -364,8 +364,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName ADD COLUMNS (v2.x long)")
       }
-      assert(ex.getMessage.contains("Cannot add"))
-      assert(ex.getMessage.contains("not a StructType"))
+      assert(ex.getMessage.contains("is not a struct"))
     }
   }
 
@@ -386,51 +385,6 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       }
     }
   }
-
-  ddlTest("ADD COLUMNS - an invalid column name") { ns =>
-    withLakeSoulTable(Seq((1, "a"), (2, "b")).toDF("v1", "v2"), ns) { tableName =>
-      val ex = intercept[AnalysisException] {
-        sql(s"ALTER TABLE $tableName ADD COLUMNS (`a column name with spaces` long)")
-      }
-      assert(ex.getMessage.contains("contains invalid character(s)"))
-    }
-  }
-
-  ddlTest("ADD COLUMNS - an invalid column name (nested)") { ns =>
-    val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-      .withColumn("struct", struct("v1", "v2"))
-    withLakeSoulTable(df, ns) { tableName =>
-
-      val ex = intercept[AnalysisException] {
-        sql(s"ALTER TABLE $tableName ADD COLUMNS (struct.`a column name with spaces` long)")
-      }
-      assert(ex.getMessage.contains("contains invalid character(s)"))
-    }
-  }
-
-  //  ddlTest("ADD COLUMNS - special column names") {
-  //    val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
-  //      .withColumn("z.z", struct("v1", "v2"))
-  //    withLakeSoulTable(df) { tableName =>
-  //
-  //      checkDatasetUnorderly(
-  //        spark.table(tableName).as[(Int, String, (Int, String))],
-  //        (1, "a", (1, "a")), (2, "b", (2, "b")))
-  //
-  //      sql(s"ALTER TABLE $tableName ADD COLUMNS (`x.x` long, `z.z`.`y.y` double)")
-  //
-  //      val snapshotManagement = getSnapshotManagement(tableName)
-  //      assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
-  //        .add("v1", "integer").add("v2", "string")
-  //        .add("z.z", new StructType()
-  //          .add("v1", "integer").add("v2", "string").add("y.y", "double"))
-  //        .add("x.x", "long"))
-  //
-  //      checkDatasetUnorderly(
-  //        spark.table(tableName).as[(Int, String, (Int, String, Option[Double]), Option[Long])],
-  //        (1, "a", (1, "a", None), None), (2, "b", (2, "b", None), None))
-  //    }
-  //  }
 
   test("ADD COLUMNS - with positions") {
     val df = Seq((1, "a"), (2, "b")).toDF("v1", "v2")
@@ -913,8 +867,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER unknown")
       }
-      assert(ex.getMessage.contains("Couldn't"))
-      assert(ex.getMessage.contains("unknown"))
+      assert(ex.getMessage.contains("Missing field unknown"))
     }
   }
 
@@ -926,8 +879,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.v1 v1 integer AFTER unknown")
       }
-      assert(ex.getMessage.contains("Couldn't"))
-      assert(ex.getMessage.contains("unknown"))
+      assert(ex.getMessage.contains("Missing field struct.unknown"))
     }
   }
 
@@ -1034,7 +986,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN unknown unknown string FIRST")
       }
-      assert(ex.getMessage.contains("Cannot update missing field unknown"))
+      assert(ex.getMessage.contains("Missing field unknown"))
     }
   }
 
@@ -1046,7 +998,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
       val ex = intercept[AnalysisException] {
         sql(s"ALTER TABLE $tableName CHANGE COLUMN struct.unknown unknown string FIRST")
       }
-      assert(ex.getMessage.contains("Cannot update missing field struct.unknown in"))
+      assert(ex.getMessage.contains("Missing field struct.unknown"))
     }
   }
 
@@ -1100,7 +1052,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
         val ex1 = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName CHANGE COLUMN V1 V1 integer")
         }
-        assert(ex1.getMessage.contains("Cannot update missing field V1"))
+        assert(ex1.getMessage.contains("Missing field V1"))
 
         val ex2 = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 V1 integer")
@@ -1110,7 +1062,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
         val ex3 = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName CHANGE COLUMN v1 v1 integer AFTER V2")
         }
-        assert(ex3.getMessage.contains("Couldn't resolve positional argument"))
+        assert(ex3.getMessage.contains("Missing field V2"))
 
         val ex4 = intercept[AnalysisException] {
           sql(s"ALTER TABLE $tableName CHANGE COLUMN s s struct<V1:integer,v2:string> AFTER v2")

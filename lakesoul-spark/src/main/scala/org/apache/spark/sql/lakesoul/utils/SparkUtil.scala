@@ -19,19 +19,17 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.fs.FileSystem
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.StaticSQLConf
-import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation
+import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, PartitionFilter, Snapshot, SnapshotManagement}
 import org.apache.spark.sql.sources.BaseRelation
-import org.apache.spark.sql.lakesoul.Snapshot
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
@@ -40,12 +38,12 @@ import scala.collection.JavaConverters._
 
 object SparkUtil {
 
-  def allPartitionFilterInfoDF(snapshot : Snapshot):  DataFrame = {
-   val allPartition = snapshot.getPartitionInfoArray.map(part =>
-        PartitionFilterInfo(
-          part.range_value,
-          MetaUtils.getPartitionMapFromKey(part.range_value),
-          part.version))
+  def allPartitionFilterInfoDF(snapshot: Snapshot): DataFrame = {
+    val allPartition = snapshot.getPartitionInfoArray.map(part =>
+      PartitionFilterInfo(
+        part.range_value,
+        MetaUtils.getPartitionMapFromKey(part.range_value),
+        part.version))
 
     val spark = SparkSession.active
     import spark.implicits._
@@ -58,11 +56,11 @@ object SparkUtil {
     spark.sparkContext.parallelize(DataOperation.getTableDataInfo(snapshot.getPartitionInfoArray)).toDS().persist().as[DataFileInfo].collect()
   }
 
-  def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean ={
-    val (partitionDesc,startPartitionVersion,endPartitionVersion,incremental)=snapshotManagement.snapshot.getPartitionDescAndVersion
-    if(endPartitionVersion == -1L && partitionDesc.equals("")){
+  def isPartitionVersionRead(snapshotManagement: SnapshotManagement): Boolean = {
+    val (partitionDesc, startPartitionVersion, endPartitionVersion, incremental) = snapshotManagement.snapshot.getPartitionDescAndVersion
+    if (endPartitionVersion == -1L && partitionDesc.equals("")) {
       false
-    }else{
+    } else {
       true
     }
   }
@@ -102,7 +100,7 @@ object SparkUtil {
   }
 
   // ------------------snapshotmanagement--------------
-  def createRelation(partitionFilters: Seq[Expression] = Nil,snapmnt:SnapshotManagement,sparksess:SparkSession): BaseRelation = {
+  def createRelation(partitionFilters: Seq[Expression] = Nil, snapmnt: SnapshotManagement, sparksess: SparkSession): BaseRelation = {
     val files: Array[DataFileInfo] = PartitionFilter.filesForScan(snapmnt.snapshot, partitionFilters)
     LakeSoulBaseRelation(files, snapmnt)(sparksess)
   }
@@ -110,7 +108,7 @@ object SparkUtil {
 
   def createDataFrame(files: Seq[DataFileInfo],
                       requiredColumns: Seq[String],
-                      snapmnt:SnapshotManagement,
+                      snapmnt: SnapshotManagement,
                       predicts: Option[Expression] = None): DataFrame = {
     val skipFiles = if (predicts.isDefined) {
       val predictFiles = PartitionFilter.filesForScan(snapmnt.snapshot, Seq(predicts.get))

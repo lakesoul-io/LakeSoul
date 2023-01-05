@@ -25,13 +25,13 @@ object StreamingRecord {
   def getBatchId(tableId: String, queryId: String): Long = {
     try {
       val commitId = dbManager.selectByTableId(tableId).getCommitId
-      if(commitId.getMostSignificantBits.equals(UUID.fromString(queryId).getMostSignificantBits)) {
+      if (commitId.getMostSignificantBits.equals(UUID.fromString(queryId).getMostSignificantBits)) {
         commitId.getLeastSignificantBits
-      }else {
+      } else {
         -1L
       }
     } catch {
-      case e: Exception => -1L
+      case _: Exception => -1L
     }
   }
 }

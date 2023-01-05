@@ -36,6 +36,10 @@ case class LakeSoulUpdate(child: LogicalPlan,
   assert(updateColumns.size == updateExpressions.size)
 
   override def output: Seq[Attribute] = Seq.empty
+
+  override protected def withNewChildInternal(newChild: LogicalPlan): LogicalPlan = {
+    copy(child = newChild)
+  }
 }
 
 

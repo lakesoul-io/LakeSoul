@@ -17,10 +17,11 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.{AnalysisException, QueryTest}
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 
 import java.util.Locale
@@ -33,7 +34,8 @@ class NotSupportedDDLSuite
 
 
 abstract class NotSupportedDDLBase extends QueryTest
-  with SharedSparkSession {
+  with SharedSparkSession
+  with LakeSoulTestUtils {
 
   val format = "lakesoul"
 
@@ -41,9 +43,10 @@ abstract class NotSupportedDDLBase extends QueryTest
 
   val partitionedTableName = "partitionedLakeSoulTbl"
 
-  protected override def beforeAll(): Unit = {
-    super.beforeAll()
+  protected override def beforeEach(): Unit = {
+    super.beforeEach()
     try {
+      println(SQLConf.get.getConf(SQLConf.DEFAULT_CATALOG))
       sql(
         s"""
            |CREATE TABLE $nonPartitionedTableName
@@ -65,7 +68,7 @@ abstract class NotSupportedDDLBase extends QueryTest
     }
   }
 
-  protected override def afterAll(): Unit = {
+  protected override def afterEach(): Unit = {
     try {
       val location = Seq(nonPartitionedTableName, partitionedTableName).map(tbl => {
         try {
@@ -77,8 +80,6 @@ abstract class NotSupportedDDLBase extends QueryTest
         }
       })
 
-      sql(s"DROP TABLE IF EXISTS $nonPartitionedTableName")
-      sql(s"DROP TABLE IF EXISTS $partitionedTableName")
       location.foreach(loc => {
         if (loc.isDefined) {
           try {
@@ -90,17 +91,17 @@ abstract class NotSupportedDDLBase extends QueryTest
       })
 
     } finally {
-      super.afterAll()
+      super.afterEach()
     }
   }
 
   private def assertUnsupported(query: String, messages: String*): Unit = {
-    val allErrMessages = "operation not allowed" +: "is only supported with v1 tables" +: messages
-    val e = intercept[Exception] {
+    val allErrMessages = "operation not allowed" +: "does not support" +: "is not supported" +: messages
+    val e = intercept[AnalysisException] {
       sql(query)
     }
-    println(e.getMessage)
-    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err.toLowerCase())))
+    println(e.getMessage().toLowerCase(Locale.ROOT))
+    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
   }
 
   test("bucketing is not supported for lakesoul tables") {

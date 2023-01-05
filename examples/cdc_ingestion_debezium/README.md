@@ -152,7 +152,7 @@ Please refer to [Quick Start](https://github.com/meta-soul/LakeSoul/wiki/02.-Qui
 ### 5.2 Start Spark Shell
 Spark shell needs to be started with kafka dependencies:
 ```bash
-./bin/spark-shell --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.1.2 --conf spark.dmetasoul.lakesoul.meta.host=localhost --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.dmetasoul.lakesoul.meta.database.name=test_lakesoul_meta --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+./bin/spark-shell --packages org.apache.spark:spark-sql-kafka-0-10_2.12:${SPARK_VERSION} --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul
 ```
 
 ### 5.3 Create a LakeSoul Table

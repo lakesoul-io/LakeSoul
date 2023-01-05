@@ -64,10 +64,6 @@ case class NativeParquetScan(
     super.getMetaData() ++ Map("PushedFilers" -> seqToString(pushedFilters))
   }
 
-  override def withFilters(
-                            partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): FileScan =
-    this.copy(partitionFilters = partitionFilters, dataFilters = dataFilters)
-
   override def createReaderFactory(): PartitionReaderFactory = {
     logInfo("[Debug][huazeng]on createReaderFactory")
     val readDataSchemaAsJson = readDataSchema.json

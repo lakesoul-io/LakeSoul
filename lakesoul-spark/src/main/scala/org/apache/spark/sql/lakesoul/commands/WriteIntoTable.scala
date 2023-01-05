@@ -18,7 +18,7 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.MetaUtils
 import org.apache.spark.sql._
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.ImplicitMetadataOperation
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
@@ -47,7 +47,7 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
                           options: LakeSoulOptions,
                           configuration: Map[String, String],
                           data: DataFrame)
-  extends RunnableCommand
+  extends LeafRunnableCommand
     with ImplicitMetadataOperation
     with Command {
 
