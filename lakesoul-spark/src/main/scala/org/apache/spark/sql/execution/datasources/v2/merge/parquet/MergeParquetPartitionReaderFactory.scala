@@ -16,32 +16,32 @@
 
 package org.apache.spark.sql.execution.datasources.v2.merge.parquet
 
-import java.net.URI
-import java.time.ZoneId
-
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetInputFormat, ParquetInputSplit}
+import org.apache.parquet.hadoop.ParquetInputFormat
 import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader}
 import org.apache.spark.sql.execution.datasources.parquet._
 import org.apache.spark.sql.execution.datasources.v2.merge.MergePartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReaderIterator}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{AtomicType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
+import java.net.URI
+import java.time.ZoneId
 import scala.collection.mutable
 
 
@@ -68,9 +68,6 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
   private val resultSchema = StructType(partitionSchema.fields ++ readDataSchema.fields)
   private val enableOffHeapColumnVector = sqlConf.offHeapColumnVectorEnabled
-  private val enableVectorizedReader: Boolean = sqlConf.parquetVectorizedReaderEnabled &&
-    resultSchema.forall(_.dataType.isInstanceOf[AtomicType])
-  private val enableRecordFilter: Boolean = sqlConf.parquetRecordFilterEnabled
   private val timestampConversion: Boolean = sqlConf.isParquetINT96TimestampConversion
   private val capacity = sqlConf.parquetVectorizedReaderBatchSize
   private val enableParquetFilterPushDown: Boolean = sqlConf.parquetFilterPushDown
@@ -121,18 +118,20 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     vectorizedReader
   }
 
-  private def createVectorizedReader(split: ParquetInputSplit,
+  private def createVectorizedReader(split: FileSplit,
                                      partitionValues: InternalRow,
                                      hadoopAttemptContext: TaskAttemptContextImpl,
                                      pushed: Option[FilterPredicate],
                                      convertTz: Option[ZoneId],
-                                     datetimeRebaseMode: LegacyBehaviorPolicy.Value,
-                                     int96RebaseMode: LegacyBehaviorPolicy.Value): VectorizedParquetRecordReader = {
+                                     datetimeRebaseSpec: RebaseSpec,
+                                     int96RebaseSpec: RebaseSpec): VectorizedParquetRecordReader = {
     val taskContext = Option(TaskContext.get())
     val vectorizedReader = new VectorizedParquetRecordReader(
       convertTz.orNull,
-      datetimeRebaseMode.toString,
-      int96RebaseMode.toString,
+      datetimeRebaseSpec.mode.toString,
+      datetimeRebaseSpec.timeZone,
+      int96RebaseSpec.mode.toString,
+      int96RebaseSpec.timeZone,
       enableOffHeapColumnVector && taskContext.isDefined,
       capacity)
     val iter = new RecordReaderIterator(vectorizedReader)
@@ -144,29 +143,36 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
   private def buildReaderBase[T](file: MergePartitionedFile,
                                  buildReaderFunc: (
-                                   ParquetInputSplit, InternalRow, TaskAttemptContextImpl,
+                                   FileSplit, InternalRow, TaskAttemptContextImpl,
                                      Option[FilterPredicate], Option[ZoneId],
-                                     LegacyBehaviorPolicy.Value,
-                                     LegacyBehaviorPolicy.Value) => RecordReader[Void, T]): RecordReader[Void, T] = {
+                                     RebaseSpec,
+                                     RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
     val conf = broadcastedConf.value.value
 
     val filePath = new Path(new URI(file.filePath))
     val split =
-      new org.apache.parquet.hadoop.ParquetInputSplit(
+      new FileSplit(
         filePath,
         file.start,
-        file.start + file.length,
         file.length,
         Array.empty,
         null)
 
     lazy val footerFileMetaData =
-      ParquetFileReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
+      ParquetFooterReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
+    val datetimeRebaseSpec = DataSourceUtils.datetimeRebaseSpec(
+      footerFileMetaData.getKeyValueMetaData.get,
+      SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ))
+    val int96RebaseSpec = DataSourceUtils.int96RebaseSpec(
+      footerFileMetaData.getKeyValueMetaData.get,
+      SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ))
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
-        pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
+        pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
+        datetimeRebaseSpec
+      )
       filters
         // Collects all converted Parquet filter predicates. Notice that not all predicates can be
         // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
@@ -202,14 +208,8 @@ case class MergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     if (pushed.isDefined) {
       ParquetInputFormat.setFilterPredicate(hadoopAttemptContext.getConfiguration, pushed.get)
     }
-    val datetimeRebaseMode = DataSourceUtils.datetimeRebaseMode(
-      footerFileMetaData.getKeyValueMetaData.get,
-      SQLConf.get.getConf(SQLConf.LEGACY_PARQUET_REBASE_MODE_IN_READ))
-    val int96RebaseMode = DataSourceUtils.int96RebaseMode(
-      footerFileMetaData.getKeyValueMetaData.get,
-      SQLConf.get.getConf(SQLConf.LEGACY_PARQUET_INT96_REBASE_MODE_IN_READ))
     val reader = buildReaderFunc(
-      split, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseMode, int96RebaseMode)
+      split, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseSpec, int96RebaseSpec)
     reader.initialize(split, hadoopAttemptContext)
     reader
   }

@@ -111,7 +111,7 @@ trait TransactionalWrite {
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
                  isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
-    val data = if (tableInfo.hash_partition_columns.nonEmpty) {
+    val data = if (!isCompaction && tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
     } else {
       oriData

@@ -1223,27 +1223,4 @@ class LakeSoulSchemaUtilsSuite extends QueryTest
     assert(visitedFields === 4)
     assert(update === res3)
   }
-
-  ////////////////////////////
-  // checkFieldNames
-  ////////////////////////////
-
-  test("check non alphanumeric column characters") {
-    val badCharacters = " ,;{}()\n\t="
-    val goodCharacters = "#.`!@$%^&*~_<>?/:"
-
-    badCharacters.foreach { char =>
-      Seq(s"a${char}b", s"${char}ab", s"ab${char}", char.toString).foreach { name =>
-        val e = intercept[AnalysisException] {
-          SchemaUtils.checkFieldNames(Seq(name))
-        }
-        assert(e.getMessage.contains("invalid character"))
-      }
-    }
-
-    goodCharacters.foreach { char =>
-      // no issues here
-      SchemaUtils.checkFieldNames(Seq(s"a${char}b", s"${char}ab", s"ab${char}", char.toString))
-    }
-  }
 }

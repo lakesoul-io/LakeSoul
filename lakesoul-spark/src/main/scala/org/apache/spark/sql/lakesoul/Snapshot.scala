@@ -30,19 +30,19 @@ class Snapshot(table_info: TableInfo,
                is_first_commit: Boolean = false
               ) {
   private var partitionDesc: String = ""
-  private var startPartitionVersion: Int = -1
-  private var endPartitionVersion: Int = -1
+  private var startPartitionTimestamp: Long = -1
+  private var endPartitionTimestamp: Long = -1
   private var readType: String = ReadType.FULL_READ
 
-  def setPartitionDescAndVersion(parDesc: String, startParVer: Int, endParVer: Int, readType: String): Unit = {
+  def setPartitionDescAndVersion(parDesc: String, startParVer: Long, endParVer: Long, readType: String): Unit = {
     this.partitionDesc = parDesc
-    this.startPartitionVersion = startParVer
-    this.endPartitionVersion = endParVer
+    this.startPartitionTimestamp = startParVer
+    this.endPartitionTimestamp = endParVer
     this.readType = readType
   }
 
-  def getPartitionDescAndVersion: (String, Int, Int, String) = {
-    (this.partitionDesc, this.startPartitionVersion, this.endPartitionVersion, this.readType)
+  def getPartitionDescAndVersion: (String, Long, Long, String) = {
+    (this.partitionDesc, this.startPartitionTimestamp, this.endPartitionTimestamp, this.readType)
   }
 
   def getTableName: String = table_info.table_path_s.get

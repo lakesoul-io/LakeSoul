@@ -18,7 +18,7 @@ package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Alias, AnsiCast, Cast, CreateStruct, Expression, GetStructField, NamedExpression, UpCast}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AnsiCast, Cast, CreateStruct, Expression, GetMapValue, GetStructField, NamedExpression, UpCast}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.LogicalRelation
@@ -42,7 +42,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsDown {
     // INSERT INTO by ordinal
-    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false)
+    case a@AppendData(DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), query, _, false, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
@@ -53,7 +53,7 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
 
     // INSERT OVERWRITE by ordinal
     case a@OverwriteByExpression(
-    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false)
+    DataSourceV2Relation(d: LakeSoulTableV2, _, _, _, _), _, query, _, false, _)
       if query.resolved && needsSchemaAdjustment(d.name(), query, d.schema()) =>
       val projection = normalizeQueryColumns(query, d)
       if (projection != query) {
@@ -72,15 +72,24 @@ case class LakeSoulAnalysis(session: SparkSession, sqlConf: SQLConf)
         d
       } else if (indices.size == 1 && !indices.head.snapshotManagement.snapshot.isFirstCommit) {
         // It is a well-defined LakeSoul table with a schema
-        LakeSoulDelete(newTarget, condition)
+        LakeSoulDelete(newTarget, Some(condition))
       } else {
         // Not a well-defined LakeSoul table
         throw LakeSoulErrors.notALakeSoulSourceException("DELETE", Some(d))
       }
 
     case u@UpdateTable(table, assignments, condition) if u.childrenResolved =>
-      val (cols, expressions) = assignments.map(a =>
-        a.key.asInstanceOf[NamedExpression] -> a.value).unzip
+      val (cols, expressions) = assignments.map(a => {
+        val key = a.key match {
+          case n: NamedExpression =>
+            n
+          case field: GetStructField =>
+            Alias(field, field.extractFieldName)()
+          case field =>
+            Alias(field, field.toString())()
+        }
+        key -> a.value
+      }).unzip
       val newTarget = table.transformUp { case LakeSoulRelationV2(v2r) => v2r }
       val indices = newTarget.collect {
         case LakeSoulTableRelationV2(tbl) => tbl

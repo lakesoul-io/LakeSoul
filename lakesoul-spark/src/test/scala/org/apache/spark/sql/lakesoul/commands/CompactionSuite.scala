@@ -287,7 +287,7 @@ class CompactionSuite extends QueryTest
       checkAnswer(spark.sql("show tables in spark_catalog.default"),
         Seq(Row("default", "external_table", false)))
       checkAnswer(spark.sql("show tables in default"),
-        Seq(Row("default", "lakesoul_test_table")))
+        Seq(Row("default", "lakesoul_test_table", false)))
       val lakeSoulTable = LakeSoulTable.forName("lakesoul_test_table")
       lakeSoulTable.compaction("date='2021-01-01'", "spark_catalog.default.external_table")
       checkAnswer(spark.sql("show partitions spark_catalog.default.external_table"),

@@ -11,6 +11,7 @@ import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
+import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, ParquetFilters, ParquetTest, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
@@ -39,7 +40,6 @@ import scala.reflect.runtime.universe.TypeTag
 
 
 class ParquetV2FilterSuite
-//  extends org.apache.spark.sql.execution.datasources.parquet.ParquetFilterSuite
   extends ParquetFilterSuite
 {
   override protected def sparkConf: SparkConf =
@@ -72,7 +72,7 @@ class ParquetV2FilterSuite
 
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
@@ -89,7 +89,6 @@ class ParquetV2FilterSuite
           // Doesn't bother checking type parameters here (e.g. `Eq[Integer]`)
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
-
 
           checker(stripSparkFilter(query), expected)
 
@@ -155,7 +154,7 @@ class ParquetNativeFilterSuite
 
       query.queryExecution.optimizedPlan.collectFirst {
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
           val pushedFilters = scan.pushedFilters
@@ -175,7 +174,7 @@ class ParquetNativeFilterSuite
 
           checker(stripSparkFilter(query), expected)
         case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _)) =>
+        DataSourceV2ScanRelation(_, scan: NativeParquetScan, _, _)) =>
           println("match case NativeParquetScan")
           assert(filters.nonEmpty, "No filter is analyzed from the given query")
           val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
@@ -226,16 +225,20 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
 
   protected def createParquetFilters(
                                       schema: MessageType,
-                                      caseSensitive: Option[Boolean] = None): ParquetFilters =
+                                      caseSensitive: Option[Boolean] = None,
+                                      datetimeRebaseSpec: RebaseSpec = RebaseSpec(LegacyBehaviorPolicy.CORRECTED)): ParquetFilters =
     new ParquetFilters(schema, conf.parquetFilterPushDownDate, conf.parquetFilterPushDownTimestamp,
       conf.parquetFilterPushDownDecimal, conf.parquetFilterPushDownStringStartWith,
       conf.parquetFilterPushDownInFilterThreshold,
-      caseSensitive.getOrElse(conf.caseSensitiveAnalysis))
+      caseSensitive.getOrElse(conf.caseSensitiveAnalysis),
+      datetimeRebaseSpec
+    )
 
   override def beforeEach(): Unit = {
     super.beforeEach()
     // Note that there are many tests here that require record-level filtering set to be true.
     spark.conf.set(SQLConf.PARQUET_RECORD_FILTER_ENABLED.key, "true")
+    spark.sparkContext.setLogLevel("WARN")
   }
 
   override def afterEach(): Unit = {
@@ -778,9 +781,9 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
     Seq(true, false).foreach { java8Api =>
       withSQLConf(
         SQLConf.DATETIME_JAVA8API_ENABLED.key -> java8Api.toString,
-        SQLConf.LEGACY_PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
-        SQLConf.LEGACY_PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
-        // spark.sql.parquet.outputTimestampType = TIMESTAMP_MILLIS
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED"
+      ) {
         val millisData = Seq(
           "1000-06-14 08:28:53.123",
           "1582-06-15 08:28:53.001",

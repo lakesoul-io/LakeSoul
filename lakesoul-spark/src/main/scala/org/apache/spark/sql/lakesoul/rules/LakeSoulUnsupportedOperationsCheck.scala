@@ -58,9 +58,6 @@ case class LakeSoulUnsupportedOperationsCheck(spark: SparkSession)
       case a: AlterTableDropPartitionCommand =>
         fail(operation = "ALTER TABLE DROP PARTITION", a.tableName)
 
-      case a: AlterTableRecoverPartitionsCommand =>
-        fail(operation = "ALTER TABLE RECOVER PARTITIONS", a.tableName)
-
       case a: AlterTableSerDePropertiesCommand =>
         fail(operation = "ALTER TABLE table SET SERDEPROPERTIES", a.tableName)
 

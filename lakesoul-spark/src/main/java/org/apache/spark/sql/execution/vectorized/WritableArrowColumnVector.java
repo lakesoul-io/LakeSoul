@@ -29,6 +29,8 @@ import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.types.UTF8String;
 
+import java.nio.ByteBuffer;
+
 public final class WritableArrowColumnVector extends WritableColumnVector {
 
     /**
@@ -107,6 +109,11 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
     @Override
     public void putBooleans(int rowId, int count, boolean value) {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void putBooleans(int i, byte b) {
+
     }
 
     /**
@@ -592,6 +599,11 @@ public final class WritableArrowColumnVector extends WritableColumnVector {
     public byte[] getBinary(int rowId) {
         if (isNullAt(rowId)) return null;
         return accessor.getBinary(rowId);
+    }
+
+    @Override
+    public ByteBuffer getByteBuffer(int i, int i1) {
+        return null;
     }
 
 //    @Override

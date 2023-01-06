@@ -180,9 +180,14 @@ object MetaVersion {
 
   }
 
+  def getLastedTimestamp(table_id: String, range_value: String): Long = {
+    dbManager.getLastedTimestamp(table_id, range_value)
+  }
+
   def getLastedVersionUptoTime(table_id: String, range_value: String, utcMills: Long): Int = {
     dbManager.getLastedVersionUptoTime(table_id, range_value, utcMills)
   }
+
   /*
   if range_value is "", clean up all patitions;
   if not "" , just one partition

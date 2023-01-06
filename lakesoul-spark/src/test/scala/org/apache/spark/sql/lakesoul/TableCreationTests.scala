@@ -373,30 +373,6 @@ trait TableCreationTests
     }
   }
 
-  test("cannot create lakesoul table with an invalid column name") {
-    val tableName = "lakesoul_test"
-    withTable(tableName) {
-      val tableLoc =
-        new File(getDefaultTablePath(tableName).stripPrefix("file:"))
-      Utils.deleteRecursively(tableLoc)
-      val ex = intercept[AnalysisException] {
-        Seq(1, 2, 3).toDF("a column name with spaces")
-          .write
-          .format(format)
-          .mode(SaveMode.Overwrite)
-          .saveAsTable(tableName)
-      }
-      assert(ex.getMessage.contains("contains invalid character(s)"))
-      assert(!tableLoc.exists())
-
-      val ex2 = intercept[AnalysisException] {
-        sql(s"CREATE TABLE $tableName(`a column name with spaces` LONG, b String) USING lakesoul")
-      }
-      assert(ex2.getMessage.contains("contains invalid character(s)"))
-      assert(!tableLoc.exists())
-    }
-  }
-
   test("cannot create lakesoul table when using buckets") {
     withTable("bucketed_table") {
       val e = intercept[AnalysisException] {

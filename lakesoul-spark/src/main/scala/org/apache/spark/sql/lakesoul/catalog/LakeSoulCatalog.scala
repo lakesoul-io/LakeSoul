@@ -27,9 +27,9 @@ import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog.TableChange._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{BucketTransform, FieldReference, IdentityTransform, Transform}
-import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1WriteBuilder, WriteBuilder}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
-import org.apache.spark.sql.execution.datasources.{DataSource, PartitioningUtils}
+import org.apache.spark.sql.connector.write.{LogicalWriteInfo, V1Write, WriteBuilder}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.{DataSource, DataSourceUtils, PartitioningUtils}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulConfig
 import org.apache.spark.sql.lakesoul.commands._
@@ -123,8 +123,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     val withDb = verifyTableAndSolidify(tableDesc, None)
 
-
-    ParquetSchemaConverter.checkFieldNames(tableDesc.schema.fieldNames)
+    DataSourceUtils.checkFieldNames(new ParquetFileFormat(), tableDesc.schema)
     CreateTableCommand(
       withDb,
       existingLocation.map(SparkUtil.makeQualifiedPath(_).toString),
@@ -264,8 +263,9 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case IdentityTransform(FieldReference(Seq(col))) =>
         identityCols += col
 
-      case BucketTransform(numBuckets, FieldReference(Seq(col))) =>
-        bucketSpec = Some(BucketSpec(numBuckets, col :: Nil, Nil))
+      case BucketTransform(numBuckets, col, sortCol) =>
+        bucketSpec = Some(BucketSpec(numBuckets, col.map(_.fieldNames.mkString(".")),
+          sortCol.map(_.fieldNames.mkString("."))))
 
       case _ =>
         throw LakeSoulErrors.operationNotSupportedException(s"Partitioning by expressions")
@@ -338,7 +338,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
 
     override def capabilities(): util.Set[TableCapability] = Set(V1_BATCH_WRITE).asJava
 
-    override def newWriteBuilder(info: LogicalWriteInfo): V1WriteBuilder = {
+    override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
       // TODO: We now pass both properties and options into CreateTableCommand, because
       // it wasn't supported in the initial APIs, but with DFWriterV2, we should actually separate
       // them
@@ -350,10 +350,13 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     /*
      * WriteBuilder for creating a lakesoul table.
      */
-    private class LakeSoulV1WriteBuilder extends WriteBuilder with V1WriteBuilder {
-      override def buildForV1Write(): InsertableRelation = {
-        (data: DataFrame, _: Boolean) => {
-          asSelectQuery = Option(data)
+    private class LakeSoulV1WriteBuilder extends WriteBuilder {
+      override def build(): V1Write = {
+        new V1Write {
+          override def toInsertableRelation: InsertableRelation =
+            (data: DataFrame, overwrite: Boolean) => {
+              asSelectQuery = Option(data)
+            }
         }
       }
     }
@@ -442,8 +445,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
             columnUpdates(field) = oldField.copy(name = rename.newName()) -> pos
 
           case other =>
-            throw new UnsupportedOperationException("Unrecognized column change " +
-              s"${other.getClass}. You may be running an out of date LakeSoul version.")
+            throw LakeSoulErrors.operationNotSupportedException("Unrecognized column change " + other.getClass)
         }
 
       case (t, _) if t == classOf[SetLocation] =>
@@ -499,7 +501,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     }
   }
 
-  // todo: invalid on spark v3.1.2
   override def listTables(namespaces: Array[String]): Array[Identifier] = {
     LakeSoulCatalog.listTables(namespaces)
   }
@@ -508,7 +509,6 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   // Namespace
   //=============
 
-  // todo: invalid on spark v3.1.2
   override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
     LakeSoulCatalog.createNamespace(namespaces)
   }
@@ -526,13 +526,13 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     LakeSoulCatalog.namespaceExists(namespace)
   }
 
-  override def dropNamespace(namespace: Array[String]): Boolean = {
+  override def dropNamespace(namespace: Array[String], cascade: Boolean): Boolean = {
     LakeSoulCatalog.dropNamespace(namespace)
   }
 
 
   override def renameTable(oldIdent: Identifier, newIdent: Identifier): Unit = {
-    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename table")
+    throw LakeSoulErrors.operationNotSupportedException("LakeSoul currently doesn't support rename table")
   }
 
   override def listNamespaces(namespace: Array[String]): Array[Array[String]] = {
@@ -558,7 +558,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   }
 
   override def alterNamespace(namespace: Array[String], changes: NamespaceChange*): Unit = {
-    throw new UnsupportedOperationException("LakeSoul currently doesn't support rename namespace")
+    throw LakeSoulErrors.operationNotSupportedException("LakeSoul currently doesn't support rename namespace")
   }
 
 

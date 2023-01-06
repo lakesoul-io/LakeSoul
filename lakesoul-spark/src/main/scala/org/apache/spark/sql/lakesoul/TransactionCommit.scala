@@ -21,7 +21,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaConverter
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils._
@@ -41,11 +41,11 @@ object TransactionCommit {
   def getActive: Option[TransactionCommit] = Option(active.get())
 
   /**
-    * Sets a transaction as the active transaction.
-    *
-    * @note This is not meant for being called directly, only from
-    *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
-    */
+   * Sets a transaction as the active transaction.
+   *
+   * @note This is not meant for being called directly, only from
+   *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
+   */
   private[lakesoul] def setActive(tc: TransactionCommit): Unit = {
     if (active.get != null) {
       throw new IllegalStateException("Cannot set a new TransactionCommit as active when one is already active")
@@ -54,10 +54,10 @@ object TransactionCommit {
   }
 
   /**
-    * Clears the active transaction as the active transaction.
-    *
-    * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
-    */
+   * Clears the active transaction as the active transaction.
+   *
+   * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
+   */
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
@@ -74,11 +74,11 @@ object PartMergeTransactionCommit {
   def getActive: Option[PartMergeTransactionCommit] = Option(active.get())
 
   /**
-    * Sets a transaction as the active transaction.
-    *
-    * @note This is not meant for being called directly, only from
-    *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
-    */
+   * Sets a transaction as the active transaction.
+   *
+   * @note This is not meant for being called directly, only from
+   *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
+   */
   private[lakesoul] def setActive(tc: PartMergeTransactionCommit): Unit = {
     if (active.get != null) {
       throw new IllegalStateException("Cannot set a new TransactionCommit as active when one is already active")
@@ -87,10 +87,10 @@ object PartMergeTransactionCommit {
   }
 
   /**
-    * Clears the active transaction as the active transaction.
-    *
-    * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
-    */
+   * Clears the active transaction as the active transaction.
+   *
+   * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
+   */
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
@@ -132,9 +132,9 @@ trait Transaction extends TransactionalWrite with Logging {
 
 
   /**
-    * Tracks the data that could have been seen by recording the partition
-    * predicates by which files have been queried by by this transaction.
-    */
+   * Tracks the data that could have been seen by recording the partition
+   * predicates by which files have been queried by by this transaction.
+   */
   protected val readPredicates = new ArrayBuffer[Expression]
 
   /** Tracks specific files that have been seen by this transaction. */
@@ -171,13 +171,13 @@ trait Transaction extends TransactionalWrite with Logging {
   }
 
   /**
-    * Records an update to the TableInfo that should be committed with this transaction.
-    * Note that this must be done before writing out any files so that file writing
-    * and checks happen with the final TableInfo for the table.
-    *
-    * IMPORTANT: It is the responsibility of the caller to ensure that files currently
-    * present in the table are still valid under the new TableInfo.
-    */
+   * Records an update to the TableInfo that should be committed with this transaction.
+   * Note that this must be done before writing out any files so that file writing
+   * and checks happen with the final TableInfo for the table.
+   *
+   * IMPORTANT: It is the responsibility of the caller to ensure that files currently
+   * present in the table are still valid under the new TableInfo.
+   */
   def updateTableInfo(table_info: TableInfo): Unit = {
     assert(!hasWritten,
       "Cannot update the metadata in a transaction that has already written data.")
@@ -191,7 +191,7 @@ trait Transaction extends TransactionalWrite with Logging {
         configuration = updatedConfigs,
         short_table_name = shortTableName
       )
-    } else{
+    } else {
       table_info
     }
     // if task run maybe inconsistent with new update tableinfo; no two phase protocol
@@ -201,7 +201,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
   protected def verifyNewMetadata(table_info: TableInfo): Unit = {
     SchemaUtils.checkColumnNameDuplication(table_info.schema, "in the TableInfo update")
-    ParquetSchemaConverter.checkFieldNames(SchemaUtils.explodeNestedFieldNames(table_info.data_schema))
+    DataSourceUtils.checkFieldNames(snapshot.fileFormat, table_info.data_schema)
   }
 
 
@@ -269,10 +269,11 @@ trait Transaction extends TransactionalWrite with Logging {
       val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
 
       val commit_type = commitType.getOrElse(CommitType("append")).name
-
       if (commit_type.equals(CommitType("update").name)) {
         val delete_file_set = new mutable.HashSet[String]()
-        expireFilesWithDeleteOp.foreach(file => {delete_file_set.add(file.path)})
+        expireFilesWithDeleteOp.foreach(file => {
+          delete_file_set.add(file.path)
+        })
 
         val partition_list = snapshotManagement.snapshot.getPartitionInfoArray
         depend_partitions.foreach(range_key => {
@@ -281,7 +282,7 @@ trait Transaction extends TransactionalWrite with Logging {
           if (partition_info.length > 0) {
             val partition_files = DataOperation.getSinglePartitionDataInfo(partition_info.head)
             partition_files.foreach(partition_file => {
-              if(!delete_file_set.contains(partition_file.path)){
+              if (!delete_file_set.contains(partition_file.path)) {
                 filter_files += partition_file
               }
             })
@@ -293,7 +294,7 @@ trait Transaction extends TransactionalWrite with Logging {
           filter_files ++= changeFiles
 
           if (filter_files.nonEmpty) {
-            val addUUID = UUID.randomUUID()
+            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
             add_file_arr_buf += DataCommitInfo(
               tableInfo.table_id,
               range_key,
@@ -314,7 +315,7 @@ trait Transaction extends TransactionalWrite with Logging {
           val changeFiles = addFiles.union(expireFilesWithDeleteOp)
             .filter(a => a.range_partitions.equalsIgnoreCase(range_key))
           if (changeFiles.nonEmpty) {
-            val addUUID = UUID.randomUUID()
+            val addUUID = getCommitIdByBatchIdAndQueryId(batch_id, query_id)
             add_file_arr_buf += DataCommitInfo(
               tableInfo.table_id,
               range_key,
@@ -336,7 +337,9 @@ trait Transaction extends TransactionalWrite with Logging {
         table_info = tableInfo.copy(short_table_name = shortTableName),
         dataCommitInfo = add_file_arr_buf.toArray,
         partitionInfoArray = add_partition_info_arr_buf.toArray,
-        commit_type = commitType.getOrElse(CommitType("append"))
+        commit_type = commitType.getOrElse(CommitType("append")),
+        query_id = query_id,
+        batch_id = batch_id
       )
 
       try {
@@ -350,5 +353,15 @@ trait Transaction extends TransactionalWrite with Logging {
       committed = true
     }
     snapshotManagement.updateSnapshot()
+  }
+
+  def getCommitIdByBatchIdAndQueryId(batch_id: Long, query_id: String): UUID = {
+    if("".equals(query_id)) {
+      UUID.randomUUID()
+    }else{
+      val queryUUID = UUID.fromString(query_id)
+      val highBits = queryUUID.getMostSignificantBits
+      new UUID(highBits, batch_id)
+    }
   }
 }

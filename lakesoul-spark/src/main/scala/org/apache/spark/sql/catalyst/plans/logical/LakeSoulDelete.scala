@@ -24,4 +24,8 @@ case class LakeSoulDelete(child: LogicalPlan,
                           condition: Option[Expression])
   extends UnaryNode {
   override def output: Seq[Attribute] = Seq.empty
+
+  override protected def withNewChildInternal(newChild: LogicalPlan): LogicalPlan = {
+    copy(child = newChild)
+  }
 }

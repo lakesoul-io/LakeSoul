@@ -21,14 +21,14 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
-import org.apache.spark.sql.execution.command.RunnableCommand
+import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
@@ -44,7 +44,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              hiveTableName: String = "",
                              hivePartitionName: String = ""
                             )
-  extends RunnableCommand with PredicateHelper with Logging {
+  extends LeafRunnableCommand with PredicateHelper with Logging {
 
 
   def filterPartitionNeedCompact(spark: SparkSession,
@@ -192,6 +192,5 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
     Seq.empty
   }
-
 
 }

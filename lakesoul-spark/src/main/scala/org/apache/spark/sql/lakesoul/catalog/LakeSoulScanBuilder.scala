@@ -19,14 +19,14 @@ package org.apache.spark.sql.lakesoul.catalog
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
+import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
+import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
-import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
@@ -42,7 +42,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
                                dataSchema: StructType,
                                options: CaseInsensitiveStringMap,
                                tableInfo: TableInfo)
-  extends FileScanBuilder(sparkSession, fileIndex, dataSchema) with SupportsPushDownFilters with Logging {
+  extends FileScanBuilder(sparkSession, fileIndex, dataSchema) with Logging {
   lazy val hadoopConf: Configuration = {
     val caseSensitiveMap = options.asCaseSensitiveMap.asScala.toMap
       .filter(!_._1.startsWith(LakeSoulUtils.MERGE_OP_COL))
@@ -61,35 +61,18 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     val parquetSchema =
       new SparkToParquetSchemaConverter(sparkSession.sessionState.conf).convert(schema)
     val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
-      pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
-    parquetFilters.convertibleFilters(this.filters).toArray
+      pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
+      RebaseSpec(LegacyBehaviorPolicy.CORRECTED)
+    )
+    parquetFilters.convertibleFilters(pushedDataFilters).toArray
   }
+
+  override def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = dataFilters
 
   override protected val supportsNestedSchemaPruning: Boolean = true
 
-  private var filters: Array[Filter] = Array.empty
-
-  override def pushFilters(filters: Array[Filter]): Array[Filter] = {
-    this.filters = filters
-    this.filters
-  }
-
-  def parseFilter(): Expression = {
-    val predicts = filters.length match {
-      case 0 => expressions.Literal(true)
-      case _ => LakeSoulSourceUtils.translateFilters(filters)
-    }
-
-    predicts
-  }
-
-  // Note: for Parquet, the actual filter push down happens in [[ParquetPartitionReaderFactory]].
-  // It requires the Parquet physical schema to determine whether a filter is convertible.
-  // All filters that can be converted to Parquet are pushed down.
-  override def pushedFilters: Array[Filter] = pushedParquetFilters
-
   //note: hash partition columns must be last
-  def mergeReadDataSchema(): StructType = {
+  private def mergeReadDataSchema(): StructType = {
     StructType((readDataSchema() ++ tableInfo.hash_partition_schema).distinct)
   }
 
@@ -99,15 +82,12 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
 
     var files: Seq[DataFileInfo] = Seq.empty
 
-    val filters = Seq(parseFilter())
+    val isPartitionVersionRead = SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)
 
-    val (partitionFilters, dataFilters) = LakeSoulUtils.splitMetadataAndDataPredicates(filters,
-      tableInfo.range_partition_columns, sparkSession)
-
-    if (SparkUtil.isPartitionVersionRead(fileIndex.snapshotManagement)) {
+    if (isPartitionVersionRead) {
       files = fileIndex.getFileInfoForPartitionVersion()
     } else {
-      files = fileIndex.getFileInfo(filters)
+      files = fileIndex.matchingFiles(partitionFilters, dataFilters)
     }
     val fileInfo = files.groupBy(_.range_partitions)
     val onlyOnePartition = fileInfo.size <= 1
@@ -118,13 +98,15 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       hasNoDeltaFile = fileInfo.forall(f => f._2.size <= 1)
     }
-
-    if (tableInfo.hash_partition_columns.isEmpty || fileInfo.isEmpty) {
-      parquetScan(partitionFilters, dataFilters)
+    if (fileInfo.isEmpty) {
+      EmptyParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+    } else if (tableInfo.hash_partition_columns.isEmpty) {
+      parquetScan()
     }
     else if (onlyOnePartition) {
       if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
-        parquetScan(partitionFilters, dataFilters)
+        parquetScan()
       } else {
         OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
@@ -143,7 +125,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
   }
 
 
-  def parquetScan(partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Scan = {
+  private def parquetScan(): Scan = {
     if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
       NativeParquetScan(
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
@@ -151,7 +133,7 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       ParquetScan(
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-        readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
+        readPartitionSchema(), pushedParquetFilters, options, None, partitionFilters, dataFilters)
     }
   }
 }

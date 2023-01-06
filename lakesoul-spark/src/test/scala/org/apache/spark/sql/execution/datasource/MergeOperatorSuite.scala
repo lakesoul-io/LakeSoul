@@ -17,9 +17,10 @@
 package org.apache.spark.sql.execution.datasource
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.SparkException
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{MergeOpInt, MergeOpString, MergeOpString02, LakeSoulTestUtils, TestUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest}
 
@@ -122,10 +123,10 @@ class MergeOperatorSuite extends QueryTest
 
       val starTable = LakeSoulTable.forPath(tableName)
 
-      val e = intercept[AssertionError] {
+      val e = intercept[SparkException] {
         starTable.toDF.withColumn("v2", expr("intOp(v2)")).show()
       }
-      assert(e.getMessage.contains("Merge operator should be used with hash partitioned table"))
+      assert(e.getCause.getMessage.contains("Merge operator should be used with hash partitioned table"))
 
     })
   }

@@ -96,4 +96,8 @@ case class CheckInvariant(child: Expression,
     }
     ev.copy(code = code, isNull = TrueLiteral, value = JavaCode.literal("null", NullType))
   }
+
+  override protected def withNewChildInternal(newChild: Expression): Expression = {
+    copy(child = newChild)
+  }
 }

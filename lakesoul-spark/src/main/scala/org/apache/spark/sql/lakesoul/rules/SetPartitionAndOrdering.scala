@@ -55,7 +55,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     bucketScan: BucketParquetScan,
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -65,7 +65,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
       val outputOrdering = hashKeys.map(key => SortOrder(key, Ascending))
 
 
-      val batchExec = BatchScanExec(relation.output, relation.scan)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
       val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {
@@ -78,7 +78,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@OnePartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -100,7 +100,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
       }
 
 
-      val batchExec = BatchScanExec(relation.output, relation.scan)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
 
       val child = if (isCompaction) {
         batchExec
@@ -118,7 +118,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
     relation@DataSourceV2ScanRelation(
     DataSourceV2Relation(tbl: LakeSoulTableV2, _, _, _, _),
     mergeScan@MultiPartitionMergeBucketScan(_, _, _, _, _, _, _, options: CaseInsensitiveStringMap, _, _, _),
-    output)) =>
+    output, _)) =>
       // projection and filters were already pushed down in the optimizer.
       // this uses PhysicalOperation to get the projection and ensure that if the batch scan does
       // not support columnar, a projection is added to convert the rows to UnsafeRow.
@@ -127,7 +127,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
       val bucketNum = tableInfo.bucket_num
       val outputPartitioning = HashPartitioning(hashKeys, bucketNum)
 
-      val batchExec = BatchScanExec(relation.output, relation.scan)
+      val batchExec = BatchScanExec(relation.output, relation.scan, filters)
       val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {
@@ -149,6 +149,9 @@ case class withPartition(partition: Partitioning,
 
   override def outputPartitioning: Partitioning = partition
 
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
+    copy(child = newChild)
+  }
 }
 
 case class withPartitionAndOrdering(partition: Partitioning,
@@ -162,4 +165,7 @@ case class withPartitionAndOrdering(partition: Partitioning,
 
   override def outputOrdering: Seq[SortOrder] = ordering
 
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
+    copy(child = newChild)
+  }
 }

@@ -18,23 +18,22 @@ package org.apache.spark.sql.lakesoul
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, NoSuchNamespaceException}
+import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.execution.datasources.LogicalRelation
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
-import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 
 object LakeSoulUtils extends PredicateHelper {
 
@@ -49,17 +48,6 @@ object LakeSoulUtils extends PredicateHelper {
     Class.forName(className, true, Utils.getContextOrSparkClassLoader)
   }
 
-  /** return async class */
-  def getAsyncClass(className: String): (Boolean, Class[_]) = {
-    try {
-      val cls = Class.forName(className, true, Utils.getContextOrSparkClassLoader)
-      (true, cls)
-    } catch {
-      case e: ClassNotFoundException => (false, null)
-      case e: Exception => throw e
-    }
-  }
-
   /** Check whether this table is a LakeSoulTableRel based on information from the Catalog. */
   def isLakeSoulTable(table: CatalogTable): Boolean = LakeSoulSourceUtils.isLakeSoulTable(table.provider)
 
@@ -67,7 +55,7 @@ object LakeSoulUtils extends PredicateHelper {
     * Check whether the provided table name is a lakesoul table based on information from the Catalog.
     */
   def isLakeSoulTable(spark: SparkSession, tableName: TableIdentifier): Boolean = {
-    if (spark.sessionState.catalog.isTemporaryTable(tableName)) {
+    if (spark.sessionState.catalog.isTempView(tableName)) {
       false
     } else spark.sessionState.catalogManager.currentCatalog match {
       case catalog: LakeSoulCatalog =>
@@ -229,7 +217,7 @@ object LakeSoulFullTable {
 object LakeSoulTableRelationV2 {
   def unapply(plan: LogicalPlan): Option[LakeSoulTableV2] = plan match {
     case DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _) => Some(table)
-    case DataSourceV2ScanRelation(DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _), _, _) => Some(table)
+    case DataSourceV2ScanRelation(DataSourceV2Relation(table: LakeSoulTableV2, _, _, _, _), _, _, _) => Some(table)
     case _ => None
   }
 }
