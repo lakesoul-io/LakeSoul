@@ -19,15 +19,20 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{DataFrame, SparkSession, functions}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.LakeSoulOptions
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
 object SparkPipeLine {
 
+  var dbName = "test_streamRead"
+  val dbPath = "s3a://bucket-name/table/path/is/also/table/name"
+
   def main(args: Array[String]): Unit = {
     val builder = SparkSession.builder()
-      .appName("BENCHMARK TEST")
+      .appName("STREAM PIPELINE TEST")
       .master("local[4]")
       .config("spark.sql.shuffle.partitions", 4)
       .config("spark.sql.files.maxPartitionBytes", "1g")
@@ -42,5 +47,23 @@ object SparkPipeLine {
       .config("spark.default.parallelism", "4")
     val spark = builder.getOrCreate()
 
+    val tableName = "testTable"
+    val field = "testField"
+    val tablePath = dbPath + "/" + tableName
+    val query = spark.readStream.format("lakesoul")
+      .option(LakeSoulOptions.PARTITION_DESC, "range = range1")
+      .option(LakeSoulOptions.READ_START_TIME, "2022-01-01 15:15:15")
+      .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
+      .load(tablePath)
+
+    getMaxRecord(query,tableName, field)
+  }
+
+  def getMaxRecord(query: DataFrame, table: String, field: String): String = {
+    query.agg(functions.max(query(field)).as("max " + field)).toString()
+  }
+
+  def getSumRecord(query: DataFrame, table: String, field: String): String = {
+    query.agg(functions.sum(query(field)).as("sum " + field)).toString()
   }
 }
