@@ -27,10 +27,24 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
 object SparkPipeLine {
 
-  var dbName = "test_streamRead"
-  val dbPath = "s3a://bucket-name/table/path/is/also/table/name"
-
   def main(args: Array[String]): Unit = {
+
+    // all args will be organized into an Array,and filed will be an Array[String]
+    val dbName = "test_cdc"
+    val tableName = "mysql_test_1"
+    val field = "type"
+    val tablePath = "/tmp/lakesoul/" + dbName + "/" + tableName
+    /** test table schema
+     * +----+-------+------+---------+
+     *  | id | name  | type | new_col |
+     *  +----+-------+------+---------+
+     *  | 1  | Peter | 10   | 8.8     |
+     *  | 2  | Alice | 20   | 9.9     |
+     *  | 3  | Dab   | 25   | 9.5     |
+     *  | 4  | Smith | 16   | 9.2     |
+     *  +----+-------+------+---------+
+     * */
+
     val builder = SparkSession.builder()
       .appName("STREAM PIPELINE TEST")
       .master("local[4]")
@@ -47,20 +61,16 @@ object SparkPipeLine {
       .config("spark.default.parallelism", "4")
     val spark = builder.getOrCreate()
 
-    val tableName = "testTable"
-    val field = "testField"
-    val tablePath = dbPath + "/" + tableName
     val query = spark.readStream.format("lakesoul")
-      .option(LakeSoulOptions.PARTITION_DESC, "range = range1")
-      .option(LakeSoulOptions.READ_START_TIME, "2022-01-01 15:15:15")
+      //      .option(LakeSoulOptions.READ_START_TIME, "2022-01-01 15:15:15")
       .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
       .load(tablePath)
 
-    getMaxRecord(query,tableName, field)
+    getMaxRecord(query, tableName, field).show()
   }
 
-  def getMaxRecord(query: DataFrame, table: String, field: String): String = {
-    query.agg(functions.max(query(field)).as("max " + field)).toString()
+  def getMaxRecord(query: DataFrame, table: String, field: String): DataFrame = {
+    query.agg(functions.max(query(field)).as("max " + field))
   }
 
   def getSumRecord(query: DataFrame, table: String, field: String): String = {
