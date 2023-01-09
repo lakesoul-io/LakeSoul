@@ -98,12 +98,19 @@ public class NativeIOWrapper implements AutoCloseable {
         }
     }
 
-    public void addColumn(String column, String datatype) {
+    public void addColumn(String column) {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer columnPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
-            Pointer datatypePtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, datatype);
-            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(readerConfigBuilder, columnPtr, datatypePtr);
+            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(readerConfigBuilder, columnPtr);
+        }
+    }
+
+    public void addSchema(String schemaJson) {
+        if (!useJavaReader) {
+            assert readerConfigBuilder != null;
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, schemaJson);
+            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_schema(readerConfigBuilder, ptr);
         }
     }
 

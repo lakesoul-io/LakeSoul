@@ -40,9 +40,11 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, Pointer file);
 
-    Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column, Pointer datatype);
+    Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column);
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
+
+    Pointer lakesoul_config_builder_add_schema(Pointer builder, Pointer schemaJson);
 
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
 

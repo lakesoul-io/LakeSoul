@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-use std::collections::HashMap;
-
+use arrow_schema::{DataType, Schema, Field};
 use datafusion::logical_expr::{col, Expr};
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {}
 
 impl Parser {
-    pub fn parse(filter_str: String, schema: &HashMap<String, String>) -> Expr {
+    pub fn parse(filter_str: String, schema_json: &String) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
         if right == "null" {
             match op.as_str() {
@@ -39,47 +38,47 @@ impl Parser {
         } else {
             match op.as_str() {
                 "not" => {
-                    let inner = Parser::parse(right, schema);
+                    let inner = Parser::parse(right, schema_json);
                     Expr::not(inner)
                 }
                 "eq" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.eq(value)
                 }
                 "noteq" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.not_eq(value)
                 }
                 "or" => {
-                    let left_expr = Parser::parse(left, schema);
-                    let right_expr = Parser::parse(right, schema);
+                    let left_expr = Parser::parse(left, schema_json);
+                    let right_expr = Parser::parse(right, schema_json);
                     left_expr.or(right_expr)
                 }
                 "and" => {
-                    let left_expr = Parser::parse(left, schema);
-                    let right_expr = Parser::parse(right, schema);
+                    let left_expr = Parser::parse(left, schema_json);
+                    let right_expr = Parser::parse(right, schema_json);
                     left_expr.and(right_expr)
                 }
                 "gt" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.gt(value)
                 }
                 "gteq" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.gt_eq(value)
                 }
                 "lt" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.lt(value)
                 }
                 "lteq" => {
                     let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
+                    let value = Parser::parse_literal(left, right, schema_json);
                     column.lt_eq(value)
                 }
 
@@ -120,53 +119,51 @@ impl Parser {
         }
     }
 
-    fn parse_literal(column: String, value: String, schema: &HashMap<String, String>) -> Expr {
-        let datatype = schema.get(&column).unwrap();
-        if datatype.len() > 7 && &datatype[..7] == "decimal" {
-            let comma_offset = datatype.find(',').unwrap();
-            let precision = datatype[8..comma_offset].parse::<u8>().unwrap();
-            let scale = datatype[comma_offset + 1..datatype.len() - 1].parse::<u8>().unwrap();
-            if precision <= 18 {
-                Expr::Literal(ScalarValue::Decimal128(
-                    Some(value.parse::<i128>().unwrap()),
-                    precision,
-                    scale,
-                ))
-            } else {
-                let binary_vec = Parser::parse_binary_array(value.as_str()).unwrap();
-
-                let mut arr = [0u8; 16];
-                for idx in 0..binary_vec.len() {
-                    arr[idx + 16 - binary_vec.len()] = binary_vec[idx];
+    fn parse_literal(column: String, value: String, schema_json: &String) -> Expr {
+        let schema: Schema = serde_json::from_str(schema_json.as_str()).unwrap();
+        let fields = schema.fields().iter().filter(|field| field.name().eq(&column)).collect::<Vec<&Field>>();
+        let data_type = fields.get(0).unwrap().data_type().clone();
+        match data_type {
+            DataType::Decimal128(precision, scale) => {
+                if precision <= 18 {
+                    Expr::Literal(ScalarValue::Decimal128(
+                        Some(value.parse::<i128>().unwrap()),
+                        precision,
+                        scale,
+                    ))
+                } else {
+                    let binary_vec = Parser::parse_binary_array(value.as_str()).unwrap();
+                    let mut arr = [0u8; 16];
+                    for idx in 0..binary_vec.len() {
+                        arr[idx + 16 - binary_vec.len()] = binary_vec[idx];
+                    }
+                    Expr::Literal(ScalarValue::Decimal128(
+                        Some(i128::from_be_bytes(arr)),
+                        precision,
+                        scale,
+                    ))
                 }
-                Expr::Literal(ScalarValue::Decimal128(
-                    Some(i128::from_be_bytes(arr)),
-                    precision,
-                    scale,
-                ))
             }
-        } else {
-            match datatype.as_str() {
-                "boolean" => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
-                "binary" => Expr::Literal(ScalarValue::Binary(Parser::parse_binary_array(value.as_str()))),
-                "float" => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
-                "double" => Expr::Literal(ScalarValue::Float64(Some(value.parse::<f64>().unwrap()))),
-                "byte" => Expr::Literal(ScalarValue::Int8(Some(value.parse::<i8>().unwrap()))),
-                "short" => Expr::Literal(ScalarValue::Int16(Some(value.parse::<i16>().unwrap()))),
-                "integer" => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
-                "long" => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
-                "date" => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
-                "timestamp" => Expr::Literal(ScalarValue::TimestampMicrosecond(
+            DataType::Boolean => Expr::Literal(ScalarValue::Boolean(Some(value.parse::<bool>().unwrap()))),
+            DataType::Binary => Expr::Literal(ScalarValue::Binary(Parser::parse_binary_array(value.as_str()))),
+            DataType::Float32 => Expr::Literal(ScalarValue::Float32(Some(value.parse::<f32>().unwrap()))),
+            DataType::Float64 => Expr::Literal(ScalarValue::Float64(Some(value.parse::<f64>().unwrap()))),
+            DataType::Int8 => Expr::Literal(ScalarValue::Int8(Some(value.parse::<i8>().unwrap()))),
+            DataType::Int16 => Expr::Literal(ScalarValue::Int16(Some(value.parse::<i16>().unwrap()))),
+            DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
+            DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
+            DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
+            DataType::Timestamp(_, _) => {
+                Expr::Literal(ScalarValue::TimestampMicrosecond(
                     Some(value.parse::<i64>().unwrap()),
                     None,
-                )),
-                "string" => {
-                    // value will be wrapped by Binary("value")
-                    let value = value.as_str()[8..value.len() - 2].to_string();
-                    Expr::Literal(ScalarValue::Utf8(Some(value)))
-                }
-                _ => Expr::Literal(ScalarValue::Utf8(Some(value))),
+                ))
             }
+            DataType::Utf8 => {
+                let value = value.as_str()[8..value.len() - 2].to_string();
+                Expr::Literal(ScalarValue::Utf8(Some(value)))
+            }
+            _ => Expr::Literal(ScalarValue::Utf8(Some(value)))
         }
     }
 
@@ -196,34 +193,39 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use crate::filter::Parser;
-    use std::collections::HashMap;
     use std::result::Result;
+    use arrow_schema::{Schema, Field, DataType, TimeUnit};
 
     #[test]
     fn test_filter_parser() -> Result<(), String> {
         let s = String::from("or(lt(a.b.c, 2.0), gt(a.b.c, 3.0))");
-        // let parser = Parser::new();
-        // Parser::parse(s);
+        let (op, left, right) = Parser::parse_filter_str(s);
+        assert_eq!(op, "or");
+        assert_eq!(left, "lt(a.b.c, 2.0)");
+        assert_eq!(right, "gt(a.b.c, 3.0)");
         Ok(())
     }
 
     #[test]
-    fn test_filter_parser_not() -> Result<(), String> {
-        let s = String::from("not(eq(a.c, 2.9))");
-        // Parser::parse(s);
-        Ok(())
-    }
+    fn test_schema_deserialization() -> Result<(), String> {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Boolean, false);
+        let field_c = Field::new("c", DataType::Utf8, false);
+        let field_d = Field::new("d", DataType::Binary, false);
+        let field_e = Field::new("e", DataType::Decimal128(5, 2), false);
+        let field_f = Field::new("f", DataType::Date32, false);
+        let field_g = Field::new("g", DataType::Timestamp(TimeUnit::Microsecond, None), false);
+        let schema = Schema::new(vec![field_a, field_b, field_c, field_d, field_e, field_f, field_g]);
 
-    #[test]
-    fn test_filter_parser_binary() -> Result<(), String> {
-        let mut schema = HashMap::<String, String>::new();
-        schema.insert("a".to_string(), "binary".to_string());
-        let s = String::from("eq(a, Binary{0 reused bytes, null})");
-        Parser::parse(s, &schema);
-        let s = String::from("eq(a, Binary{0 reused bytes, []})");
-        Parser::parse(s, &schema);
-        let s = String::from("eq(a, Binary{3 reused bytes, [49, 50, 51]})");
-        Parser::parse(s, &schema);
+        let s = "{\"fields\":[{\"name\":\"a\",\"data_type\":\"Int64\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"b\",\"data_type\":\"Boolean\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"c\",\"data_type\":\"Utf8\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"d\",\"data_type\":\"Binary\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"e\",\"data_type\":{\"Decimal128\":[5,2]},\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"f\",\"data_type\":\"Date32\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
+            {\"name\":\"g\",\"data_type\":{\"Timestamp\":[\"Microsecond\",null]},\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false}]}";
+        let de_schema: Schema = serde_json::from_str(&s).unwrap();
+        assert_eq!(schema, de_schema);
         Ok(())
     }
 }
