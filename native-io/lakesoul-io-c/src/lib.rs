@@ -124,9 +124,8 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
         let column = CStr::from_ptr(column).to_str().unwrap().to_string();
-        let datatype = CStr::from_ptr(datatype).to_str().unwrap().to_string();
         convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_column(column, datatype),
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_column(column),
         )
     }
 }
@@ -139,6 +138,17 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
     unsafe {
         let filter = CStr::from_ptr(filter).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_filter_str(filter))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_schema(
+    builder: NonNull<IOConfigBuilder>,
+    schema_json: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let schema_json = CStr::from_ptr(schema_json).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_schema_json(schema_json))
     }
 }
 

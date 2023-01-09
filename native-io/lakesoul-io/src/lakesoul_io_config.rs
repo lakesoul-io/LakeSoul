@@ -36,7 +36,6 @@ pub struct LakeSoulIOConfig {
     primary_keys: Vec<String>,
     // selecting columns
     pub(crate) columns: Vec<String>,
-    schema: HashMap<String, String>,
 
     // filtering predicates
     pub(crate) filters: Vec<Expr>,
@@ -87,9 +86,8 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_column(mut self, col: String, datatype: String) -> Self {
+    pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(String::from(&col));
-        self.config.schema.insert(String::from(&col), datatype);
         self
     }
 
@@ -119,7 +117,7 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, &self.config.schema);
+        let expr = FilterParser::parse(filter_str, &self.config.schema_json);
         self.config.filters.push(expr);
         self
     }
