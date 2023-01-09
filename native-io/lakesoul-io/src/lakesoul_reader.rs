@@ -25,6 +25,7 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
+use arrow_schema::SchemaRef;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::StreamExt;
 
@@ -38,6 +39,7 @@ pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
     stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
+    pub(crate) schema: Option<SchemaRef>,
 }
 
 impl LakeSoulReader {
@@ -47,6 +49,7 @@ impl LakeSoulReader {
             sess_ctx,
             config,
             stream: Box::new_uninit(),
+            schema: None,
         })
     }
 
@@ -60,6 +63,7 @@ impl LakeSoulReader {
             df = df.select_columns(&cols)?;
         }
         df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
+        self.schema = Some(df.schema().clone().into());
 
         self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
 

@@ -25,6 +25,7 @@ use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
 use object_store::MultipartId;
 use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -49,6 +50,7 @@ pub struct MultiPartAsyncWriter {
     config: LakeSoulIOConfig,
 }
 
+/// A VecDeque which is both std::io::Write and bytes::Buf
 #[derive(Clone)]
 struct InMemBuf(Arc<VecDeque<u8>>);
 
@@ -82,6 +84,9 @@ impl MultiPartAsyncWriter {
         }
         let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files[0];
+
+        // parse file name. Url::parse requires file:// scheme for local files, otherwise
+        // RelativeUrlWithoutBase would be throw, in this case we directly return local object store
         let (object_store, path) = match Url::parse(file_name.as_str()) {
             Ok(url) => Ok((
                 sess_ctx
@@ -97,9 +102,11 @@ impl MultiPartAsyncWriter {
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
+
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
-        let in_mem_buf = InMemBuf(Arc::new(VecDeque::<u8>::with_capacity(64 * 1024 * 1024)));
+        let in_mem_buf = InMemBuf(Arc::new(VecDeque::<u8>::with_capacity(16 * 1024 * 1024)));
         let write_schema: Schema = serde_json::from_str(&config.schema_json).unwrap();
+
         Ok(MultiPartAsyncWriter {
             in_mem_buf: in_mem_buf.clone(),
             sess_ctx,
@@ -112,6 +119,7 @@ impl MultiPartAsyncWriter {
                     WriterProperties::builder()
                         .set_max_row_group_size(config.max_row_group_size)
                         .set_write_batch_size(config.batch_size)
+                        .set_compression(Compression::SNAPPY)
                         .build(),
                 ),
             )?,
@@ -133,7 +141,8 @@ impl MultiPartAsyncWriter {
         in_mem_buf: &mut Arc<VecDeque<u8>>,
     ) -> Result<()> {
         unsafe {
-            writer.write_all_buf(Arc::get_mut_unchecked(in_mem_buf).into()).await?;
+            println!("write to AsyncWrite with length {}", in_mem_buf.len());
+            writer.write_all_buf(Arc::get_mut_unchecked(in_mem_buf)).await?;
             Ok(())
         }
     }
@@ -152,6 +161,7 @@ impl MultiPartAsyncWriter {
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_reader::LakeSoulReader;
     use crate::lakesoul_writer::MultiPartAsyncWriter;
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
@@ -177,7 +187,7 @@ mod tests {
             .with_files(vec![path.clone()])
             .with_thread_num(2)
             .with_batch_size(256)
-            .with_max_row_group_size(1)
+            .with_max_row_group_size(2)
             .with_schema_json(serde_json::to_string::<Schema>(to_write.schema().borrow()).unwrap())
             .build();
         let mut async_writer = MultiPartAsyncWriter::new(writer_conf).await?;
@@ -201,6 +211,49 @@ mod tests {
 
             assert_eq!(expected_data, actual_data);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_s3_read_write() -> Result<()> {
+
+        let common_conf_builder = LakeSoulIOConfigBuilder::new()
+            .with_thread_num(2)
+            .with_batch_size(8192)
+            .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.access.secret".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string())
+            ;
+
+        let read_conf = common_conf_builder.clone()
+            .with_files(vec![
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+            ])
+            .build();
+        let mut reader = LakeSoulReader::new(read_conf)?;
+        reader.start().await?;
+
+        let schema = reader.schema.clone().unwrap();
+
+        let write_conf = common_conf_builder.clone()
+            .with_files(vec![
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file_written.parquet".to_string(),
+            ])
+            .with_schema_json(serde_json::to_string::<Schema>(schema.borrow()).unwrap())
+            .build();
+        let mut async_writer = MultiPartAsyncWriter::new(write_conf).await?;
+
+        println!("begin read and write file");
+        while let Some(rb) = reader.next_rb().await {
+            let rb = rb?;
+            println!("read batch with rows {}", rb.num_rows());
+            async_writer.write_record_batch(&rb).await?;
+        }
+
+        println!("begin flush file");
+        async_writer.flush_and_shutdown().await?;
+        drop(reader);
 
         Ok(())
     }
