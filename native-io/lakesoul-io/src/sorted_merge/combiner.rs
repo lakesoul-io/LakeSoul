@@ -1,12 +1,36 @@
-use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
-use crate::sorted_stream_merger::SortKeyRange;
+use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
+use crate::sorted_merge::sorted_stream_merger::SortKeyRange;
 use async_trait::async_trait;
 use dary_heap::DaryHeap;
 use datafusion::error::Result;
 use futures::future::try_join_all;
 use smallvec::SmallVec;
-use std::cmp::Reverse;
 
+use std::fmt::{Debug, Formatter};
+use std::cmp::Reverse;
+use std::sync::Arc;
+use std::ops::Deref;
+use std::borrow::Borrow;
+
+#[derive(Debug)]
+pub enum RangeCombiner {
+    MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>)
+}
+
+impl RangeCombiner {
+    pub fn new() -> Self {
+        RangeCombiner::MinHeapSortKeyRangeCombiner(MinHeapSortKeyRangeCombiner::<NonUniqueSortKeyRangeFetcher, 2>::with_fetchers(vec![]))
+    }
+
+    pub fn push(&mut self, range: SortKeyRange) {
+        match self {
+            RangeCombiner::MinHeapSortKeyRangeCombiner(combiner) => combiner.push(range)
+        };
+    }
+}
+
+#[derive(Debug)]
 pub struct MinHeapSortKeyRangeCombiner<Fetcher: StreamSortKeyRangeFetcher + Send, const D: usize> {
     fetchers: Vec<Fetcher>,
     heap: DaryHeap<Reverse<SortKeyRange>, D>,
@@ -49,6 +73,10 @@ where
         }
     }
 
+    fn fetcher_num(self) -> usize {
+        self.fetchers.len()
+    } 
+
     async fn init(&mut self) -> Result<()> {
         let fetcher_iter_mut = self.fetchers.iter_mut();
         let futures = fetcher_iter_mut.map(|fetcher| async { fetcher.init_batch().await });
@@ -60,19 +88,19 @@ where
         Ok(())
     }
 
-    async fn next(&mut self) -> Result<Option<SmallVec<[SortKeyRange; 4]>>> {
-        let mut ranges: SmallVec<[SortKeyRange; 4]> = SmallVec::<[SortKeyRange; 4]>::new();
+    async fn next(&mut self) -> Result<Option<SmallVec<[Box<SortKeyRange>; 4]>>> {
+        let mut ranges: SmallVec<[Box<SortKeyRange>; 4]> = SmallVec::<[Box<SortKeyRange>; 4]>::new();
         let sort_key_range = self.heap.pop();
         if sort_key_range.is_some() {
-            let range = sort_key_range.unwrap().0;
-            self.fetch_next_range(range.stream_idx, Some(&range)).await?;
+            let range = Box::new(sort_key_range.unwrap().0);
+            self.fetch_next_range(range.stream_idx, Some(range.borrow())).await?;
             ranges.push(range);
             loop {
                 // check if next range (maybe in another stream) has same row key
                 let next_range = self.heap.peek();
-                if next_range.is_some_and(|nr| nr.0 == *ranges.last().unwrap()) {
-                    let range_next = self.heap.pop().unwrap().0;
-                    self.fetch_next_range(range_next.stream_idx, Some(&range_next)).await?;
+                if next_range.is_some_and(|nr| nr.0 == **ranges.last().unwrap()) {
+                    let range_next = Box::new(self.heap.pop().unwrap().0);
+                    self.fetch_next_range(range_next.stream_idx, Some(range_next.borrow())).await?;
                     ranges.push(range_next);
                 } else {
                     break;
@@ -85,15 +113,19 @@ where
             Ok(Some(ranges))
         }
     }
+
+    fn push(&mut self, sort_key_range: SortKeyRange) {
+        self.heap.push(Reverse(sort_key_range));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_reader::ArrowResult;
-    use crate::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
-    use crate::min_heap_combiner::MinHeapSortKeyRangeCombiner;
-    use crate::non_unique_fetcher::NonUniqueSortKeyRangeFetcher;
-    use crate::sorted_stream_merger::SortKeyRangeInBatch;
+    use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
+    use crate::sorted_merge::combiner::MinHeapSortKeyRangeCombiner;
+    use crate::sorted_merge::fetcher::NonUniqueSortKeyRangeFetcher;
+    use crate::sorted_merge::sorted_stream_merger::SortKeyRangeInBatch;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow::record_batch::RecordBatch;
     use datafusion::error::Result;
@@ -125,10 +157,9 @@ mod tests {
         let batches = [batches];
         let exec = MemoryExec::try_new(&batches, schema.clone(), None).unwrap();
         let stream = exec.execute(0, context.clone()).unwrap();
-        let ready_futures =
-            stream.map(std::future::ready as fn(ArrowResult<RecordBatch>) -> Ready<ArrowResult<RecordBatch>>);
-        let bufferred = ready_futures.buffered(2);
-        NonUniqueSortKeyRangeFetcher::new(stream_idx, bufferred, &sort_exprs, schema)
+        let fused = stream.fuse();
+
+        NonUniqueSortKeyRangeFetcher::new(stream_idx, fused, &sort_exprs, schema)
     }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {

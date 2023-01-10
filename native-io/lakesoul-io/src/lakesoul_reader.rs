@@ -130,7 +130,7 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                "/Users/ceng/PycharmProjects/write_parquet/small_1.parquet".to_string(),
                 ])
             .with_thread_num(1)
             .with_batch_size(256)
@@ -140,8 +140,8 @@ mod tests {
         let mut row_cnt: usize = 0;
 
         while let Some(rb) = reader.next_rb().await {
-            let num_rows = &rb.unwrap().num_rows();
-            row_cnt = row_cnt + num_rows;
+            let rb = &rb.unwrap();
+            println!("{}", rb.schema());
         }
         assert_eq!(row_cnt, 1000);
         Ok(())

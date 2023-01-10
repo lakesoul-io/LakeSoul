@@ -13,6 +13,7 @@ atomic_refcell = "0.1.8"
 heapless = "0.7.16"
 arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["prettyprint"] }
 arrow-schema = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["serde"] }
+arrow-buffer = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred" }
 parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["async", "arrow"] }
 bytes = "1.1"
 futures = "0.3.25"

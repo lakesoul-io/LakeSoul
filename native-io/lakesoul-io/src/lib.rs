@@ -15,15 +15,14 @@
  */
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
-#![feature(is_some_with)]
+#![feature(is_some_and)]
 #![feature(async_closure)]
 #![feature(let_chains)]
+
+extern crate core;
 
 pub mod lakesoul_reader;
 pub mod filter;
 pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
-pub mod sorted_stream_merger;
-pub mod merge_traits;
-pub mod non_unique_fetcher;
-pub mod min_heap_combiner;
+pub mod sorted_merge;
