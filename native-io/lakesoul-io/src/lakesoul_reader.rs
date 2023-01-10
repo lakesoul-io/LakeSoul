@@ -80,6 +80,7 @@ impl LakeSoulReader {
 pub struct SyncSendableMutableLakeSoulReader {
     inner: Arc<AtomicRefCell<Mutex<LakeSoulReader>>>,
     runtime: Arc<Runtime>,
+    schema: Option<SchemaRef>,
 }
 
 impl SyncSendableMutableLakeSoulReader {
@@ -87,14 +88,18 @@ impl SyncSendableMutableLakeSoulReader {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
             runtime: Arc::new(runtime),
+            schema: None,
         }
     }
 
-    pub fn start_blocked(&self) -> Result<()> {
+    pub fn start_blocked(&mut self) -> Result<()> {
         let inner_reader = self.inner.clone();
         let runtime = self.get_runtime();
         runtime.block_on(async {
-            inner_reader.borrow().lock().await.start().await?;
+            let reader = inner_reader.borrow();
+            let mut reader = reader.lock().await;
+            reader.start().await?;
+            self.schema = reader.schema.clone();
             Ok(())
         })
     }
@@ -108,8 +113,13 @@ impl SyncSendableMutableLakeSoulReader {
         runtime.spawn(async move {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
-            f(reader.next_rb().await);
+            let rb = reader.next_rb().await;
+            f(rb);
         })
+    }
+
+    pub fn get_schema(&self) -> Option<SchemaRef> {
+        self.schema.clone()
     }
 
     fn get_runtime(&self) -> Arc<Runtime> {

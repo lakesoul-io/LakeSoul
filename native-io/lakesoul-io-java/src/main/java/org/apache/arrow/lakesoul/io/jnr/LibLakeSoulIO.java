@@ -44,7 +44,7 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
 
-    Pointer lakesoul_config_builder_add_schema(Pointer builder, Pointer schemaJson);
+    Pointer lakesoul_config_builder_set_schema(Pointer builder, Pointer schemaJson);
 
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
 
@@ -53,9 +53,15 @@ public interface LibLakeSoulIO {
     Pointer lakesoul_config_builder_set_batch_size(Pointer builder, int batch_size);
     Pointer lakesoul_config_builder_set_buffer_size(Pointer builder, int buffer_size);
 
-    Pointer create_lakesoul_reader_config_from_builder(Pointer builder);
+    Pointer create_lakesoul_io_config_from_builder(Pointer builder);
 
     Pointer create_lakesoul_reader_from_config(Pointer config, Pointer runtime);
+
+    Pointer lakesoul_reader_get_schema(Pointer reader);
+
+    void lakesoul_schema_free(Pointer s);
+
+    Pointer create_lakesoul_writer_from_config(Pointer config, Pointer runtime);
 
     interface JavaCallback { // type representing callback
         @Delegate
@@ -66,7 +72,11 @@ public interface LibLakeSoulIO {
 
     void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, JavaCallback callback);
 
+    void write_record_batch(Pointer writer, long schemaAddr, long arrayAddr, JavaCallback callback);
+
     void free_lakesoul_reader(Pointer reader);
+
+    void flush_and_close_writer(Pointer writer, JavaCallback callback);
 
     void free_tokio_runtime(Pointer runtime);
 }

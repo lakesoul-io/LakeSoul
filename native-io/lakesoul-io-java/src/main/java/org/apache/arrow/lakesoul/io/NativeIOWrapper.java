@@ -110,7 +110,7 @@ public class NativeIOWrapper implements AutoCloseable {
         if (!useJavaReader) {
             assert readerConfigBuilder != null;
             Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, schemaJson);
-            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_schema(readerConfigBuilder, ptr);
+            readerConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(readerConfigBuilder, ptr);
         }
     }
 
@@ -168,7 +168,7 @@ public class NativeIOWrapper implements AutoCloseable {
             assert readerConfigBuilder != null;
 
             tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
-            config = libLakeSoulIO.create_lakesoul_reader_config_from_builder(readerConfigBuilder);
+            config = libLakeSoulIO.create_lakesoul_io_config_from_builder(readerConfigBuilder);
             reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);
         } else {
             arrowJavaReader = arrowJavaReaderBuilder.build();
