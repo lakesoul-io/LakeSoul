@@ -1,0 +1,98 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.arrow.lakesoul.io;
+
+import jnr.ffi.Pointer;
+import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.ArrowSchema;
+import org.apache.arrow.c.CDataDictionaryProvider;
+import org.apache.arrow.c.Data;
+import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Schema;
+
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
+    private Pointer writer = null;
+
+    private final BufferAllocator allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("NativeIOWriter", 0, Long.MAX_VALUE);
+
+    private final CDataDictionaryProvider provider = new CDataDictionaryProvider();
+
+    public NativeIOWriter(Schema schema) {
+        super();
+        setSchema(schema.toJson());
+    }
+
+    public NativeIOWriter(String schemaJson) {
+        super();
+        setSchema(schemaJson);
+    }
+
+    public void createWriter() throws IOException {
+        assert tokioRuntimeBuilder != null;
+        assert ioConfigBuilder != null;
+
+        tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        // tokioRuntime will be moved to reader
+        writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
+        tokioRuntime = null;
+        Pointer p = libLakeSoulIO.check_writer_created(writer);
+        if (p != null) {
+            throw new IOException(p.getString(0));
+        }
+    }
+
+    public void write(VectorSchemaRoot batch) throws IOException {
+        ArrowArray array = ArrowArray.allocateNew(allocator);
+        ArrowSchema schema = ArrowSchema.allocateNew(allocator);
+        Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        libLakeSoulIO.write_record_batch(writer, schema.memoryAddress(), array.memoryAddress(), (status, err) -> {
+            if (!status && err != null) {
+                errMsg.set(err);
+            }
+        });
+        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            throw new IOException(errMsg.get());
+        }
+    }
+
+    public void flush() throws IOException {
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        libLakeSoulIO.flush_and_close_writer(writer, (status, err) -> {
+            if (!status && err != null) {
+                errMsg.set(err);
+            }
+        });
+        writer = null;
+        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            throw new IOException(errMsg.get());
+        }
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (writer != null) {
+            flush();
+        }
+    }
+}

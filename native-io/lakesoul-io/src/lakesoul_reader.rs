@@ -176,7 +176,7 @@ mod tests {
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         loop {
@@ -218,7 +218,7 @@ mod tests {
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         loop {
@@ -297,7 +297,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         let start = Instant::now();

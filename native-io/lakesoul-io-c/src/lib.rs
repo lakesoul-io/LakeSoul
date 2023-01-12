@@ -249,6 +249,17 @@ pub extern "C" fn create_lakesoul_reader_from_config(
     convert_to_nonnull(result)
 }
 
+#[no_mangle]
+pub extern "C" fn check_reader_created(reader: NonNull<Result<Reader>>) -> *const c_char {
+    unsafe {
+        if let Some(err) = reader.as_ref().err.as_ref() {
+            err as *const c_char
+        } else {
+            std::ptr::null()
+        }
+    }
+}
+
 pub type ResultCallback = extern "C" fn(bool, *const c_char);
 
 fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
@@ -368,6 +379,17 @@ pub extern "C" fn create_lakesoul_writer_from_config(
 }
 
 #[no_mangle]
+pub extern "C" fn check_writer_created(writer: NonNull<Result<Reader>>) -> *const c_char {
+    unsafe {
+        if let Some(err) = writer.as_ref().err.as_ref() {
+            err as *const c_char
+        } else {
+            std::ptr::null()
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn write_record_batch(
     writer: NonNull<Result<Writer>>,
     schema_addr: c_ptrdiff_t,
@@ -437,6 +459,7 @@ pub struct TokioRuntime {
 pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
     let mut builder = Builder::new_multi_thread();
     builder.enable_all();
+    builder.worker_threads(2);
     convert_to_opaque(builder)
 }
 

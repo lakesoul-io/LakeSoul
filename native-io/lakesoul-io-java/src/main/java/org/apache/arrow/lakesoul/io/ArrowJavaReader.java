@@ -69,7 +69,7 @@ public class ArrowJavaReader {
         batchIterator = scanner.scan().iterator().next().execute();
     }
 
-    void nextRecordBatch(long schemaAddr, long arrayAddr, NativeIOWrapper.Callback callback) {
+    void nextRecordBatch(long schemaAddr, long arrayAddr, NativeIOReader.Callback callback) {
         try {
             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
             VectorLoader loader = new VectorLoader(root);
@@ -85,6 +85,9 @@ public class ArrowJavaReader {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
 
+    Schema getSchema() {
+        return schema;
     }
 }

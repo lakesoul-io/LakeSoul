@@ -57,11 +57,15 @@ public interface LibLakeSoulIO {
 
     Pointer create_lakesoul_reader_from_config(Pointer config, Pointer runtime);
 
+    Pointer check_reader_created(Pointer reader);
+
     Pointer lakesoul_reader_get_schema(Pointer reader);
 
     void lakesoul_schema_free(Pointer s);
 
     Pointer create_lakesoul_writer_from_config(Pointer config, Pointer runtime);
+
+    Pointer check_writer_created(Pointer writer);
 
     interface JavaCallback { // type representing callback
         @Delegate

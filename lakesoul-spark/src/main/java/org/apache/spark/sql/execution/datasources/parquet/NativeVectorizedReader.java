@@ -17,7 +17,7 @@
 package org.apache.spark.sql.execution.datasources.parquet;
 
 import com.amazonaws.auth.AWSCredentials;
-import org.apache.arrow.lakesoul.io.NativeIOWrapper;
+import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.hadoop.fs.FileSystem;
@@ -36,7 +36,6 @@ import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
@@ -237,12 +236,11 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.threadNum = threadNum;
   }
 
-  private void recreateNativeReader() {
+  private void recreateNativeReader() throws IOException {
     if (nativeReader != null) {
       nativeReader.close();
     }
-    wrapper = new NativeIOWrapper();
-    wrapper.initialize();
+    wrapper = new NativeIOReader();
     wrapper.addFile(filePath);
     // Initialize missing columns with nulls.
     for (int i = 0; i < missingColumns.length; i++) {
@@ -252,7 +250,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     String schemaJson = NativeIOUtils.convertStructTypeToArrowJson(sparkSchema, convertTz == null ? "" : convertTz.toString());
-    wrapper.addSchema(schemaJson);
+    wrapper.setSchema(schemaJson);
 
     wrapper.setBatchSize(capacity);
     wrapper.setBufferSize(prefetchBufferSize);
@@ -268,8 +266,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     wrapper.createReader();
-    wrapper.startReader(bool -> {});
-
 
     totalRowCount= 0;
     nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
@@ -386,7 +382,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     initBatch();
   }
 
-  private NativeIOWrapper wrapper = null;
+  private NativeIOReader wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
 
   private int prefetchBufferSize = 2;

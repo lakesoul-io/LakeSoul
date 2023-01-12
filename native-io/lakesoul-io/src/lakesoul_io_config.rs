@@ -40,6 +40,7 @@ pub struct LakeSoulIOConfig {
     // filtering predicates
     pub(crate) filters: Vec<Expr>,
     // read or write batch size
+    #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
     // write row group max row num
     #[derivative(Default(value = "250000"))]
