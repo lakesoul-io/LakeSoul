@@ -30,30 +30,7 @@ import org.apache.spark.sql.functions._
 
 object SparkPipeLine {
 
-  val fromDataSourcePath = "/tmp/lakesoul/test_cdc/mysql_test_2"
-  val toDataSourcePath = "file:///home/yongpeng/result"
-  val checkpointLocation = "file:///home/yongpeng/chk"
-  val partitionDesc = ""
-  val readStartTime = "2023-01-01 15:20:15"
-  val sourceType = "lakesoul"
-  val outputMode = "update"
-  val processType = ProcessOptions.STREAM
-  val field = "id"
-
   def main(args: Array[String]): Unit = {
-
-    /** test table
-     * +-------+----------+-------+-------+
-     * | name  | phone_no | score | hash  |
-     * +-------+----------+-------+-------+
-     * | Alice | 20       | 9.9   | hash1 |
-     * | Bob   | 10010    | 9.8   | hash2 |
-     * | Carl  | 1020     | 9.4   | hash3 |
-     * | Smith | 8820     | 9.2   | hash4 |
-     * | Bob   | 9988     | 8.9   | hash5 |
-     * +-------+----------+-------+-------+
-     * primaryKey is hash
-     * */
 
     val builder = SparkSession.builder()
       .appName("STREAM PIPELINE TEST")
@@ -71,13 +48,36 @@ object SparkPipeLine {
       .config("spark.default.parallelism", "4")
       .config("park.sql.warehouse.dir", "/tmp/lakesoul")
     val spark = builder.getOrCreate()
+
+    val parameter = ParametersTool.fromArgs(args)
+    val fromDataSourcePath = parameter.get(SparkPipeLineOptions.FROM_DATASOURCE_PATH)
+    val toDataSourcePath = parameter.get(SparkPipeLineOptions.TO_DATASOURCE_PATH)
+    val checkpointLocation = parameter.get(SparkPipeLineOptions.CHECKPOINT_LOCATION)
+    val readStartTime = parameter.get(SparkPipeLineOptions.READ_START_TIME)
+    val sourceType = parameter.get(SparkPipeLineOptions.SOURCE_TYPE)
+    val sinkType = parameter.get(SparkPipeLineOptions.SINK_TYPE)
+    val outputMode = parameter.get(SparkPipeLineOptions.OUTPUT_MODE)
+    val processType = parameter.get(SparkPipeLineOptions.PROCESS_TYPE)
+    val processFields = parameter.get(SparkPipeLineOptions.PROCESS_FIELDS)
+    // unrequested parameter
+    val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESC)
+    val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS)
+    val hashBucketNum = parameter.get(SparkPipeLineOptions.HASH_BUCKET_NUM).toInt
+
     val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
     //    query.createOrReplaceTempView("testView")
-    //    val data = spark.sql("select hash,score from testView")
-    val operators = Map("groupBy" -> "hash", "sum" -> "score","max" -> "score")
-    val data = processDataFrameByOperators(query, "", operators)
+    //    val data = spark.sql("select hash,name,score from testView")
+    val data = processDataFrameByOperators(query, "", processOperatorsAndFields(processFields))
+    sinkToDataSource(data, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
+  }
 
-    sinkToDataSource(data, sourceType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType)
+  def processOperatorsAndFields(processFields: String): Map[String, String] = {
+    var operators = Map[String, String]()
+    val processFieldsSeq = processFields.split(";").toSeq
+    processFieldsSeq.foreach(fieldCouple => {
+      operators += (fieldCouple.split(":")(0) -> fieldCouple.split(":")(1))
+    })
+    operators
   }
 
   def sourceFromDataSource(spark: SparkSession,
@@ -103,26 +103,28 @@ object SparkPipeLine {
   }
 
   def sinkToDataSource(query: DataFrame,
-                       source: String,
+                       sinkSource: String,
                        outputMode: String,
                        checkpointLocation: String,
                        partitionDesc: String,
                        toDataSourcePath: String,
-                       processType: String): Unit = {
+                       processType: String,
+                       hashPartitions: String,
+                       hashBucketNum: Int): Unit = {
     processType match {
       case "batch" =>
-        query.write.format(source)
+        query.write.format(sinkSource)
           .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
-          .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
-          .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
+          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
+          .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
       case "stream" =>
-        query.writeStream.format(source)
+        query.writeStream.format(sinkSource)
           .outputMode(outputMode)
           .option("checkpointLocation", checkpointLocation)
           .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
-          .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
-          .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
+          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
+          .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
           .trigger(Trigger.Once())
           .start().awaitTermination()
@@ -130,21 +132,20 @@ object SparkPipeLine {
   }
 
 
-  /** --operators groupby:op;max:id
+  /** eg：--operators groupby:id;sum:score;max:score
    * */
   def processDataFrameByOperators(query: DataFrame, table: String, operators: Map[String, String]): DataFrame = {
     val ops = operators.keys.toSeq
-    val fields = operators.values.toSeq
     ops(0) match {
-      case "groupBy" => query.groupBy(fields(0)).agg(sum(query(fields(1))).as(getComputeOps(ops(1)) + fields(1))
-        ,max(query(fields(2))).as(getComputeOps(ops(2)) + fields(2)))
+      case "groupBy" => query.groupBy(operators.get("groupBy").get).agg(sum(query(operators.get("sum").get)).as("sum score"),
+        max(query(operators.get("avg").get)).as("avg score"))
 
-      case "orderBy" => query.orderBy(fields(0)).agg(sum(query(fields(1))).as(getComputeOps(ops(1)) + fields(1)))
+      case "orderBy" => query.orderBy(operators.get("orderBy").get).agg(sum(query(operators.get("sum").get)))
     }
   }
 
-  def getComputeOps(ops: String): String = {
-    ops match {
+  def getComputeOps(op: String, field: String): String = {
+    op match {
       case "sum" => "sum"
       case "max" => "max"
       case "min" => "min"
@@ -153,7 +154,20 @@ object SparkPipeLine {
   }
 }
 
-object ProcessOptions {
+object SparkPipeLineOptions {
   val BATCH = "batch"
   val STREAM = "stream"
+  var FROM_DATASOURCE_PATH = "sourcePath"
+  var TO_DATASOURCE_PATH = "sinkPath"
+  var CHECKPOINT_LOCATION = "checkpointLocation"
+  var READ_START_TIME = "readStartTime"
+  var SOURCE_TYPE = "sourceType"
+  var SINK_TYPE = "sinkType"
+  var OUTPUT_MODE = "outputmode"
+  var PROCESS_TYPE = "processType"
+  var PROCESS_FIELDS = "fields"
+  // selected parameter
+  var PARTITION_DESC = "partitionDesc"
+  var HASH_PARTITIONS = "hashPartition"
+  var HASH_BUCKET_NUM = "hashBucketNum"
 }
