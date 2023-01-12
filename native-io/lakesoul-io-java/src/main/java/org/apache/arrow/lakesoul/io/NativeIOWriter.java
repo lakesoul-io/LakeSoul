@@ -24,7 +24,6 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,24 +35,19 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
     private final CDataDictionaryProvider provider = new CDataDictionaryProvider();
 
-    public NativeIOWriter(Schema schema) {
-        super();
-        setSchema(schema.toJson());
-    }
-
     public NativeIOWriter(String schemaJson) {
         super();
         setSchema(schemaJson);
     }
 
-    public void createWriter() throws IOException {
+    public void initializeWriter() throws IOException {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;
 
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
-        // tokioRuntime will be moved to reader
         writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
+        // tokioRuntime will be moved to reader, we don't need to free it
         tokioRuntime = null;
         Pointer p = libLakeSoulIO.check_writer_created(writer);
         if (p != null) {

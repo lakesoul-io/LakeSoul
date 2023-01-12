@@ -58,7 +58,7 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, ptr);
     }
 
-    public void createReader() throws IOException {
+    public void initializeReader() throws IOException {
         if (!useJavaReader) {
             assert tokioRuntimeBuilder != null;
             assert ioConfigBuilder != null;

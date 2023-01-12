@@ -121,18 +121,8 @@ public class NativeIOBase {
     public static final class Callback implements LibLakeSoulIO.JavaCallback {
 
         public BiConsumer<Boolean, String> callback;
-        public long array_ptr;
         private Pointer key;
-        private ObjectReferenceManager<Callback> referenceManager;
-
-        public Callback(BiConsumer<Boolean, String> callback) {
-            this(callback, 0L);
-        }
-
-        public Callback(BiConsumer<Boolean, String> callback, long array_ptr) {
-            this.callback = callback;
-            this.array_ptr = array_ptr;
-        }
+        private final ObjectReferenceManager<Callback> referenceManager;
 
         public Callback(BiConsumer<Boolean, String> callback, ObjectReferenceManager<Callback> referenceManager) {
             this.callback = callback;

@@ -28,7 +28,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
     val filePath = projectDir + "/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
     reader.addFile(filePath)
     reader.setThreadNum(2)
-    reader.createReader()
+    reader.initializeReader()
 
     val schema = reader.getSchema
 
@@ -36,7 +36,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
 
     val writer = new NativeIOWriter(schema)
     writer.addFile(System.getProperty("java.io.tmpdir") + "/" + "temp.parquet")
-    writer.createWriter()
+    writer.initializeWriter()
 
     while (lakesoulReader.hasNext) {
       val batch = lakesoulReader.next()
