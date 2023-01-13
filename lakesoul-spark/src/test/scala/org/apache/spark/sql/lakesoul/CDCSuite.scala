@@ -17,7 +17,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.arrow.lakesoul.io.NativeIOWrapper
+import org.apache.arrow.lakesoul.io.{NativeIOBase, NativeIOReader}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -72,7 +72,7 @@ class CDCSuite
     SnapshotManagement(path)
   }
 
-  Seq("false", NativeIOWrapper.isNativeIOLibExist.toString).distinct.foreach { nativeIOEnabled =>
+  Seq("false", NativeIOBase.isNativeIOLibExist.toString).distinct.foreach { nativeIOEnabled =>
     test(s"test cdc with MultiPartitionMergeScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {

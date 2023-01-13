@@ -16,7 +16,8 @@
 
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::Schema;
+use arrow_schema::SchemaRef;
+use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
@@ -25,12 +26,15 @@ use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
 use object_store::MultipartId;
 use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 use url::{ParseError, Url};
 
 /// An async writer using object_store's multi-part upload feature for cloud storage.
@@ -43,12 +47,14 @@ use url::{ParseError, Url};
 pub struct MultiPartAsyncWriter {
     in_mem_buf: InMemBuf,
     sess_ctx: SessionContext,
+    schema: SchemaRef,
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
     config: LakeSoulIOConfig,
 }
 
+/// A VecDeque which is both std::io::Write and bytes::Buf
 #[derive(Clone)]
 struct InMemBuf(Arc<VecDeque<u8>>);
 
@@ -82,6 +88,9 @@ impl MultiPartAsyncWriter {
         }
         let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files[0];
+
+        // parse file name. Url::parse requires file:// scheme for local files, otherwise
+        // RelativeUrlWithoutBase would be throw, in this case we directly return local object store
         let (object_store, path) = match Url::parse(file_name.as_str()) {
             Ok(url) => Ok((
                 sess_ctx
@@ -97,21 +106,26 @@ impl MultiPartAsyncWriter {
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
+
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
-        let in_mem_buf = InMemBuf(Arc::new(VecDeque::<u8>::with_capacity(64 * 1024 * 1024)));
-        let write_schema: Schema = serde_json::from_str(&config.schema_json).unwrap();
+        let in_mem_buf = InMemBuf(Arc::new(VecDeque::<u8>::with_capacity(16 * 1024 * 1024)));
+        let schema: SchemaRef =
+            Arc::new(serde_json::from_str(&config.schema_json).map_err(|e| DataFusionError::External(Box::new(e)))?);
+
         Ok(MultiPartAsyncWriter {
             in_mem_buf: in_mem_buf.clone(),
             sess_ctx,
+            schema: schema.clone(),
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer: ArrowWriter::try_new(
                 in_mem_buf,
-                Arc::new(write_schema),
+                schema,
                 Some(
                     WriterProperties::builder()
                         .set_max_row_group_size(config.max_row_group_size)
                         .set_write_batch_size(config.batch_size)
+                        .set_compression(Compression::SNAPPY)
                         .build(),
                 ),
             )?,
@@ -133,7 +147,7 @@ impl MultiPartAsyncWriter {
         in_mem_buf: &mut Arc<VecDeque<u8>>,
     ) -> Result<()> {
         unsafe {
-            writer.write_all_buf(Arc::get_mut_unchecked(in_mem_buf).into()).await?;
+            writer.write_all_buf(Arc::get_mut_unchecked(in_mem_buf)).await?;
             Ok(())
         }
     }
@@ -149,9 +163,62 @@ impl MultiPartAsyncWriter {
     }
 }
 
+pub struct SyncSendableMutableLakeSoulWriter {
+    inner: Arc<AtomicRefCell<Mutex<MultiPartAsyncWriter>>>,
+    runtime: Arc<Runtime>,
+    schema: SchemaRef,
+}
+
+impl SyncSendableMutableLakeSoulWriter {
+    pub fn new(config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
+        let runtime = Arc::new(runtime);
+        runtime.clone().block_on(async move {
+            let writer = MultiPartAsyncWriter::new(config).await?;
+            let schema = writer.schema.clone();
+            Ok(SyncSendableMutableLakeSoulWriter {
+                inner: Arc::new(AtomicRefCell::new(Mutex::new(writer))),
+                runtime,
+                schema,
+            })
+        })
+    }
+
+    // blocking method for writer record batch.
+    // since the underlying multipart upload would accumulate buffers
+    // and upload concurrently in backgroud, we only need blocking method here
+    // for ffi callers
+    pub fn write_batch(&self, record_batch: &RecordBatch) -> Result<()> {
+        let inner_writer = self.inner.clone();
+        let runtime = self.runtime.clone();
+        runtime.block_on(async move {
+            let writer = inner_writer.borrow();
+            let mut writer = writer.lock().await;
+            writer.write_record_batch(&record_batch).await
+        })
+    }
+
+    pub fn flush_and_close(self) -> Result<()> {
+        let inner_writer = match Arc::try_unwrap(self.inner) {
+            Ok(inner) => inner,
+            Err(_) => return Err(Internal("Cannot get ownership of inner writer".to_string()))
+        };
+        let runtime = self.runtime;
+        runtime.block_on(async move {
+            let writer = inner_writer.into_inner();
+            let mut writer = writer.into_inner();
+            writer.flush_and_shutdown().await
+        })
+    }
+
+    pub fn get_schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_reader::LakeSoulReader;
     use crate::lakesoul_writer::MultiPartAsyncWriter;
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
@@ -177,7 +244,7 @@ mod tests {
             .with_files(vec![path.clone()])
             .with_thread_num(2)
             .with_batch_size(256)
-            .with_max_row_group_size(1)
+            .with_max_row_group_size(2)
             .with_schema_json(serde_json::to_string::<Schema>(to_write.schema().borrow()).unwrap())
             .build();
         let mut async_writer = MultiPartAsyncWriter::new(writer_conf).await?;
@@ -201,6 +268,47 @@ mod tests {
 
             assert_eq!(expected_data, actual_data);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_s3_read_write() -> Result<()> {
+        let common_conf_builder = LakeSoulIOConfigBuilder::new()
+            .with_thread_num(2)
+            .with_batch_size(8192)
+            .with_max_row_group_size(250000)
+            .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.access.secret".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
+
+        let read_conf = common_conf_builder
+            .clone()
+            .with_files(vec![
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet".to_string()
+            ])
+            .build();
+        let mut reader = LakeSoulReader::new(read_conf)?;
+        reader.start().await?;
+
+        let schema = reader.schema.clone().unwrap();
+
+        let write_conf = common_conf_builder
+            .clone()
+            .with_files(vec![
+                "s3://lakesoul-test-bucket/data/native-io-test/large_file_written.parquet".to_string(),
+            ])
+            .with_schema_json(serde_json::to_string::<Schema>(schema.borrow()).unwrap())
+            .build();
+        let mut async_writer = MultiPartAsyncWriter::new(write_conf).await?;
+
+        while let Some(rb) = reader.next_rb().await {
+            let rb = rb?;
+            async_writer.write_record_batch(&rb).await?;
+        }
+
+        async_writer.flush_and_shutdown().await?;
+        drop(reader);
 
         Ok(())
     }

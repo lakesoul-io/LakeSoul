@@ -28,7 +28,7 @@ use std::sync::Arc;
 use url::Url;
 
 #[derive(Derivative)]
-#[derivative(Default)]
+#[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
     // files to read or write
     pub(crate) files: Vec<String>,
@@ -40,6 +40,7 @@ pub struct LakeSoulIOConfig {
     // filtering predicates
     pub(crate) filters: Vec<Expr>,
     // read or write batch size
+    #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
     // write row group max row num
     #[derivative(Default(value = "250000"))]
@@ -58,6 +59,8 @@ pub struct LakeSoulIOConfig {
     pub(crate) thread_num: usize,
 }
 
+#[derive(Derivative)]
+#[derivative(Clone)]
 pub struct LakeSoulIOConfigBuilder {
     config: LakeSoulIOConfig,
 }

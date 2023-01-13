@@ -20,3 +20,4 @@ pub mod lakesoul_reader;
 pub mod filter;
 pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
+pub use datafusion::arrow::error::Result;

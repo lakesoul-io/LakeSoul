@@ -25,6 +25,7 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
+use arrow_schema::SchemaRef;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::StreamExt;
 
@@ -38,6 +39,7 @@ pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
     stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
+    pub(crate) schema: Option<SchemaRef>,
 }
 
 impl LakeSoulReader {
@@ -47,6 +49,7 @@ impl LakeSoulReader {
             sess_ctx,
             config,
             stream: Box::new_uninit(),
+            schema: None,
         })
     }
 
@@ -60,6 +63,7 @@ impl LakeSoulReader {
             df = df.select_columns(&cols)?;
         }
         df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
+        self.schema = Some(df.schema().clone().into());
 
         self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
 
@@ -76,6 +80,7 @@ impl LakeSoulReader {
 pub struct SyncSendableMutableLakeSoulReader {
     inner: Arc<AtomicRefCell<Mutex<LakeSoulReader>>>,
     runtime: Arc<Runtime>,
+    schema: Option<SchemaRef>,
 }
 
 impl SyncSendableMutableLakeSoulReader {
@@ -83,14 +88,18 @@ impl SyncSendableMutableLakeSoulReader {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
             runtime: Arc::new(runtime),
+            schema: None,
         }
     }
 
-    pub fn start_blocked(&self) -> Result<()> {
+    pub fn start_blocked(&mut self) -> Result<()> {
         let inner_reader = self.inner.clone();
         let runtime = self.get_runtime();
         runtime.block_on(async {
-            inner_reader.borrow().lock().await.start().await?;
+            let reader = inner_reader.borrow();
+            let mut reader = reader.lock().await;
+            reader.start().await?;
+            self.schema = reader.schema.clone();
             Ok(())
         })
     }
@@ -104,8 +113,13 @@ impl SyncSendableMutableLakeSoulReader {
         runtime.spawn(async move {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
-            f(reader.next_rb().await);
+            let rb = reader.next_rb().await;
+            f(rb);
         })
+    }
+
+    pub fn get_schema(&self) -> Option<SchemaRef> {
+        self.schema.clone()
     }
 
     fn get_runtime(&self) -> Arc<Runtime> {
@@ -162,7 +176,7 @@ mod tests {
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         loop {
@@ -204,7 +218,7 @@ mod tests {
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         loop {
@@ -283,7 +297,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         let start = Instant::now();
