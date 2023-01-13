@@ -185,7 +185,7 @@ impl SyncSendableMutableLakeSoulWriter {
 
     // blocking method for writer record batch.
     // since the underlying multipart upload would accumulate buffers
-    // and upload concurrently, we only need blocking method here
+    // and upload concurrently in backgroud, we only need blocking method here
     // for ffi callers
     pub fn write_batch(&self, record_batch: &RecordBatch) -> Result<()> {
         let inner_writer = self.inner.clone();

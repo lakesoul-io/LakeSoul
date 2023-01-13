@@ -106,5 +106,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
   override def close(): Unit = {
     reader.close()
+    provider.close()
+    allocator.close()
   }
 }

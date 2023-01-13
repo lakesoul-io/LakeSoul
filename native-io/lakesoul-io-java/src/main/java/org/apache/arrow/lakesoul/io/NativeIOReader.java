@@ -76,14 +76,14 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             // startReader in C is a blocking call
             startReader((status, err) -> {
                 if (!status) {
-                    errMsg.set(err != null ? err : "Unknown error");
+                    errMsg.set("Init native reader failed with error: " + (err != null ? err : "unknown error"));
                 }
             });
             if (errMsg.get() != null) {
                 throw new IOException(errMsg.get());
             }
             if (readerSchema.isEmpty()) {
-                throw new IOException("Cannot retrieve native reader's schema");
+                throw new IOException("Init native reader failed: Cannot retrieve native reader's schema");
             }
         } else {
             arrowJavaReader = arrowJavaReaderBuilder.build();
@@ -114,6 +114,8 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             if (tokioRuntime != null) {
                 libLakeSoulIO.free_tokio_runtime(tokioRuntime);
             }
+        } else if (arrowJavaReader != null) {
+            arrowJavaReader.close();
         }
     }
 

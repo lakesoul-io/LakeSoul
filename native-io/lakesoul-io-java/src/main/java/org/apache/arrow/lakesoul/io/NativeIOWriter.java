@@ -51,7 +51,8 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         tokioRuntime = null;
         Pointer p = libLakeSoulIO.check_writer_created(writer);
         if (p != null) {
-            throw new IOException(p.getString(0));
+            writer = null;
+            throw new IOException("Init native writer failed with error: " + p.getString(0));
         }
     }
 
@@ -66,7 +67,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
             }
         });
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
-            throw new IOException(errMsg.get());
+            throw new IOException("Native writer write batch failed with error: " + errMsg.get());
         }
     }
 
@@ -79,7 +80,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         });
         writer = null;
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
-            throw new IOException(errMsg.get());
+            throw new IOException("Native writer flush failed with error: " + errMsg.get());
         }
     }
 
@@ -88,5 +89,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         if (writer != null) {
             flush();
         }
+        provider.close();
+        allocator.close();
     }
 }
