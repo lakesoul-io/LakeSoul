@@ -68,17 +68,22 @@ object SparkPipeLine {
     val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
     //    query.createOrReplaceTempView("testView")
     //    val data = spark.sql("select hash,name,score from testView")
-    val data = processDataFrameByOperators(query, "", processOperatorsAndFields(processFields))
-    sinkToDataSource(data, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
-  }
-
-  def processOperatorsAndFields(processFields: String): Map[String, String] = {
-    var operators = Map[String, String]()
+    /** process operators and fields
+     * eg：--operator:field  groupby:id;sum:score;max:score
+     * */
     val processFieldsSeq = processFields.split(";").toSeq
-    processFieldsSeq.foreach(fieldCouple => {
-      operators += (fieldCouple.split(":")(0) -> fieldCouple.split(":")(1))
-    })
-    operators
+    for (i <- 0 to processFieldsSeq.length - 1) {
+      val op = processFieldsSeq(i).split(":")(0)
+      val field = processFieldsSeq(i).split(":")(1)
+      if (i == 0) {
+        op match {
+          case "groupBy" => query.groupBy(field)
+        }
+      } else {
+        query.agg(getComputeOps(query, op, field))
+      }
+    }
+    sinkToDataSource(query, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
   }
 
   def sourceFromDataSource(spark: SparkSession,
@@ -132,29 +137,12 @@ object SparkPipeLine {
     }
   }
 
-
-  /** eg：--operator:field  groupby:id;sum:score;max:score
-   * */
-  def processDataFrameByOperators(query: DataFrame, table: String, operators: Map[String, String]): DataFrame = {
-    val ops = operators.keys.toSeq
-    val fields = operators.values.toSeq
-    ops(0) match {
-      case "groupBy" => getComputeOps(getCombinationOps(query, ops(0), fields(0)), query, ops(1), fields(1))
-    }
-  }
-
-  def getCombinationOps(query: DataFrame, op: String, field: String): RelationalGroupedDataset = {
+  def getComputeOps(query: DataFrame, op: String, field: String): Column = {
     op match {
-      case "groupBy" => query.groupBy(field)
-    }
-  }
-
-  def getComputeOps(relationSet: RelationalGroupedDataset, query: DataFrame, op: String, field: String): DataFrame = {
-    op match {
-      case "sum" => relationSet.agg(sum(query(field).as("sum " + field)))
-      case "max" => relationSet.agg(max(query(field).as("max " + field)))
-      case "min" => relationSet.agg(min(query(field).as("min " + field)))
-      case "avg" => relationSet.agg(avg(query(field).as("avg " + field)))
+      case "sum" => sum(query(field).as("sum " + field))
+      case "max" => max(query(field).as("max " + field))
+      case "min" => min(query(field).as("min " + field))
+      case "avg" => avg(query(field).as("avg " + field))
     }
   }
 }
