@@ -19,7 +19,7 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, RelationalGroupedDataset, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.{READ_TYPE, ReadType}
@@ -52,17 +52,18 @@ object SparkPipeLine {
     val parameter = ParametersTool.fromArgs(args)
     val fromDataSourcePath = parameter.get(SparkPipeLineOptions.FROM_DATASOURCE_PATH)
     val toDataSourcePath = parameter.get(SparkPipeLineOptions.TO_DATASOURCE_PATH)
-    val checkpointLocation = parameter.get(SparkPipeLineOptions.CHECKPOINT_LOCATION)
-    val readStartTime = parameter.get(SparkPipeLineOptions.READ_START_TIME)
+    val readStartTime = parameter.get(SparkPipeLineOptions.READ_START_TIMESTAMP)
     val sourceType = parameter.get(SparkPipeLineOptions.SOURCE_TYPE)
     val sinkType = parameter.get(SparkPipeLineOptions.SINK_TYPE)
     val outputMode = parameter.get(SparkPipeLineOptions.OUTPUT_MODE)
     val processType = parameter.get(SparkPipeLineOptions.PROCESS_TYPE)
     val processFields = parameter.get(SparkPipeLineOptions.PROCESS_FIELDS)
     // unrequested parameter
-    val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESC)
-    val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS)
-    val hashBucketNum = parameter.get(SparkPipeLineOptions.HASH_BUCKET_NUM).toInt
+    val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESCRIBE, "")
+    val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS_NAME)
+    val hashBucketNum = parameter.getInt(SparkPipeLineOptions.HASH_BUCKET_NUMBER)
+    // default parameter
+    val checkpointLocation = SparkPipeLineOptions.CHECKPOINT_LOCATION
 
     val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
     //    query.createOrReplaceTempView("testView")
@@ -126,48 +127,50 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
-          .trigger(Trigger.Once())
+          .trigger(Trigger.ProcessingTime(1000))
           .start().awaitTermination()
     }
   }
 
 
-  /** eg：--operators groupby:id;sum:score;max:score
+  /** eg：--operator:field  groupby:id;sum:score;max:score
    * */
   def processDataFrameByOperators(query: DataFrame, table: String, operators: Map[String, String]): DataFrame = {
     val ops = operators.keys.toSeq
+    val fields = operators.values.toSeq
     ops(0) match {
-      case "groupBy" => query.groupBy(operators.get("groupBy").get).agg(sum(query(operators.get("sum").get)).as("sum score"),
-        max(query(operators.get("avg").get)).as("avg score"))
-
-      case "orderBy" => query.orderBy(operators.get("orderBy").get).agg(sum(query(operators.get("sum").get)))
+      case "groupBy" => getComputeOps(getCombinationOps(query, ops(0), fields(0)), query, ops(1), fields(1))
     }
   }
 
-  def getComputeOps(op: String, field: String): String = {
+  def getCombinationOps(query: DataFrame, op: String, field: String): RelationalGroupedDataset = {
     op match {
-      case "sum" => "sum"
-      case "max" => "max"
-      case "min" => "min"
-      case "avg" => "avg"
+      case "groupBy" => query.groupBy(field)
+    }
+  }
+
+  def getComputeOps(relationSet: RelationalGroupedDataset, query: DataFrame, op: String, field: String): DataFrame = {
+    op match {
+      case "sum" => relationSet.agg(sum(query(field).as("sum " + field)))
+      case "max" => relationSet.agg(max(query(field).as("max " + field)))
+      case "min" => relationSet.agg(min(query(field).as("min " + field)))
+      case "avg" => relationSet.agg(avg(query(field).as("avg " + field)))
     }
   }
 }
 
 object SparkPipeLineOptions {
-  val BATCH = "batch"
-  val STREAM = "stream"
   var FROM_DATASOURCE_PATH = "sourcePath"
   var TO_DATASOURCE_PATH = "sinkPath"
-  var CHECKPOINT_LOCATION = "checkpointLocation"
-  var READ_START_TIME = "readStartTime"
+  var CHECKPOINT_LOCATION = "file:///tmp/chk"
+  var READ_START_TIMESTAMP = "readStartTime"
   var SOURCE_TYPE = "sourceType"
   var SINK_TYPE = "sinkType"
   var OUTPUT_MODE = "outputmode"
   var PROCESS_TYPE = "processType"
   var PROCESS_FIELDS = "fields"
   // selected parameter
-  var PARTITION_DESC = "partitionDesc"
-  var HASH_PARTITIONS = "hashPartition"
-  var HASH_BUCKET_NUM = "hashBucketNum"
+  var PARTITION_DESCRIBE = "partitionDesc"
+  var HASH_PARTITIONS_NAME = "hashPartition"
+  var HASH_BUCKET_NUMBER = "hashBucketNum"
 }
