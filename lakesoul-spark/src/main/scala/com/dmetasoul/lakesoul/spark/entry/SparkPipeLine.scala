@@ -19,10 +19,10 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
-import org.apache.spark.sql.{Column, DataFrame, RelationalGroupedDataset, SparkSession}
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.{HASH_BUCKET_NUM, READ_TYPE, ReadType}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.functions._
@@ -78,14 +78,14 @@ object SparkPipeLine {
       val op = processFieldsSeq(i).split(":")(0)
       val field = processFieldsSeq(i).split(":")(1)
       op match {
-        case "groupby" => groupby += "group by " + field
+        case "groupBy" => groupby += "group by " + field
         case "sum" => aggs += "sum(" + field + ") as sum,"
         case "max" => aggs += "max(" + field + ") as max,"
         case "min" => aggs += "min(" + field + ") as min,"
         case "avg" => aggs += "avg(" + field + ") as avg,"
       }
     }
-    val sqlString = "select "+aggs+hashPartitions+" from testView "+groupby
+    val sqlString = "select " + aggs + hashPartitions + " from testView " + groupby
     val query1 = spark.sql(sqlString)
     sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
   }
@@ -131,6 +131,7 @@ object SparkPipeLine {
       case "stream" =>
         query.writeStream.format(sinkSource)
           .outputMode(outputMode)
+          .option("mergeSchema", "true")
           .option("checkpointLocation", checkpointLocation)
           .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
@@ -138,24 +139,6 @@ object SparkPipeLine {
           .option("path", toDataSourcePath)
           .trigger(Trigger.ProcessingTime(2000))
           .start().awaitTermination()
-    }
-  }
-
-  def getComputeOps(query: DataFrame, op: String, field: String): Column = {
-    op match {
-      case "sum" => sum(query(field).as("sum " + field))
-      case "max" => max(query(field).as("max " + field))
-      case "min" => min(query(field).as("min " + field))
-      case "avg" => avg(query(field).as("avg " + field))
-    }
-  }
-
-  def getComputeSql(op: String, field: String): String = {
-    op match {
-      case "sum" => "sum("+field+") as sum"
-      case "max" => "max("+field+") as max"
-      case "min" => "min("+field+") as min"
-      case "avg" => "avg("+field+") as avg"
     }
   }
 
