@@ -22,7 +22,7 @@ package com.dmetasoul.lakesoul.spark.entry
 import org.apache.spark.sql.{Column, DataFrame, RelationalGroupedDataset, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.{READ_TYPE, ReadType}
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.{HASH_BUCKET_NUM, READ_TYPE, ReadType}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.functions._
@@ -52,38 +52,42 @@ object SparkPipeLine {
     val parameter = ParametersTool.fromArgs(args)
     val fromDataSourcePath = parameter.get(SparkPipeLineOptions.FROM_DATASOURCE_PATH)
     val toDataSourcePath = parameter.get(SparkPipeLineOptions.TO_DATASOURCE_PATH)
-    val readStartTime = parameter.get(SparkPipeLineOptions.READ_START_TIMESTAMP)
-    val sourceType = parameter.get(SparkPipeLineOptions.SOURCE_TYPE)
-    val sinkType = parameter.get(SparkPipeLineOptions.SINK_TYPE)
-    val outputMode = parameter.get(SparkPipeLineOptions.OUTPUT_MODE)
-    val processType = parameter.get(SparkPipeLineOptions.PROCESS_TYPE)
+    val readStartTime = parameter.get(SparkPipeLineOptions.READ_START_TIMESTAMP, "1970-01-01 00:00:00")
+    val sourceType = parameter.get(SparkPipeLineOptions.SOURCE_TYPE, "lakesoul")
+    val sinkType = parameter.get(SparkPipeLineOptions.SINK_TYPE, "lakesoul")
+    val outputMode = parameter.get(SparkPipeLineOptions.OUTPUT_MODE, "complete")
+    val processType = parameter.get(SparkPipeLineOptions.PROCESS_TYPE, "stream")
     val processFields = parameter.get(SparkPipeLineOptions.PROCESS_FIELDS)
     // unrequested parameter
     val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESCRIBE, "")
     val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS_NAME)
-    val hashBucketNum = parameter.getInt(SparkPipeLineOptions.HASH_BUCKET_NUMBER)
+    val hashBucketNum = parameter.getInt(SparkPipeLineOptions.HASH_BUCKET_NUMBER, 2)
     // default parameter
     val checkpointLocation = SparkPipeLineOptions.CHECKPOINT_LOCATION
 
-    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
-    //    query.createOrReplaceTempView("testView")
+    var query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
+    query.createOrReplaceTempView("testView")
     //    val data = spark.sql("select hash,name,score from testView")
     /** process operators and fields
      * eg：--operator:field  groupby:id;sum:score;max:score
      * */
     val processFieldsSeq = processFields.split(";").toSeq
+    var groupby = ""
+    var aggs = ""
     for (i <- 0 to processFieldsSeq.length - 1) {
       val op = processFieldsSeq(i).split(":")(0)
       val field = processFieldsSeq(i).split(":")(1)
-      if (i == 0) {
-        op match {
-          case "groupBy" => query.groupBy(field)
-        }
-      } else {
-        query.agg(getComputeOps(query, op, field))
+      op match {
+        case "groupby" => groupby += "group by " + field
+        case "sum" => aggs += "sum(" + field + ") as sum,"
+        case "max" => aggs += "max(" + field + ") as max,"
+        case "min" => aggs += "min(" + field + ") as min,"
+        case "avg" => aggs += "avg(" + field + ") as avg,"
       }
     }
-    sinkToDataSource(query, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
+    val sqlString = "select "+aggs+hashPartitions+" from testView "+groupby
+    val query1 = spark.sql(sqlString)
+    sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
   }
 
   def sourceFromDataSource(spark: SparkSession,
@@ -132,7 +136,7 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
-          .trigger(Trigger.ProcessingTime(1000))
+          .trigger(Trigger.ProcessingTime(2000))
           .start().awaitTermination()
     }
   }
@@ -143,6 +147,24 @@ object SparkPipeLine {
       case "max" => max(query(field).as("max " + field))
       case "min" => min(query(field).as("min " + field))
       case "avg" => avg(query(field).as("avg " + field))
+    }
+  }
+
+  def getComputeSql(op: String, field: String): String = {
+    op match {
+      case "sum" => "sum("+field+") as sum"
+      case "max" => "max("+field+") as max"
+      case "min" => "min("+field+") as min"
+      case "avg" => "avg("+field+") as avg"
+    }
+  }
+
+  def getComputeDataFrame(query: DataFrame, op: String, field: String): DataFrame = {
+    op match {
+      case "sum" => query.agg(sum(query(field).as("sum " + field)))
+      case "max" => query.agg(max(query(field).as("max " + field)))
+      case "min" => query.agg(min(query(field).as("min " + field)))
+      case "avg" => query.agg(avg(query(field).as("avg " + field)))
     }
   }
 }
