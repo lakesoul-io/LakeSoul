@@ -65,9 +65,10 @@ object SparkPipeLine {
     val checkpointLocation = parameter.get(SparkPipeLineOptions.CHECKPOINT_LOCATION, "file:///tmp/chk")
     val triggerTime = parameter.getLong(SparkPipeLineOptions.TRIGGER_TIME, 2000)
     val sinkTableName = parameter.get(SparkPipeLineOptions.SINK_TABLE_NAME, "")
+    val sourceTableName = parameter.get(SparkPipeLineOptions.SOURCE_TABLE_NAME, "")
 
-    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
-    query.createOrReplaceTempView("testView")
+    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType,sourceTableName)
+    query.createOrReplaceTempView("LakesoulView")
     /** process operators and fields
      * eg：--operator:field  groupby:id;sum:score;max:score
      * */
@@ -77,15 +78,15 @@ object SparkPipeLine {
     for (i <- 0 to processFieldsSeq.length - 1) {
       val op = processFieldsSeq(i).split(":")(0)
       val field = processFieldsSeq(i).split(":")(1)
-      op match {
-        case "groupBy" => groupby += "group by " + field
+      op.toLowerCase() match {
+        case "groupby" => groupby += "group by " + field
         case "sum" => aggs += "sum(" + field + ") as sum,"
         case "max" => aggs += "max(" + field + ") as max,"
         case "min" => aggs += "min(" + field + ") as min,"
         case "avg" => aggs += "avg(" + field + ") as avg,"
       }
     }
-    val sqlString = "select " + aggs + hashPartitions + " from testView " + groupby
+    val sqlString = "select " + aggs + hashPartitions + " from LakesoulView " + groupby
     val query1 = spark.sql(sqlString)
     sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum, triggerTime, sinkTableName)
   }
@@ -96,19 +97,38 @@ object SparkPipeLine {
                            readStartTime: String,
                            readType: String,
                            fromDataSourcePath: String,
-                           processType: String): DataFrame = {
+                           processType: String,sourceTableName:String): DataFrame = {
     processType match {
-      case "batch" => spark.read.format(source)
-        .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
-        .option(LakeSoulOptions.READ_START_TIME, readStartTime)
-        .option(LakeSoulOptions.READ_TYPE, readType)
-        .load(fromDataSourcePath)
+      case "batch" =>
+        if("".equals(sourceTableName)){
+          spark.read.format(source)
+            .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
+            .option(LakeSoulOptions.READ_START_TIME, readStartTime)
+            .option(LakeSoulOptions.READ_TYPE, readType)
+            .load(fromDataSourcePath)
+        }else{
+          spark.read.format(source)
+            .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
+            .option(LakeSoulOptions.READ_START_TIME, readStartTime)
+            .option(LakeSoulOptions.READ_TYPE, readType)
+            .table(sourceTableName)
+        }
 
-      case "stream" => spark.readStream.format(source)
-        .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
-        .option(LakeSoulOptions.READ_START_TIME, readStartTime)
-        .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
-        .load(fromDataSourcePath)
+      case "stream" =>
+        if("".equals(sourceTableName)){
+          spark.readStream.format(source)
+            .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
+            .option(LakeSoulOptions.READ_START_TIME, readStartTime)
+            .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
+            .load(fromDataSourcePath)
+        }else{
+          spark.readStream.format(source)
+            .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
+            .option(LakeSoulOptions.READ_START_TIME, readStartTime)
+            .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
+            .table(sourceTableName)
+        }
+
     }
   }
 
@@ -141,7 +161,8 @@ object SparkPipeLine {
           .option("path", toDataSourcePath)
           .option(SparkPipeLineOptions.SINK_TABLE_NAME, sinkTableName)
           .trigger(Trigger.ProcessingTime(triggerTime))
-          .start().awaitTermination()
+          .start()
+          .awaitTermination()
     }
   }
 
@@ -171,4 +192,5 @@ object SparkPipeLineOptions {
   val HASH_BUCKET_NUMBER = "hashBucketNum"
   val TRIGGER_TIME = "trigger_time"
   val SINK_TABLE_NAME = "sinkTableName"
+  val SOURCE_TABLE_NAME = "sourceTableName"
 }
