@@ -20,6 +20,7 @@ import jnr.ffi.Pointer;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -110,9 +111,11 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         if (!useJavaReader) {
             if (reader != null) {
                 libLakeSoulIO.free_lakesoul_reader(reader);
+                reader = null;
             }
             if (tokioRuntime != null) {
                 libLakeSoulIO.free_tokio_runtime(tokioRuntime);
+                tokioRuntime = null;
             }
         } else if (arrowJavaReader != null) {
             arrowJavaReader.close();

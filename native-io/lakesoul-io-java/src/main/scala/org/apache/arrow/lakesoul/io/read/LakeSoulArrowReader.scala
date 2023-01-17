@@ -25,6 +25,7 @@ import org.apache.arrow.vector.VectorSchemaRoot
 import java.io.IOException
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise}
+import scala.util.Success
 
 case class LakeSoulArrowReader(reader: NativeIOReader,
                                timeout: Int = 10000) extends AutoCloseable {
@@ -56,6 +57,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
     override def hasNext: Boolean = {
       if (!finished) {
+        clean()
         val p = Promise[Option[VectorSchemaRoot]]()
         vsrFuture = p.future
         val consumerSchema = ArrowSchema.allocateNew(allocator)
@@ -66,6 +68,8 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
               Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
             p.success(Some(root))
           } else {
+            consumerArray.close()
+            consumerSchema.close()
             if (err == null) {
               p.success(None)
               finish()
@@ -100,6 +104,16 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     private def finish(): Unit = {
       if (!finished) {
         finished = true
+      }
+    }
+
+    private def clean(): Unit = {
+      if (vsrFuture != null && vsrFuture.isCompleted) {
+        vsrFuture.value match {
+          case Some(Success(Some(batch))) =>
+            batch.close()
+          case _ =>
+        }
       }
     }
   }

@@ -227,6 +227,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private void recreateNativeReader() throws IOException {
     if (nativeReader != null) {
       nativeReader.close();
+      nativeReader = null;
     }
     NativeIOReader reader = new NativeIOReader();
     reader.addFile(filePath);
