@@ -62,8 +62,8 @@ object SparkPipeLine {
     val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESCRIBE, "")
     val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS_NAME)
     val hashBucketNum = parameter.getInt(SparkPipeLineOptions.HASH_BUCKET_NUMBER, 2)
-    // default parameter
-    val checkpointLocation = SparkPipeLineOptions.CHECKPOINT_LOCATION
+    val checkpointLocation = parameter.get(SparkPipeLineOptions.CHECKPOINT_LOCATION, "file:///tmp/chk")
+    val triggerTime = parameter.getLong(SparkPipeLineOptions.TRIGGER_TIME, 2000)
 
     var query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
     query.createOrReplaceTempView("testView")
@@ -87,7 +87,7 @@ object SparkPipeLine {
     }
     val sqlString = "select " + aggs + hashPartitions + " from testView " + groupby
     val query1 = spark.sql(sqlString)
-    sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum)
+    sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum, triggerTime)
   }
 
   def sourceFromDataSource(spark: SparkSession,
@@ -120,7 +120,8 @@ object SparkPipeLine {
                        toDataSourcePath: String,
                        processType: String,
                        hashPartitions: String,
-                       hashBucketNum: Int): Unit = {
+                       hashBucketNum: Int,
+                       triggerTime: Long): Unit = {
     processType match {
       case "batch" =>
         query.write.format(sinkSource)
@@ -137,7 +138,7 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
-          .trigger(Trigger.ProcessingTime(2000))
+          .trigger(Trigger.ProcessingTime(triggerTime))
           .start().awaitTermination()
     }
   }
@@ -153,17 +154,18 @@ object SparkPipeLine {
 }
 
 object SparkPipeLineOptions {
-  var FROM_DATASOURCE_PATH = "sourcePath"
-  var TO_DATASOURCE_PATH = "sinkPath"
-  var CHECKPOINT_LOCATION = "file:///tmp/chk"
-  var READ_START_TIMESTAMP = "readStartTime"
-  var SOURCE_TYPE = "sourceType"
-  var SINK_TYPE = "sinkType"
-  var OUTPUT_MODE = "outputmode"
-  var PROCESS_TYPE = "processType"
-  var PROCESS_FIELDS = "fields"
+  val FROM_DATASOURCE_PATH = "sourcePath"
+  val TO_DATASOURCE_PATH = "sinkPath"
+  val CHECKPOINT_LOCATION = "checkpointLocation"
+  val READ_START_TIMESTAMP = "readStartTime"
+  val SOURCE_TYPE = "sourceType"
+  val SINK_TYPE = "sinkType"
+  val OUTPUT_MODE = "outputmode"
+  val PROCESS_TYPE = "processType"
+  val PROCESS_FIELDS = "fields"
   // selected parameter
-  var PARTITION_DESCRIBE = "partitionDesc"
-  var HASH_PARTITIONS_NAME = "hashPartition"
-  var HASH_BUCKET_NUMBER = "hashBucketNum"
+  val PARTITION_DESCRIBE = "partitionDesc"
+  val HASH_PARTITIONS_NAME = "hashPartition"
+  val HASH_BUCKET_NUMBER = "hashBucketNum"
+  val TRIGGER_TIME = "trigger_time"
 }
