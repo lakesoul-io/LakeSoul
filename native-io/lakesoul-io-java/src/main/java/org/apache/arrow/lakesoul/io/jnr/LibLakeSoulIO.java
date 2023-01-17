@@ -40,6 +40,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, Pointer file);
 
+    Pointer lakesoul_config_builder_add_single_primary_key(Pointer builder, Pointer pk);
+
     Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column);
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);

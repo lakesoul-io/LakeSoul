@@ -273,6 +273,7 @@ impl SortAsyncWriter {
         schema: SchemaRef,
         runtime: Arc<Runtime>,
     ) -> Result<Self> {
+        let _ = runtime.enter();
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         let recv_exec = ReceiverStreamExec::new(rx, tokio::task::spawn(async move {}), schema.clone());
 
@@ -290,7 +291,6 @@ impl SortAsyncWriter {
         let sort_exec = Arc::new(SortExec::try_new(sort_exprs, Arc::new(recv_exec), None)?);
         let mut sorted_stream = sort_exec.execute(0, async_writer.sess_ctx.task_ctx())?;
 
-        let _ = runtime.enter();
         let mut async_writer = Box::new(async_writer);
         let join_handle = tokio::task::spawn(async move {
             while let Some(batch) = sorted_stream.next().await {
