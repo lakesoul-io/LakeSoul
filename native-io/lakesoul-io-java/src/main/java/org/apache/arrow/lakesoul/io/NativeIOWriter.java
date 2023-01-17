@@ -21,6 +21,7 @@ import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
+import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -38,6 +39,13 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     public NativeIOWriter(String schemaJson) {
         super();
         setSchema(schemaJson);
+    }
+
+    public void setPrimaryKeys(Iterable<String> primaryKeys) {
+        for (String pk : primaryKeys) {
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, pk);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, ptr);
+        }
     }
 
     public void initializeWriter() throws IOException {
