@@ -9,8 +9,9 @@ use std::collections::VecDeque;
 
 
 use crate::sorted_merge::merge_traits::{StreamSortKeyRangeCombiner, StreamSortKeyRangeFetcher};
-use crate::sorted_merge::combiner::RangeCombiner;
+use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::fetcher::{RangeFetcher, NonUniqueSortKeyRangeFetcher};
+use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 use arrow::error::ArrowError;
 use arrow::error::ArrowError::DivideByZero;
@@ -29,40 +30,12 @@ use futures::stream::{Fuse, FusedStream};
 use pin_project_lite::pin_project;
 use smallvec::SmallVec;
 
-// A range in one record batch with same primary key
-pub struct SortKeyRangeInBatch {
-    pub(crate) begin_row: usize, // begin row in this batch, included
-    pub(crate) end_row: usize,   // included
-    pub(crate) batch: Arc<RecordBatch>,
-    pub(crate) rows: Arc<Rows>,
-}
-
-impl SortKeyRangeInBatch {
-    pub fn new(begin_row: usize, end_row: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
-        SortKeyRangeInBatch {
-            begin_row,
-            end_row,
-            batch,
-            rows,
-        }
-    }
-
-    pub(crate) fn current(&self) -> Row<'_> {
-        self.rows.row(self.begin_row)
-    }
-}
-
-impl Clone for SortKeyRangeInBatch {
-    fn clone(&self) -> Self {
-        SortKeyRangeInBatch::new(self.begin_row, self.end_row, self.batch.clone(), self.rows.clone())
-    }
-}
 
 // Multiple ranges in consecutive batches of ONE stream with same primary key
 // This is the unit to be sorted in min heap
 pub struct SortKeyRange {
     // use small vector to avoid allocation on every row
-    pub(crate) sort_key_ranges: SmallVec<[SortKeyRangeInBatch; 2]>,
+    pub(crate) sort_key_ranges: SmallVec<[SortKeyBatchRange; 2]>,
 
     pub(crate) stream_idx: usize,
 }
@@ -88,17 +61,14 @@ impl SortKeyRange {
         new_range
     }
 
-    pub fn add_range_in_batch(&mut self, range: SortKeyRangeInBatch) {
+    pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         self.sort_key_ranges.push(range)
     }
 
-    fn current(&self) -> Row<'_> {
+    pub fn current(&self) -> Row<'_> {
         self.sort_key_ranges.first().unwrap().current()
     }
 
-    pub fn is_empty(&self) -> bool {
-        todo!()
-    }
 }
 
 impl Clone for SortKeyRange {
@@ -129,15 +99,6 @@ impl Ord for SortKeyRange {
     }
 }
 
-impl Debug for SortKeyRangeInBatch {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        f.debug_struct("SortKeyRangeInBatch")
-            .field("begin_row", &self.begin_row)
-            .field("end_row", &self.end_row)
-            .field("batch", &self.batch)
-            .finish()
-    }
-}
 
 impl Debug for SortKeyRange {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
@@ -241,7 +202,7 @@ pub(crate) struct SortedStreamMerger
     /// The sorted input streams to merge together
     // streams: MergingStreams,
 
-    range_fetchers: MergingRangeFetchers,
+    streams: MergingStreams,
 
     /// For each input stream maintain a dequeue of RecordBatches
     ///
@@ -251,7 +212,7 @@ pub(crate) struct SortedStreamMerger
 
     /// Maintain a flag for each stream denoting if the current cursor
     /// has finished and needs to poll from the stream
-    range_finished: Vec<bool>,
+    window_finished: Vec<bool>,
 
     // /// The accumulated row indexes for the next record batch
     // in_progress: Vec<RowIndex>,
@@ -271,7 +232,7 @@ pub(crate) struct SortedStreamMerger
     next_batch_id: usize,
 
     /// Vector that holds all [`SortKeyCursor`]s
-    ranges: Vec<Option<SortKeyRangeInBatch>>,
+    ranges: Vec<Option<SortKeyBatchRange>>,
 
     /// row converter
     row_converter: RowConverter,
@@ -286,8 +247,8 @@ impl SortedStreamMerger
         expressions: &[PhysicalSortExpr],
         batch_size: usize,
     ) -> Result<Self> {
-        let stream_count = streams.len();
-        let batches = (0..stream_count)
+        let streams_num = streams.len();
+        let batches = (0..streams_num)
             .into_iter()
             .map(|_| VecDeque::new())
             .collect();
@@ -303,24 +264,26 @@ impl SortedStreamMerger
         let row_converter = RowConverter::new(sort_fields);
 
 
-        let range_fetchers = (0..stream_count)
-            .into_iter()
-            .zip(wrappers)
-            .map(|(stream_idx, stream)| RangeFetcher::new(stream_idx, stream, expressions, schema.clone()))
-            .collect::<Result<Vec<_>>>()?;
+        // let range_fetchers = (0..stream_count)
+        //     .into_iter()
+        //     .zip(wrappers)
+        //     .map(|(stream_idx, stream)| RangeFetcher::new(stream_idx, stream, expressions, schema.clone()))
+        //     .collect::<Result<Vec<_>>>()?;
+
+        let combiner = RangeCombiner::new(schema.clone(), streams_num, batch_size);
 
         Ok(Self {
             schema,
             batches,
-            range_finished: vec![true; stream_count],
-            // streams: MergingStreams::new(wrappers),
-            range_fetchers: MergingRangeFetchers::new(range_fetchers),
+            window_finished: vec![true; streams_num],
+            streams: MergingStreams::new(wrappers),
+            // range_fetchers: MergingRangeFetchers::new(range_fetchers),
             column_expressions: expressions.iter().map(|x| x.expr.clone()).collect(),
             aborted: false,
             // in_progress: vec![],
             next_batch_id: 0,
-            ranges: (0..stream_count).into_iter().map(|_| None).collect(),
-            range_combiner: RangeCombiner::new(),
+            ranges: (0..streams_num).into_iter().map(|_| None).collect(),
+            range_combiner: combiner,
             batch_size,
             row_converter,
         })
@@ -370,85 +333,69 @@ impl SortedStreamMerger
     /// If the stream at the given index is not exhausted, and the last cursor for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// cursor for the stream from the returned result
-    fn maybe_poll_fetcher(
+    fn maybe_poll_stream(
         &mut self,
         cx: &mut Context<'_>,
         idx: usize,
     ) -> Poll<ArrowResult<()>> {
-        if !self.range_finished[idx] {
+        if !self.window_finished[idx] {
             // Cursor is not finished - don't need a new RecordBatch yet
             return Poll::Ready(Ok(()));
         }
-        let mut empty_range = false;
+        let mut empty_batch = false;
         {
-            let fetcher = &mut self.range_fetchers.fetchers[idx];
-            if fetcher.is_terminated() {
+            let stream = &mut self.streams.streams[idx];
+            if stream.is_terminated() {
                 return Poll::Ready(Ok(()));
             }
 
             // Fetch a new input record and create a RecordBatchRanges from it
-            match futures::ready!(fetcher.poll_next_unpin(cx)) {
+            match futures::ready!(stream.poll_next_unpin(cx)) {
                 None => return Poll::Ready(Ok(())),
                 Some(Err(e)) => {
                     return Poll::Ready(Err(e));
                 }
-                Some(Ok(sort_key_range)) => {
-                    if sort_key_range.is_empty() {
-                        empty_range = true;
+                Some(Ok(batch)) => {
+                    if batch.num_rows() > 0 {
+                        let cols = self
+                            .column_expressions
+                            .iter()
+                            .map(|expr| {
+                                Ok(expr.evaluate(&batch)?.into_array(batch.num_rows()))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let rows = match self.row_converter.convert_columns(&cols) {
+                            Ok(rows) => rows,
+                            Err(e) => {
+                                return Poll::Ready(Err(ArrowError::ExternalError(
+                                    Box::new(e),
+                                )));
+                            }
+                        };
+                        self.next_batch_id += 1;
+                        self.batches[idx].push_back(batch.clone());
+                        
+                        let (batch, rows) = (Arc::new(batch), Arc::new(rows));
+                        let range = SortKeyBatchRange::new(0, 0, idx, batch.clone(), rows.clone()).advance();
+
+                        self.window_finished[idx] = false;
+
+                        self.range_combiner.push_range(Reverse(range));
+                        
                     } else {
-                        self.range_combiner.push(sort_key_range)
+                        empty_batch = true;
                     }
-                    // if batch.num_rows() > 0 {
-                    //     let cols = self
-                    //         .column_expressions
-                    //         .iter()
-                    //         .map(|expr| {
-                    //             Ok(expr.evaluate(&batch)?.into_array(batch.num_rows()))
-                    //         })
-                    //         .collect::<Result<Vec<_>>>()?;
-
-                    //     let rows = match self.row_converter.convert_columns(&cols) {
-                    //         Ok(rows) => rows,
-                    //         Err(e) => {
-                    //             return Poll::Ready(Err(ArrowError::ExternalError(
-                    //                 Box::new(e),
-                    //             )));
-                    //         }
-                    //     };
-
-                    //     let cursor = SortKeyCursor::new(
-                    //         idx,
-                    //         self.next_batch_id, // assign this batch an ID
-                    //         rows,
-                    //     );
-                    //     self.next_batch_id += 1;
-                    //     self.heap.push(Reverse(cursor));
-                    //     self.cursor_finished[idx] = false;
-                    //     self.batches[idx].push_back(batch)
-                    // } else {
-                    //     empty_batch = true;
-                    // }
-
                 }
             }
         }
 
-        if empty_range {
-            self.maybe_poll_fetcher(cx, idx)
+        if empty_batch {
+            self.maybe_poll_stream(cx, idx)
         } else {
             Poll::Ready(Ok(()))
         }
     }
 
-    /// Drains the in_progress SortKeyRangeInBatch, and builds a new RecordBatch from them
-    ///
-    /// Will then drop any batches for which all rows have been yielded to the output
-    fn build_record_batch(&mut self) -> ArrowResult<RecordBatch> {
-        // Mapping from stream index to the index of the first buffer from that stream
-
-        // Merge all SortKeyRangeInBatch with specific MergeOp(RangeCombiner)
-        todo!()
-    }
 
 }
 
@@ -465,21 +412,44 @@ impl SortedStreamMerger
 
         // Ensure all non-exhausted fetchers have a cursor from which
         // rows can be pulled
-        for i in 0..self.range_fetchers.num_fetchers() {
-            match futures::ready!(self.maybe_poll_fetcher(cx, i)) {
+        for i in 0..self.streams.num_streams() {
+            match futures::ready!(self.maybe_poll_stream(cx, i)) {
                 Ok(_) => {}
                 Err(e) => {
                     self.aborted = true;
                     return Poll::Ready(Some(Err(e)));
                 }
             }
-            todo!()
         }
-
         
         // refer by https://docs.rs/datafusion/13.0.0/src/datafusion/physical_plan/sorts/sort_preserving_merge.rs.html#567-608
         loop {
-            todo!()
+            match self.range_combiner.poll_result() {
+                RangeCombinerResult::Err(e) => return Poll::Ready(Some(Err(e))),
+                RangeCombinerResult::Range(Reverse(mut range)) => {
+                    let stream_idx = range.stream_idx();
+                    let batch = Arc::new(self.batches[stream_idx].back().unwrap());
+                    let current_range = range.advance();
+
+                    let mut window_finished = false;
+                    if !current_range.is_finished() {
+                        self.range_combiner.push_range(Reverse(range))
+                    } else {
+                        self.window_finished[stream_idx] = true;
+                        match futures::ready!(self.maybe_poll_stream(cx, stream_idx)) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                self.aborted = true;
+                                return Poll::Ready(Some(Err(e)));
+                            }
+                        }
+
+                    }
+                },                
+                RangeCombinerResult::RecordBatch(batch) => 
+                     return Poll::Ready(Some(batch))
+                    
+            }
         }
     }
 

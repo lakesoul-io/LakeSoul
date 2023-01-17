@@ -1,14 +1,16 @@
 use crate::sorted_merge::utils;
 
-use std::{mem};
+use std::{mem, ptr::null};
 
-use arrow::array::{ArrayData, ArrayDataBuilder, MutableArrayData};
+use arrow::array::{make_array as make_arrow_array, ArrayData, ArrayDataBuilder, MutableArrayData};
 use arrow_buffer::{bit_util, ToByteSlice, Buffer, MutableBuffer};
 use arrow_schema::{DataType, Field, IntervalUnit, UnionMode};
+use half::f16;
 
 #[derive(Debug)]
-pub(crate) struct ChangeableArrayData {
+pub(crate) struct MergedArrayData {
     pub data_type: DataType,
+    pub nullable: bool,
     pub null_count: usize,
 
     pub len: usize,
@@ -21,14 +23,15 @@ pub(crate) struct ChangeableArrayData {
     // pub child_data: Vec<MutableArrayData<'a>>,
 }
 
-impl ChangeableArrayData {
-    fn new(field: &Field, capacity: usize) -> Self {
+impl MergedArrayData {
+    pub(crate) fn new(field: &Field, capacity: usize) -> Self {
         Self::with_capacities(field, capacity)
     }
 
-    fn with_capacities(field: &Field, capacity: usize) -> Self {
+    pub(crate) fn with_capacities(field: &Field, capacity: usize) -> Self {
         let [buffer1, buffer2] = new_buffers(field.data_type(), capacity);
-        let null_buffer = if field.is_nullable() {
+        let nullable = if field.is_nullable() { true } else { false };
+        let null_buffer = if nullable {
             let null_bytes = bit_util::ceil(capacity, 8);
             MutableBuffer::from_len_zeroed(null_bytes)
         } else {
@@ -37,6 +40,7 @@ impl ChangeableArrayData {
         };
         Self {
             data_type: (*field.data_type()).clone(),
+            nullable: nullable,
             null_count: 0,
             len: 0,
             null_buffer: null_buffer,
@@ -45,12 +49,14 @@ impl ChangeableArrayData {
         }
     }
 
-    fn push_none(&mut self) {
-        self.null_count += 1;
-        self.extend_null_bit();
+    pub(crate) fn push_null(&mut self) {
+        if !self.nullable { assert!(self.null_buffer.capacity() == 0) };
+        // self.extend_null_bit();
         self.len += 1;
+        self.null_count += 1;
         // put a default value for None
         let item = utils::get_default_value(&self.data_type);
+        println!("[debug][changhui]item's length is {}", item.len());
         self.buffer1.extend_from_slice(item);
     }
 
@@ -65,7 +71,10 @@ impl ChangeableArrayData {
         )
     }
     */
-    fn push_non_null_item(&mut self, item: &[u8]) {
+    pub(crate) fn push_non_null_item<T: ToByteSlice>(&mut self, item: T) {
+        if self.nullable {
+            self.extend_non_null_bit();
+        }
         match self.data_type {
             DataType::UInt8
             | DataType::UInt16
@@ -75,22 +84,41 @@ impl ChangeableArrayData {
             | DataType::Int16
             | DataType::Int32
             | DataType::Int64 => {
-                self.buffer1.extend_from_slice(item); // ensure that the type of t is passed correctly
+                self.buffer1.push(item); // ensure that the type of t is passed correctly
                 self.len += 1;
             },
             _ => panic!("Unsupported DataType: {}", self.data_type)
         }
-
     }
+    // fn push_non_null_item(&mut self, item: &[u8]) {
+    //     if self.nullable {
+    //         self.extend_non_null_bit();
+    //     }
+    //     match self.data_type {
+    //         DataType::UInt8
+    //         | DataType::UInt16
+    //         | DataType::UInt32
+    //         | DataType::UInt64
+    //         | DataType::Int8
+    //         | DataType::Int16
+    //         | DataType::Int32
+    //         | DataType::Int64 => {
+    //             self.buffer1.extend_from_slice(item); // ensure that the type of t is passed correctly
+    //             self.len += 1;
+    //         },
+    //         _ => panic!("Unsupported DataType: {}", self.data_type)
+    //     }
 
-    fn extend_null_bit(&mut self) {
+    // }
+
+    fn extend_non_null_bit(&mut self) {
         utils::resize_for_bits(&mut self.null_buffer, self.len + 1);
         let write_data = self.null_buffer.as_slice_mut();
         bit_util::set_bit(write_data, self.len);
-        self.len += 1;
+        // self.len += 1;
     }
 
-    fn freeze(self, dictionary: Option<ArrayData>) -> ArrayDataBuilder {
+    pub(crate) fn freeze(self) -> ArrayData {
         let buffers = into_buffers(&self.data_type, self.buffer1, self.buffer2);
 
         // let child_data = match self.data_type {
@@ -104,13 +132,15 @@ impl ChangeableArrayData {
         //     }
         // };
 
-        ArrayDataBuilder::new(self.data_type)
+        let array_data_builder = ArrayDataBuilder::new(self.data_type)
             .offset(0)
             .len(self.len)
             .null_count(self.null_count)
             .buffers(buffers)
             // .child_data(child_data)
-            .null_bit_buffer((self.null_count > 0).then(|| self.null_buffer.into()))
+            .null_bit_buffer((self.null_count > 0).then(|| self.null_buffer.into()));
+
+        unsafe { array_data_builder.build_unchecked() }
     }
 }
 
@@ -157,7 +187,7 @@ pub(crate) fn new_buffers(data_type: &DataType, capacity: usize) -> [MutableBuff
             empty_buffer,
         ],
         DataType::Float16 => [
-            MutableBuffer::new(capacity * mem::size_of::<f16>()),
+            MutableBuffer::new(capacity * mem::size_of::<f32>()),
             empty_buffer,
         ],
         DataType::Float32 => [
@@ -299,21 +329,18 @@ pub(crate) fn into_buffers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::ManuallyDrop;
-    use std::sync::mpsc::sync_channel;
-    use std::time::Instant;
-    use tokio::runtime::Builder;
+    use crate::lakesoul_reader::ArrowResult;
+    use std::sync::Arc;
 
-    use arrow::array::ArrayData;
+    use arrow::array::{Int32Array, ArrayData, ArrayRef};
+    use arrow::record_batch::RecordBatch;
     use arrow::buffer::Buffer;
-    use arrow_schema::DataType;
-    use arrow::buffer::MutableBuffer;
-    use bytes::Bytes;
+    use arrow_schema::{DataType, Schema, SchemaRef};
 
-    fn demo<T, const N: usize>(v: Vec<T>) -> [T; N] {
-        v.try_into()
-            .unwrap_or_else(|v: Vec<T>| panic!("Expected a Vec of length {} but it was {}", N, v.len()))
-    }
+    // fn demo<T, const N: usize>(v: Vec<T>) -> [T; N] {
+    //     v.try_into()
+    //         .unwrap_or_else(|v: Vec<T>| panic!("Expected a Vec of length {} but it was {}", N, v.len()))
+    // }
 
     unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
         ::std::slice::from_raw_parts(
@@ -322,51 +349,52 @@ mod tests {
         )
     }
 
-    #[test]
-    fn my_test() {
-        // let u = [1, 2, 3, None];
-        // let b1 = Buffer::from_slice_ref(&u);
-        // println!("{}", b1.len());
-        // let src = b1.as_ptr() as *const u8;
-        // println!("{}", src);
-        let y = true;
-        let a: Vec<bool> = vec![y];
-        let len = a.len();
-        const x: usize = 1;
-        let p: [bool; x] = demo(a);
-        let l = unsafe { any_as_u8_slice(&p) };
-        println!("{:?}", l);
-        let mut b = MutableBuffer::new(5);
-        b.extend_from_slice(l);
-        let y = true;
-        let a: Vec<bool> = vec![y];
-        let len = a.len();
-        // const x : usize = 1;
-        let p: [bool; x] = demo(a);
-        let l = unsafe { any_as_u8_slice(&p) };
-        b.extend_from_slice(l);
-        let y = false;
-        let a: Vec<bool> = vec![y];
-        let len = a.len();
-        // const x : usize = 1;
-        let p: [bool; x] = demo(a);
-        let l = unsafe { any_as_u8_slice(&p) };
-        b.extend_from_slice(l);
-        let c: Buffer = b.into();
-        println!("{}", c.len());
-        println!("{:?}", c.as_slice());
+    fn fill_value_for_primitive(array_data: &mut MergedArrayData, dt: &DataType, item: i32) {
+        match *dt {
+            DataType::UInt8 => array_data.push_non_null_item(item as u8),
+            DataType::UInt16 => array_data.push_non_null_item(item as u16),
+            DataType::UInt32 => array_data.push_non_null_item(item as u32),
+            DataType::UInt64 => array_data.push_non_null_item(item as u64),
+            DataType::Int8 => array_data.push_non_null_item(item as i8),
+            DataType::Int16 => array_data.push_non_null_item(item as i16),
+            DataType::Int32 => array_data.push_non_null_item(item as i32),
+            DataType::Int64 => array_data.push_non_null_item(item as i64),
+            _ => panic!("Unsupported DataType: {}", dt)
+        }
+    } 
 
-        unsafe {
-            let bytes: [u8; 6] = [1, 2, 3, 4, 5, 6];
-
-            let (prefix, shorts, suffix) = bytes.align_to::<u16>();
-            println!("{}", shorts.len());
-            println!("{}", prefix.len());
-            println!("{}", suffix.len());
-            for i in shorts {
-                println!("{}", i);
+    fn _test_primitive_push(field_name: &str, dt: DataType, nullable: bool) {
+        let field = Field::new(field_name, dt.clone(), nullable);
+        let mut array_data = MergedArrayData::new(&field, 5);
+        println!("[debug][changhui]MergedArrayData init: {:?}", array_data);
+        if nullable {
+            for i in 0..5 {
+                if i % 2 == 0 {
+                    fill_value_for_primitive(&mut array_data, &dt, i);
+                } else {
+                    array_data.push_null();
+                }
+            }
+        } else {
+            for i in 0..5 {
+                fill_value_for_primitive(&mut array_data, &dt, i);
             }
         }
+        let ad = array_data.freeze();
+        println!("{:?}", ad);
+        let column = make_arrow_array(ad);
+        let schema = Schema::new(vec![field]);
+        let rb = RecordBatch::try_new(std::sync::Arc::new(schema), vec![column,]).unwrap();
+        assert_eq!(rb.column(0).null_count(), if nullable {2} else {0});
+        assert_eq!(rb.num_rows(), 5);
+        println!("{:?}", rb);
+    }
+
+    #[test]
+    fn test_primitive_data_type() {
+        _test_primitive_push("int32", DataType::Int32, true);
+        _test_primitive_push("int64", DataType::Int64, false);
+        _test_primitive_push("uint16", DataType::UInt16, false);
     }
 
     #[test]

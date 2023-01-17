@@ -13,6 +13,7 @@ atomic_refcell = "0.1.8"
 heapless = "0.7.16"
 arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["prettyprint"] }
 arrow-schema = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["serde"] }
+arrow-array = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred" }
 arrow-buffer = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred" }
 parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-24-parquet-bufferred", features = ["async", "arrow"] }
 bytes = "1.1"
@@ -27,6 +28,7 @@ pin-project-lite = "0.2.9"
 futures-util = "0.3"
 async-trait = "0.1.58"
 dary_heap = "0.3.4"
+half = { version = "2.0", default-features = false }
 
 
 
