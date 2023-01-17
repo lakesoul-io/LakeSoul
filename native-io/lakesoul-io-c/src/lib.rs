@@ -19,7 +19,7 @@ extern crate core;
 
 use core::ffi::{c_ptrdiff_t, c_size_t};
 use std::borrow::Borrow;
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, CStr, CString};
 use std::ptr::NonNull;
 use std::slice;
 use std::sync::Arc;
@@ -211,7 +211,7 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
 }
 
 #[no_mangle]
-pub extern "C" fn lakesoul_config_builder_add_file(
+pub extern "C" fn lakesoul_config_builder_add_files(
     builder: NonNull<IOConfigBuilder>,
     files: *const *const c_char,
     file_num: c_size_t,
@@ -225,6 +225,35 @@ pub extern "C" fn lakesoul_config_builder_add_file(
             .map(|str| str.to_string())
             .collect();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_files(files))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
+    builder: NonNull<IOConfigBuilder>,
+    pk: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let pk = CStr::from_ptr(pk).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_primary_key(pk))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_primary_keys(
+    builder: NonNull<IOConfigBuilder>,
+    pks: *const *const c_char,
+    pk_num: c_size_t,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let pks = slice::from_raw_parts(pks, pk_num as usize);
+        let pks: Vec<_> = pks
+            .iter()
+            .map(|p| CStr::from_ptr(*p))
+            .map(|c_str| c_str.to_str().unwrap())
+            .map(|str| str.to_string())
+            .collect();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_primary_keys(pks))
     }
 }
 
@@ -408,7 +437,7 @@ pub extern "C" fn write_record_batch(
                     "Cannot cast to StructArray from array and schema addresses".to_string(),
                 )))?;
             let rb = RecordBatch::from(struct_array);
-            writer.as_ref().write_batch(&rb)?;
+            writer.as_ref().write_batch(rb)?;
             Ok(())
         };
         let result: lakesoul_io::Result<()> = result_fn();
@@ -494,14 +523,15 @@ mod tests {
     use crate::{
         create_lakesoul_io_config_from_builder, create_lakesoul_reader_from_config, create_lakesoul_writer_from_config,
         flush_and_close_writer, free_lakesoul_reader, lakesoul_config_builder_add_single_file,
-        lakesoul_config_builder_set_batch_size, lakesoul_config_builder_set_max_row_group_size,
-        lakesoul_config_builder_set_object_store_option, lakesoul_config_builder_set_schema,
-        lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema, lakesoul_schema_free, next_record_batch,
-        start_reader, tokio_runtime_builder_set_thread_num, write_record_batch, IOConfigBuilder,
+        lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
+        lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
+        lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
+        lakesoul_schema_free, next_record_batch, start_reader, tokio_runtime_builder_set_thread_num,
+        write_record_batch, IOConfigBuilder,
     };
     use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
     use core::ffi::c_ptrdiff_t;
-    use std::ffi::{c_void, CStr, CString};
+    use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::ptr::NonNull;
     use std::sync::{Condvar, Mutex};
@@ -512,6 +542,15 @@ mod tests {
                 builder,
                 CString::from_vec_unchecked(Vec::from(key)).as_ptr() as *const c_char,
                 CString::from_vec_unchecked(Vec::from(value)).as_ptr() as *const c_char,
+            )
+        }
+    }
+
+    fn add_pk(builder: NonNull<IOConfigBuilder>, pk: &str) -> NonNull<IOConfigBuilder> {
+        unsafe {
+            lakesoul_config_builder_add_single_primary_key(
+                builder,
+                CString::from_vec_unchecked(Vec::from(pk)).as_ptr() as *const c_char,
             )
         }
     }
@@ -617,7 +656,138 @@ mod tests {
             writer_config_builder = lakesoul_config_builder_add_single_file(
                 writer_config_builder,
                 CString::from_vec_unchecked(Vec::from(
-                    "s3://lakesoul-test-bucket/data/native-io-test/large_file_written.parquet",
+                    "s3://lakesoul-test-bucket/data/native-io-test/large_file_written_c.parquet",
+                ))
+                .as_ptr() as *const c_char,
+            );
+        }
+        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.key", "minioadmin1");
+        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
+        let mut runtime_builder = crate::new_tokio_runtime_builder();
+        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+        let writer_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
+        let writer_config = create_lakesoul_io_config_from_builder(writer_config_builder);
+        let writer = create_lakesoul_writer_from_config(writer_config, writer_runtime);
+        unsafe {
+            match writer.as_ref().err.as_ref() {
+                Some(err) => assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                ),
+                None => {}
+            }
+        }
+
+        loop {
+            unsafe {
+                let mut called = CALL_BACK_CV.0.lock().unwrap();
+                *called = false;
+            }
+            let array_ptr = FFI_ArrowArray::empty();
+            let schema_ptr = FFI_ArrowSchema::empty();
+
+            next_record_batch(
+                reader,
+                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                reader_callback.clone(),
+            );
+            wait_callback();
+
+            unsafe {
+                if READER_FINISHED {
+                    if let Some(err) = READER_FAILED.as_ref() {
+                        assert!(false, "Reader failed {}", err);
+                    }
+                    break;
+                }
+            }
+
+            unsafe {
+                let mut called = CALL_BACK_CV.0.lock().unwrap();
+                *called = false;
+            }
+            write_record_batch(
+                writer,
+                std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
+                std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
+                writer_callback.clone(),
+            );
+            wait_callback();
+
+            unsafe {
+                if WRITER_FINISHED {
+                    if let Some(err) = WRITER_FAILED.as_ref() {
+                        assert!(false, "Writer {}", err);
+                    }
+                    break;
+                }
+            }
+        }
+
+        flush_and_close_writer(writer, writer_callback);
+        free_lakesoul_reader(reader);
+    }
+
+    #[test]
+    fn test_native_read_sort_write() {
+        let mut reader_config_builder = crate::new_lakesoul_io_config_builder();
+        reader_config_builder = lakesoul_config_builder_set_batch_size(reader_config_builder, 8192);
+        reader_config_builder = lakesoul_config_builder_set_thread_num(reader_config_builder, 2);
+        unsafe {
+            reader_config_builder = lakesoul_config_builder_add_single_file(
+                reader_config_builder,
+                CString::from_vec_unchecked(Vec::from(
+                    "s3://lakesoul-test-bucket/data/native-io-test/large_file.parquet",
+                ))
+                .as_ptr() as *const c_char,
+            );
+        }
+        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.key", "minioadmin1");
+        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
+
+        let mut runtime_builder = crate::new_tokio_runtime_builder();
+        runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
+        let reader_runtime = crate::create_tokio_runtime_from_builder(runtime_builder);
+        let reader_config = create_lakesoul_io_config_from_builder(reader_config_builder);
+        let reader = create_lakesoul_reader_from_config(reader_config, reader_runtime);
+
+        unsafe {
+            match reader.as_ref().err.as_ref() {
+                Some(err) => assert!(
+                    false,
+                    "{}",
+                    CStr::from_ptr(err as *const c_char).to_str().unwrap().to_string()
+                ),
+                None => {}
+            }
+        }
+
+        start_reader(reader, reader_callback.clone());
+        unsafe {
+            assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
+        }
+
+        let schema_str = lakesoul_reader_get_schema(reader);
+
+        let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
+        writer_config_builder = lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
+        writer_config_builder = lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
+        writer_config_builder = lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
+        writer_config_builder = lakesoul_config_builder_set_schema(writer_config_builder, schema_str as *const c_char);
+        writer_config_builder = add_pk(writer_config_builder, "str2");
+        writer_config_builder = add_pk(writer_config_builder, "str3");
+        writer_config_builder = add_pk(writer_config_builder, "int2");
+        writer_config_builder = add_pk(writer_config_builder, "int6");
+        lakesoul_schema_free(schema_str);
+        unsafe {
+            writer_config_builder = lakesoul_config_builder_add_single_file(
+                writer_config_builder,
+                CString::from_vec_unchecked(Vec::from(
+                    "s3://lakesoul-test-bucket/data/native-io-test/large_file_written_sorted_c.parquet",
                 ))
                 .as_ptr() as *const c_char,
             );

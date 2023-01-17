@@ -12,7 +12,7 @@
     <artifactId>lakesoul-flink</artifactId>
     <version>2.2.0-flink-1.14-SNAPSHOT</version>
     <properties>
-        <flink.version>1.14.5</flink.version>
+        <flink.version>1.14.6</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
@@ -68,6 +68,12 @@
             <artifactId>flink-formats</artifactId>
             <version>${flink.version}</version>
             <type>pom</type>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-python_${scala.binary.version}</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -232,6 +238,7 @@
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>org.apache.flink:flink-formats</include>
                             <include>org.apache.flink:flink-parquet_2.12</include>
+                            <include>org.apache.flink:flink-python_2.12</include>
                             <include>org.apache.parquet:parquet-hadoop-bundle</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
                             <include>com.dmetasoul:lakesoul-common</include>

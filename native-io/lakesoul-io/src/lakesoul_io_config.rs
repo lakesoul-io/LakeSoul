@@ -33,7 +33,7 @@ pub struct LakeSoulIOConfig {
     // files to read or write
     pub(crate) files: Vec<String>,
     // primary key column names
-    primary_keys: Vec<String>,
+    pub(crate) primary_keys: Vec<String>,
     // selecting columns
     pub(crate) columns: Vec<String>,
 
@@ -79,6 +79,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_files(mut self, files: Vec<String>) -> Self {
         self.config.files = files;
+        self
+    }
+
+    pub fn with_primary_key(mut self, pks: String) -> Self {
+        self.config.primary_keys.push(pks);
         self
     }
 
@@ -195,7 +200,8 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     let sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
-    let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
+    // limit memory for sort writer
+    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(256 * 1024 * 1024, 1.0))?;
 
     // register object store(s)
     for file_name in &config.files {
