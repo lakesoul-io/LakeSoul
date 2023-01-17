@@ -28,6 +28,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
     val filePath = projectDir + "/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
     reader.addFile(filePath)
     reader.setThreadNum(2)
+    reader.setBatchSize(512)
     reader.initializeReader()
 
     val schema = reader.getSchema
@@ -40,13 +41,13 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
 
     while (lakesoulReader.hasNext) {
       val batch = lakesoulReader.next()
-      println(batch)
+      println(batch.get.contentToTSVString())
       writer.write(batch.get)
     }
 
     writer.flush()
 
-    reader.close()
+    lakesoulReader.close()
   }
 
 }
