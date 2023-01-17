@@ -58,16 +58,16 @@ object SparkPipeLine {
     val outputMode = parameter.get(SparkPipeLineOptions.OUTPUT_MODE, "complete")
     val processType = parameter.get(SparkPipeLineOptions.PROCESS_TYPE, "stream")
     val processFields = parameter.get(SparkPipeLineOptions.PROCESS_FIELDS)
+    val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS_NAME)
     // unrequested parameter
     val partitionDesc = parameter.get(SparkPipeLineOptions.PARTITION_DESCRIBE, "")
-    val hashPartitions = parameter.get(SparkPipeLineOptions.HASH_PARTITIONS_NAME)
     val hashBucketNum = parameter.getInt(SparkPipeLineOptions.HASH_BUCKET_NUMBER, 2)
     val checkpointLocation = parameter.get(SparkPipeLineOptions.CHECKPOINT_LOCATION, "file:///tmp/chk")
     val triggerTime = parameter.getLong(SparkPipeLineOptions.TRIGGER_TIME, 2000)
+    val sinkTableName = parameter.get(SparkPipeLineOptions.SINK_TABLE_NAME, "")
 
-    var query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
+    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType)
     query.createOrReplaceTempView("testView")
-    //    val data = spark.sql("select hash,name,score from testView")
     /** process operators and fields
      * eg：--operator:field  groupby:id;sum:score;max:score
      * */
@@ -87,7 +87,7 @@ object SparkPipeLine {
     }
     val sqlString = "select " + aggs + hashPartitions + " from testView " + groupby
     val query1 = spark.sql(sqlString)
-    sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum, triggerTime)
+    sinkToDataSource(query1, sinkType, outputMode, checkpointLocation, partitionDesc, toDataSourcePath, processType, hashPartitions, hashBucketNum, triggerTime, sinkTableName)
   }
 
   def sourceFromDataSource(spark: SparkSession,
@@ -121,7 +121,8 @@ object SparkPipeLine {
                        processType: String,
                        hashPartitions: String,
                        hashBucketNum: Int,
-                       triggerTime: Long): Unit = {
+                       triggerTime: Long,
+                       sinkTableName: String): Unit = {
     processType match {
       case "batch" =>
         query.write.format(sinkSource)
@@ -133,11 +134,12 @@ object SparkPipeLine {
         query.writeStream.format(sinkSource)
           .outputMode(outputMode)
           .option("mergeSchema", "true")
-          .option("checkpointLocation", checkpointLocation)
+          .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, checkpointLocation)
           .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
+          .option(SparkPipeLineOptions.SINK_TABLE_NAME, sinkTableName)
           .trigger(Trigger.ProcessingTime(triggerTime))
           .start().awaitTermination()
     }
@@ -168,4 +170,5 @@ object SparkPipeLineOptions {
   val HASH_PARTITIONS_NAME = "hashPartition"
   val HASH_BUCKET_NUMBER = "hashBucketNum"
   val TRIGGER_TIME = "trigger_time"
+  val SINK_TABLE_NAME = "sinkTableName"
 }
