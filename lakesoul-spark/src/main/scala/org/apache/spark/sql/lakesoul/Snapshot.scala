@@ -20,6 +20,7 @@ import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.v2.parquet.NativeParquetFileFormat
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.utils._
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
@@ -54,7 +55,8 @@ class Snapshot(table_info: TableInfo,
   }
 
   /** Return the underlying Spark `FileFormat` of the LakeSoulTableRel. */
-  def fileFormat: FileFormat = new ParquetFileFormat()
+//  def fileFormat: FileFormat = new ParquetFileFormat()
+    def fileFormat: FileFormat = new NativeParquetFileFormat
 
   def getConfiguration: Map[String, String] = table_info.configuration
 

@@ -70,6 +70,8 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
         AtomicReference<String> errMsg = new AtomicReference<>();
         libLakeSoulIO.write_record_batch(writer, schema.memoryAddress(), array.memoryAddress(), (status, err) -> {
+            array.close();
+            schema.close();
             if (!status && err != null) {
                 errMsg.set(err);
             }
