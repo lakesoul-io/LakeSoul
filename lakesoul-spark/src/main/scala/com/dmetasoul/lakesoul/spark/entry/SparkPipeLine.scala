@@ -67,7 +67,7 @@ object SparkPipeLine {
     val sinkTableName = parameter.get(SparkPipeLineOptions.SINK_TABLE_NAME, "")
     val sourceTableName = parameter.get(SparkPipeLineOptions.SOURCE_TABLE_NAME, "")
 
-    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType,sourceTableName)
+    val query = sourceFromDataSource(spark, sourceType, partitionDesc, readStartTime, ReadType.INCREMENTAL_READ, fromDataSourcePath, processType, sourceTableName)
     query.createOrReplaceTempView("LakesoulView")
     /** process operators and fields
      * eg：--operator:field  groupby:id;sum:score;max:score
@@ -97,16 +97,16 @@ object SparkPipeLine {
                            readStartTime: String,
                            readType: String,
                            fromDataSourcePath: String,
-                           processType: String,sourceTableName:String): DataFrame = {
+                           processType: String, sourceTableName: String): DataFrame = {
     processType match {
       case "batch" =>
-        if("".equals(sourceTableName)){
+        if ("".equals(sourceTableName)) {
           spark.read.format(source)
             .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
             .option(LakeSoulOptions.READ_START_TIME, readStartTime)
             .option(LakeSoulOptions.READ_TYPE, readType)
             .load(fromDataSourcePath)
-        }else{
+        } else {
           spark.read.format(source)
             .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
             .option(LakeSoulOptions.READ_START_TIME, readStartTime)
@@ -115,13 +115,13 @@ object SparkPipeLine {
         }
 
       case "stream" =>
-        if("".equals(sourceTableName)){
+        if ("".equals(sourceTableName)) {
           spark.readStream.format(source)
             .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
             .option(LakeSoulOptions.READ_START_TIME, readStartTime)
             .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(fromDataSourcePath)
-        }else{
+        } else {
           spark.readStream.format(source)
             .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
             .option(LakeSoulOptions.READ_START_TIME, readStartTime)
@@ -159,7 +159,7 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
-          .option(SparkPipeLineOptions.SINK_TABLE_NAME, sinkTableName)
+          .option("shortTableName", sinkTableName)
           .trigger(Trigger.ProcessingTime(triggerTime))
           .start()
           .awaitTermination()
