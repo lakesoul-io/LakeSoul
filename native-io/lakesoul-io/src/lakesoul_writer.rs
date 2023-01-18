@@ -39,6 +39,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::any::Any;
 use std::collections::VecDeque;
+use std::io::ErrorKind::ResourceBusy;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
@@ -84,15 +85,17 @@ pub struct SortAsyncWriter {
 
 /// A VecDeque which is both std::io::Write and bytes::Buf
 #[derive(Clone)]
-struct InMemBuf(Arc<VecDeque<u8>>);
+struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
 
 impl Write for InMemBuf {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        unsafe {
-            Arc::get_mut_unchecked(&mut self.0).extend(buf);
-            Ok(buf.len())
-        }
+        let mut v = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| std::io::Error::from(ResourceBusy))?;
+        v.extend(buf);
+        Ok(buf.len())
     }
 
     #[inline]
@@ -102,10 +105,12 @@ impl Write for InMemBuf {
 
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        unsafe {
-            Arc::get_mut_unchecked(&mut self.0).extend(buf);
-            Ok(())
-        }
+        let mut v = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| std::io::Error::from(ResourceBusy))?;
+        v.extend(buf);
+        Ok(())
     }
 }
 
@@ -194,7 +199,9 @@ impl MultiPartAsyncWriter {
         }?;
 
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
-        let in_mem_buf = InMemBuf(Arc::new(VecDeque::<u8>::with_capacity(16 * 1024 * 1024)));
+        let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
+            16 * 1024 * 1024,
+        ))));
         let schema: SchemaRef =
             Arc::new(serde_json::from_str(&config.schema_json).map_err(|e| DataFusionError::External(Box::new(e)))?);
 
@@ -228,8 +235,12 @@ impl MultiPartAsyncWriter {
         writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
     ) -> Result<()> {
         arrow_writer.write(&batch)?;
-        if in_mem_buf.0.len() > 0 {
-            MultiPartAsyncWriter::write_part(writer, &mut in_mem_buf.0).await
+        let mut v = in_mem_buf
+            .0
+            .try_borrow_mut()
+            .map_err(|e| Internal(format!("{:?}", e)))?;
+        if v.len() > 0 {
+            MultiPartAsyncWriter::write_part(writer, &mut *v).await
         } else {
             Ok(())
         }
@@ -237,12 +248,10 @@ impl MultiPartAsyncWriter {
 
     pub async fn write_part(
         writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
-        in_mem_buf: &mut Arc<VecDeque<u8>>,
+        in_mem_buf: &mut VecDeque<u8>,
     ) -> Result<()> {
-        unsafe {
-            writer.write_all_buf(Arc::get_mut_unchecked(in_mem_buf)).await?;
-            Ok(())
-        }
+        writer.write_all_buf(in_mem_buf).await?;
+        Ok(())
     }
 }
 
@@ -257,8 +266,13 @@ impl AsyncWriter for MultiPartAsyncWriter {
         let mut this = *self;
         let arrow_writer = this.arrow_writer;
         arrow_writer.close()?;
-        if this.in_mem_buf.0.len() > 0 {
-            MultiPartAsyncWriter::write_part(&mut this.writer, &mut this.in_mem_buf.0).await?;
+        let mut v = this
+            .in_mem_buf
+            .0
+            .try_borrow_mut()
+            .map_err(|e| Internal(format!("{:?}", e)))?;
+        if v.len() > 0 {
+            MultiPartAsyncWriter::write_part(&mut this.writer, &mut *v).await?;
         }
         // shutdown multi part async writer to complete the upload
         this.writer.shutdown().await?;
@@ -328,7 +342,7 @@ impl AsyncWriter for SortAsyncWriter {
 }
 
 pub struct SyncSendableMutableLakeSoulWriter {
-    inner: Arc<AtomicRefCell<Mutex<Box<dyn AsyncWriter>>>>,
+    inner: Arc<Mutex<Box<dyn AsyncWriter>>>,
     runtime: Arc<Runtime>,
     schema: SchemaRef,
 }
@@ -350,7 +364,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Box::new(writer)
             };
             Ok(SyncSendableMutableLakeSoulWriter {
-                inner: Arc::new(AtomicRefCell::new(Mutex::new(writer))),
+                inner: Arc::new(Mutex::new(writer)),
                 runtime,
                 schema,
             })
@@ -365,8 +379,7 @@ impl SyncSendableMutableLakeSoulWriter {
         let inner_writer = self.inner.clone();
         let runtime = self.runtime.clone();
         runtime.block_on(async move {
-            let writer = inner_writer.borrow();
-            let mut writer = writer.lock().await;
+            let mut writer = inner_writer.lock().await;
             writer.write_record_batch(record_batch).await
         })
     }
@@ -379,7 +392,6 @@ impl SyncSendableMutableLakeSoulWriter {
         let runtime = self.runtime;
         runtime.block_on(async move {
             let writer = inner_writer.into_inner();
-            let writer = writer.into_inner();
             writer.flush_and_close().await
         })
     }
