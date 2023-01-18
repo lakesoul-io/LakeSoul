@@ -19,6 +19,8 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpInt
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
@@ -151,6 +153,8 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
       case "stream" =>
+        //todo failover情况，batch无法恢复，需要测试
+        var batch = 0
         query.writeStream.format(sinkSource)
           .outputMode(outputMode)
           .option("mergeSchema", "true")
@@ -160,6 +164,20 @@ object SparkPipeLine {
           .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
           .option("path", toDataSourcePath)
           .option("shortTableName", sinkTableName)
+          .foreachBatch { (curQuery: DataFrame, _: Long) => {
+            if (batch == 0) {
+              curQuery.write.format(sinkSource)
+                .mode("overwrite")
+                .option(LakeSoulOptions.PARTITION_DESC, partitionDesc)
+                .option(LakeSoulOptions.HASH_PARTITIONS, hashPartitions)
+                .option(LakeSoulOptions.HASH_BUCKET_NUM, hashBucketNum)
+                .save(toDataSourcePath)
+            } else {
+              LakeSoulTable.forPath(toDataSourcePath).upsert(curQuery)
+            }
+            batch += 1
+          }
+          }
           .trigger(Trigger.ProcessingTime(triggerTime))
           .start()
           .awaitTermination()
