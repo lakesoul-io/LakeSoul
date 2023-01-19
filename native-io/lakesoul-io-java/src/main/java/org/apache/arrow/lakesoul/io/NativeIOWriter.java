@@ -19,26 +19,21 @@ package org.apache.arrow.lakesoul.io;
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
-import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
-import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
+
     private Pointer writer = null;
 
-    private final BufferAllocator allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("NativeIOWriter", 0, Long.MAX_VALUE);
-
-    private final CDataDictionaryProvider provider = new CDataDictionaryProvider();
-
-    public NativeIOWriter(String schemaJson) {
-        super();
-        setSchema(schemaJson);
+    public NativeIOWriter(Schema schema) {
+        super("NativeWriter");
+        setSchema(schema);
     }
 
     public void setPrimaryKeys(Iterable<String> primaryKeys) {
@@ -70,6 +65,8 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
         AtomicReference<String> errMsg = new AtomicReference<>();
         libLakeSoulIO.write_record_batch(writer, schema.memoryAddress(), array.memoryAddress(), (status, err) -> {
+            array.close();
+            schema.close();
             if (!status && err != null) {
                 errMsg.set(err);
             }
@@ -97,7 +94,6 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         if (writer != null) {
             flush();
         }
-        provider.close();
-        allocator.close();
+        super.close();
     }
 }

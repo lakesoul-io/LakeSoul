@@ -47,6 +47,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
     }
 
     writer.flush()
+    writer.close()
 
     lakesoulReader.close()
   }
