@@ -20,6 +20,7 @@ import com.amazonaws.auth.AWSCredentials;
 import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3AUtils;
@@ -36,6 +37,7 @@ import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
@@ -238,8 +240,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       }
     }
 
-    String schemaJson = NativeIOUtils.convertStructTypeToArrowJson(sparkSchema, convertTz == null ? "" : convertTz.toString());
-    reader.setSchema(schemaJson);
+    Schema arrowSchema = ArrowUtils.toArrowSchema(sparkSchema, convertTz == null ? "" : convertTz.toString());
+    reader.setSchema(arrowSchema);
 
     reader.setBatchSize(capacity);
     reader.setBufferSize(prefetchBufferSize);

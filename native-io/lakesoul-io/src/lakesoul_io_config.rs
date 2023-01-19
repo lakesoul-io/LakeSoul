@@ -25,7 +25,18 @@ use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+use arrow_schema::{Schema, SchemaRef};
 use url::Url;
+
+#[derive(Derivative)]
+#[derivative(Clone)]
+pub struct IOSchema(pub(crate) SchemaRef);
+
+impl Default for IOSchema {
+    fn default() -> Self {
+        IOSchema(Arc::new(Schema::empty()))
+    }
+}
 
 #[derive(Derivative)]
 #[derivative(Default, Clone)]
@@ -48,8 +59,8 @@ pub struct LakeSoulIOConfig {
     #[derivative(Default(value = "2"))]
     pub(crate) prefetch_size: usize,
 
-    // arrow schema in json for read and write
-    pub(crate) schema_json: String,
+    // arrow schema
+    pub(crate) schema: IOSchema,
 
     // object store related configs
     pub(crate) object_store_options: HashMap<String, String>,
@@ -117,13 +128,13 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_schema_json(mut self, json_str: String) -> Self {
-        self.config.schema_json = json_str;
+    pub fn with_schema(mut self, schema: SchemaRef) -> Self {
+        self.config.schema = IOSchema(schema);
         self
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, &self.config.schema_json);
+        let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
         self.config.filters.push(expr);
         self
     }

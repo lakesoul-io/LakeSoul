@@ -18,7 +18,13 @@ package org.apache.arrow.lakesoul.io;
 
 import jnr.ffi.Runtime;
 import jnr.ffi.*;
+import org.apache.arrow.c.ArrowSchema;
+import org.apache.arrow.c.CDataDictionaryProvider;
+import org.apache.arrow.c.Data;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
+import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.File;
 import java.nio.file.Paths;
@@ -26,13 +32,23 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
-public class NativeIOBase {
+public class NativeIOBase implements AutoCloseable {
+
     protected Pointer ioConfigBuilder;
+
     protected Pointer config = null;
+
     protected Pointer tokioRuntimeBuilder;
+
     protected Pointer tokioRuntime = null;
+
     protected final LibLakeSoulIO libLakeSoulIO;
+
     protected final ObjectReferenceManager<NativeIOReader.Callback> referenceManager;
+
+    protected BufferAllocator allocator;
+
+    protected CDataDictionaryProvider provider;
 
     private static boolean isMac() {
         String OS = System.getProperty("os.name").toLowerCase();
@@ -52,18 +68,25 @@ public class NativeIOBase {
         return new File(getNativeIOLibPath()).exists();
     }
 
-    public NativeIOBase() {
+    public NativeIOBase(String allocatorName) {
+        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
+        this.provider = new CDataDictionaryProvider();
+
         Map<LibraryOption, Object> libraryOptions = new HashMap<>();
         libraryOptions.put(LibraryOption.LoadNow, true);
         libraryOptions.put(LibraryOption.IgnoreError, true);
 
         String libName = getNativeIOLibPath(); // platform specific name for liblakesoul_io_c
 
-        libLakeSoulIO = LibraryLoader.loadLibrary(
-                LibLakeSoulIO.class,
-                libraryOptions,
-                libName
-        );
+        synchronized (LibraryLoader.class) {
+            // LibraryLoader seems not thread safe
+            libLakeSoulIO = LibraryLoader.loadLibrary(
+                    LibLakeSoulIO.class,
+                    libraryOptions,
+                    libName
+            );
+        }
+
         referenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
@@ -82,10 +105,16 @@ public class NativeIOBase {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, columnPtr);
     }
 
-    public void setSchema(String schemaJson) {
+    public void setSchema(Schema schema) {
         assert ioConfigBuilder != null;
-        Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, schemaJson);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ptr);
+        ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
+        CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
+        Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ffiSchema.memoryAddress());
+        tmpProvider.close();
+        // rust side doesn't release the schema
+        ffiSchema.release();
+        ffiSchema.close();
     }
 
     public void setThreadNum(int threadNum) {
@@ -118,6 +147,18 @@ public class NativeIOBase {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, ptrKey, ptrValue);
     }
 
+    @Override
+    public void close() throws Exception {
+        if (provider != null) {
+            provider.close();
+            provider = null;
+        }
+        if (allocator != null) {
+            allocator.close();
+            allocator = null;
+        }
+    }
+
     public static final class Callback implements LibLakeSoulIO.JavaCallback {
 
         public BiConsumer<Boolean, String> callback;
@@ -145,5 +186,13 @@ public class NativeIOBase {
             callback.accept(status, err);
             removerReferenceKey();
         }
+    }
+
+    public BufferAllocator getAllocator() {
+        return allocator;
+    }
+
+    public CDataDictionaryProvider getProvider() {
+        return provider;
     }
 }

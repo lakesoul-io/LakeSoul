@@ -18,7 +18,6 @@
 extern crate core;
 
 use core::ffi::{c_ptrdiff_t, c_size_t};
-use std::borrow::Borrow;
 use std::ffi::{c_char, CStr, CString};
 use std::ptr::NonNull;
 use std::slice;
@@ -151,12 +150,13 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_schema(
     builder: NonNull<IOConfigBuilder>,
-    schema_json: *const c_char,
+    schema_addr: c_ptrdiff_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let schema_json = CStr::from_ptr(schema_json).to_str().unwrap().to_string();
+        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+        let schema = Schema::try_from(&*(ffi_schema)).unwrap();
         convert_to_opaque(
-            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_schema_json(schema_json),
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_schema(Arc::new(schema)),
         )
     }
 }
@@ -364,25 +364,15 @@ pub extern "C" fn next_record_batch(
 }
 
 #[no_mangle]
-pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>) -> *mut c_char {
+pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>, schema_addr: c_ptrdiff_t) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
-        let schema_string = reader.as_ref().get_schema().map_or(String::default(), |s| {
-            serde_json::to_string::<Schema>(s.borrow()).unwrap()
+        let schema = reader.as_ref().get_schema().unwrap_or(Arc::new(Schema::empty()));
+        let schema_addr = schema_addr as *mut FFI_ArrowSchema;
+        let _ = FFI_ArrowSchema::try_from(schema.as_ref()).map(|s| {
+            std::ptr::write_unaligned(schema_addr, s);
         });
-        let c_str = CString::new(schema_string).unwrap();
-        c_str.into_raw()
     }
-}
-
-#[no_mangle]
-pub extern "C" fn lakesoul_schema_free(s: *mut c_char) {
-    unsafe {
-        if s.is_null() {
-            return;
-        }
-        CString::from_raw(s)
-    };
 }
 
 #[no_mangle]
@@ -526,7 +516,7 @@ mod tests {
         lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
         lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
         lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
-        lakesoul_schema_free, next_record_batch, start_reader, tokio_runtime_builder_set_thread_num,
+        next_record_batch, start_reader, tokio_runtime_builder_set_thread_num,
         write_record_batch, IOConfigBuilder,
     };
     use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
@@ -644,14 +634,15 @@ mod tests {
             assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
         }
 
-        let schema_str = lakesoul_reader_get_schema(reader);
+        let schema_ffi = FFI_ArrowSchema::empty();
+        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
 
         let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
         writer_config_builder = lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
         writer_config_builder = lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
         writer_config_builder = lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
-        writer_config_builder = lakesoul_config_builder_set_schema(writer_config_builder, schema_str as *const c_char);
-        lakesoul_schema_free(schema_str);
+        writer_config_builder =
+            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
         unsafe {
             writer_config_builder = lakesoul_config_builder_add_single_file(
                 writer_config_builder,
@@ -771,18 +762,19 @@ mod tests {
             assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
         }
 
-        let schema_str = lakesoul_reader_get_schema(reader);
+        let schema_ffi = FFI_ArrowSchema::empty();
+        lakesoul_reader_get_schema(reader, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
 
         let mut writer_config_builder = crate::new_lakesoul_io_config_builder();
         writer_config_builder = lakesoul_config_builder_set_batch_size(writer_config_builder, 8192);
         writer_config_builder = lakesoul_config_builder_set_thread_num(writer_config_builder, 2);
         writer_config_builder = lakesoul_config_builder_set_max_row_group_size(writer_config_builder, 250000);
-        writer_config_builder = lakesoul_config_builder_set_schema(writer_config_builder, schema_str as *const c_char);
+        writer_config_builder =
+            lakesoul_config_builder_set_schema(writer_config_builder, std::ptr::addr_of!(schema_ffi) as c_ptrdiff_t);
         writer_config_builder = add_pk(writer_config_builder, "str2");
         writer_config_builder = add_pk(writer_config_builder, "str3");
         writer_config_builder = add_pk(writer_config_builder, "int2");
         writer_config_builder = add_pk(writer_config_builder, "int6");
-        lakesoul_schema_free(schema_str);
         unsafe {
             writer_config_builder = lakesoul_config_builder_add_single_file(
                 writer_config_builder,
