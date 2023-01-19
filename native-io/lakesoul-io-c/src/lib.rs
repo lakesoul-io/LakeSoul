@@ -15,7 +15,6 @@
  */
 
 #![feature(c_size_t)]
-#![feature(vec_into_raw_parts)]
 extern crate core;
 
 use core::ffi::{c_ptrdiff_t, c_size_t};
