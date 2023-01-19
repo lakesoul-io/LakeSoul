@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import org.apache.arrow.lakesoul.io.NativeIOBase;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.connector.sink.Sink;
 import org.apache.flink.configuration.Configuration;
@@ -150,7 +151,11 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
     }
 
     private BucketWriter<RowData, String> createBucketWriter() throws IOException {
-        return new BulkBucketWriter<>(
-                FileSystem.get(basePath.toUri()).createRecoverableWriter(), writerFactory);
+        if (NativeIOBase.isNativeIOLibExist()) {
+            return new NativeBucketWriter(getFakeRowType(), this.conf);
+        } else {
+            return new BulkBucketWriter<>(
+                    FileSystem.get(basePath.toUri()).createRecoverableWriter(), writerFactory);
+        }
     }
 }

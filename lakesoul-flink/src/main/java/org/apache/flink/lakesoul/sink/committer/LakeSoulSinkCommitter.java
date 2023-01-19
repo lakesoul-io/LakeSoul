@@ -82,8 +82,14 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 // commit files
                 for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
                         committable.getPendingFiles()) {
-                    // We should always use commitAfterRecovery which contains additional checks.
-                    bucketWriter.recoverPendingFile(pendingFileRecoverable).commitAfterRecovery();
+                    // pending file would be null for NativeBucketWriter
+                    if (pendingFileRecoverable != null) {
+                        BucketWriter.PendingFile pendingFile = bucketWriter.recoverPendingFile(pendingFileRecoverable);
+                        if (pendingFile != null) {
+                            // We should always use commitAfterRecovery which contains additional checks.
+                            pendingFile.commitAfterRecovery();
+                        }
+                    }
                 }
                 // commit LakeSoul Meta
                 TableSchemaIdentity identity = committable.getIdentity();

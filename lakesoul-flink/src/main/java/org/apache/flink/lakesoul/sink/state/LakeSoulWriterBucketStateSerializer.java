@@ -30,6 +30,8 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.
 import org.apache.flink.util.function.FunctionWithException;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter.InProgressFileRecoverable;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -98,6 +100,12 @@ public class LakeSoulWriterBucketStateSerializer
 
         SimpleVersionedSerialization.writeVersionAndSerialize(
                 tableSchemaIdentitySerializer, state.getIdentity(), dataOutputView);
+
+        // write filePaths
+        dataOutputView.writeInt(state.getFilePaths().size());
+        for (String path : state.getFilePaths()) {
+            dataOutputView.writeUTF(path);
+        }
     }
 
     private LakeSoulWriterBucketState deserialize(DataInputView in) throws IOException {
@@ -131,11 +139,17 @@ public class LakeSoulWriterBucketStateSerializer
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
                 tableSchemaIdentitySerializer, dataInputView);
 
+        List<String> filePaths = new ArrayList<>();
+        int pathNum = dataInputView.readInt();
+        for (int i = 0; i < pathNum; ++i) {
+            filePaths.add(dataInputView.readUTF());
+        }
+
         return new LakeSoulWriterBucketState(
                 identity, bucketId,
                 new Path(bucketPathStr),
                 creationTime,
-                current, inProgressPath);
+                current, inProgressPath, filePaths);
     }
 
     private void validateMagicNumber(DataInputView in) throws IOException {

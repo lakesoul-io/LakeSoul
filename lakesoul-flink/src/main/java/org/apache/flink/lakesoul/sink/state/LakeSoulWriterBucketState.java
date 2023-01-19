@@ -24,6 +24,8 @@ import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 
 import javax.annotation.Nullable;
 
+import java.util.List;
+
 import static org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter.InProgressFileRecoverable;
 
 /** States for {@link LakeSoulWriterBucket}. */
@@ -50,18 +52,24 @@ public class LakeSoulWriterBucketState {
 
     private final String inProgressPath;
 
+    private final List<String> filePaths;
+
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             String bucketId,
             Path bucketPath,
             long inProgressFileCreationTime,
-            @Nullable InProgressFileRecoverable inProgressFileRecoverable, String inProgressPath) {
+            @Nullable InProgressFileRecoverable inProgressFileRecoverable,
+            @Nullable String inProgressPath,
+            List<String> filePaths
+            ) {
         this.identity = identity;
         this.bucketId = bucketId;
         this.bucketPath = bucketPath;
         this.inProgressFileCreationTime = inProgressFileCreationTime;
         this.inProgressFileRecoverable = inProgressFileRecoverable;
         this.inProgressPath = inProgressPath;
+        this.filePaths = filePaths;
     }
 
     public String getBucketId() {
@@ -110,5 +118,9 @@ public class LakeSoulWriterBucketState {
 
     public String getInProgressPath() {
         return inProgressPath;
+    }
+
+    public List<String> getFilePaths() {
+        return filePaths;
     }
 }

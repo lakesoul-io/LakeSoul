@@ -19,6 +19,7 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
+import org.apache.arrow.lakesoul.io.NativeIOBase;
 import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
@@ -68,7 +69,11 @@ public class TableSchemaWriterCreator implements Serializable {
     public LakeSoulCDCComparator comparator;
 
     public Path tableLocation;
+
     public BulkWriter.Factory<RowData> writerFactory;
+
+    public Configuration conf;
+
     public static TableSchemaWriterCreator create(
             TableId tableId,
             RowType rowType,
@@ -77,17 +82,18 @@ public class TableSchemaWriterCreator implements Serializable {
             List<String> partitionKeyList,
             ClassLoader userClassLoader,
             Configuration conf) throws IOException {
-        TableSchemaWriterCreator info = new TableSchemaWriterCreator();
-        info.identity = new TableSchemaIdentity(tableId, rowType, tableLocation, primaryKeys, partitionKeyList);
-        info.primaryKeys = primaryKeys;
-        info.partitionKeyList = partitionKeyList;
-        info.outputFileConfig = OutputFileConfig.builder().build();
+        TableSchemaWriterCreator creator = new TableSchemaWriterCreator();
+        creator.conf = conf;
+        creator.identity = new TableSchemaIdentity(tableId, rowType, tableLocation, primaryKeys, partitionKeyList);
+        creator.primaryKeys = primaryKeys;
+        creator.partitionKeyList = partitionKeyList;
+        creator.outputFileConfig = OutputFileConfig.builder().build();
 
-        info.keyGen = new LakeSoulKeyGen(rowType, info.primaryKeys.toArray(new String[0]));
-        RecordComparator recordComparator = info.keyGen.getComparator().newInstance(userClassLoader);
-        info.comparator = new LakeSoulCDCComparator(recordComparator);
+        creator.keyGen = new LakeSoulKeyGen(rowType, creator.primaryKeys.toArray(new String[0]));
+        RecordComparator recordComparator = creator.keyGen.getComparator().newInstance(userClassLoader);
+        creator.comparator = new LakeSoulCDCComparator(recordComparator);
 
-        info.partitionComputer = new CdcPartitionComputer(
+        creator.partitionComputer = new CdcPartitionComputer(
                 "default",
                 rowType.getFieldNames().toArray(new String[0]),
                 rowType,
@@ -95,20 +101,24 @@ public class TableSchemaWriterCreator implements Serializable {
                 conf.getBoolean(LakeSoulSinkOptions.USE_CDC)
         );
 
-        info.bucketAssigner = new FlinkBucketAssigner(info.partitionComputer);
+        creator.bucketAssigner = new FlinkBucketAssigner(creator.partitionComputer);
 
-        info.tableLocation = FlinkUtil.makeQualifiedPath(tableLocation);
-        info.writerFactory = ParquetRowDataBuilder.createWriterFactory(
+        creator.tableLocation = FlinkUtil.makeQualifiedPath(tableLocation);
+        creator.writerFactory = ParquetRowDataBuilder.createWriterFactory(
                         rowType,
                         getParquetConfiguration(conf),
                         conf.get(UTC_TIMEZONE));
 
-        return info;
+        return creator;
     }
 
     public BucketWriter<RowData, String> createBucketWriter() throws IOException {
-        return new BulkBucketWriter<>(
-                FileSystem.get(tableLocation.toUri()).createRecoverableWriter(), writerFactory);
+        if (NativeIOBase.isNativeIOLibExist()) {
+            return new NativeBucketWriter(this.identity.rowType, this.conf);
+        } else {
+            return new BulkBucketWriter<>(
+                    FileSystem.get(tableLocation.toUri()).createRecoverableWriter(), writerFactory);
+        }
     }
 
     public static org.apache.hadoop.conf.Configuration getParquetConfiguration(ReadableConfig options) {
