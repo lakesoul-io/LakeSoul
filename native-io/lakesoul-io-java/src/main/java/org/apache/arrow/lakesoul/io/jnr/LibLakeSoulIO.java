@@ -46,13 +46,14 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
 
-    Pointer lakesoul_config_builder_set_schema(Pointer builder, Pointer schemaJson);
+    Pointer lakesoul_config_builder_set_schema(Pointer builder, long schemaAddr);
 
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
 
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);
 
     Pointer lakesoul_config_builder_set_batch_size(Pointer builder, int batch_size);
+
     Pointer lakesoul_config_builder_set_buffer_size(Pointer builder, int buffer_size);
 
     Pointer create_lakesoul_io_config_from_builder(Pointer builder);
@@ -61,9 +62,7 @@ public interface LibLakeSoulIO {
 
     Pointer check_reader_created(Pointer reader);
 
-    Pointer lakesoul_reader_get_schema(Pointer reader);
-
-    void lakesoul_schema_free(Pointer s);
+    void lakesoul_reader_get_schema(Pointer reader, long schemaAddr);
 
     Pointer create_lakesoul_writer_from_config(Pointer config, Pointer runtime);
 

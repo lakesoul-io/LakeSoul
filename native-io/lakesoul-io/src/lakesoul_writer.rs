@@ -202,8 +202,7 @@ impl MultiPartAsyncWriter {
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
             16 * 1024 * 1024,
         ))));
-        let schema: SchemaRef =
-            Arc::new(serde_json::from_str(&config.schema_json).map_err(|e| DataFusionError::External(Box::new(e)))?);
+        let schema: SchemaRef = config.schema.0.clone();
 
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
@@ -434,7 +433,7 @@ mod tests {
                 .with_thread_num(2)
                 .with_batch_size(256)
                 .with_max_row_group_size(2)
-                .with_schema_json(serde_json::to_string::<Schema>(to_write.schema().borrow()).unwrap())
+                .with_schema(to_write.schema())
                 .build();
             let mut async_writer = MultiPartAsyncWriter::try_new(writer_conf).await?;
             async_writer.write_record_batch(to_write.clone()).await?;
@@ -463,7 +462,7 @@ mod tests {
                 .with_thread_num(2)
                 .with_batch_size(256)
                 .with_max_row_group_size(2)
-                .with_schema_json(serde_json::to_string::<Schema>(to_write.schema().borrow()).unwrap())
+                .with_schema(to_write.schema())
                 .with_primary_keys(vec!["col".to_string()])
                 .build();
 
@@ -522,7 +521,7 @@ mod tests {
             .with_files(vec![
                 "s3://lakesoul-test-bucket/data/native-io-test/large_file_written.parquet".to_string(),
             ])
-            .with_schema_json(serde_json::to_string::<Schema>(schema.borrow()).unwrap())
+            .with_schema(schema)
             .build();
         let mut async_writer = MultiPartAsyncWriter::try_new(write_conf).await?;
 
@@ -565,7 +564,7 @@ mod tests {
                 .with_files(vec![
                     "s3://lakesoul-test-bucket/data/native-io-test/large_file_written_sorted.parquet".to_string(),
                 ])
-                .with_schema_json(serde_json::to_string::<Schema>(schema.borrow()).unwrap())
+                .with_schema(schema)
                 .with_primary_keys(vec!["str0".to_string(), "str1".to_string(), "int1".to_string()])
                 .build();
             let async_writer = MultiPartAsyncWriter::try_new(write_conf.clone()).await?;

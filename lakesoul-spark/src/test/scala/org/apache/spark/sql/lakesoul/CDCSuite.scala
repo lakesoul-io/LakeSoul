@@ -17,7 +17,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.arrow.lakesoul.io.{NativeIOBase, NativeIOReader}
+import org.apache.arrow.lakesoul.io.NativeIOBase
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier

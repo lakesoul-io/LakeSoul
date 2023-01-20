@@ -18,8 +18,6 @@ package org.apache.arrow.lakesoul.io.read
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.lakesoul.io.NativeIOReader
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
-import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 
 import java.io.IOException
@@ -46,11 +44,6 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     }
   }
 
-  val allocator: BufferAllocator =
-    ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
-
-  val provider = new CDataDictionaryProvider()
-
   val iterator: Iterator[Option[VectorSchemaRoot]] = new Iterator[Option[VectorSchemaRoot]] {
     var vsrFuture: Future[Option[VectorSchemaRoot]] = _
     private var finished = false
@@ -60,16 +53,15 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         clean()
         val p = Promise[Option[VectorSchemaRoot]]()
         vsrFuture = p.future
-        val consumerSchema = ArrowSchema.allocateNew(allocator)
-        val consumerArray = ArrowArray.allocateNew(allocator)
+        val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
+        val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
+        val provider = new CDataDictionaryProvider
         reader.nextBatch((hasNext, err) => {
           if (hasNext) {
             val root: VectorSchemaRoot =
-              Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
+              Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
             p.success(Some(root))
           } else {
-            consumerArray.close()
-            consumerSchema.close()
             if (err == null) {
               p.success(None)
               finish()
@@ -88,6 +80,9 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
           case e: Throwable =>
             ex = Some(e)
             false
+        } finally {
+          consumerArray.close()
+          consumerSchema.close()
         }
       } else {
         false
@@ -120,7 +115,5 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
   override def close(): Unit = {
     reader.close()
-    provider.close()
-    allocator.close()
   }
 }
