@@ -42,11 +42,10 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             Path bucketPath,
             BucketWriter<RowData, String> bucketWriter,
             RollingPolicy<RowData, String> rollingPolicy,
-            OutputFileConfig outputFileConfig,
-            LakeSoulCDCComparator comparator) {
+            OutputFileConfig outputFileConfig) {
         return LakeSoulWriterBucket.getNew(
                 subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, comparator);
+                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
     }
 
     @Override
@@ -56,11 +55,9 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             BucketWriter<RowData, String> bucketWriter,
             RollingPolicy<RowData, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
-            OutputFileConfig outputFileConfig,
-            LakeSoulCDCComparator comparator)
+            OutputFileConfig outputFileConfig)
             throws IOException {
         return LakeSoulWriterBucket.restore(subTaskId, tableId, bucketWriter,
-                                            rollingPolicy, bucketState, outputFileConfig,
-                                            comparator);
+                                            rollingPolicy, bucketState, outputFileConfig);
     }
 }

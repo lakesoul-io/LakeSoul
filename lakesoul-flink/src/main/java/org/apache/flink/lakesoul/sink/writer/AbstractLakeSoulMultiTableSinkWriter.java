@@ -137,8 +137,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                             creator.createBucketWriter(),
                             rollingPolicy,
                             state,
-                            outputFileConfig,
-                            creator.comparator);
+                            outputFileConfig);
 
             updateActiveBucketId(identity, bucketId, restoredBucket);
         }
@@ -242,7 +241,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                     bucketFactory.getNewBucket(
                             subTaskId,
                             creator.identity,
-                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, creator.comparator);
+                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
             LOG.info("Create new bucket {}, {}, {}",
                      identity, bucketId, bucketPath);

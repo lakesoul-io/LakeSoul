@@ -128,7 +128,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     @Override
     public LakeSoulSinkCommitter createCommitter() throws IOException {
-        return new LakeSoulSinkCommitter(createBucketWriter());
+        return new LakeSoulSinkCommitter();
     }
 
     @Override
@@ -137,7 +137,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
         BucketWriter<RowData, String> bucketWriter = createBucketWriter();
 
         return new LakeSoulWriterBucketStateSerializer(
-                bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
+                bucketWriter.getProperties().getPendingFileRecoverableSerializer());
     }
 
     @Override
@@ -146,8 +146,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
         BucketWriter<RowData, String> bucketWriter = createBucketWriter();
 
         return new LakeSoulSinkCommittableSerializer(
-                bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
-                bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
+                bucketWriter.getProperties().getPendingFileRecoverableSerializer());
     }
 
     private BucketWriter<RowData, String> createBucketWriter() throws IOException {

@@ -1,8 +1,28 @@
+/*
+ *
+ *  * Copyright [2022] [DMetaSoul Team]
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  *     http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ *
+ */
+
 package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.core.memory.DataInputDeserializer;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.WriterProperties;
@@ -10,7 +30,6 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 
 public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
@@ -98,14 +117,20 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
                 throw new UnsupportedOperationException(
                         "Only NativeParquetWriter.NativeWriterPendingFileRecoverable is supported.");
             }
+            DataOutputSerializer out = new DataOutputSerializer(256);
             NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
                     (NativeParquetWriter.NativeWriterPendingFileRecoverable) obj;
-            return recoverable.path.getBytes(StandardCharsets.UTF_8);
+            out.writeUTF(recoverable.path);
+            out.writeLong(recoverable.creationTime);
+            return out.getCopyOfBuffer();
         }
 
         @Override
         public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized) throws IOException {
-            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(new String(serialized, StandardCharsets. UTF_8));
+            DataInputDeserializer in = new DataInputDeserializer(serialized);
+            String path = in.readUTF();
+            long time = in.readLong();
+            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, time);
         }
     }
 }

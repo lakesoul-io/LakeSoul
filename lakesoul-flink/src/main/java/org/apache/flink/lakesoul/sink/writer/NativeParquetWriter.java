@@ -1,8 +1,24 @@
+/*
+ *
+ *  * Copyright [2022] [DMetaSoul Team]
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  *     http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ *
+ */
+
 package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.arrow.lakesoul.io.NativeIOWriter;
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
-import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
@@ -25,8 +41,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     private final long creationTime;
 
-    private final BufferAllocator allocator;
-
     private final VectorSchemaRoot batch;
 
     private final String bucketID;
@@ -44,9 +58,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.rowsInBatch = 0;
 
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
-        nativeWriter = new NativeIOWriter(arrowSchema.toJson());
-        allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("FlinkNativeWriter", 0, Long.MAX_VALUE);
-        batch = VectorSchemaRoot.create(arrowSchema, allocator);
+        nativeWriter = new NativeIOWriter(arrowSchema);
+        batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();
         nativeWriter.addFile(this.path);
@@ -77,8 +90,17 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     static public class NativeWriterPendingFileRecoverable implements PendingFileRecoverable, Serializable {
         public String path;
 
-        NativeWriterPendingFileRecoverable(String path) {
+        public long creationTime;
+
+        NativeWriterPendingFileRecoverable(String path, long creationTime) {
             this.path = path;
+            this.creationTime = creationTime;
+        }
+
+        @Override
+        public String toString() {
+            return "PendingFile(" +
+                    path + ", " + creationTime + ")";
         }
     }
 
@@ -89,7 +111,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.nativeWriter.flush();
         this.arrowWriter.reset();
         this.rowsInBatch = 0;
-        return new NativeWriterPendingFileRecoverable(this.path);
+        return new NativeWriterPendingFileRecoverable(this.path, this.creationTime);
     }
 
     @Override
@@ -100,7 +122,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             throw new RuntimeException(e);
         }
         this.batch.close();
-        this.allocator.close();
     }
 
     @Override

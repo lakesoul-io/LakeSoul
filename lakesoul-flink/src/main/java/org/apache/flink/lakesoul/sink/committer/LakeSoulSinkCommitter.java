@@ -21,7 +21,6 @@ package org.apache.flink.lakesoul.sink.committer;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
-import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.core.fs.FileStatus;
@@ -30,9 +29,9 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,8 +42,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
-
-import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -58,17 +55,13 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkCommitter.class);
 
-    private final BucketWriter<?, ?> bucketWriter;
-
-    public LakeSoulSinkCommitter(BucketWriter<?, ?> bucketWriter) {
-        this.bucketWriter = checkNotNull(bucketWriter);
-    }
+    public LakeSoulSinkCommitter() {}
 
     @Override
     public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
             throws IOException {
         LOG.info("Found {} committables for LakeSoul to commit", committables.size());
-        // commit by file creation time in descending order
+        // commit by file creation time in ascending order
         committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
 
         DBManager lakeSoulDBManager = new DBManager();
@@ -79,23 +72,23 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 if (committable.getPendingFiles().isEmpty()) {
                     continue;
                 }
-                // commit files
+
+                // pending files to commit
+                List<String> files = new ArrayList<>();
                 for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
                         committable.getPendingFiles()) {
-                    // pending file would be null for NativeBucketWriter
-                    if (pendingFileRecoverable != null) {
-                        BucketWriter.PendingFile pendingFile = bucketWriter.recoverPendingFile(pendingFileRecoverable);
-                        if (pendingFile != null) {
-                            // We should always use commitAfterRecovery which contains additional checks.
-                            pendingFile.commitAfterRecovery();
-                        }
+                    if (pendingFileRecoverable instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable) {
+                        NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
+                                (NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
+                        files.add(recoverable.path);
                     }
                 }
+
+                if (files.isEmpty()) continue;
+
                 // commit LakeSoul Meta
                 TableSchemaIdentity identity = committable.getIdentity();
                 List<DataFileOp> dataFileOpList = new ArrayList<>();
-                List<String> files = committable.getFilePaths();
-                assert files != null;
                 String fileExistCols = String.join(",",
                                                    identity.rowType.getFieldNames());
                 for (String file : files) {
@@ -137,11 +130,6 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 }
 
                 lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo);
-            }
-
-            if (committable.hasInProgressFileToCleanup()) {
-                bucketWriter.cleanupInProgressFileRecoverable(
-                        committable.getInProgressFileToCleanup());
             }
         }
 
