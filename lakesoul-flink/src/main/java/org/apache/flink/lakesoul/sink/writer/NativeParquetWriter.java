@@ -31,6 +31,8 @@ import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.List;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
     private final ArrowWriter<RowData> arrowWriter;
@@ -51,7 +53,13 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     String path;
 
-    public NativeParquetWriter(RowType rowType, int batchSize, String bucketID, Path path, long creationTime, Configuration conf) throws IOException {
+    public NativeParquetWriter(RowType rowType,
+                               List<String> primaryKeys,
+                               int batchSize,
+                               String bucketID,
+                               Path path,
+                               long creationTime,
+                               Configuration conf) throws IOException {
         this.batchSize = batchSize;
         this.creationTime = creationTime;
         this.bucketID = bucketID;
@@ -59,6 +67,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
+        nativeWriter.setPrimaryKeys(primaryKeys);
+        nativeWriter.setAuxSortColumns(Collections.singletonList("__lakesoul_cdc_event_time__"));
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();

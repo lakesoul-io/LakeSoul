@@ -55,7 +55,6 @@ public final class DefaultOneTableBulkFormatBuilder
                 super.outputFileConfig,
                 context.getProcessingTimeService(),
                 super.bucketCheckInterval,
-                context.getUserCodeClassLoader().asClassLoader(),
                 super.conf
                 );
     }

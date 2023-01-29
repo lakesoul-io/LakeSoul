@@ -21,7 +21,6 @@ package org.apache.flink.lakesoul.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.types.LakeSoulCDCComparator;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;

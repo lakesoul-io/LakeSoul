@@ -28,11 +28,14 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketStateSerializer;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
-import org.apache.flink.lakesoul.sink.writer.*;
+import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
+import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucketFactory;
+import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
@@ -43,6 +46,7 @@ import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
+import java.util.Collections;
 
 import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.UTC_TIMEZONE;
 import static org.apache.flink.lakesoul.sink.writer.TableSchemaWriterCreator.getParquetConfiguration;
@@ -151,7 +155,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     private BucketWriter<RowData, String> createBucketWriter() throws IOException {
         if (NativeIOBase.isNativeIOLibExist()) {
-            return new NativeBucketWriter(getFakeRowType(), this.conf);
+            return new NativeBucketWriter(getFakeRowType(), Collections.emptyList(), this.conf);
         } else {
             return new BulkBucketWriter<>(
                     FileSystem.get(basePath.toUri()).createRecoverableWriter(), writerFactory);

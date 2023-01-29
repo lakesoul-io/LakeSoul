@@ -29,9 +29,7 @@ import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
 import org.apache.flink.lakesoul.sink.bucket.CdcPartitionComputer;
 import org.apache.flink.lakesoul.sink.bucket.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
-import org.apache.flink.lakesoul.types.LakeSoulCDCComparator;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
@@ -39,7 +37,6 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
@@ -54,8 +51,6 @@ public class TableSchemaWriterCreator implements Serializable {
 
     public TableSchemaIdentity identity;
 
-    public LakeSoulKeyGen keyGen;
-
     public List<String> primaryKeys;
 
     public List<String> partitionKeyList;
@@ -65,8 +60,6 @@ public class TableSchemaWriterCreator implements Serializable {
     public CdcPartitionComputer partitionComputer;
 
     public BucketAssigner<RowData, String> bucketAssigner;
-
-    public LakeSoulCDCComparator comparator;
 
     public Path tableLocation;
 
@@ -80,7 +73,6 @@ public class TableSchemaWriterCreator implements Serializable {
             String tableLocation,
             List<String> primaryKeys,
             List<String> partitionKeyList,
-            ClassLoader userClassLoader,
             Configuration conf) throws IOException {
         TableSchemaWriterCreator creator = new TableSchemaWriterCreator();
         creator.conf = conf;
@@ -88,10 +80,6 @@ public class TableSchemaWriterCreator implements Serializable {
         creator.primaryKeys = primaryKeys;
         creator.partitionKeyList = partitionKeyList;
         creator.outputFileConfig = OutputFileConfig.builder().build();
-
-        creator.keyGen = new LakeSoulKeyGen(rowType, creator.primaryKeys.toArray(new String[0]));
-        RecordComparator recordComparator = creator.keyGen.getComparator().newInstance(userClassLoader);
-        creator.comparator = new LakeSoulCDCComparator(recordComparator);
 
         creator.partitionComputer = new CdcPartitionComputer(
                 "default",
@@ -114,8 +102,9 @@ public class TableSchemaWriterCreator implements Serializable {
 
     public BucketWriter<RowData, String> createBucketWriter() throws IOException {
         if (NativeIOBase.isNativeIOLibExist()) {
-            return new NativeBucketWriter(this.identity.rowType, this.conf);
+            return new NativeBucketWriter(this.identity.rowType, this.primaryKeys, this.conf);
         } else {
+            // TODO: we should throw
             return new BulkBucketWriter<>(
                     FileSystem.get(tableLocation.toUri()).createRecoverableWriter(), writerFactory);
         }

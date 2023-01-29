@@ -78,9 +78,11 @@ public class LakeSoulRecordConvert implements Serializable {
             if (!beforeType.getTypeAt(beforeTypeIndex).equals(afterType.getTypeAt(afterTypeIndex))) {
                 return true;
             }
-            RowData.FieldGetter beforeFieldGetter = RowData.createFieldGetter(beforeType.getTypeAt(beforeTypeIndex), beforeTypeIndex);
+            RowData.FieldGetter beforeFieldGetter =
+                    RowData.createFieldGetter(beforeType.getTypeAt(beforeTypeIndex), beforeTypeIndex);
             Object beforeField = beforeFieldGetter.getFieldOrNull(beforeData);
-            RowData.FieldGetter afterFieldGetter = RowData.createFieldGetter(afterType.getTypeAt(afterTypeIndex), afterTypeIndex);
+            RowData.FieldGetter afterFieldGetter =
+                    RowData.createFieldGetter(afterType.getTypeAt(afterTypeIndex), afterTypeIndex);
             Object afterField = afterFieldGetter.getFieldOrNull(afterData);
             if (beforeField == null && afterField == null) {
                 continue;
@@ -189,7 +191,6 @@ public class LakeSoulRecordConvert implements Serializable {
         } else {
             return otherLogicalType(fieldSchema);
         }
-
     }
 
     private LogicalType primitiveLogicalType(Schema fieldSchema) {

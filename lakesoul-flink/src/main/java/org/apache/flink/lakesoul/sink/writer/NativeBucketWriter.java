@@ -30,21 +30,25 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
+import java.util.List;
 
 public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     private final RowType rowType;
 
+    private final List<String> primaryKeys;
+
     private final Configuration conf;
 
-    public NativeBucketWriter(RowType rowType, Configuration conf) {
+    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, Configuration conf) {
         this.rowType = rowType;
+        this.primaryKeys = primaryKeys;
         this.conf = conf;
     }
 
     @Override
     public InProgressFileWriter<RowData, String> openNewInProgressFile(String s, Path path, long creationTime) throws IOException {
-        return new NativeParquetWriter(rowType, 8192, s, path, creationTime, conf);
+        return new NativeParquetWriter(rowType, primaryKeys, 8192, s, path, creationTime, conf);
     }
 
     @Override
