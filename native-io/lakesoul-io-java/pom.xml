@@ -21,8 +21,6 @@
         <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.1.0</scalatest.version>
-        <javacpp.version>1.5.7</javacpp.version>
-        <spark.version>3.1.2</spark.version>
     </properties>
 
 
@@ -108,12 +106,6 @@
             <version>${scalatest.version}</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.bytedeco</groupId>
-            <artifactId>javacpp</artifactId>
-            <version>${javacpp.version}</version>
-        </dependency>
-
 
         <!--        jnr-ffi deps-->
         <dependency>

@@ -38,6 +38,8 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -48,6 +50,7 @@ import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.IDENTIFI
 import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.UTC_TIMEZONE;
 
 public class TableSchemaWriterCreator implements Serializable {
+    private static final Logger LOG = LoggerFactory.getLogger(TableSchemaWriterCreator.class);
 
     public TableSchemaIdentity identity;
 
@@ -102,6 +105,7 @@ public class TableSchemaWriterCreator implements Serializable {
 
     public BucketWriter<RowData, String> createBucketWriter() throws IOException {
         if (NativeIOBase.isNativeIOLibExist()) {
+            LOG.info("Create natvie bucket writer");
             return new NativeBucketWriter(this.identity.rowType, this.primaryKeys, this.conf);
         } else {
             // TODO: we should throw

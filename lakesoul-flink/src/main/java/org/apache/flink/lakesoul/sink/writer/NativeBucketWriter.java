@@ -79,7 +79,7 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     }
 
     // Copied from apache flink
-    private static class UnsupportedInProgressFileRecoverableSerializable
+    public static class UnsupportedInProgressFileRecoverableSerializable
             implements SimpleVersionedSerializer<InProgressFileWriter.InProgressFileRecoverable> {
 
         static final UnsupportedInProgressFileRecoverableSerializable INSTANCE =
@@ -104,10 +104,10 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
         }
     }
 
-    private static class NativePendingFileRecoverableSerializer
+    public static class NativePendingFileRecoverableSerializer
         implements SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable> {
 
-        static final NativePendingFileRecoverableSerializer INSTANCE =
+        public static final NativePendingFileRecoverableSerializer INSTANCE =
                 new NativePendingFileRecoverableSerializer();
 
         @Override

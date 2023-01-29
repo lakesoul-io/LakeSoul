@@ -50,11 +50,8 @@ public class FlinkCDCMultiTableTest {
 
     StreamExecutionEnvironment env;
 
-    MiniClusterWithClientResource flinkCluster;
-
     @Before
     public void before() throws Exception {
-
         conf.set(LakeSoulSinkOptions.USE_CDC, true)
             .set(LakeSoulSinkOptions.SOURCE_PARALLELISM, 4)
             .set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 2)
@@ -62,59 +59,15 @@ public class FlinkCDCMultiTableTest {
             .set(RestOptions.ADDRESS, "localhost")
             .set(WebOptions.SUBMIT_ENABLE, true)
             .set(RestOptions.PORT, 8081);
-//        flinkCluster =
-//                new MiniClusterWithClientResource(
-//                        new MiniClusterResourceConfiguration.Builder()
-//                                .setNumberSlotsPerTaskManager(2)
-//                                .setNumberTaskManagers(1)
-//                                .setConfiguration(conf)
-//                                .build());
-//        flinkCluster.before();
-//        env = StreamExecutionEnvironment.getExecutionEnvironment();
         env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
-        env.enableCheckpointing(3000);
-        env.setStateBackend(new HashMapStateBackend());
-        CheckpointConfig config = env.getCheckpointConfig();
-        config.setCheckpointStorage("file:/tmp/localState");
-        config.setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
-        StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
-        tEnvs.getConfig().getConfiguration().set(
-                ExecutionCheckpointingOptions.CHECKPOINTING_MODE, CheckpointingMode.EXACTLY_ONCE);
-        Catalog lakesoulCatalog = new LakeSoulCatalog();
-        tEnvs.registerCatalog("lakesoul", lakesoulCatalog);
-        tEnvs.useCatalog("lakesoul");
-
-        tEnvs.executeSql("CREATE DATABASE IF NOT EXISTS test_cdc");
-
-        tEnvs.executeSql(
-                "CREATE TABLE IF NOT EXISTS test_cdc.mysql_test_1 ( id int," +
-                " name string," +
-                " dt int," +
-                " date1 date," +
-                " ts timestamp, " +
-                "primary key (id) NOT ENFORCED ) " +
-                " with ('connector' = 'lakesoul'," +
-                "'format'='parquet','path'='" +
-                "/tmp/lakesoul/test_cdc/mysql_test_1" + "'," +
-                "'use_cdc'='true'," +
-                "'hashBucketNum'='2')");
-
-        tEnvs.executeSql(
-                "CREATE TABLE IF NOT EXISTS test_cdc.mysql_test_2 ( id int," +
-                " name string," +
-                " dt int," +
-                " new_col string, " +
-                "primary key (id) NOT ENFORCED ) " +
-                " with ('connector' = 'lakesoul'," +
-                "'format'='parquet','path'='" +
-                "/tmp/lakesoul/test_cdc/mysql_test_2" + "'," +
-                "'use_cdc'='true'," +
-                "'hashBucketNum'='2')");
+        env.enableCheckpointing(10 * 1000);
+        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
+        env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink");
     }
 
     @After
     public void after() {
-//        flinkCluster.after();
     }
 
     @Test
@@ -126,6 +79,7 @@ public class FlinkCDCMultiTableTest {
             .databaseList("test_cdc") // set captured // database
             .tableList("test_cdc.*") // set captured table
             .username("root")
+            .serverTimeZone("UTC")
             .password("root");
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
@@ -144,14 +98,5 @@ public class FlinkCDCMultiTableTest {
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         DataStreamSink<BinarySourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
         env.execute("test");
-
-//        StreamGraph sg = env.getStreamGraph();
-        // Note:
-//        sg.setSavepointRestoreSettings(SavepointRestoreSettings
-//             .forPath("/tmp/localState/1a4d2ab3705489acb671e44212c745b2/chk-1/"));
-
-//        flinkCluster.getMiniCluster().executeJobBlocking(sg.getJobGraph());
-
-//        env.execute("Flink Multi Table CDC Sink To LakeSoul");
     }
 }

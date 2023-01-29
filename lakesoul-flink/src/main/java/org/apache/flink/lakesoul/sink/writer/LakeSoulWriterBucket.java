@@ -160,6 +160,8 @@ public class LakeSoulWriterBucket {
             }
             inProgressPartWriter = rollPartFile(currentTime);
         }
+
+        inProgressPartWriter.write(element, currentTime);
     }
 
     List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
