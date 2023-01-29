@@ -38,6 +38,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
     val writer = new NativeIOWriter(schema)
     writer.addFile(System.getProperty("java.io.tmpdir") + "/" + "temp.parquet")
     writer.setPrimaryKeys(java.util.Arrays.asList("email", "first_name", "last_name"))
+    writer.setAuxSortColumns(java.util.Arrays.asList("country"))
     writer.initializeWriter()
 
     while (lakesoulReader.hasNext) {

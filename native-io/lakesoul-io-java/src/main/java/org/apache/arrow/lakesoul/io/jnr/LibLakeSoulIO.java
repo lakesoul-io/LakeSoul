@@ -44,6 +44,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_single_column(Pointer builder, Pointer column);
 
+    Pointer lakesoul_config_builder_add_single_aux_sort_column(Pointer builder, Pointer column);
+
     Pointer lakesoul_config_builder_add_filter(Pointer builder, Pointer filter);
 
     Pointer lakesoul_config_builder_set_schema(Pointer builder, long schemaAddr);

@@ -137,6 +137,17 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
+    builder: NonNull<IOConfigBuilder>,
+    column: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let column = CStr::from_ptr(column).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_aux_sort_column(column))
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_filter(
     builder: NonNull<IOConfigBuilder>,
     filter: *const c_char,
@@ -390,7 +401,7 @@ pub extern "C" fn create_lakesoul_writer_from_config(
 ) -> NonNull<Result<Writer>> {
     let config: LakeSoulIOConfig = from_opaque(config);
     let runtime: Runtime = from_opaque(runtime);
-    let result = match SyncSendableMutableLakeSoulWriter::new(config, runtime) {
+    let result = match SyncSendableMutableLakeSoulWriter::try_new(config, runtime) {
         Ok(writer) => Result::<Writer>::new(writer),
         Err(e) => Result::<Writer>::error(format!("{}", e).as_str()),
     };
@@ -516,8 +527,7 @@ mod tests {
         lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
         lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
         lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
-        next_record_batch, start_reader, tokio_runtime_builder_set_thread_num,
-        write_record_batch, IOConfigBuilder,
+        next_record_batch, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch, IOConfigBuilder,
     };
     use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
     use core::ffi::c_ptrdiff_t;

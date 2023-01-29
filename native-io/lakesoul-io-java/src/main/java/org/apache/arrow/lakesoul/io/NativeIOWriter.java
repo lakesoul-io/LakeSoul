@@ -43,6 +43,13 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
+    public void setAuxSortColumns(Iterable<String> auxSortColumns) {
+        for (String col : auxSortColumns) {
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, col);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(ioConfigBuilder, ptr);
+        }
+    }
+
     public void initializeWriter() throws IOException {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;

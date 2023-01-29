@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig};
 use crate::lakesoul_reader::ArrowResult;
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
@@ -24,8 +24,9 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::error::Result;
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::expressions::{col, Column};
+use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics};
@@ -38,6 +39,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::any::Any;
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::io::ErrorKind::ResourceBusy;
 use std::io::Write;
@@ -52,7 +54,7 @@ use tokio_stream::StreamExt;
 use url::{ParseError, Url};
 
 #[async_trait]
-pub trait AsyncWriter {
+pub trait AsyncBatchWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
     async fn flush_and_close(self: Box<Self>) -> Result<()>;
@@ -63,8 +65,8 @@ pub trait AsyncWriter {
 /// Everytime when a new RowGroup is flushed, the length of the VecDeque would grow.
 /// At this time, we pass the VecDeque as `bytes::Buf` to `AsyncWriteExt::write_buf` provided
 /// by object_store, which would drain and copy the content of the VecDeque so that we could reuse it.
-/// The CloudMultiPartUpload itself would try to concurrently upload parts, and
-/// all parts will be committed to cloud storage by shutdown the AsyncWrite.
+/// The `CloudMultiPartUpload` itself would try to concurrently upload parts, and
+/// all parts will be committed to cloud storage by shutdown the `AsyncWrite` object.
 pub struct MultiPartAsyncWriter {
     in_mem_buf: InMemBuf,
     sess_ctx: SessionContext,
@@ -79,7 +81,7 @@ pub struct MultiPartAsyncWriter {
 /// sort the batches before write to async writer
 pub struct SortAsyncWriter {
     sorter_sender: Sender<ArrowResult<RecordBatch>>,
-    sort_exec: Arc<SortExec>,
+    sort_exec: Arc<dyn ExecutionPlan>,
     join_handle: JoinHandle<Result<()>>,
 }
 
@@ -255,7 +257,7 @@ impl MultiPartAsyncWriter {
 }
 
 #[async_trait]
-impl AsyncWriter for MultiPartAsyncWriter {
+impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
@@ -283,18 +285,19 @@ impl SortAsyncWriter {
     pub fn try_new(
         async_writer: MultiPartAsyncWriter,
         config: LakeSoulIOConfig,
-        schema: SchemaRef,
         runtime: Arc<Runtime>,
     ) -> Result<Self> {
         let _ = runtime.enter();
         let (tx, rx) = tokio::sync::mpsc::channel(2);
-        let recv_exec = ReceiverStreamExec::new(rx, tokio::task::spawn(async move {}), schema.clone());
+        let recv_exec = ReceiverStreamExec::new(rx, tokio::task::spawn(async move {}), config.schema.0.clone());
 
         let sort_exprs: Vec<PhysicalSortExpr> = config
             .primary_keys
             .iter()
+            // add aux sort cols to sort expr
+            .chain(config.aux_sort_cols.iter())
             .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &*schema)?;
+                let col = Column::new_with_schema(pk.as_str(), &*config.schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -302,7 +305,29 @@ impl SortAsyncWriter {
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
         let sort_exec = Arc::new(SortExec::try_new(sort_exprs, Arc::new(recv_exec), None)?);
-        let mut sorted_stream = sort_exec.execute(0, async_writer.sess_ctx.task_ctx())?;
+
+        // see if we need to prune aux sort cols
+        let exec_plan: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
+            sort_exec
+        } else {
+            let proj_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = config
+                .schema
+                .0
+                .fields
+                .iter()
+                .filter_map(|f| {
+                    if config.aux_sort_cols.contains(f.name()) {
+                        // exclude aux sort cols
+                        None
+                    } else {
+                        Some(col(f.name().as_str(), &*config.schema.0).map(|e| (e, f.name().clone())))
+                    }
+                })
+                .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>>>()?;
+            Arc::new(ProjectionExec::try_new(proj_expr, sort_exec)?)
+        };
+
+        let mut sorted_stream = exec_plan.execute(0, async_writer.sess_ctx.task_ctx())?;
 
         let mut async_writer = Box::new(async_writer);
         let join_handle = tokio::task::spawn(async move {
@@ -316,14 +341,14 @@ impl SortAsyncWriter {
 
         Ok(SortAsyncWriter {
             sorter_sender: tx,
-            sort_exec,
+            sort_exec: exec_plan,
             join_handle,
         })
     }
 }
 
 #[async_trait]
-impl AsyncWriter for SortAsyncWriter {
+impl AsyncBatchWriter for SortAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         self.sorter_sender
             .send(Ok(batch))
@@ -341,31 +366,49 @@ impl AsyncWriter for SortAsyncWriter {
 }
 
 pub struct SyncSendableMutableLakeSoulWriter {
-    inner: Arc<Mutex<Box<dyn AsyncWriter>>>,
+    inner: Arc<Mutex<Box<dyn AsyncBatchWriter>>>,
     runtime: Arc<Runtime>,
     schema: SchemaRef,
 }
 
 impl SyncSendableMutableLakeSoulWriter {
-    pub fn new(config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
+    pub fn try_new(config: LakeSoulIOConfig, runtime: Runtime) -> Result<Self> {
         let runtime = Arc::new(runtime);
         runtime.clone().block_on(async move {
-            let writer = MultiPartAsyncWriter::try_new(config.clone()).await?;
+            // if aux sort cols exist, we need to adjust the schema of final writer
+            // to exclude all aux sort cols
+            let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
+                let schema = config.schema.0.clone();
+                let proj_indices = schema
+                    .fields
+                    .iter()
+                    .filter(|f| !config.aux_sort_cols.contains(f.name()))
+                    .map(|f| {
+                        schema
+                            .index_of(f.name().as_str())
+                            .map_err(|e| DataFusionError::ArrowError(e))
+                    })
+                    .collect::<Result<Vec<usize>>>()?;
+                Arc::new(schema.project(proj_indices.borrow())?)
+            } else {
+                config.schema.0.clone()
+            };
+
+            let mut writer_config = config.clone();
+            writer_config.schema = IOSchema(writer_schema);
+            let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
+
             let schema = writer.schema.clone();
-            let writer: Box<dyn AsyncWriter> = if !config.primary_keys.is_empty() {
-                Box::new(SortAsyncWriter::try_new(
-                    writer,
-                    config,
-                    schema.clone(),
-                    runtime.clone(),
-                )?)
+            let writer: Box<dyn AsyncBatchWriter> = if !config.primary_keys.is_empty() {
+                Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
             } else {
                 Box::new(writer)
             };
+
             Ok(SyncSendableMutableLakeSoulWriter {
                 inner: Arc::new(Mutex::new(writer)),
                 runtime,
-                schema,
+                schema, // this should be the final written schema
             })
         })
     }
@@ -404,13 +447,13 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
-    use crate::lakesoul_writer::{AsyncWriter, MultiPartAsyncWriter, SortAsyncWriter};
+    use crate::lakesoul_writer::{
+        AsyncBatchWriter, MultiPartAsyncWriter, SortAsyncWriter, SyncSendableMutableLakeSoulWriter,
+    };
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
-    use arrow_schema::Schema;
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use std::borrow::Borrow;
     use std::fs::File;
     use std::sync::Arc;
     use tokio::runtime::Builder;
@@ -467,8 +510,7 @@ mod tests {
                 .build();
 
             let async_writer = MultiPartAsyncWriter::try_new(writer_conf.clone()).await?;
-            let schema = async_writer.schema.clone();
-            let mut async_writer = SortAsyncWriter::try_new(async_writer, writer_conf, schema, runtime.clone())?;
+            let mut async_writer = SortAsyncWriter::try_new(async_writer, writer_conf, runtime.clone())?;
             async_writer.write_record_batch(to_write.clone()).await?;
             Box::new(async_writer).flush_and_close().await?;
 
@@ -493,6 +535,57 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_parquet_async_write_with_aux_sort() -> Result<()> {
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let col = Arc::new(Int64Array::from_iter_values([3, 2, 3])) as ArrayRef;
+        let col1 = Arc::new(Int64Array::from_iter_values([5, 3, 2])) as ArrayRef;
+        let col2 = Arc::new(Int64Array::from_iter_values([3, 2, 1])) as ArrayRef;
+        let to_write = RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir
+            .into_path()
+            .join("test.parquet")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        let writer_conf = LakeSoulIOConfigBuilder::new()
+            .with_files(vec![path.clone()])
+            .with_thread_num(2)
+            .with_batch_size(256)
+            .with_max_row_group_size(2)
+            .with_schema(to_write.schema())
+            .with_primary_keys(vec!["col".to_string()])
+            .with_aux_sort_column("col2".to_string())
+            .build();
+
+        let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+        writer.write_batch(to_write.clone())?;
+        writer.flush_and_close()?;
+
+        let file = File::open(path.clone())?;
+        let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 1024).unwrap();
+
+        let actual_batch = record_batch_reader
+            .next()
+            .expect("No batch found")
+            .expect("Unable to get batch");
+        let col = Arc::new(Int64Array::from_iter_values([2, 3, 3])) as ArrayRef;
+        let col1 = Arc::new(Int64Array::from_iter_values([3, 2, 5])) as ArrayRef;
+        let to_read = RecordBatch::try_from_iter([("col", col), ("col1", col1)])?;
+
+        assert_eq!(to_read.schema(), actual_batch.schema());
+        assert_eq!(to_read.num_columns(), actual_batch.num_columns());
+        assert_eq!(to_read.num_rows(), actual_batch.num_rows());
+        for i in 0..to_read.num_columns() {
+            let expected_data = to_read.column(i).data();
+            let actual_data = actual_batch.column(i).data();
+
+            assert_eq!(expected_data, actual_data);
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -568,8 +661,7 @@ mod tests {
                 .with_primary_keys(vec!["str0".to_string(), "str1".to_string(), "int1".to_string()])
                 .build();
             let async_writer = MultiPartAsyncWriter::try_new(write_conf.clone()).await?;
-            let schema = async_writer.schema.clone();
-            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf, schema, runtime.clone())?;
+            let mut async_writer = SortAsyncWriter::try_new(async_writer, write_conf, runtime.clone())?;
 
             while let Some(rb) = reader.next_rb().await {
                 let rb = rb?;
