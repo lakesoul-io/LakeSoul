@@ -33,9 +33,9 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
-          use-cross: true
       - name: Build with Maven
         run: |
+          cargo install cross --git https://github.com/cross-rs/cross
           mvn -q -B clean package -f pom.xml -DskipTests
       - name: Get jar names
         run: |

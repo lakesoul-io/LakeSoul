@@ -47,7 +47,6 @@ jobs:
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
-    - uses: actions-rs/cargo@v1
     - name: Compile Native-IO
       run: cd native-io && cargo +nightly build --release --all-features --package lakesoul-io-c
     - name: Build with Maven
