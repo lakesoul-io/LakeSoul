@@ -211,7 +211,7 @@ impl StreamSortKeyRangeFetcher for NonUniqueSortKeyRangeFetcher {
                     }
                 }
                 // construct a sort key in batch
-                let sort_key_in_batch = SortKeyBatchRange::new(begin, i, 0, batch.clone(), rows.clone());
+                let sort_key_in_batch = SortKeyBatchRange::new(begin, i, self.stream_idx, batch.clone(), rows.clone());
                 sort_key_range.sort_key_ranges.push(sort_key_in_batch);
                 i = i + 1;
                 break; // while
