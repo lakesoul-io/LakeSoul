@@ -94,22 +94,6 @@
             <version>${flink.version}</version>
             <type>pom</type>
         </dependency>
-        <dependency>
-            <groupId>org.apache.flink</groupId>
-            <artifactId>flink-parquet_2.12</artifactId>
-            <version>${flink.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.parquet</groupId>
-                    <artifactId>parquet-hadoop</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.parquet</groupId>
-            <artifactId>parquet-hadoop-bundle</artifactId>
-            <version>1.12.3</version>
-        </dependency>
 
         <dependency>
             <groupId>com.ververica</groupId>
@@ -337,9 +321,6 @@
                     <artifactSet>
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
-                            <include>org.apache.flink:flink-formats</include>
-                            <include>org.apache.flink:flink-parquet_2.12</include>
-                            <include>org.apache.parquet:parquet-hadoop-bundle</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
@@ -373,15 +354,6 @@
                             <exclude>org/apache/log4j/**</exclude>
                         </excludes>
                     </artifactSet>
-                    <filters>
-                        <filter>
-                            <artifact>org.apache.flink:flink-parquet_2.12</artifact>
-                            <excludes>
-                                <exclude>org/apache/flink/formats/parquet/utils/ParquetSchemaConverter*</exclude>
-                                <exclude>org/apache/flink/formats/parquet/row/ParquetRowDataWriter*</exclude>
-                            </excludes>
-                        </filter>
-                    </filters>
                     <relocations>
                         <relocation>
                             <pattern>com.zaxxer.hikari</pattern>

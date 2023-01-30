@@ -20,11 +20,8 @@
 package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.arrow.lakesoul.io.NativeIOBase;
-import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
 import org.apache.flink.lakesoul.sink.bucket.CdcPartitionComputer;
 import org.apache.flink.lakesoul.sink.bucket.FlinkBucketAssigner;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
@@ -42,10 +39,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
-import java.util.Properties;
-
-import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.IDENTIFIER;
-import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.UTC_TIMEZONE;
 
 public class TableSchemaWriterCreator implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(TableSchemaWriterCreator.class);
@@ -63,8 +56,6 @@ public class TableSchemaWriterCreator implements Serializable {
     public BucketAssigner<RowData, String> bucketAssigner;
 
     public Path tableLocation;
-
-    public BulkWriter.Factory<RowData> writerFactory;
 
     public Configuration conf;
 
@@ -91,13 +82,7 @@ public class TableSchemaWriterCreator implements Serializable {
         );
 
         creator.bucketAssigner = new FlinkBucketAssigner(creator.partitionComputer);
-
         creator.tableLocation = FlinkUtil.makeQualifiedPath(tableLocation);
-        creator.writerFactory = ParquetRowDataBuilder.createWriterFactory(
-                        rowType,
-                        getParquetConfiguration(conf),
-                        conf.get(UTC_TIMEZONE));
-
         return creator;
     }
 
@@ -110,15 +95,5 @@ public class TableSchemaWriterCreator implements Serializable {
             LOG.error(msg);
             throw new IOException(msg);
         }
-    }
-
-    public static org.apache.hadoop.conf.Configuration getParquetConfiguration(ReadableConfig options) {
-        org.apache.hadoop.conf.Configuration conf = new org.apache.hadoop.conf.Configuration();
-        conf.set("parquet.compression", "snappy");
-        conf.setInt("parquet.block.size", 32 * 1024 * 1024);
-        Properties properties = new Properties();
-        ((org.apache.flink.configuration.Configuration) options).addAllToProperties(properties);
-        properties.forEach((k, v) -> conf.set(IDENTIFIER + "." + k, v.toString()));
-        return conf;
     }
 }
