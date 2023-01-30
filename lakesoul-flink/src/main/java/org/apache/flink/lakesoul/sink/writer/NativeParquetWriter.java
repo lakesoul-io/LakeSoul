@@ -134,11 +134,12 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     @Override
     public void dispose() {
         try {
+            this.arrowWriter.finish();
+            this.batch.close();
             this.nativeWriter.close();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        this.batch.close();
     }
 
     @Override

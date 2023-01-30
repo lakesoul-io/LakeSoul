@@ -178,9 +178,12 @@ public class LakeSoulWriterBucket {
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
                 ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
+
+        // this.pendingFiles would be cleared later, we need to make a copy
+        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
-                pendingFiles,
+                tmpPending,
                 time, tableId));
         pendingFiles.clear();
 
@@ -194,12 +197,15 @@ public class LakeSoulWriterBucket {
 
         long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
                 ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
+
+        // this.pendingFiles would be cleared later, we need to make a copy
+        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
         return new LakeSoulWriterBucketState(
                 tableId,
                 bucketId,
                 bucketPath,
                 time,
-                pendingFiles);
+                tmpPending);
     }
 
     void onProcessingTime(long timestamp) throws IOException {

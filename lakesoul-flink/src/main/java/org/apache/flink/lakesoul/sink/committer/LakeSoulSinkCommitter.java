@@ -70,6 +70,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
             LOG.info("Commtting {}", committable);
             if (committable.hasPendingFile()) {
                 assert committable.getPendingFiles() != null;
+                LOG.info("PendingFiles to commit {}", committable.getPendingFiles().size());
                 if (committable.getPendingFiles().isEmpty()) {
                     continue;
                 }
@@ -84,6 +85,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                         files.add(recoverable.path);
                     }
                 }
+
+                LOG.info("Files to commit {}", String.join("; ", files));
 
                 if (files.isEmpty()) continue;
 

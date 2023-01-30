@@ -499,15 +499,22 @@ public class LakeSoulRecordConvert implements Serializable {
                         + dbzObj.getClass().getName());
     }
 
-    private int getPrecision(int nano) {
-        if (nano == 0) return 3;
-        if ((nano % 1000) > 0) return 9;
-        return 6;
+    private int getPrecision(Schema schema) {
+        switch (schema.name()) {
+            case Time.SCHEMA_NAME:
+            case Timestamp.SCHEMA_NAME:
+                return 3;
+            case MicroTimestamp.SCHEMA_NAME:
+            case MicroTime.SCHEMA_NAME:
+                return 6;
+            default:
+                return 9;
+        }
     }
 
     public void writeZonedTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema, ZoneId serverTimeZone) {
         TimestampData data = (TimestampData) convertToZonedTimeStamp(dbzObj, schema, serverTimeZone);
-        writer.writeTimestamp(index, data, getPrecision(data.getNanoOfMillisecond()));
+        writer.writeTimestamp(index, data, getPrecision(schema));
     }
 
     public Object convertToTimeStamp(Object dbzObj, Schema schema) {
@@ -533,7 +540,7 @@ public class LakeSoulRecordConvert implements Serializable {
 
     public void writeTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
         TimestampData data = (TimestampData) convertToTimeStamp(dbzObj, schema);
-        writer.writeTimestamp(index, data, getPrecision(data.getNanoOfMillisecond()));
+        writer.writeTimestamp(index, data, getPrecision(schema));
     }
 
     public void writeBoolean(BinaryRowWriter writer, int index, Object dbzObj) {
