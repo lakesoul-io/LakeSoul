@@ -47,7 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.apache.flink.table.types.logical.ZonedTimestampType.DEFAULT_PRECISION;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_CDC_EVENT_TIME_COLUMN;
 
 public class LakeSoulRecordConvert implements Serializable {
     private final ZoneId serverTimeZone;
@@ -176,7 +176,7 @@ public class LakeSoulRecordConvert implements Serializable {
             colNames[i] = item.name();
             colTypes[i] = convertToLogical(item.schema());
         }
-        colNames[useCDC ? arity - 2 : arity - 1] = "__lakesoul_cdc_event_time__";
+        colNames[useCDC ? arity - 2 : arity - 1] = LAKESOUL_CDC_EVENT_TIME_COLUMN;
         colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
         if (useCDC) {
             colNames[arity - 1] = "rowKinds";
@@ -228,12 +228,17 @@ public class LakeSoulRecordConvert implements Serializable {
             case Json.LOGICAL_NAME:
             case EnumSet.LOGICAL_NAME:
                 return new VarCharType(Integer.MAX_VALUE);
+            case Time.SCHEMA_NAME:
+                return new TimeType(3);
             case MicroTime.SCHEMA_NAME:
+                return new TimeType(6);
             case NanoTime.SCHEMA_NAME:
-                return new TimeType(9);//time
+                return new TimeType(9);
             case Timestamp.SCHEMA_NAME:
+                return new TimestampType(3);
             case MicroTimestamp.SCHEMA_NAME:
-            case NanoTimestamp.SCHEMA_NAME:           //timestamp
+                return new TimestampType(6);
+            case NanoTimestamp.SCHEMA_NAME:
                 return new TimestampType(9);
             case Decimal.LOGICAL_NAME:
                 Map<String, String> paras = fieldSchema.parameters();
@@ -397,20 +402,21 @@ public class LakeSoulRecordConvert implements Serializable {
             case EnumSet.LOGICAL_NAME:
                 writeString(writer, index, fieldValue);
                 break;
+            case Time.SCHEMA_NAME:
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
-                writeTime(writer, index, fieldValue, fieldSchema);//time
+                writeTime(writer, index, fieldValue, fieldSchema);
                 break;
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
-            case NanoTimestamp.SCHEMA_NAME:           //timestamp
+            case NanoTimestamp.SCHEMA_NAME:
                 writeTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
             case Decimal.LOGICAL_NAME:
                 writeDecimal(writer, index, fieldValue, fieldSchema);
                 break;
             case Date.SCHEMA_NAME:
-                writeDate(writer, index, fieldValue);//date
+                writeDate(writer, index, fieldValue);
                 break;
             case Year.SCHEMA_NAME:
                 writeInt(writer, index, fieldValue);
@@ -424,24 +430,19 @@ public class LakeSoulRecordConvert implements Serializable {
         }
     }
 
-    public Object convertToTime(Object dbzObj, Schema schema) {
+    public long convertToTime(Object dbzObj, Schema schema) {
         if (dbzObj instanceof Long) {
-            switch (schema.name()) {
-                case MicroTime.SCHEMA_NAME:
-                    return (int) ((long) dbzObj / 1000);
-                case NanoTime.SCHEMA_NAME:
-                    return (int) ((long) dbzObj / 1000_000);
-            }
+            return (long) dbzObj;
         } else if (dbzObj instanceof Integer) {
-            return dbzObj;
+            return (Integer) dbzObj;
         }
         // get number of milliseconds of the day
-        return TemporalConversions.toLocalTime(dbzObj).toSecondOfDay() * 1000;
+        return TemporalConversions.toLocalTime(dbzObj).toSecondOfDay() * 1000L;
     }
 
     public void writeTime(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
-        Integer data = (Integer) convertToTime(dbzObj, schema);
-        writer.writeInt(index, data);
+        long data = convertToTime(dbzObj, schema);
+        writer.writeLong(index, data);
     }
 
     public Object convertToDecimal(Object dbzObj, Schema schema) {
@@ -498,9 +499,15 @@ public class LakeSoulRecordConvert implements Serializable {
                         + dbzObj.getClass().getName());
     }
 
+    private int getPrecision(int nano) {
+        if (nano == 0) return 3;
+        if ((nano % 1000) > 0) return 9;
+        return 6;
+    }
+
     public void writeZonedTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema, ZoneId serverTimeZone) {
         TimestampData data = (TimestampData) convertToZonedTimeStamp(dbzObj, schema, serverTimeZone);
-        writer.writeTimestamp(index, data, DEFAULT_PRECISION);
+        writer.writeTimestamp(index, data, getPrecision(data.getNanoOfMillisecond()));
     }
 
     public Object convertToTimeStamp(Object dbzObj, Schema schema) {
@@ -518,6 +525,7 @@ public class LakeSoulRecordConvert implements Serializable {
                             nano / 1000_000, (int) (nano % 1000_000));
             }
         }
+        // fallback to zoned timestamp
         LocalDateTime localDateTime =
                 TemporalConversions.toLocalDateTime(dbzObj, serverTimeZone);
         return TimestampData.fromLocalDateTime(localDateTime);
@@ -525,7 +533,7 @@ public class LakeSoulRecordConvert implements Serializable {
 
     public void writeTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
         TimestampData data = (TimestampData) convertToTimeStamp(dbzObj, schema);
-        writer.writeTimestamp(index, data, 9);
+        writer.writeTimestamp(index, data, getPrecision(data.getNanoOfMillisecond()));
     }
 
     public void writeBoolean(BinaryRowWriter writer, int index, Object dbzObj) {

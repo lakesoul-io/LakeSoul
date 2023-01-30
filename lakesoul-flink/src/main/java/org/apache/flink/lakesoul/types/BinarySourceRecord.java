@@ -86,11 +86,9 @@ public class BinarySourceRecord {
             Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
             long eventTime = 0;
             if (sourceField != null && sourceField.schema().field("ts_ms") != null) {
-                System.out.println(sourceField.schema().field("ts_ms").schema().type());
                 Struct source = value.getStruct(Envelope.FieldName.SOURCE);
                 if (source != null) {
                     eventTime = (Long) source.getWithoutDefault("ts_ms");
-                    System.out.println("Event time: " + eventTime);
                 }
             }
             LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, eventTime);

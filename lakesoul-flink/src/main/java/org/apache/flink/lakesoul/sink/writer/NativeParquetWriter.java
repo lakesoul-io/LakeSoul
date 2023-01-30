@@ -22,19 +22,26 @@ import org.apache.arrow.lakesoul.io.NativeIOWriter;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_CDC_EVENT_TIME_COLUMN;
+
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
+    private static final Logger LOG = LoggerFactory.getLogger(NativeParquetWriter.class);
+
     private final ArrowWriter<RowData> arrowWriter;
 
     private final NativeIOWriter nativeWriter;
@@ -68,7 +75,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        nativeWriter.setAuxSortColumns(Collections.singletonList("__lakesoul_cdc_event_time__"));
+        nativeWriter.setAuxSortColumns(Collections.singletonList(LAKESOUL_CDC_EVENT_TIME_COLUMN));
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();
@@ -155,16 +162,23 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     }
 
     private void setFSConfigs(Configuration conf) {
-        setFSConf(conf, "fs.s3a.access.key");
-        setFSConf(conf, "fs.s3a.access.secret");
-        setFSConf(conf, "fs.s3a.endpoint");
-        setFSConf(conf, "fs.s3a.endpoint.region");
+        conf.addAll(GlobalConfiguration.loadConfiguration());
+        // try hadoop's s3 configs
+        setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key");
+        setFSConf(conf, "fs.s3a.access.secret", "fs.s3a.access.secret");
+        setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint");
+        setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region");
+        // try flink's s3 credential configs
+        setFSConf(conf, "s3.access-key", "fs.s3a.access.key");
+        setFSConf(conf, "s3.secret-key", "fs.s3a.access.secret");
+        setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint");
     }
 
-    private void setFSConf(Configuration conf, String confKey) {
+    private void setFSConf(Configuration conf, String confKey, String fsConfKey) {
         String value = conf.getString(confKey, "");
         if (!value.isEmpty()) {
-            this.nativeWriter.setObjectStoreOption(confKey, value);
+            LOG.info("Set native object store option {}={}", fsConfKey, value);
+            this.nativeWriter.setObjectStoreOption(fsConfKey, value);
         }
     }
 }
