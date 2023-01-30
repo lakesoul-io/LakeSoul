@@ -350,10 +350,19 @@
                             <include>commons-lang:commons-lang</include>
                         </includes>
                         <excludes>
-                            <exclude>org/slf4j/impl/**</exclude>
-                            <exclude>org/apache/log4j/**</exclude>
+                            <exclude>org.apache.logging.log4j:*</exclude>
+                            <exclude>org.slf4j:*</exclude>
                         </excludes>
                     </artifactSet>
+                    <filters>
+                        <filter>
+                            <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
+                            <excludes>
+                                <exclude>org/apache/flink/shaded/guava30/**</exclude>
+                                <exclude>META-INF/maven/com.google.guava/**</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
                     <relocations>
                         <relocation>
                             <pattern>com.zaxxer.hikari</pattern>

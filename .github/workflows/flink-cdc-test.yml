@@ -2,7 +2,7 @@ name: CI with flink cdc Test
 
 on:
   push:
-    branches: [ "main", "release/spark_3.3" ]
+    branches: [ "main", "release/spark_3.3", "flink_native_writer" ]
 
 jobs:
   build:
@@ -30,6 +30,10 @@ jobs:
         run: |
           git lfs fetch
           git lfs checkout
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          use-cross: true
       - name: Build with Maven
         run: |
           mvn -q -B clean package -f pom.xml -DskipTests
