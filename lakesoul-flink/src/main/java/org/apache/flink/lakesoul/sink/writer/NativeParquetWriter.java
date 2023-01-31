@@ -62,12 +62,11 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     public NativeParquetWriter(RowType rowType,
                                List<String> primaryKeys,
-                               int batchSize,
                                String bucketID,
                                Path path,
                                long creationTime,
                                Configuration conf) throws IOException {
-        this.batchSize = batchSize;
+        this.batchSize = 250000; // keep same with native writer's row group row number
         this.creationTime = creationTime;
         this.bucketID = bucketID;
         this.rowsInBatch = 0;

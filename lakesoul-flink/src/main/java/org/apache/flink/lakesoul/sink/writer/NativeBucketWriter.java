@@ -48,7 +48,7 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     @Override
     public InProgressFileWriter<RowData, String> openNewInProgressFile(String s, Path path, long creationTime) throws IOException {
-        return new NativeParquetWriter(rowType, primaryKeys, 8192, s, path, creationTime, conf);
+        return new NativeParquetWriter(rowType, primaryKeys, s, path, creationTime, conf);
     }
 
     @Override
