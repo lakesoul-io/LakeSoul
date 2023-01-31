@@ -42,10 +42,9 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                                         OutputFileConfig outputFileConfig,
                                         Sink.ProcessingTimeService processingTimeService,
                                         long bucketCheckInterval,
-                                        ClassLoader userClassLoader,
                                         Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,
-              bucketCheckInterval, userClassLoader, conf);
+              bucketCheckInterval, conf);
     }
 
     private TableSchemaIdentity getIdentity(RowType rowType, BinarySourceRecord element) {

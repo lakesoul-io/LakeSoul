@@ -21,15 +21,12 @@ import jnr.ffi.*;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
+import org.apache.arrow.lakesoul.io.jnr.JnrLoader;
 import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 
-import java.io.File;
-import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.function.BiConsumer;
 
 public class NativeIOBase implements AutoCloseable {
@@ -50,42 +47,15 @@ public class NativeIOBase implements AutoCloseable {
 
     protected CDataDictionaryProvider provider;
 
-    private static boolean isMac() {
-        String OS = System.getProperty("os.name").toLowerCase();
-        return (OS.contains("mac"));
-    }
-
-    public static String getNativeIOLibPath() {
-        String ext = ".dylib";
-        if (!isMac()) {
-            ext = ".so";
-        }
-
-        return Paths.get(System.getenv("LakeSoulLib"), "liblakesoul_io_c" + ext).toString();
-    }
-
     public static boolean isNativeIOLibExist() {
-        return new File(getNativeIOLibPath()).exists();
+        return JnrLoader.get() != null;
     }
 
     public NativeIOBase(String allocatorName) {
         this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
         this.provider = new CDataDictionaryProvider();
 
-        Map<LibraryOption, Object> libraryOptions = new HashMap<>();
-        libraryOptions.put(LibraryOption.LoadNow, true);
-        libraryOptions.put(LibraryOption.IgnoreError, true);
-
-        String libName = getNativeIOLibPath(); // platform specific name for liblakesoul_io_c
-
-        synchronized (LibraryLoader.class) {
-            // LibraryLoader seems not thread safe
-            libLakeSoulIO = LibraryLoader.loadLibrary(
-                    LibLakeSoulIO.class,
-                    libraryOptions,
-                    libName
-            );
-        }
+        libLakeSoulIO = JnrLoader.get();
 
         referenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
