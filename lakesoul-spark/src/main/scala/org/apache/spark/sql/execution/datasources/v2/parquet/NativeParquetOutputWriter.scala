@@ -2,51 +2,62 @@ package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import org.apache.arrow.lakesoul.io.NativeIOWriter
 import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.types.pojo.Schema
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.arrow.ArrowWriter
 import org.apache.spark.sql.execution.datasources.OutputWriter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.ArrowUtils
-import org.apache.spark.sql.vectorized.NativeIOUtils
 
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
 
-  private var recordCount = 0L
+  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE = 250000
 
-  val nativeIOWriter = new NativeIOWriter(NativeIOUtils.convertStructTypeToArrowJson(dataSchema, timeZoneId))
+  private var recordCount = 0
+
+  val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
+  val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
   nativeIOWriter.addFile(path)
+
+  private val conf: Configuration = context.getConfiguration
+  private val s3AccessKey: String = conf.get("spark.hadoop.fs.s3a.access.key", "")
+  if (s3AccessKey != "") {
+    nativeIOWriter.setObjectStoreOption("fs.s3a.access.key", s3AccessKey)
+  }
+  private val s3AccessSecret: String = conf.get("spark.hadoop.fs.s3a.access.secret", "")
+  if (s3AccessSecret != "") {
+    nativeIOWriter.setObjectStoreOption("fs.s3a.access.secret", s3AccessSecret)
+  }
+  private val s3Endpoint: String = conf.get("spark.hadoop.fs.s3a.endpoint", "")
+  if (s3Endpoint != "") {
+    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint", s3Endpoint)
+  }
   nativeIOWriter.initializeWriter()
 
-  val arrowSchema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
 
-  val allocator =
+  val allocator: BufferAllocator =
     ArrowMemoryUtils.rootAllocator.newChildAllocator("toBatchIterator", 0, Long.MaxValue)
-  val root = VectorSchemaRoot.create(arrowSchema, allocator)
+  val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
   val recordWriter: ArrowWriter = ArrowWriter.create(root)
 
   override def write(row: InternalRow): Unit = {
+
     recordWriter.write(row)
+    recordCount += 1
+
+    if (recordCount >= NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE) {
+      recordWriter.finish()
+      nativeIOWriter.write(root)
+      recordWriter.reset()
+      recordCount = 0
+    }
   }
 
-//  def checkBlockSizeReached() {
-//    if (this.recordCount >= this.recordCountForNextMemCheck) {
-//      val memSize = this.columnStore.getBufferedSize
-//      val recordSize = memSize / this.recordCount
-//      if (memSize > this.nextRowGroupSize - 2L * recordSize) {
-//        LOG.debug("mem size {} > {}: flushing {} records to disk.", Array[AnyRef](memSize, this.nextRowGroupSize, this.recordCount))
-//        this.flushRowGroupToStore()
-//        this.initStore()
-//        this.recordCountForNextMemCheck = Math.min(Math.max(this.props.getMinRowCountForPageSizeCheck.toLong, this.recordCount / 2L), this.props.getMaxRowCountForPageSizeCheck.toLong)
-//        this.lastRowGroupEndPos = this.parquetFileWriter.getPos
-//      } else {
-//        this.recordCountForNextMemCheck = Math.min(Math.max(this.props.getMinRowCountForPageSizeCheck.toLong, (this.recordCount + (this.nextRowGroupSize.toFloat / recordSize.toFloat).toLong) / 2L), this.recordCount + this.props.getMaxRowCountForPageSizeCheck.toLong)
-//        LOG.debug("Checked mem at {} will check again at: {}", this.recordCount, this.recordCountForNextMemCheck)
-//      }
-//    }
-//  }
 
   override def close(): Unit = {
 
