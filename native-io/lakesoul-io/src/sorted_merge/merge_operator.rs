@@ -1,14 +1,12 @@
-use core::panic;
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::{DataType};
 use arrow::datatypes::ArrowPrimitiveType;
 use arrow::array::{as_primitive_array, as_string_array};
 use arrow_array::cast::as_boolean_array;
-use datafusion::physical_plan::DisplayFormatType::Default;
 
-use crate::sorted_merge::sort_key_range::{SortKeyBatchRange, SortKeyArrayRange};
+use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
 
 
 #[derive(Debug)]

@@ -10,7 +10,8 @@ use arrow::{
     array::ArrayRef,
 };
 
-// A range in one record_batch with same primary key
+// A range in one arrow::record_batch::RecordBatch with same sorted primary key
+// This is the unit to be sorted in min heap
 pub struct SortKeyBatchRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
     pub(crate) end_row: usize,   // not included
@@ -57,21 +58,15 @@ impl SortKeyBatchRange {
         self.stream_idx
     }
 
-
     #[inline(always)]
-    /// Return true if the stream is finished
+    /// Return true if the range has reached the end of batch
     pub fn is_finished(&self) -> bool {
         self.begin_row >= self.rows.num_rows()
     }
 
-
     #[inline(always)]
-    /// Returns the cursor's current row, and advances the cursor to the next row
+    /// Returns the current batch range, and advances the next range with next sort key
     pub fn advance(&mut self) -> SortKeyBatchRange {
-        // assert!(!self.is_finished());
-        // let t = self.cur_row;
-        // self.cur_row += 1;
-        // t
         let current = self.clone();
         self.begin_row = self.end_row;
         if !self.is_finished() {
@@ -87,6 +82,7 @@ impl SortKeyBatchRange {
         current
     }
 
+    //create a SortKeyArrayRange with specific column index of SortKeyBatchRange
     pub fn column(&self, idx: usize) -> SortKeyArrayRange {
         SortKeyArrayRange {
             begin_row: self.begin_row,
@@ -137,6 +133,7 @@ impl Ord for SortKeyBatchRange {
     }
 }
 
+// A range in one arrow::array::Array with same sorted primary key
 #[derive(Debug)]
 pub struct SortKeyArrayRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
@@ -162,12 +159,11 @@ impl Clone for SortKeyArrayRange {
     }
 }
 
-
-// Multiple ranges in consecutive batches of ONE stream with same primary key
-// This is the unit to be sorted in min heap
+// Multiple ranges with same sorted primary key from variant source record_batch. These ranges will be merged into ONE row of target record_batch finnally.
 #[derive(Debug)]
 pub struct SortKeyArrayRanges {
-    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>,
+    // vector with length=column_num that holds a Vecotor of SortKeyArrayRange to be merged for each column
+    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>, 
 
     pub(crate) schema: SchemaRef,
 
@@ -192,6 +188,7 @@ impl SortKeyArrayRanges {
         self.sort_key_array_ranges[column_idx].clone()
     }
 
+    // insert one SortKeyBatchRange into SortKeyArrayRanges, 
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
@@ -203,7 +200,7 @@ impl SortKeyArrayRanges {
             range
                 .schema()
                 .column_with_name(name)
-                .map(|(idx, feild)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
+                .map(|(idx, _)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
         };
     }
 
