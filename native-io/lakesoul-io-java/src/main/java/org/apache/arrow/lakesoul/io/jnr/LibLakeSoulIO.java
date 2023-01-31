@@ -58,6 +58,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_set_buffer_size(Pointer builder, int buffer_size);
 
+    Pointer lakesoul_config_builder_set_max_row_group_size(Pointer builder, int row_group_size);
+
     Pointer create_lakesoul_io_config_from_builder(Pointer builder);
 
     Pointer create_lakesoul_reader_from_config(Pointer config, Pointer runtime);

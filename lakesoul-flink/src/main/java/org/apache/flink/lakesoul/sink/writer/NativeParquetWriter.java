@@ -75,6 +75,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
         nativeWriter.setAuxSortColumns(Collections.singletonList(LAKESOUL_CDC_EVENT_TIME_COLUMN));
+        nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();

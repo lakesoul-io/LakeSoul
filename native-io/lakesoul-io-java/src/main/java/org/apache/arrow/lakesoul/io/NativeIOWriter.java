@@ -50,6 +50,10 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
+    public void setRowGroupRowNumber(int rowNum) {
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(ioConfigBuilder, rowNum);
+    }
+
     public void initializeWriter() throws IOException {
         assert tokioRuntimeBuilder != null;
         assert ioConfigBuilder != null;
