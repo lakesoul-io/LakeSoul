@@ -23,14 +23,16 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::Arc;
 
-pub use arrow::array::{export_array_into_raw, StructArray};
-pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow::array::{export_array_into_raw, StructArray};
+use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow::record_batch::RecordBatch;
+use arrow::error::Result as ArrowResult;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use tokio::runtime::{Builder, Runtime};
 
 use lakesoul_io::lakesoul_reader::{
-    ArrowResult, LakeSoulReader, RecordBatch, SyncSendableMutableLakeSoulReader,
+    LakeSoulReader, SyncSendableMutableLakeSoulReader,
 };
 
 #[repr(C)]

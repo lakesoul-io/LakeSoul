@@ -33,7 +33,7 @@ pub struct LakeSoulIOConfig {
     // files to read or write
     pub(crate) files: Vec<String>,
     // primary key column names
-    primary_keys: Vec<String>,
+    pub(crate) primary_keys: Vec<String>,
     // selecting columns
     pub(crate) columns: Vec<String>,
 

@@ -18,10 +18,13 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-pub use datafusion::arrow::error::ArrowError;
-pub use datafusion::arrow::error::Result as ArrowResult;
-pub use datafusion::arrow::record_batch::RecordBatch;
-pub use datafusion::error::{DataFusionError, Result};
+use arrow::datatypes::SchemaRef;
+use arrow::error::Result as ArrowResult;
+use arrow::record_batch::RecordBatch;
+
+use datafusion::error::{DataFusionError, Result};
+use datafusion::physical_plan::expressions::{PhysicalSortExpr, col};
+
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
@@ -33,6 +36,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::sorted_merge::sorted_stream_merger::{SortedStream,SortedStreamMerger};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -51,19 +55,58 @@ impl LakeSoulReader {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let mut df = self
-            .sess_ctx
-            .read_parquet(self.config.files[0].as_str(), Default::default())
-            .await?;
-        if !self.config.columns.is_empty() {
-            let cols: Vec<_> = self.config.columns.iter().map(String::as_str).collect();
-            df = df.select_columns(&cols)?;
+        match self.config.files.len() {
+            1 => {
+                let mut df = self
+                    .sess_ctx
+                    .read_parquet(self.config.files[0].as_str(), Default::default())
+                    .await?;
+                if !self.config.columns.is_empty() {
+                    let cols: Vec<_> = self.config.columns.iter().map(String::as_str).collect();
+                    df = df.select_columns(&cols)?;
+                }
+                df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
+
+                self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
+                Ok(())
+            }
+            0 => Err(DataFusionError::Internal(
+                "LakeSoulReader has wrong number of file".to_string(),
+            )),
+            _ => {
+                let mut streams = Vec::with_capacity(self.config.files.len());
+                for i in 0..self.config.files.len() {
+                    let stream = self
+                        .sess_ctx
+                        .read_parquet(self.config.files[i].as_str(), Default::default())
+                        .await?
+                        .execute_stream()
+                        .await?;
+                    streams.push(SortedStream::new(
+                        stream,
+                    ));
+                }
+                let schema: SchemaRef = Arc::new(serde_json::from_str(self.config.schema_json.as_str()).unwrap());
+
+                let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
+                for i in 0..self.config.primary_keys.len() {
+                    sort_exprs.push(PhysicalSortExpr {
+                        expr: col(self.config.primary_keys[i].as_str(), &schema).unwrap(),
+                        options: Default::default(),
+                    });
+                }
+
+                let merge_stream = SortedStreamMerger::new_from_streams(
+                    streams,
+                    schema,
+                    sort_exprs.as_slice(),
+                    self.config.batch_size,
+                )
+                .unwrap();
+                self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));
+                Ok(())
+            }
         }
-        df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
-
-        self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
-
-        Ok(())
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
