@@ -95,7 +95,7 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   }
 
   override def buildColumnarReader(file: PartitionedFile): PartitionReader[ColumnarBatch] = {
-    val vectorizedReader = createVectorizedReader(file)
+    var vectorizedReader = createVectorizedReader(file)
 
     new PartitionReader[ColumnarBatch] {
       override def next(): Boolean = {
@@ -109,7 +109,10 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
       }
 
       override def close(): Unit = {
-        vectorizedReader.close()
+        if (vectorizedReader != null) {
+          vectorizedReader.close()
+          vectorizedReader = null
+        }
       }
     }
   }

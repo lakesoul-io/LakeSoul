@@ -19,14 +19,13 @@ parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-r
 bytes = "1.1"
 futures = "0.3.25"
 datafusion-common = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-13-parquet-prefetch" }
-serde_json = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 url = "2.2"
+async-trait = "0.1"
 smallvec = { version = "1.10.0", features = ["const_generics", "union"] }
 async-stream = "0.3"
 pin-project-lite = "0.2.9"
 futures-util = "0.3"
-async-trait = "0.1.58"
 dary_heap = "0.3.4"
 half = { version = "2.0", default-features = false }
 

@@ -20,10 +20,8 @@ package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
-import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
-import org.apache.flink.lakesoul.types.LakeSoulCDCComparator;
-import org.apache.flink.lakesoul.types.LakeSoulCDCElement;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.apache.flink.table.data.RowData;
@@ -32,10 +30,11 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
 
-import static org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter.InProgressFileRecoverable;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -45,8 +44,7 @@ import static org.apache.flink.util.Preconditions.checkState;
  * <p>For each incoming element in the {@code LakeSoulMultiTablesSink}, the user-specified {@link BucketAssigner}
  * is queried to see in which bucket this element should be written to.
  *
- * <p>This writer is responsible for writing the input data and managing the staging area used by a
- * bucket to temporarily store in-progress, uncommitted data.
+ * <p>This writer is responsible for writing the input data and creating pending (uncommitted) files.
  */
 public class LakeSoulWriterBucket {
 
@@ -66,22 +64,13 @@ public class LakeSoulWriterBucket {
 
     private final String uniqueId;
 
-    private final List<PendingFileAndCreateTime> pendingFiles =
+    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
             new ArrayList<>();
-
-    private final List<String> filePaths = new ArrayList<>();
 
     private long partCounter;
 
     @Nullable
-    private InProgressFileRecoverable inProgressFileToCleanup;
-
-    @Nullable
-    private InProgressFileWriter<RowData, String> inProgressPart;
-
-    private String inProgressPath;
-
-    private final PriorityQueue<LakeSoulCDCElement> sortQueue;
+    private InProgressFileWriter<RowData, String> inProgressPartWriter;
 
     private final TableSchemaIdentity tableId;
 
@@ -94,8 +83,7 @@ public class LakeSoulWriterBucket {
             Path bucketPath,
             BucketWriter<RowData, String> bucketWriter,
             RollingPolicy<RowData, String> rollingPolicy,
-            OutputFileConfig outputFileConfig,
-            LakeSoulCDCComparator comparator) {
+            OutputFileConfig outputFileConfig) {
         this.subTaskId = subTaskId;
         this.tableId = checkNotNull(tableId);
         this.bucketId = checkNotNull(bucketId);
@@ -106,7 +94,6 @@ public class LakeSoulWriterBucket {
 
         this.uniqueId = UUID.randomUUID().toString();
         this.partCounter = 0;
-        this.sortQueue = new PriorityQueue<>(comparator);
     }
 
     /**
@@ -118,9 +105,7 @@ public class LakeSoulWriterBucket {
             BucketWriter<RowData, String> partFileFactory,
             RollingPolicy<RowData, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
-            OutputFileConfig outputFileConfig,
-            LakeSoulCDCComparator comparator)
-            throws IOException {
+            OutputFileConfig outputFileConfig) throws IOException {
 
         this(
                 subTaskId, tableId,
@@ -128,34 +113,13 @@ public class LakeSoulWriterBucket {
                 bucketState.getBucketPath(),
                 partFileFactory,
                 rollingPolicy,
-                outputFileConfig,
-                comparator);
+                outputFileConfig);
 
-        restoreInProgressFile(bucketState);
+        restoreState(bucketState);
     }
 
-    private void restoreInProgressFile(LakeSoulWriterBucketState state) throws IOException {
-        if (!state.hasInProgressFileRecoverable()) {
-            return;
-        }
-
-        // we try to resume the previous in-progress file
-        InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable =
-                state.getInProgressFileRecoverable();
-        String path = state.getInProgressPath();
-
-        if (bucketWriter.getProperties().supportsResume()) {
-            inProgressPart =
-                    bucketWriter.resumeInProgressFileFrom(
-                            bucketId,
-                            inProgressFileRecoverable,
-                            state.getInProgressFileCreationTime());
-            this.inProgressPath = path;
-        } else {
-            pendingFiles.add(new PendingFileAndCreateTime(inProgressFileRecoverable,
-                                                          state.getInProgressFileCreationTime()));
-            filePaths.add(path);
-        }
+    private void restoreState(LakeSoulWriterBucketState state) throws IOException {
+        pendingFiles.addAll(state.getPendingFileRecoverableList());
     }
 
     public String getBucketId() {
@@ -171,7 +135,7 @@ public class LakeSoulWriterBucket {
     }
 
     public boolean isActive() {
-        return inProgressPart != null || inProgressFileToCleanup != null || pendingFiles.size() > 0;
+        return inProgressPartWriter != null || pendingFiles.size() > 0;
     }
 
     void merge(final LakeSoulWriterBucket bucket) throws IOException {
@@ -180,7 +144,6 @@ public class LakeSoulWriterBucket {
 
         bucket.closePartFile();
         pendingFiles.addAll(bucket.pendingFiles);
-        filePaths.addAll(bucket.filePaths);
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Merging buckets for bucket id={}", bucketId);
@@ -188,22 +151,23 @@ public class LakeSoulWriterBucket {
     }
 
     void write(RowData element, long currentTime) throws IOException {
-        if (inProgressPart == null || rollingPolicy.shouldRollOnEvent(inProgressPart, element)) {
+        if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Opening new part file for bucket id={} due to element {}.",
                         bucketId,
                         element);
             }
-            inProgressPart = rollPartFile(currentTime);
+            inProgressPartWriter = rollPartFile(currentTime);
         }
 
-        sortQueue.add(new LakeSoulCDCElement(element, currentTime));
+        inProgressPartWriter.write(element, currentTime);
     }
 
     List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
-        if (inProgressPart != null
-            && (rollingPolicy.shouldRollOnCheckpoint(inProgressPart) || flush)) {
+        // we always close part file and do not keep in-progress file
+        // since the native parquet writer doesn't support resume
+        if (inProgressPartWriter != null) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Closing in-progress part file for bucket id={} on checkpoint.", bucketId);
@@ -212,40 +176,41 @@ public class LakeSoulWriterBucket {
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        long time = pendingFiles.isEmpty() ? Long.MIN_VALUE : pendingFiles.get(0).inProgressFileCreationTime;
+        long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
+                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
+
+        // this.pendingFiles would be cleared later, we need to make a copy
+        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
-                pendingFiles.stream().map(p -> p.pendingFile).collect(Collectors.toList()),
-                new ArrayList<>(filePaths), time, tableId));
+                tmpPending,
+                time, tableId));
         pendingFiles.clear();
-        filePaths.clear();
-
-        if (inProgressFileToCleanup != null) {
-            committables.add(new LakeSoulMultiTableSinkCommittable(bucketId, tableId, inProgressFileToCleanup));
-            inProgressFileToCleanup = null;
-        }
 
         return committables;
     }
 
     LakeSoulWriterBucketState snapshotState() throws IOException {
-        InProgressFileWriter.InProgressFileRecoverable inProgressFileRecoverable = null;
-        long inProgressFileCreationTime = Long.MAX_VALUE;
-
-        if (inProgressPart != null) {
-            inProgressFileRecoverable = inProgressPart.persist();
-            inProgressFileToCleanup = inProgressFileRecoverable;
-            inProgressFileCreationTime = inProgressPart.getCreationTime();
+        if (inProgressPartWriter != null) {
+            closePartFile();
         }
 
+        long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
+                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
+
+        // this.pendingFiles would be cleared later, we need to make a copy
+        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
         return new LakeSoulWriterBucketState(
                 tableId,
-                bucketId, bucketPath, inProgressFileCreationTime, inProgressFileRecoverable, inProgressPath);
+                bucketId,
+                bucketPath,
+                time,
+                tmpPending);
     }
 
     void onProcessingTime(long timestamp) throws IOException {
-        if (inProgressPart != null
-            && rollingPolicy.shouldRollOnProcessingTime(inProgressPart, timestamp)) {
+        if (inProgressPartWriter != null
+            && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
@@ -253,8 +218,8 @@ public class LakeSoulWriterBucket {
                         + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
                         bucketId,
                         uniqueId,
-                        inProgressPart.getCreationTime(),
-                        inProgressPart.getLastUpdateTime(),
+                        inProgressPartWriter.getCreationTime(),
+                        inProgressPartWriter.getLastUpdateTime(),
                         timestamp);
             }
 
@@ -274,7 +239,6 @@ public class LakeSoulWriterBucket {
                     bucketId);
         }
 
-        inProgressPath = partFilePath.toString();
         return bucketWriter.openNewInProgressFile(bucketId, partFilePath, currentTime);
     }
 
@@ -300,24 +264,17 @@ public class LakeSoulWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-        if (inProgressPart != null) {
-            long creationTime = inProgressPart.getCreationTime();
-            while (!sortQueue.isEmpty()) {
-                LakeSoulCDCElement element = sortQueue.poll();
-                inProgressPart.write(element.element, element.timedata);
-            }
+        if (inProgressPartWriter != null) {
             InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
-                    inProgressPart.closeForCommit();
-            pendingFiles.add(new PendingFileAndCreateTime(pendingFileRecoverable, creationTime));
-            filePaths.add(inProgressPath);
-            inProgressPart = null;
-            inProgressPath = null;
+                    inProgressPartWriter.closeForCommit();
+            pendingFiles.add(pendingFileRecoverable);
+            inProgressPartWriter = null;
         }
     }
 
     void disposePartFile() {
-        if (inProgressPart != null) {
-            inProgressPart.dispose();
+        if (inProgressPartWriter != null) {
+            inProgressPartWriter.dispose();
         }
     }
 
@@ -339,11 +296,10 @@ public class LakeSoulWriterBucket {
             final Path bucketPath,
             final BucketWriter<RowData, String> bucketWriter,
             final RollingPolicy<RowData, String> rollingPolicy,
-            final OutputFileConfig outputFileConfig,
-            final LakeSoulCDCComparator comparator) {
+            final OutputFileConfig outputFileConfig) {
         return new LakeSoulWriterBucket(
                 subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, comparator);
+                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
     }
 
     /**
@@ -361,9 +317,7 @@ public class LakeSoulWriterBucket {
             final BucketWriter<RowData, String> bucketWriter,
             final RollingPolicy<RowData, String> rollingPolicy,
             final LakeSoulWriterBucketState bucketState,
-            final OutputFileConfig outputFileConfig,
-            final LakeSoulCDCComparator comparator) throws IOException {
-        return new LakeSoulWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig,
-                                        comparator);
+            final OutputFileConfig outputFileConfig) throws IOException {
+        return new LakeSoulWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
     }
 }

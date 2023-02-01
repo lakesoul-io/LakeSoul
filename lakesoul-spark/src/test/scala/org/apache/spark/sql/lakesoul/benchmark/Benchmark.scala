@@ -98,9 +98,12 @@ object Benchmark {
       .option("password", mysqlPassword).load()
     val lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
-    val result = jdbcDF.rdd.subtract(lakesoulDF.rdd).count() == 0
+    val diff = jdbcDF.rdd.subtract(lakesoulDF.rdd)
+
+    val result = diff.count() == 0
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
+      spark.createDataFrame(diff, lakesoulDF.schema).show()
       println(table + " data verification ERROR!!!")
       System.exit(1)
     }

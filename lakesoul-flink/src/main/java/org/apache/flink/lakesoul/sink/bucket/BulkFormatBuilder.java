@@ -18,33 +18,27 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
-import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.api.connector.sink.Sink;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.formats.parquet.row.ParquetRowDataBuilder;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketStateSerializer;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
-import org.apache.flink.lakesoul.sink.writer.*;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BulkBucketWriter;
+import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
+import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucketFactory;
+import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.OnCheckpointRollingPolicy;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.types.logical.IntType;
-import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
 
-import static org.apache.flink.formats.parquet.ParquetFileFormatFactory.UTC_TIMEZONE;
-import static org.apache.flink.lakesoul.sink.writer.TableSchemaWriterCreator.getParquetConfiguration;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -54,8 +48,6 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
         extends BucketsBuilder<IN, T> {
 
     protected final Path basePath;
-
-    protected BulkWriter.Factory<RowData> writerFactory;
 
     protected long bucketCheckInterval;
 
@@ -90,14 +82,6 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
         this.rollingPolicy = checkNotNull(policy);
         this.bucketFactory = checkNotNull(bucketFactory);
         this.outputFileConfig = checkNotNull(outputFileConfig);
-        this.writerFactory = ParquetRowDataBuilder.createWriterFactory(
-                getFakeRowType(),
-                getParquetConfiguration(conf),
-                conf.get(UTC_TIMEZONE));
-    }
-
-    private RowType getFakeRowType() {
-        return RowType.of(true, new IntType(true));
     }
 
     public T withBucketCheckInterval(final long interval) {
@@ -127,30 +111,20 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     @Override
     public LakeSoulSinkCommitter createCommitter() throws IOException {
-        return new LakeSoulSinkCommitter(createBucketWriter());
+        return new LakeSoulSinkCommitter();
     }
 
     @Override
     public SimpleVersionedSerializer<LakeSoulWriterBucketState> getWriterStateSerializer()
             throws IOException {
-        BucketWriter<RowData, String> bucketWriter = createBucketWriter();
-
         return new LakeSoulWriterBucketStateSerializer(
-                bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
+                NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     }
 
     @Override
     public SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> getCommittableSerializer()
             throws IOException {
-        BucketWriter<RowData, String> bucketWriter = createBucketWriter();
-
         return new LakeSoulSinkCommittableSerializer(
-                bucketWriter.getProperties().getPendingFileRecoverableSerializer(),
-                bucketWriter.getProperties().getInProgressFileRecoverableSerializer());
-    }
-
-    private BucketWriter<RowData, String> createBucketWriter() throws IOException {
-        return new BulkBucketWriter<>(
-                FileSystem.get(basePath.toUri()).createRecoverableWriter(), writerFactory);
+                NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     }
 }

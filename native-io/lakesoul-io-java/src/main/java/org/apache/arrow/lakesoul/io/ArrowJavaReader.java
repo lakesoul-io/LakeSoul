@@ -34,7 +34,7 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.Schema;
 
-public class ArrowJavaReader {
+public class ArrowJavaReader implements AutoCloseable {
     private final ScanOptions options;
     private final BufferAllocator allocator;
     private final DatasetFactory datasetFactory;
@@ -69,7 +69,7 @@ public class ArrowJavaReader {
         batchIterator = scanner.scan().iterator().next().execute();
     }
 
-    void nextRecordBatch(long schemaAddr, long arrayAddr, NativeIOWrapper.Callback callback) {
+    void nextRecordBatch(long schemaAddr, long arrayAddr, NativeIOReader.Callback callback) {
         try {
             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
             VectorLoader loader = new VectorLoader(root);
@@ -85,6 +85,18 @@ public class ArrowJavaReader {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
 
+    Schema getSchema() {
+        return schema;
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (scanner != null) {
+            batchIterator.close();
+            scanner.close();
+            allocator.close();
+        }
     }
 }

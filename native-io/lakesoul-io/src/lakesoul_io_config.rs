@@ -25,10 +25,21 @@ use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+use arrow_schema::{Schema, SchemaRef};
 use url::Url;
 
 #[derive(Derivative)]
-#[derivative(Default)]
+#[derivative(Clone)]
+pub struct IOSchema(pub(crate) SchemaRef);
+
+impl Default for IOSchema {
+    fn default() -> Self {
+        IOSchema(Arc::new(Schema::empty()))
+    }
+}
+
+#[derive(Derivative)]
+#[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
     // files to read or write
     pub(crate) files: Vec<String>,
@@ -36,10 +47,13 @@ pub struct LakeSoulIOConfig {
     pub(crate) primary_keys: Vec<String>,
     // selecting columns
     pub(crate) columns: Vec<String>,
+    // auxiliary sorting columns
+    pub(crate) aux_sort_cols: Vec<String>,
 
     // filtering predicates
     pub(crate) filters: Vec<Expr>,
     // read or write batch size
+    #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
     // write row group max row num
     #[derivative(Default(value = "250000"))]
@@ -47,8 +61,8 @@ pub struct LakeSoulIOConfig {
     #[derivative(Default(value = "2"))]
     pub(crate) prefetch_size: usize,
 
-    // arrow schema in json for read and write
-    pub(crate) schema_json: String,
+    // arrow schema
+    pub(crate) schema: IOSchema,
 
     // object store related configs
     pub(crate) object_store_options: HashMap<String, String>,
@@ -58,6 +72,8 @@ pub struct LakeSoulIOConfig {
     pub(crate) thread_num: usize,
 }
 
+#[derive(Derivative)]
+#[derivative(Clone)]
 pub struct LakeSoulIOConfigBuilder {
     config: LakeSoulIOConfig,
 }
@@ -79,6 +95,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn with_primary_key(mut self, pks: String) -> Self {
+        self.config.primary_keys.push(pks);
+        self
+    }
+
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
         self
@@ -86,6 +107,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(String::from(&col));
+        self
+    }
+
+    pub fn with_aux_sort_column(mut self, col: String) -> Self {
+        self.config.aux_sort_cols.push(String::from(&col));
         self
     }
 
@@ -109,13 +135,13 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_schema_json(mut self, json_str: String) -> Self {
-        self.config.schema_json = json_str;
+    pub fn with_schema(mut self, schema: SchemaRef) -> Self {
+        self.config.schema = IOSchema(schema);
         self
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, &self.config.schema_json);
+        let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
         self.config.filters.push(expr);
         self
     }
@@ -192,7 +218,8 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     let sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
-    let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
+    // limit memory for sort writer
+    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(256 * 1024 * 1024, 1.0))?;
 
     // register object store(s)
     for file_name in &config.files {
