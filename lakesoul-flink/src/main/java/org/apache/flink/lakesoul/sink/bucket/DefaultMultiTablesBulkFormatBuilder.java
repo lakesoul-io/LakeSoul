@@ -42,7 +42,6 @@ public class DefaultMultiTablesBulkFormatBuilder
                 super.outputFileConfig,
                 context.getProcessingTimeService(),
                 super.bucketCheckInterval,
-                context.getUserCodeClassLoader().asClassLoader(),
                 super.conf
         );
     }

@@ -81,8 +81,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final ConcurrentHashMap<TableSchemaIdentity, TableSchemaWriterCreator> perTableSchemaWriterCreator;
 
-    private final ClassLoader userClassLoader;
-
     private final Configuration conf;
 
     public AbstractLakeSoulMultiTableSinkWriter(
@@ -93,7 +91,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             final OutputFileConfig outputFileConfig,
             final Sink.ProcessingTimeService processingTimeService,
             final long bucketCheckInterval,
-            final ClassLoader userClassLoader,
             final Configuration conf) {
         this.subTaskId = subTaskId;
 
@@ -114,7 +111,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                 bucketCheckInterval > 0,
                 "Bucket checking interval for processing time should be positive.");
         this.bucketCheckInterval = bucketCheckInterval;
-        this.userClassLoader = userClassLoader;
         this.conf = conf;
     }
 
@@ -137,8 +133,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                             creator.createBucketWriter(),
                             rollingPolicy,
                             state,
-                            outputFileConfig,
-                            creator.comparator);
+                            outputFileConfig);
 
             updateActiveBucketId(identity, bucketId, restoredBucket);
         }
@@ -161,7 +156,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             try {
                 return TableSchemaWriterCreator.create(identity1.tableId, identity1.rowType,
                         identity1.tableLocation, identity1.primaryKeys,
-                        identity1.partitionKeyList, userClassLoader, conf);
+                        identity1.partitionKeyList, conf);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
@@ -242,7 +237,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                     bucketFactory.getNewBucket(
                             subTaskId,
                             creator.identity,
-                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig, creator.comparator);
+                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
             LOG.info("Create new bucket {}, {}, {}",
                      identity, bucketId, bucketPath);

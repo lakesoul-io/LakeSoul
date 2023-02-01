@@ -15,6 +15,7 @@
  */
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
+#![feature(io_error_more)]
 
 pub mod lakesoul_reader;
 pub mod filter;

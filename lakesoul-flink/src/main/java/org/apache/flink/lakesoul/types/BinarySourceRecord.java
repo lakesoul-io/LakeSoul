@@ -19,10 +19,12 @@
 
 package org.apache.flink.lakesoul.types;
 
+import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaAndValue;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.source.SourceRecord;
+import io.debezium.data.Envelope;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -46,6 +48,8 @@ public class BinarySourceRecord {
     private final LakeSoulRowDataWrapper data;
 
     private final String sourceRecordValue;
+
+    private long eventTime;
 
     public BinarySourceRecord(String topic, List<String> primaryKeys,
                               List<String> partitionKeys,
@@ -75,8 +79,19 @@ public class BinarySourceRecord {
         } else {
             List<String> primaryKeys = new ArrayList<>();
             keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(sourceRecord.valueSchema(),
-                    (Struct) sourceRecord.value(), tableId);
+            Schema valueSchema = sourceRecord.valueSchema();
+            Struct value = (Struct) sourceRecord.value();
+
+            // retrieve source event time if exist and non-zero
+            Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
+            long eventTime = 0;
+            if (sourceField != null && sourceField.schema().field("ts_ms") != null) {
+                Struct source = value.getStruct(Envelope.FieldName.SOURCE);
+                if (source != null) {
+                    eventTime = (Long) source.getWithoutDefault("ts_ms");
+                }
+            }
+            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, eventTime);
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, Collections.emptyList(), data, null,
                     tableId, false);
         }

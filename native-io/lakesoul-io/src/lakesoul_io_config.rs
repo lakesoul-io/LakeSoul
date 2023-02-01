@@ -47,6 +47,8 @@ pub struct LakeSoulIOConfig {
     pub(crate) primary_keys: Vec<String>,
     // selecting columns
     pub(crate) columns: Vec<String>,
+    // auxiliary sorting columns
+    pub(crate) aux_sort_cols: Vec<String>,
 
     // filtering predicates
     pub(crate) filters: Vec<Expr>,
@@ -105,6 +107,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_column(mut self, col: String) -> Self {
         self.config.columns.push(String::from(&col));
+        self
+    }
+
+    pub fn with_aux_sort_column(mut self, col: String) -> Self {
+        self.config.aux_sort_cols.push(String::from(&col));
         self
     }
 

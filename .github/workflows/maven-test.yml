@@ -47,12 +47,24 @@ jobs:
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
-    - uses: actions-rs/cargo@v1
+    - name: Set up cargo cache
+      uses: actions/cache@v3
+      continue-on-error: true
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          native-io/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
     - name: Compile Native-IO
       run: cd native-io && cargo +nightly build --release --all-features --package lakesoul-io-c
     - name: Build with Maven
       run: LakeSoulLib=/home/runner/work/LakeSoul/LakeSoul/native-io/target/release mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
     - name: Upload Test Report
+      continue-on-error: true
       uses: actions/upload-artifact@v3
       with:
         name: maven-test-report-artifact

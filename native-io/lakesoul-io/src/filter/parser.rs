@@ -194,7 +194,6 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use crate::filter::Parser;
-    use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use std::result::Result;
 
     #[test]
