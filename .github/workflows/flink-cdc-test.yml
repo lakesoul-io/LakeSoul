@@ -45,6 +45,10 @@ jobs:
             native-io/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
+      - name: Pull images
+        run: |
+          docker pull -q bitnami/spark:3.3.1
+          docker pull -q dockcross/manylinux2014-x64:latest
       - name: Build with Maven
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
@@ -65,10 +69,6 @@ jobs:
           docker compose pull -q
           docker compose up -d
           sleep 10s
-      - name: Pull images
-        run: |
-          docker pull -q bitnami/spark:3.3.1
-          docker pull -q dockcross/manylinux2014-x64:latest
       - name: Start flink task
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC

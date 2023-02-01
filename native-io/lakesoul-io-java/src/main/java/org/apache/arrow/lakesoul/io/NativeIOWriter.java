@@ -75,13 +75,15 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         ArrowSchema schema = ArrowSchema.allocateNew(allocator);
         Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
         AtomicReference<String> errMsg = new AtomicReference<>();
-        libLakeSoulIO.write_record_batch(writer, schema.memoryAddress(), array.memoryAddress(), (status, err) -> {
+        Callback nativeCallback = new Callback((status, err) -> {
             array.close();
             schema.close();
             if (!status && err != null) {
                 errMsg.set(err);
             }
-        });
+        }, referenceManager);
+        nativeCallback.registerReferenceKey();
+        libLakeSoulIO.write_record_batch(writer, schema.memoryAddress(), array.memoryAddress(), nativeCallback);
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
             throw new IOException("Native writer write batch failed with error: " + errMsg.get());
         }
@@ -89,11 +91,13 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
 
     public void flush() throws IOException {
         AtomicReference<String> errMsg = new AtomicReference<>();
-        libLakeSoulIO.flush_and_close_writer(writer, (status, err) -> {
+        Callback nativeCallback = new Callback((status, err) -> {
             if (!status && err != null) {
                 errMsg.set(err);
             }
-        });
+        }, referenceManager);
+        nativeCallback.registerReferenceKey();
+        libLakeSoulIO.flush_and_close_writer(writer, nativeCallback);
         writer = null;
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
             throw new IOException("Native writer flush failed with error: " + errMsg.get());

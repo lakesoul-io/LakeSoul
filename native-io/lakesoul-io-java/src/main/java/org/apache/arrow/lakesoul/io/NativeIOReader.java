@@ -131,12 +131,15 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     private void startReader(BiConsumer<Boolean, String> callback) {
         if (!useJavaReader) {
             assert reader != null;
-            libLakeSoulIO.start_reader(reader, (status, err) -> {
+            BiConsumer<Boolean, String> wrapCallback = (status, err) -> {
                 if (status) {
                     this.readerSchema = getReaderSchema();
                 }
                 callback.accept(status, err);
-            });
+            };
+            Callback nativeCallback = new Callback(wrapCallback, referenceManager);
+            nativeCallback.registerReferenceKey();
+            libLakeSoulIO.start_reader(reader, nativeCallback);
         }
     }
 
