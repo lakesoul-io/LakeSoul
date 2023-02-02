@@ -119,6 +119,13 @@
                     <include>*.so</include>
                     <include>*.dll</include>
                 </includes>
+                <excludes>
+                    <exclude>deps</exclude>
+                    <exclude>.fingerprint</exclude>
+                    <exclude>build</exclude>
+                    <exclude>examples</exclude>
+                    <exclude>*.d</exclude>
+                </excludes>
             </resource>
         </resources>
         <extensions>

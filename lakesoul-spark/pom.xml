@@ -42,6 +42,28 @@
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-io-java</artifactId>
             <version>2.2.0-SNAPSHOT</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-log4j12</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>log4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-buffer</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-common</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- scala deps -->
@@ -212,6 +234,23 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>${basedir}/../native-io/target/x86_64-unknown-linux-gnu/release/</directory>
+                <includes>
+                    <include>*.dylib</include>
+                    <include>*.so</include>
+                    <include>*.dll</include>
+                </includes>
+                <excludes>
+                    <exclude>deps</exclude>
+                    <exclude>.fingerprint</exclude>
+                    <exclude>build</exclude>
+                    <exclude>examples</exclude>
+                    <exclude>*.d</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -299,6 +338,13 @@
                         <includes>
                             <include>com.dmetasoul:lakesoul-spark</include>
                             <include>com.dmetasoul:lakesoul-common</include>
+                            <include>com.dmetasoul:lakesoul-io-java</include>
+                            <include>com.github.jnr:*</include>
+                            <include>org.ow2.asm:*</include>
+                            <include>org.apache.arrow:arrow-algorithm</include>
+                            <include>org.apache.arrow:arrow-c-data</include>
+                            <include>org.apache.arrow:arrow-dataset</include>
+                            <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
@@ -317,6 +363,10 @@
                         <relocation>
                             <pattern>com.alibaba.fastjson</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.flatbuffers</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>
