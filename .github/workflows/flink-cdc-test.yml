@@ -2,7 +2,7 @@ name: CI with flink cdc Test
 
 on:
   push:
-    branches: [ "main", "lakesoul_native_write" ]
+    branches: [ "main", "release/spark_3.3" ]
 
 jobs:
   build:

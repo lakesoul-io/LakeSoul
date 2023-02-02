@@ -28,12 +28,14 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.arrow.ArrowWriter
 import org.apache.spark.sql.execution.datasources.OutputWriter
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.ArrowUtils
 
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
 
-  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE = 250000
+  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
 
   private var recordCount = 0
 
