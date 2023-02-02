@@ -12,6 +12,7 @@
     <modelVersion>4.0.0</modelVersion>
     <artifactId>lakesoul-io-java</artifactId>
     <version>2.2.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -110,24 +111,129 @@
         </dependency>
     </dependencies>
 
+    <profiles>
+        <profile>
+            <id>native-dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../target/release/</directory>
+                        <includes>
+                            <include>*.dylib</include>
+                            <include>*.so</include>
+                            <include>*.dll</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>compile-native</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>+nightly build --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <workingDirectory>${basedir}/../</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>clean-native</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>
+                                        clean
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>release-linux-x86-64</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../target/x86_64-unknown-linux-gnu/release/</directory>
+                        <includes>
+                            <include>*.so</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>compile-native</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cross</executable>
+                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <workingDirectory>${basedir}/../</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>clean-native</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>
+                                        clean
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
     <build>
-        <resources>
-            <resource>
-                <directory>${basedir}/../target/x86_64-unknown-linux-gnu/release/</directory>
-                <includes>
-                    <include>*.dylib</include>
-                    <include>*.so</include>
-                    <include>*.dll</include>
-                </includes>
-                <excludes>
-                    <exclude>deps</exclude>
-                    <exclude>.fingerprint</exclude>
-                    <exclude>build</exclude>
-                    <exclude>examples</exclude>
-                    <exclude>*.d</exclude>
-                </excludes>
-            </resource>
-        </resources>
         <extensions>
             <extension>
                 <groupId>kr.motd.maven</groupId>
@@ -151,34 +257,6 @@
                 <configuration>
                     <source>1.8</source>
                     <target>1.8</target>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.1.0</version>
-                <executions>
-                    <execution>
-                        <id>compile-native</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                    </execution>
-                </executions>
-                <configuration>
-                    <executable>cross</executable>
-                    <arguments>
-                        <argument>build</argument>
-                        <argument>+nightly</argument>
-                        <argument>--target</argument>
-                        <argument>x86_64-unknown-linux-gnu</argument>
-                        <argument>--release</argument>
-                        <argument>--all-features</argument>
-                        <argument>--package</argument>
-                        <argument>lakesoul-io-c</argument>
-                    </arguments>
-                    <workingDirectory>${basedir}/../</workingDirectory>
                 </configuration>
             </plugin>
             <plugin>
