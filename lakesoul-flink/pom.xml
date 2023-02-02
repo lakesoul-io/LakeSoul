@@ -251,23 +251,6 @@
     </dependencies>
 
     <build>
-        <resources>
-            <resource>
-                <directory>${basedir}/../native-io/target/x86_64-unknown-linux-gnu/release/</directory>
-                <includes>
-                    <include>*.dylib</include>
-                    <include>*.so</include>
-                    <include>*.dll</include>
-                </includes>
-                <excludes>
-                    <exclude>deps</exclude>
-                    <exclude>.fingerprint</exclude>
-                    <exclude>build</exclude>
-                    <exclude>examples</exclude>
-                    <exclude>*.d</exclude>
-                </excludes>
-            </resource>
-        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
