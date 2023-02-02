@@ -59,10 +59,9 @@ jobs:
           native-io/target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
         restore-keys: ${{ runner.os }}-cargo-
-    - name: Compile Native-IO
-      run: cd native-io && cargo +nightly build --release --all-features --package lakesoul-io-c
     - name: Build with Maven
-      run: LakeSoulLib=/home/runner/work/LakeSoul/LakeSoul/native-io/target/release mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
+      run: |
+        MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
     - name: Upload Test Report
       continue-on-error: true
       uses: actions/upload-artifact@v3

@@ -51,8 +51,7 @@ jobs:
           docker pull -q dockcross/manylinux2014-x64:latest
       - name: Build with Maven
         run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-          mvn -q -B clean package -f pom.xml -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV

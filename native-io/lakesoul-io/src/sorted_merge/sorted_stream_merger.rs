@@ -115,7 +115,7 @@ impl SortedStreamMerger
             Ok(SortField::new_with_options(data_type, expr.options))
         })
         .collect::<Result<Vec<_>>>()?;
-        let row_converter = RowConverter::new(sort_fields);
+        let row_converter = RowConverter::new(sort_fields).unwrap();
 
         let combiner = RangeCombiner::new(schema.clone(), streams_num, batch_size);
 
@@ -293,7 +293,7 @@ mod tests {
     use datafusion::execution::context::TaskContext;
     use datafusion::physical_expr::PhysicalSortExpr;    
     use datafusion::physical_plan::expressions::col;
-    use datafusion::logical_plan::col as logical_col;
+    use datafusion::logical_expr::col as logical_col;
     use datafusion::assert_batches_eq;
     use datafusion::physical_plan::{memory::MemoryExec, ExecutionPlan, common};
 
@@ -305,10 +305,11 @@ mod tests {
     async fn test_multi_file_merger() {
         let session_config = SessionConfig::default().with_batch_size(32);
         let session_ctx = SessionContext::with_config(session_config);
+        let project_dir = std::env::current_dir().unwrap();
         let files:Vec<String> = vec![
-            "/Users/ceng/PycharmProjects/write_parquet/small_0.parquet".to_string(),
-            "/Users/ceng/PycharmProjects/write_parquet/small_1.parquet".to_string(),
-            "/Users/ceng/PycharmProjects/write_parquet/small_2.parquet".to_string(),
+            project_dir.join("../../python/small_0.parquet").into_os_string().into_string().unwrap(),
+            project_dir.join("../../python/small_1.parquet").into_os_string().into_string().unwrap(),
+            project_dir.join("../../python/small_2.parquet").into_os_string().into_string().unwrap(),
         ];
         let mut streams = Vec::with_capacity(files.len());
         for i in 0..files.len() {
