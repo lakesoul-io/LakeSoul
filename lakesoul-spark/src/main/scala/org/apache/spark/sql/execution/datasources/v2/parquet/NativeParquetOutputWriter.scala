@@ -22,6 +22,8 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.s3a.S3AFileSystem
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.arrow.ArrowWriter
@@ -39,21 +41,20 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
   nativeIOWriter.addFile(path)
 
-  private val conf: Configuration = context.getConfiguration
-  private val s3AccessKey: String = conf.get("spark.hadoop.fs.s3a.access.key", "")
-  if (s3AccessKey != "") {
-    nativeIOWriter.setObjectStoreOption("fs.s3a.access.key", s3AccessKey)
+  val conf: Configuration = context.getConfiguration
+  val fileSystem: FileSystem = new Path(path).getFileSystem(conf)
+  if (fileSystem.isInstanceOf[S3AFileSystem]) {
+    val s3aAccessKey = conf.get("fs.s3a.access.key")
+    val s3aAccessSecret = conf.get("fs.s3a.access.secret")
+    val s3aRegion = conf.get("fs.s3a.endpoint.region");
+    val s3aEndpoint = conf.get("fs.s3a.endpoint")
+    nativeIOWriter.setObjectStoreOption("fs.s3a.access.key", s3aAccessKey)
+    nativeIOWriter.setObjectStoreOption("fs.s3a.access.secret", s3aAccessSecret)
+    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint.region", s3aRegion)
+    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint", s3aEndpoint)
   }
-  private val s3AccessSecret: String = conf.get("spark.hadoop.fs.s3a.access.secret", "")
-  if (s3AccessSecret != "") {
-    nativeIOWriter.setObjectStoreOption("fs.s3a.access.secret", s3AccessSecret)
-  }
-  private val s3Endpoint: String = conf.get("spark.hadoop.fs.s3a.endpoint", "")
-  if (s3Endpoint != "") {
-    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint", s3Endpoint)
-  }
-  nativeIOWriter.initializeWriter()
 
+  nativeIOWriter.initializeWriter()
 
   val allocator: BufferAllocator =
     ArrowMemoryUtils.rootAllocator.newChildAllocator("toBatchIterator", 0, Long.MaxValue)
