@@ -112,9 +112,11 @@ public class NativeIOBase implements AutoCloseable {
 
     public void setObjectStoreOption(String key, String value) {
         assert ioConfigBuilder != null;
-        Pointer ptrKey = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, key);
-        Pointer ptrValue = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, ptrKey, ptrValue);
+        if (key != null && value != null) {
+            Pointer ptrKey = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, key);
+            Pointer ptrValue = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, ptrKey, ptrValue);
+        }
     }
 
     @Override

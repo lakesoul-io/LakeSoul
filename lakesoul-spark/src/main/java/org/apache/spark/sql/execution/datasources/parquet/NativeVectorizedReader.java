@@ -16,14 +16,12 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.amazonaws.auth.AWSCredentials;
 import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
@@ -162,7 +160,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       awsS3Bucket = s3aFileSystem.getBucket();
       s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
       s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
-      awsCredentials = S3AUtils.createAWSCredentialProviderSet(file.toUri(), taskAttemptContext.getConfiguration()).getCredentials();
+      s3aAccessKey = taskAttemptContext.getConfiguration().get("fs.s3a.access.key");
+      s3aSecretKey = taskAttemptContext.getConfiguration().get("fs.s3a.secret.key");
     }
     initializeInternal();
   }
@@ -248,7 +247,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     reader.setThreadNum(threadNum);
 
     if (s3aFileSystem != null) {
-      reader.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), s3aRegion, awsS3Bucket, s3aEndpoint);
+      reader.setObjectStoreOptions(s3aAccessKey, s3aSecretKey, s3aRegion, awsS3Bucket, s3aEndpoint);
     }
 
     if (filter != null) {
@@ -378,12 +377,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private S3AFileSystem s3aFileSystem = null;
   private String s3aEndpoint = null;
   private String s3aRegion = null;
-
-  private AWSCredentials awsCredentials = null;
+  private String s3aAccessKey = null;
+  private String s3aSecretKey = null;
 
   private String awsS3Bucket = null;
 
-  private FilterPredicate filter;
+  private final FilterPredicate filter;
 }
 
 
