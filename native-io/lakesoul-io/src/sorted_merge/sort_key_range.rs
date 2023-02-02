@@ -16,25 +16,28 @@ pub struct SortKeyBatchRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
     pub(crate) end_row: usize,   // not included
     pub(crate) stream_idx: usize,
+    pub(crate) batch_idx: usize,
     pub(crate) batch: Arc<RecordBatch>,
     pub(crate) rows: Arc<Rows>,
 }
 
 impl SortKeyBatchRange {
-    pub fn new(begin_row: usize, end_row: usize, stream_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
+    pub fn new(begin_row: usize, end_row: usize, stream_idx: usize, batch_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
         SortKeyBatchRange {
             begin_row,
             end_row,
             stream_idx,
+            batch_idx,
             batch,
             rows,
         }
     }
 
-    pub fn new_and_init(begin_row: usize, stream_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
+    pub fn new_and_init(begin_row: usize, stream_idx: usize, batch_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
         let mut range =SortKeyBatchRange {
             begin_row,
             end_row: begin_row,
+            batch_idx,
             stream_idx,
             batch,
             rows,
@@ -88,6 +91,7 @@ impl SortKeyBatchRange {
             begin_row: self.begin_row,
             end_row: self.end_row,
             stream_idx: self.stream_idx,
+            batch_idx: self.batch_idx,
             array: self.batch.column(idx).clone(),
         }
     }
@@ -107,7 +111,7 @@ impl Debug for SortKeyBatchRange {
 
 impl Clone for SortKeyBatchRange {
     fn clone(&self) -> Self {
-        SortKeyBatchRange::new(self.begin_row, self.end_row, self.stream_idx, self.batch.clone(), self.rows.clone())
+        SortKeyBatchRange::new(self.begin_row, self.end_row, self.stream_idx, self.batch_idx, self.batch.clone(), self.rows.clone())
     }
 }
 
@@ -139,6 +143,7 @@ pub struct SortKeyArrayRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
     pub(crate) end_row: usize,   // not included
     pub(crate) stream_idx: usize,
+    pub(crate) batch_idx: usize,
     pub(crate) array: ArrayRef,
 }
 
@@ -154,6 +159,7 @@ impl Clone for SortKeyArrayRange {
             begin_row: self.begin_row,
             end_row: self.end_row,
             stream_idx: self.stream_idx,
+            batch_idx: self.batch_idx,
             array: self.array.clone(),
         }
     }
@@ -161,7 +167,7 @@ impl Clone for SortKeyArrayRange {
 
 // Multiple ranges with same sorted primary key from variant source record_batch. These ranges will be merged into ONE row of target record_batch finnally.
 #[derive(Debug)]
-pub struct SortKeyArrayRanges {
+pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vecotor of SortKeyArrayRange to be merged for each column
     pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>, 
 
@@ -170,9 +176,9 @@ pub struct SortKeyArrayRanges {
     pub(crate) batch_range: Option<SortKeyBatchRange>,
 }
 
-impl SortKeyArrayRanges {
-    pub fn new(schema: SchemaRef) -> SortKeyArrayRanges {
-        SortKeyArrayRanges {
+impl SortKeyBatchRanges {
+    pub fn new(schema: SchemaRef) -> SortKeyBatchRanges {
+        SortKeyBatchRanges {
             sort_key_array_ranges: (0..schema.fields().len()).map(|_| vec![]).collect(),
             schema: schema.clone(),
             batch_range: None,
@@ -224,9 +230,9 @@ impl SortKeyArrayRanges {
 
 }
 
-impl Clone for SortKeyArrayRanges {
+impl Clone for SortKeyBatchRanges {
     fn clone(&self) -> Self {
-        SortKeyArrayRanges {
+        SortKeyBatchRanges {
             sort_key_array_ranges: self.sort_key_array_ranges.clone(),
             schema: self.schema.clone(),
             batch_range: match &self.batch_range {

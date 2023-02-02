@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::cmp::Reverse;
-use std::collections::VecDeque;
 
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
@@ -76,7 +75,7 @@ pub(crate) struct SortedStreamMerger
     streams: MergingStreams,
 
 
-    /// Maintain a flag for each stream denoting if the current cursor
+    /// Maintain a flag for each stream denoting if the current range
     /// has finished and needs to poll from the stream
     range_finished: Vec<bool>,
 
@@ -93,6 +92,8 @@ pub(crate) struct SortedStreamMerger
 
     /// row converter
     row_converter: RowConverter,
+
+    batch_idx_counter: usize,
 
 }
 
@@ -126,12 +127,13 @@ impl SortedStreamMerger
             aborted: false,
             range_combiner: combiner,
             row_converter,
+            batch_idx_counter: 0,
         })
     }
 
-    /// If the stream at the given index is not exhausted, and the last cursor for the
+    /// If the stream at the given index is not exhausted, and the last batch range for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
-    /// cursor for the stream from the returned result
+    /// batch range for the stream from the returned result
     fn maybe_poll_stream(
         &mut self,
         cx: &mut Context<'_>,
@@ -172,8 +174,9 @@ impl SortedStreamMerger
                             }
                         };
                         
+                        self.batch_idx_counter = self.batch_idx_counter + 1;
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
-                        let range = SortKeyBatchRange::new_and_init(0, idx, batch.clone(), rows.clone());
+                        let range = SortKeyBatchRange::new_and_init(0, idx, self.batch_idx_counter, batch.clone(), rows.clone());
 
                         self.range_finished[idx] = false;
 
@@ -207,7 +210,7 @@ impl SortedStreamMerger
             return Poll::Ready(None);
         }
 
-        // Ensure all non-exhausted fetchers have a cursor from which
+        // Ensure all non-exhausted streams have a range from which
         // rows can be pulled
         for i in 0..self.streams.num_streams() {
             match futures::ready!(self.maybe_poll_stream(cx, i)) {
