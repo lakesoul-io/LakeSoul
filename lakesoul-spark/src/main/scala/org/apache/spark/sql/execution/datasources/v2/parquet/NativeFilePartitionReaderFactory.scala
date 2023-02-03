@@ -23,7 +23,6 @@ import org.apache.spark.sql.execution.datasources.v2.{FilePartitionReader, Parti
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-
 abstract class NativeFilePartitionReaderFactory extends PartitionReaderFactory with Logging{
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     throw new UnsupportedOperationException("Cannot create row-based reader.")

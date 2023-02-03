@@ -16,8 +16,6 @@
 
 package org.apache.spark.sql.lakesoul
 
-import org.apache.arrow.lakesoul.io.NativeIOBase
-import org.apache.spark.sql.api.r.SQLUtils
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -58,9 +56,9 @@ class Snapshot(table_info: TableInfo,
 
   /** Return the underlying Spark `FileFormat` of the LakeSoulTableRel. */
   def fileFormat: FileFormat = if (SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {
-    new NativeParquetFileFormat
+    new NativeParquetFileFormat()
   } else {
-    new ParquetFileFormat
+    new ParquetFileFormat()
   }
 
   def getConfiguration: Map[String, String] = table_info.configuration
