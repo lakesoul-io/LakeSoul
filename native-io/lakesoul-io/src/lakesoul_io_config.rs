@@ -177,7 +177,7 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
         .or_else(|| config.object_store_options.get("fs.s3a.access.key").cloned());
     let secret = std::env::var("AWS_ACCESS_KEY_ID")
         .ok()
-        .or_else(|| config.object_store_options.get("fs.s3a.access.secret").cloned());
+        .or_else(|| config.object_store_options.get("fs.s3a.secret.key").cloned());
     let region = std::env::var("AWS_REGION").ok().or_else(|| {
         std::env::var("AWS_DEFAULT_REGION")
             .ok()

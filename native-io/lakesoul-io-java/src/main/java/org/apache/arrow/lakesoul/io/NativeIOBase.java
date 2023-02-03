@@ -104,7 +104,7 @@ public class NativeIOBase implements AutoCloseable {
 
     public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint) {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
-        setObjectStoreOption("fs.s3a.access.secret", accessSecret);
+        setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
         setObjectStoreOption("fs.s3a.bucket", bucketName);
         setObjectStoreOption("fs.s3a.endpoint", endpoint);

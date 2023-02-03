@@ -231,6 +231,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- for test only. we don't bundle hadoop dependencies -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-aws</artifactId>
+            <version>3.3.3</version>
+            <scope>provided</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

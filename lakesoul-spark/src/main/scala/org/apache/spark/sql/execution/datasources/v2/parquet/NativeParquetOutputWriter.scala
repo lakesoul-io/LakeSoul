@@ -22,8 +22,8 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.fs.s3a.S3AFileSystem
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.arrow.ArrowWriter
@@ -35,34 +35,35 @@ import org.apache.spark.sql.util.ArrowUtils
 
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
 
-  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
+  val NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE: Int = SQLConf.get.getConf(LakeSoulSQLConf.NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
 
   private var recordCount = 0
 
   val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
-  val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
+  private val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
   nativeIOWriter.addFile(path)
 
   val conf: Configuration = context.getConfiguration
   val fileSystem: FileSystem = new Path(path).getFileSystem(conf)
   if (fileSystem.isInstanceOf[S3AFileSystem]) {
-    val s3aAccessKey = conf.get("fs.s3a.access.key")
-    val s3aAccessSecret = conf.get("fs.s3a.access.secret")
-    val s3aRegion = conf.get("fs.s3a.endpoint.region");
-    val s3aEndpoint = conf.get("fs.s3a.endpoint")
-    nativeIOWriter.setObjectStoreOption("fs.s3a.access.key", s3aAccessKey)
-    nativeIOWriter.setObjectStoreOption("fs.s3a.access.secret", s3aAccessSecret)
-    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint.region", s3aRegion)
-    nativeIOWriter.setObjectStoreOption("fs.s3a.endpoint", s3aEndpoint)
+    setObjectStoreOption("fs.s3a.access.key", conf)
+    setObjectStoreOption("fs.s3a.secret.key", conf)
+    setObjectStoreOption("fs.s3a.endpoint", conf)
+    setObjectStoreOption("fs.s3a.endpoint.region", conf)
   }
 
   nativeIOWriter.initializeWriter()
 
   val allocator: BufferAllocator =
     ArrowMemoryUtils.rootAllocator.newChildAllocator("toBatchIterator", 0, Long.MaxValue)
-  val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
-  val recordWriter: ArrowWriter = ArrowWriter.create(root)
+  private val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
+
+  private val recordWriter: ArrowWriter = ArrowWriter.create(root)
+
+  private def setObjectStoreOption(key: String, conf: Configuration): Unit = {
+    nativeIOWriter.setObjectStoreOption(key, conf.get(key))
+  }
 
   override def write(row: InternalRow): Unit = {
 
@@ -77,9 +78,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
     }
   }
 
-
   override def close(): Unit = {
-
     recordWriter.finish()
 
     nativeIOWriter.write(root)
@@ -88,6 +87,5 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
     recordWriter.reset()
     root.close()
     allocator.close()
-
   }
 }
