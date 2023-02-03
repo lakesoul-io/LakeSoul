@@ -16,18 +16,32 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 import org.scalatest.BeforeAndAfterEach
 
 class DropTableSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulTestUtils {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
+
   import testImplicits._
   test("drop table") {
     withTempDir(f => {
