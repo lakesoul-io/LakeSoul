@@ -105,6 +105,7 @@ impl LakeSoulReader {
                     schema,
                     sort_exprs.as_slice(),
                     self.config.batch_size,
+                    vec![] // todo: needs to be modified after LakeSoulIOConfig adds merge_op
                 )
                 .unwrap();
                 self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));

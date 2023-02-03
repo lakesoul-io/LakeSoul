@@ -11,7 +11,7 @@ use arrow::{error::Result as ArrowResult,
     datatypes::{Field, SchemaRef, DataType},
     array::{
         make_array as make_arrow_array, Array, ArrayRef, 
-        ArrayBuilder, PrimitiveBuilder, GenericStringBuilder, 
+        ArrayBuilder, PrimitiveBuilder, StringBuilder,
         MutableArrayData
     },
 };
@@ -27,8 +27,9 @@ impl RangeCombiner {
     pub fn new(
         schema: SchemaRef,
         streams_num:usize,
-        target_batch_size: usize) -> Self {
-        RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(schema, streams_num, target_batch_size))
+        target_batch_size: usize,
+        merge_operator: Vec<MergeOperator>) -> Self {
+        RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(schema, streams_num, target_batch_size, merge_operator))
     }
 
     pub fn push_range(&mut self, range: Reverse<SortKeyBatchRange>) {
@@ -65,16 +66,21 @@ pub struct MinHeapSortKeyBatchRangeCombiner{
 impl MinHeapSortKeyBatchRangeCombiner{
     pub fn new(
         schema: SchemaRef,
-        streams_num: usize, 
-        target_batch_size: usize) -> Self {
+        streams_num: usize,
+        target_batch_size: usize,
+        merge_operator: Vec<MergeOperator>) -> Self {
         let new_range = SortKeyBatchRanges::new(schema.clone());
+        let merge_op = match merge_operator.len() {
+            0 => vec![MergeOperator::UseLast; schema.clone().fields().len()],
+            _ => merge_operator
+        };
         MinHeapSortKeyBatchRangeCombiner{
             schema: schema.clone(),
             heap: BinaryHeap::with_capacity(streams_num),
             in_progress: vec![],
             target_batch_size: target_batch_size,
             current_sort_key_range: new_range,
-            merge_operator: vec![MergeOperator::UseLast; schema.clone().fields().len()],
+            merge_operator: merge_op,
         }
     }
 
@@ -154,9 +160,17 @@ fn merge_sort_key_array_ranges(capacity:usize, field: &Field, ranges:&Vec<Vec<So
     let data_type = (*field.data_type()).clone();
     let mut append_array_data_builder:Box<dyn ArrayBuilder> = 
         match data_type {
+            DataType::UInt8 => Box::new(PrimitiveBuilder::<UInt8Type>::with_capacity(capacity)),
+            DataType::UInt16 => Box::new(PrimitiveBuilder::<UInt16Type>::with_capacity(capacity)),
+            DataType::UInt32 => Box::new(PrimitiveBuilder::<UInt32Type>::with_capacity(capacity)),
+            DataType::UInt64 => Box::new(PrimitiveBuilder::<UInt64Type>::with_capacity(capacity)),
+            DataType::Int8 => Box::new(PrimitiveBuilder::<Int8Type>::with_capacity(capacity)),
+            DataType::Int16 => Box::new(PrimitiveBuilder::<Int16Type>::with_capacity(capacity)),
             DataType::Int32 => Box::new(PrimitiveBuilder::<Int32Type>::with_capacity(capacity)),
             DataType::Int64 => Box::new(PrimitiveBuilder::<Int64Type>::with_capacity(capacity)),
-            DataType::Utf8 => Box::new(GenericStringBuilder::<i32>::with_capacity(capacity, capacity)),
+            DataType::Float32 => Box::new(PrimitiveBuilder::<Float32Type>::with_capacity(capacity)),
+            DataType::Float64 => Box::new(PrimitiveBuilder::<Float64Type>::with_capacity(capacity)),
+            DataType::Utf8 => Box::new(StringBuilder::with_capacity(capacity, capacity)),
             _ => {
                 if *merge_operator == MergeOperator::UseLast {
                     Box::new(PrimitiveBuilder::<Int32Type>::with_capacity(capacity))
