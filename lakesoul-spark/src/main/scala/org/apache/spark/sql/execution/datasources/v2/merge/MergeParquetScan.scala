@@ -356,7 +356,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
   override def latestOffset: Offset = {
     val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
-    LongOffset(endTimestamp)
+    LongOffset(endTimestamp+1)
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
