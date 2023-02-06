@@ -1,13 +1,28 @@
-use std::sync::Arc;
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
-
+use std::sync::Arc;
 
 use arrow::{
-    record_batch::RecordBatch,
-    datatypes::SchemaRef,
-    row::{Row, Rows},
     array::ArrayRef,
+    datatypes::SchemaRef,
+    record_batch::RecordBatch,
+    row::{Row, Rows},
 };
 
 // A range in one arrow::record_batch::RecordBatch with same sorted primary key
@@ -22,7 +37,14 @@ pub struct SortKeyBatchRange {
 }
 
 impl SortKeyBatchRange {
-    pub fn new(begin_row: usize, end_row: usize, stream_idx: usize, batch_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
+    pub fn new(
+        begin_row: usize,
+        end_row: usize,
+        stream_idx: usize,
+        batch_idx: usize,
+        batch: Arc<RecordBatch>,
+        rows: Arc<Rows>,
+    ) -> Self {
         SortKeyBatchRange {
             begin_row,
             end_row,
@@ -33,8 +55,14 @@ impl SortKeyBatchRange {
         }
     }
 
-    pub fn new_and_init(begin_row: usize, stream_idx: usize, batch_idx: usize, batch: Arc<RecordBatch>, rows: Arc<Rows>) -> Self {
-        let mut range =SortKeyBatchRange {
+    pub fn new_and_init(
+        begin_row: usize,
+        stream_idx: usize,
+        batch_idx: usize,
+        batch: Arc<RecordBatch>,
+        rows: Arc<Rows>,
+    ) -> Self {
+        let mut range = SortKeyBatchRange {
             begin_row,
             end_row: begin_row,
             batch_idx,
@@ -95,9 +123,7 @@ impl SortKeyBatchRange {
             array: self.batch.column(idx).clone(),
         }
     }
-
 }
-
 
 impl Debug for SortKeyBatchRange {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
@@ -111,7 +137,14 @@ impl Debug for SortKeyBatchRange {
 
 impl Clone for SortKeyBatchRange {
     fn clone(&self) -> Self {
-        SortKeyBatchRange::new(self.begin_row, self.end_row, self.stream_idx, self.batch_idx, self.batch.clone(), self.rows.clone())
+        SortKeyBatchRange::new(
+            self.begin_row,
+            self.end_row,
+            self.stream_idx,
+            self.batch_idx,
+            self.batch.clone(),
+            self.rows.clone(),
+        )
     }
 }
 
@@ -155,7 +188,7 @@ impl SortKeyArrayRange {
 
 impl Clone for SortKeyArrayRange {
     fn clone(&self) -> Self {
-        SortKeyArrayRange{
+        SortKeyArrayRange {
             begin_row: self.begin_row,
             end_row: self.end_row,
             stream_idx: self.stream_idx,
@@ -169,7 +202,7 @@ impl Clone for SortKeyArrayRange {
 #[derive(Debug)]
 pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vecotor of SortKeyArrayRange to be merged for each column
-    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>, 
+    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>,
 
     pub(crate) schema: SchemaRef,
 
@@ -194,7 +227,7 @@ impl SortKeyBatchRanges {
         self.sort_key_array_ranges[column_idx].clone()
     }
 
-    // insert one SortKeyBatchRange into SortKeyArrayRanges, 
+    // insert one SortKeyBatchRange into SortKeyArrayRanges,
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
@@ -207,10 +240,10 @@ impl SortKeyBatchRanges {
                 .schema()
                 .column_with_name(name)
                 .map(|(idx, _)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
-        };
+        }
     }
 
-    pub fn is_empty(&self) -> bool{
+    pub fn is_empty(&self) -> bool {
         self.batch_range.is_none()
     }
 
@@ -224,10 +257,9 @@ impl SortKeyBatchRanges {
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {
         match &self.batch_range {
             None => true,
-            Some(batch_range) => batch_range.current() == range.current()
+            Some(batch_range) => batch_range.current() == range.current(),
         }
     }
-
 }
 
 impl Clone for SortKeyBatchRanges {
