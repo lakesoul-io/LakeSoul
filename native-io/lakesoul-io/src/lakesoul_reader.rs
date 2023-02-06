@@ -70,6 +70,7 @@ impl LakeSoulReader {
                     df = df.select_columns(&cols)?;
                 }
                 df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
+                self.schema = Some(df.schema().clone().into());
 
                 self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
                 Ok(())
@@ -108,6 +109,7 @@ impl LakeSoulReader {
                     vec![] // todo: needs to be modified after LakeSoulIOConfig adds merge_op
                 )
                 .unwrap();
+                self.schema = Some(merge_stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));
                 Ok(())
             }
