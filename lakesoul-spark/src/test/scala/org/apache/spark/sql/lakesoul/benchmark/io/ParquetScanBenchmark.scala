@@ -26,6 +26,7 @@ object ParquetScanBenchmark {
       .config("spark.hadoop.fs.s3a.buffer.dir", "/tmp")
       .config("spark.hadoop.fs.s3a.fast.upload.buffer", "disk")
       .config("spark.hadoop.fs.s3a.fast.upload", value = true)
+      .config("spark.hadoop.fs.s3a.threads.max", value = 2)
       .config("spark.hadoop.fs.s3a.multipart.size", 33554432)
       .config("spark.sql.shuffle.partitions", 1)
       .config("spark.sql.files.maxPartitionBytes", "2g")
