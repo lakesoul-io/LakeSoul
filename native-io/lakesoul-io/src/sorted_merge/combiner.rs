@@ -188,8 +188,8 @@ fn merge_sort_key_array_ranges(capacity:usize, field: &Field, ranges:&Vec<Vec<So
         let ranges_of_row = ranges[i].clone();
         let res = merge_operator.merge(data_type.clone(), &ranges_of_row, &mut append_array_data_builder);
         let (flatten_idx, row_idx) = match res {
-            MergeResult::AppendValue => {
-                (append_idx, append_array_data_builder.len() - 1)
+            MergeResult::AppendValue(row_idx) => {
+                (append_idx, row_idx)
             }
             MergeResult::AppendNull => {
                 if !field.is_nullable() {
