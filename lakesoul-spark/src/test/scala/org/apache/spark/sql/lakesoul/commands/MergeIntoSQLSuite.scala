@@ -1,16 +1,29 @@
 package org.apache.spark.sql.lakesoul.commands
 
-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestBeforeAndAfterEach, LakeSoulTestSparkSession, LakeSoulTestUtils}
 import org.apache.spark.util.Utils
 import org.scalatest._
 import matchers.should.Matchers._
-import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 
 class MergeIntoSQLSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   import testImplicits._
 

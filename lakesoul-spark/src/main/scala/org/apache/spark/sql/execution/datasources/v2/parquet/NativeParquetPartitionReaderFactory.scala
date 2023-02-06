@@ -15,6 +15,7 @@
  */
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
+
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapred.FileSplit
 import org.apache.hadoop.mapreduce._

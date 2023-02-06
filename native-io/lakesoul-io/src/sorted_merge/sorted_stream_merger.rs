@@ -352,7 +352,7 @@ mod tests {
                 .await
                 .unwrap();
             let rb = common::collect(stream).await.unwrap();
-            print_batches(&rb.clone());
+            print_batches(&rb.clone()).unwrap();
             all_rb.extend(rb);
         }
 
@@ -666,7 +666,7 @@ mod tests {
         let merge_stream =
             SortedStreamMerger::new_from_streams(vec![s1, s2, s3], Arc::new(schema), &sort_exprs, 2, vec![]).unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
-        print_batches(&merged);
+        print_batches(&merged).unwrap();
     }
 
     #[tokio::test]
