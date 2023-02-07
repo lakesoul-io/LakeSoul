@@ -466,8 +466,8 @@ object LakeSoulTable {
   *   endTime 2022-10-01 13:46:30
   * */
   def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, readType: String): LakeSoulTable = {
-    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(startTimeStamp)
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(endTimeStamp)
+    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.getID)).parse(startTimeStamp)
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.getID)).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       val sm = SnapshotManagement.apply(p)

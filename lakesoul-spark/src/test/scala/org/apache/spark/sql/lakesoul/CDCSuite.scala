@@ -200,16 +200,13 @@ class CDCSuite
           lake.upsert(tableForUpsert2)
 
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
-          // Processing time zone time difference between docker and local
-          val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionA)
-          val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, ReadType.SNAPSHOT_READ)
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionA, ReadType.SNAPSHOT_READ)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
-            .option(LakeSoulOptions.READ_END_TIME, currentVersion)
+            .option(LakeSoulOptions.READ_END_TIME, versionA)
             .option(LakeSoulOptions.READ_TYPE, ReadType.SNAPSHOT_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
@@ -260,18 +257,13 @@ class CDCSuite
 
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
-          // Processing time zone time difference between docker and local
-          val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
-          val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionC)
-          val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
-          val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, ReadType.INCREMENTAL_READ)
+          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionB, versionC, ReadType.INCREMENTAL_READ)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
-            .option(LakeSoulOptions.READ_START_TIME, currentVersion)
-            .option(LakeSoulOptions.READ_END_TIME, endVersion)
+            .option(LakeSoulOptions.READ_START_TIME, versionB)
+            .option(LakeSoulOptions.READ_END_TIME, versionC)
             .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
