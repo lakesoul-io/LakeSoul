@@ -10,14 +10,12 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions.{READ_TYPE, ReadType}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
-import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
-import java.time.LocalTime
-import java.util.{Calendar, TimeZone}
 
 class ReadSuite extends QueryTest
   with SharedSparkSession
@@ -373,7 +371,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time - 3000, "range=range1")
+          testStreamRead.setTablePath(tablePath, time + 8000, "range=range1")
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -410,7 +408,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time - 3000, "range=range1,op=insert")
+          testStreamRead.setTablePath(tablePath, time + 8000, "range=range1,op=insert")
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -447,7 +445,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time - 3000, "")
+          testStreamRead.setTablePath(tablePath, time + 8000, "")
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -476,13 +474,10 @@ class ReadSuite extends QueryTest
 
     override def run(): Unit = {
       val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(startTime)
-      // Processing time zone time difference between docker and local
-      val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
-      val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
       var batch = 0
       val query = spark.readStream.format("lakesoul")
         .option(LakeSoulOptions.PARTITION_DESC, partitionDes)
-        .option(LakeSoulOptions.READ_START_TIME, currentVersion)
+        .option(LakeSoulOptions.READ_START_TIME, versionB)
         .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
         .load(tablePath)
       query
@@ -492,19 +487,25 @@ class ReadSuite extends QueryTest
         if (partitionDes.equals("range=range1")) {
           if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
+          } else if (batch == 3) {
+            checkAnswer(data, Seq((7, "range1", "hash1-1", "delete")).toDF("id", "range", "hash", "op"))
           }
         } else if (partitionDes.equals("range=range1,op=insert")) {
           if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
+          } else if (batch == 2) {
+            checkAnswer(data, Seq((4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
           }
         } else {
           if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert")).toDF("id", "range", "hash", "op"))
+          } else if (batch == 3) {
+            checkAnswer(data, Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete")).toDF("id", "range", "hash", "op"))
           }
         }
       }
       }
-        .trigger(Trigger.Once())
+        .trigger(Trigger.ProcessingTime(1000))
         .start()
         .awaitTermination()
     }

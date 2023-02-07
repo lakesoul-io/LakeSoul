@@ -23,12 +23,11 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
 
 import java.util.TimeZone
 import scala.collection.JavaConverters._
@@ -470,7 +469,6 @@ object LakeSoulTable {
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.getID)).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
-      val sm = SnapshotManagement.apply(p)
       if (endTime < 0) {
         println("No version found in Table before time")
         null
