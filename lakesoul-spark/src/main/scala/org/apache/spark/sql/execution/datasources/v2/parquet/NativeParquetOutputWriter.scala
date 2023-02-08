@@ -82,6 +82,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
     recordWriter.finish()
 
     nativeIOWriter.write(root)
+    nativeIOWriter.flush()
     nativeIOWriter.close()
 
     recordWriter.reset()

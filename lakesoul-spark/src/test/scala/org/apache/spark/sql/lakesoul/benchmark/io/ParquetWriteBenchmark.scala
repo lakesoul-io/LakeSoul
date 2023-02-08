@@ -28,7 +28,7 @@ object ParquetWriteBenchmark {
       .config("spark.hadoop.fs.s3a.threads.max", value = 2)
       .config("spark.hadoop.fs.s3a.connection.maximum", value = 4)
       .config("spark.hadoop.fs.s3a.multipart.size", 33554432)
-      .config("spark.hadoop.fs.s3a.fast.upload.active.blocks", 2)
+      .config("spark.hadoop.fs.s3a.fast.upload.active.blocks", 8)
       .config("spark.sql.shuffle.partitions", 1)
       .config("spark.sql.files.maxPartitionBytes", "2g")
       .config("spark.default.parallelism", 1)

@@ -219,7 +219,7 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
     // limit memory for sort writer
-    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(256 * 1024 * 1024, 1.0))?;
+    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 
     // register object store(s)
     for file_name in &config.files {
