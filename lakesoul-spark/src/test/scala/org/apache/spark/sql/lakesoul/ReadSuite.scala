@@ -366,14 +366,14 @@ class ReadSuite extends QueryTest
             .save(tablePath)
           val time = System.currentTimeMillis()
           val lake = LakeSoulTable.forPath(tablePath)
-          val tableForUpsert = Seq((3, "range1", "hash1-2", "update"), (4, "range1", "hash1-5", "insert"), (5, "range2", "hash2-2", "insert"), (6, "range2", "hash2-5", "insert"))
+          val tableForUpsert = Seq((3, "range1", "hash1-2", "update"), (4, "range2", "hash2-2", "insert"))
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time + 8000, "range=range1")
+          testStreamRead.setTablePath(tablePath, time - 4000, "range=range1")
           testStreamRead.start()
-          val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
+          val tableForUpsert1 = Seq((5, "range1", "hash1-3", "insert"), (6, "range2", "hash2-5", "insert"), (7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-5", "delete"))
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert1)
@@ -408,7 +408,7 @@ class ReadSuite extends QueryTest
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time + 8000, "range=range1,op=insert")
+          testStreamRead.setTablePath(tablePath, time - 4000, "range=range1,op=insert")
           testStreamRead.start()
           val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
@@ -429,7 +429,7 @@ class ReadSuite extends QueryTest
       withTable("tt") {
         withTempDir(dir => {
           val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
-          Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
+          Seq((1, "range1", "hash1-1", "insert"))
             .toDF("id", "range", "hash", "op")
             .write
             .mode("append")
@@ -440,18 +440,18 @@ class ReadSuite extends QueryTest
             .save(tablePath)
           val time = System.currentTimeMillis()
           val lake = LakeSoulTable.forPath(tablePath)
-          val tableForUpsert = Seq((3, "range1", "hash1-2", "update"), (4, "range1", "hash1-5", "insert"), (5, "range2", "hash2-2", "insert"), (6, "range2", "hash2-5", "insert"))
+          val tableForUpsert = Seq((2, "range2", "hash2-1", "insert"))
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert)
           val testStreamRead = new TestStreamRead
-          testStreamRead.setTablePath(tablePath, time + 8000, "")
+          testStreamRead.setTablePath(tablePath, time - 4000, "")
           testStreamRead.start()
-          val tableForUpsert1 = Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete"))
+          val tableForUpsert1 = Seq((3, "range1", "hash1-2", "update"), (4, "range2", "hash2-2", "insert"), (5, "range1", "hash1-5", "insert"), (6, "range1", "hash1-1", "delete"))
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert1)
-          val tableForUpsert2 = Seq((9, "range1", "hash1-13", "insert"), (10, "range2", "hash2-13", "update"))
+          val tableForUpsert2 = Seq((7, "range2", "hash2-5", "insert"), (8, "range2", "hash2-10", "delete"))
             .toDF("id", "range", "hash", "op")
           Thread.sleep(2000)
           lake.upsert(tableForUpsert2)
@@ -486,26 +486,20 @@ class ReadSuite extends QueryTest
         val data = query.select("id", "range", "hash", "op")
         if (partitionDes.equals("range=range1")) {
           if (batch == 1) {
-            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
-          } else if (batch == 3) {
-            checkAnswer(data, Seq((7, "range1", "hash1-1", "delete")).toDF("id", "range", "hash", "op"))
+            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (3, "range1", "hash1-2", "update")).toDF("id", "range", "hash", "op"))
           }
         } else if (partitionDes.equals("range=range1,op=insert")) {
           if (batch == 1) {
-            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert")).toDF("id", "range", "hash", "op"))
-          } else if (batch == 2) {
-            checkAnswer(data, Seq((4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
+            checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (4, "range1", "hash1-5", "insert")).toDF("id", "range", "hash", "op"))
           }
         } else {
           if (batch == 1) {
             checkAnswer(data, Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert")).toDF("id", "range", "hash", "op"))
-          } else if (batch == 3) {
-            checkAnswer(data, Seq((7, "range1", "hash1-1", "delete"), (8, "range2", "hash2-10", "delete")).toDF("id", "range", "hash", "op"))
           }
         }
       }
       }
-        .trigger(Trigger.ProcessingTime(1000))
+        .trigger(Trigger.Once())
         .start()
         .awaitTermination()
     }

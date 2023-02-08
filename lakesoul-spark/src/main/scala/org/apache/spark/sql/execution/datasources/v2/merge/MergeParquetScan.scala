@@ -336,9 +336,9 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     if (!options.containsKey(LakeSoulOptions.READ_START_TIME)) {
       LongOffset(0L)
     } else {
-      val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(options.get(LakeSoulOptions.READ_START_TIME))
-      val latesTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
-      if (startTime / 1000 < latesTimestamp) {
+      val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.toZoneId)).parse(options.get(LakeSoulOptions.READ_START_TIME))
+      val latestTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+      if (startTime / 1000 < latestTimestamp) {
         LongOffset(startTime / 1000)
       } else {
         throw LakeSoulErrors.illegalStreamReadStartTime(options.get(LakeSoulOptions.READ_START_TIME))
