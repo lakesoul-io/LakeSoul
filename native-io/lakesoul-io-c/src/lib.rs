@@ -472,6 +472,25 @@ pub extern "C" fn flush_and_close_writer(writer: NonNull<Result<Writer>>, callba
     }
 }
 
+// consumes the writer pointer
+// this writer cannot be used again
+#[no_mangle]
+pub extern "C" fn abort_and_close_writer(writer: NonNull<Result<Writer>>, callback: ResultCallback) {
+    unsafe {
+        let writer =
+            from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(NonNull::new_unchecked(writer.as_ref().ptr));
+        let result = writer.abort_and_close();
+        match result {
+            Ok(_) => call_result_callback(callback, true, std::ptr::null()),
+            Err(e) => call_result_callback(
+                callback,
+                false,
+                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            ),
+        }
+    }
+}
+
 // C interface for tokio::runtime
 
 // opaque types to pass as raw pointers
@@ -619,7 +638,7 @@ mod tests {
             );
         }
         reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.key", "minioadmin1");
-        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.secret.key", "minioadmin1");
         reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
 
         let mut runtime_builder = crate::new_tokio_runtime_builder();
@@ -663,7 +682,7 @@ mod tests {
             );
         }
         writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.key", "minioadmin1");
-        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.secret.key", "minioadmin1");
         writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
         let mut runtime_builder = crate::new_tokio_runtime_builder();
         runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);
@@ -747,7 +766,7 @@ mod tests {
             );
         }
         reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.key", "minioadmin1");
-        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.secret.key", "minioadmin1");
         reader_config_builder = set_object_store_kv(reader_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
 
         let mut runtime_builder = crate::new_tokio_runtime_builder();
@@ -795,7 +814,7 @@ mod tests {
             );
         }
         writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.key", "minioadmin1");
-        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.access.secret", "minioadmin1");
+        writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.secret.key", "minioadmin1");
         writer_config_builder = set_object_store_kv(writer_config_builder, "fs.s3a.endpoint", "http://localhost:9000");
         let mut runtime_builder = crate::new_tokio_runtime_builder();
         runtime_builder = tokio_runtime_builder_set_thread_num(runtime_builder, 4);

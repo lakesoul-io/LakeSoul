@@ -109,7 +109,6 @@ public class LakeSoulWriterBucketStateSerializer
 
         String bucketId = dataInputView.readUTF();
         String bucketPathStr = dataInputView.readUTF();
-        long creationTime = dataInputView.readLong();
 
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
                 tableSchemaIdentitySerializer, dataInputView);
@@ -123,7 +122,6 @@ public class LakeSoulWriterBucketStateSerializer
         return new LakeSoulWriterBucketState(
                 identity, bucketId,
                 new Path(bucketPathStr),
-                creationTime,
                 pendingFileRecoverableList);
     }
 

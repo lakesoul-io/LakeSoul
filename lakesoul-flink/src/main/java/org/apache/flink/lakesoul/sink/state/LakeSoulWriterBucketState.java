@@ -36,25 +36,17 @@ public class LakeSoulWriterBucketState {
     /** The directory where all the part files of the bucket are stored. */
     private final Path bucketPath;
 
-    /**
-     * The creation time of the firstly open part file, or {@code Long.MAX_VALUE} if there is no
-     * open part file.
-     */
-    private final long inProgressFileCreationTime;
-
     private final List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList;
 
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             String bucketId,
             Path bucketPath,
-            long inProgressFileCreationTime,
             List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList
             ) {
         this.identity = identity;
         this.bucketId = bucketId;
         this.bucketPath = bucketPath;
-        this.inProgressFileCreationTime = inProgressFileCreationTime;
         this.pendingFileRecoverableList = pendingFileRecoverableList;
     }
 
@@ -64,10 +56,6 @@ public class LakeSoulWriterBucketState {
 
     public Path getBucketPath() {
         return bucketPath;
-    }
-
-    public long getInProgressFileCreationTime() {
-        return inProgressFileCreationTime;
     }
 
     @Override

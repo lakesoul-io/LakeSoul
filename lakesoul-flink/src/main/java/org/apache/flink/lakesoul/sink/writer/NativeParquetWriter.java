@@ -19,6 +19,8 @@
 package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.arrow.lakesoul.io.NativeIOWriter;
+import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
@@ -44,7 +46,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     private final ArrowWriter<RowData> arrowWriter;
 
-    private final NativeIOWriter nativeWriter;
+    private NativeIOWriter nativeWriter;
 
     private final int batchSize;
 
@@ -60,6 +62,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     String path;
 
+    protected BufferAllocator allocator;
+
     public NativeParquetWriter(RowType rowType,
                                List<String> primaryKeys,
                                String bucketID,
@@ -70,13 +74,14 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.creationTime = creationTime;
         this.bucketID = bucketID;
         this.rowsInBatch = 0;
+        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("NativeParquetWriter", 0, Long.MAX_VALUE);
 
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
         nativeWriter.setAuxSortColumns(Collections.singletonList(LAKESOUL_CDC_EVENT_TIME_COLUMN));
         nativeWriter.setRowGroupRowNumber(this.batchSize);
-        batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
+        batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();
         nativeWriter.addFile(this.path);
@@ -94,6 +99,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
             this.arrowWriter.reset();
+            this.batch.clear();
             this.rowsInBatch = 0;
         }
     }
@@ -128,15 +134,26 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.nativeWriter.flush();
         this.arrowWriter.reset();
         this.rowsInBatch = 0;
+        this.batch.clear();
+        this.batch.close();
+        this.allocator.close();
+        try {
+            this.nativeWriter.close();
+            this.nativeWriter = null;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         return new NativeWriterPendingFileRecoverable(this.path, this.creationTime);
     }
 
     @Override
     public void dispose() {
         try {
+            this.nativeWriter.close();
+            this.nativeWriter = null;
             this.arrowWriter.finish();
             this.batch.close();
-            this.nativeWriter.close();
+            this.allocator.close();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -166,12 +183,12 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         conf.addAll(GlobalConfiguration.loadConfiguration());
         // try hadoop's s3 configs
         setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key");
-        setFSConf(conf, "fs.s3a.access.secret", "fs.s3a.access.secret");
+        setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key");
         setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint");
         setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region");
         // try flink's s3 credential configs
         setFSConf(conf, "s3.access-key", "fs.s3a.access.key");
-        setFSConf(conf, "s3.secret-key", "fs.s3a.access.secret");
+        setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key");
         setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint");
     }
 

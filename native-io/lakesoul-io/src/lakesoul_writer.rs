@@ -18,7 +18,7 @@ use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConf
 use crate::lakesoul_reader::ArrowResult;
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_schema::{ArrowError, SchemaRef};
 use async_trait::async_trait;
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -34,7 +34,7 @@ use datafusion::prelude::SessionContext;
 use datafusion_common::DataFusionError;
 use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
-use object_store::MultipartId;
+use object_store::{MultipartId, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -58,6 +58,8 @@ pub trait AsyncBatchWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()>;
 
     async fn flush_and_close(self: Box<Self>) -> Result<()>;
+
+    async fn abort_and_close(self: Box<Self>) -> Result<()>;
 }
 
 /// An async writer using object_store's multi-part upload feature for cloud storage.
@@ -75,6 +77,8 @@ pub struct MultiPartAsyncWriter {
     multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
     config: LakeSoulIOConfig,
+    object_store: Arc<dyn ObjectStore>,
+    path: Path,
 }
 
 /// Wrap the above async writer with a SortExec to
@@ -226,6 +230,8 @@ impl MultiPartAsyncWriter {
             multi_part_id: multipart_id,
             arrow_writer,
             config,
+            object_store,
+            path,
         })
     }
 
@@ -278,6 +284,14 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         // shutdown multi part async writer to complete the upload
         this.writer.shutdown().await?;
         Ok(())
+    }
+
+    async fn abort_and_close(self: Box<Self>) -> Result<()> {
+        let this = *self;
+        this.object_store
+            .abort_multipart(&this.path, &this.multi_part_id)
+            .await
+            .map_err(|e| DataFusionError::ObjectStore(e))
     }
 }
 
@@ -332,8 +346,13 @@ impl SortAsyncWriter {
         let mut async_writer = Box::new(async_writer);
         let join_handle = tokio::task::spawn(async move {
             while let Some(batch) = sorted_stream.next().await {
-                let batch = batch?;
-                async_writer.write_record_batch(batch).await?;
+                match batch {
+                    Ok(batch) => {
+                        async_writer.write_record_batch(batch).await?;
+                    }
+                    // received abort singal
+                    Err(_) => return async_writer.abort_and_close().await
+                }
             }
             async_writer.flush_and_close().await?;
             Ok(())
@@ -358,6 +377,19 @@ impl AsyncBatchWriter for SortAsyncWriter {
 
     async fn flush_and_close(self: Box<Self>) -> Result<()> {
         let sender = self.sorter_sender;
+        drop(sender);
+        self.join_handle
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?
+    }
+
+    async fn abort_and_close(self: Box<Self>) -> Result<()> {
+        let sender = self.sorter_sender;
+        // send abort signal to the task
+        sender
+            .send(Err(ArrowError::IoError("abort".to_string())))
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
         drop(sender);
         self.join_handle
             .await
@@ -435,6 +467,18 @@ impl SyncSendableMutableLakeSoulWriter {
         runtime.block_on(async move {
             let writer = inner_writer.into_inner();
             writer.flush_and_close().await
+        })
+    }
+
+    pub fn abort_and_close(self) -> Result<()> {
+        let inner_writer = match Arc::try_unwrap(self.inner) {
+            Ok(inner) => inner,
+            Err(_) => return Err(Internal("Cannot get ownership of inner writer".to_string())),
+        };
+        let runtime = self.runtime;
+        runtime.block_on(async move {
+            let writer = inner_writer.into_inner();
+            writer.abort_and_close().await
         })
     }
 
@@ -595,7 +639,7 @@ mod tests {
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
             .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
-            .with_object_store_option("fs.s3a.access.secret".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.secret.key".to_string(), "minioadmin1".to_string())
             .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
 
         let read_conf = common_conf_builder
@@ -638,7 +682,7 @@ mod tests {
                 .with_batch_size(8192)
                 .with_max_row_group_size(250000)
                 .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
-                .with_object_store_option("fs.s3a.access.secret".to_string(), "minioadmin1".to_string())
+                .with_object_store_option("fs.s3a.secret.key".to_string(), "minioadmin1".to_string())
                 .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string());
 
             let read_conf = common_conf_builder

@@ -87,5 +87,7 @@ public interface LibLakeSoulIO {
 
     void flush_and_close_writer(Pointer writer, JavaCallback callback);
 
+    void abort_and_close_writer(Pointer writer, JavaCallback callback);
+
     void free_tokio_runtime(Pointer runtime);
 }
