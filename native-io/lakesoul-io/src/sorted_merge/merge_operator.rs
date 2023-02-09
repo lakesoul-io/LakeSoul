@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use arrow::array::{as_primitive_array, ArrayBuilder, UInt8Builder};
 use arrow_array::{builder::*, types::*, Array, ArrowPrimitiveType};
 use arrow_schema::DataType;
+use smallvec::SmallVec;
 
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
 use crate::sum_with_primitive_type_and_append_value;
@@ -39,7 +40,7 @@ impl MergeOperator {
     pub fn merge(
         &self,
         data_type: DataType,
-        ranges: &Vec<SortKeyArrayRange>,
+        ranges: &SmallVec<[SortKeyArrayRange; 4]>,
         append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     ) -> MergeResult {
         match &ranges.len() {
@@ -64,7 +65,7 @@ impl MergeOperator {
     fn sum_with_primitive_type(
         &self,
         dt: DataType,
-        ranges: &Vec<SortKeyArrayRange>,
+        ranges: &SmallVec<[SortKeyArrayRange; 4]>,
         append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     ) -> MergeResult {
         match dt {

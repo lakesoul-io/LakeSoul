@@ -16,6 +16,7 @@
 
 use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
+use arrow_schema::{Schema, SchemaRef};
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
@@ -25,7 +26,6 @@ use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
-use arrow_schema::{Schema, SchemaRef};
 use url::Url;
 
 #[derive(Derivative)]

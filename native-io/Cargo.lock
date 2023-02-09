@@ -643,6 +643,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dary_heap"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82eecd74c7634706917b219b767d8624fc661dd1f0007a12f0bc977bd6849902"
+
+[[package]]
 name = "dashmap"
 version = "5.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1267,6 +1273,7 @@ dependencies = [
  "atomic_refcell",
  "bytes",
  "comfy-table",
+ "dary_heap",
  "datafusion",
  "datafusion-common",
  "derivative",
@@ -1275,6 +1282,7 @@ dependencies = [
  "object_store",
  "parquet",
  "serde",
+ "smallvec",
  "tempfile",
  "tokio",
  "tokio-stream",
