@@ -22,12 +22,14 @@ package com.dmetasoul.lakesoul.spark.entry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import org.apache.spark.SparkConf;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.TimeZone;
 
 public class PipelineParser {
-    public PipeLineContainer parserYaml(String yamlPath) {
+    public PipeLineContainer parserYaml(String yamlPath,SparkConf sparkConf) {
         File yamlFile = new File(yamlPath);
         if (!yamlFile.exists()) {
             System.out.println("yamlFile not exist in path : " + yamlPath);
@@ -41,5 +43,9 @@ public class PipelineParser {
         }
         return pc;
 
+    }
+
+    public static void main(String[] args) {
+        //new PipelineParser().parserYaml("d:\\groupby.yml");
     }
 }

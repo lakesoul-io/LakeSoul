@@ -60,12 +60,21 @@ public class PipeLineContainer {
 class Opreator {
     private String viewName;
     private String sourceTableName;
+    private String sourceDatabaseName = "";
     private String sinkTableName;
     private SourceOption sourceOption;
     private Operation operation;
 
     public SourceOption getSourceOption() {
         return sourceOption;
+    }
+
+    public String getSourceDatabaseName() {
+        return sourceDatabaseName;
+    }
+
+    public void setSourceDatabaseName(String sourceDatabaseName) {
+        this.sourceDatabaseName = sourceDatabaseName;
     }
 
     public void setSourceOption(SourceOption sourceOption) {
@@ -104,18 +113,29 @@ class Opreator {
         return operation;
     }
 
+    public String getTableNameWithDatabase() {
+        String tableName = "";
+        if ("".equals(sourceDatabaseName)) {
+            tableName = sourceTableName;
+        } else {
+            tableName = sourceDatabaseName + "." + sourceTableName;
+        }
+        return tableName;
+    }
+
     public String toSql() {
         String sql = "";
+        String tableName = sourceTableName;
         if (operation.isGroupBy()) {
             String agg = operation.getGroupby().aggKeysSql();
             String metric = operation.getGroupby().metricKeysSql();
-            sql = "select " + agg + "," + metric + " from " + sourceTableName + " group by " + agg;
+            sql = "select " + agg + "," + metric + " from " + tableName + " group by " + agg;
         }
         if (operation.isFilter()) {
-            sql = "select * from " + sourceTableName + " where " + operation.getFilter().toString();
+            sql = "select * from " + tableName + " where " + operation.getFilter().toString();
         }
         if (operation.isJoin()) {
-            sql = "select * from " + sourceTableName + " " + operation.getJoin().getJoinType() + " join " + operation.getJoin().getRightTableName() + operation.getJoin().joinConditions();
+            sql = "select * from " + tableName + " " + operation.getJoin().getJoinType() + " join " + operation.getJoin().getRightTableName() + operation.getJoin().joinConditions();
         }
         return sql;
     }
@@ -123,7 +143,7 @@ class Opreator {
 
 class SourceOption {
     private String readStartTime = "1970-01-01 00:00:00";
-    private String processType = "batch";
+    private String processType = "stream";
 
     public String getReadStartTime() {
         return readStartTime;
@@ -325,7 +345,7 @@ class PipelineSink {
     private String sinkTableName;
     private String sinkPath;
     private int triggerTime = 2000;
-    private String hashPartition;
+    private List<String> hashPartition;
     private int hashBucketNum = 2;
     private String rangPatition = "";
     private String outputmode = "complete";
@@ -343,6 +363,15 @@ class PipelineSink {
     public void setRangPatition(String rangPatition) {
         this.rangPatition = rangPatition;
     }
+
+    public List<String> getHashPartition() {
+        return hashPartition;
+    }
+
+    public void setHashPartition(List<String> hashPartition) {
+        this.hashPartition = hashPartition;
+    }
+
 
     public String getSinkTableName() {
         return sinkTableName;
@@ -366,14 +395,6 @@ class PipelineSink {
 
     public void setTriggerTime(int triggerTime) {
         this.triggerTime = triggerTime;
-    }
-
-    public String getHashPartition() {
-        return hashPartition;
-    }
-
-    public void setHashPartition(String hashPartition) {
-        this.hashPartition = hashPartition;
     }
 
     public int getHashBucketNum() {
@@ -410,11 +431,11 @@ class PipelineSink {
 }
 
 class Resource {
-    private int excutorNum;
-    private int excutorCores;
-    private String excutorMemory;
-    private int driverCores;
-    private String driverMemory;
+    private int excutorNum = 1;
+    private int excutorCores = 1;
+    private String excutorMemory = "1g";
+    private int driverCores = 1;
+    private String driverMemory = "1g";
 
     public Resource() {
 
