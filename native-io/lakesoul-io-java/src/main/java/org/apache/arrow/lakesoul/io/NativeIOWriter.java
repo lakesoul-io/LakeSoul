@@ -36,12 +36,6 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         setSchema(schema);
     }
 
-    public void setPrimaryKeys(Iterable<String> primaryKeys) {
-        for (String pk : primaryKeys) {
-            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, pk);
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, ptr);
-        }
-    }
 
     public void setAuxSortColumns(Iterable<String> auxSortColumns) {
         for (String col : auxSortColumns) {

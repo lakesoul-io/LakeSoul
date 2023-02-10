@@ -23,6 +23,7 @@ import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -61,6 +62,14 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         assert ioConfigBuilder != null;
         Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, filter);
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, ptr);
+    }
+
+    public void addMergeOps(Map<String, String> mergeOps) {
+        for (Map.Entry<String, String> entry:mergeOps.entrySet()) {
+            Pointer fieldPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, entry.getKey());
+            Pointer mergeOpPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, entry.getValue());
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_merge_op(ioConfigBuilder, fieldPtr, mergeOpPtr);
+        }
     }
 
     public void initializeReader() throws IOException {

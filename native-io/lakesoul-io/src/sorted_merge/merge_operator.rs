@@ -16,7 +16,7 @@
 
 use std::fmt::Debug;
 
-use arrow::array::{as_primitive_array, ArrayBuilder, UInt8Builder};
+use arrow::array::{as_primitive_array, as_string_array, ArrayBuilder, UInt8Builder};
 use arrow_array::{builder::*, types::*, Array, ArrowPrimitiveType};
 use arrow_schema::DataType;
 
@@ -27,6 +27,13 @@ use crate::sum_with_primitive_type_and_append_value;
 pub enum MergeOperator {
     UseLast,
     Sum,
+    Concat,
+}
+
+impl Default for MergeOperator{
+    fn default() -> Self {
+        MergeOperator::UseLast
+    }
 }
 
 pub enum MergeResult {
@@ -36,6 +43,15 @@ pub enum MergeResult {
 }
 
 impl MergeOperator {
+    pub fn from_name(name: &str)-> Self{
+        match name {
+            "UseLast" => MergeOperator::UseLast,
+            "Sum" => MergeOperator::Sum,
+            "Concat" => MergeOperator::Concat,
+            _ => panic!("Invalid MergeOperator name")
+        }
+    }
+
     pub fn merge(
         &self,
         data_type: DataType,
@@ -50,6 +66,10 @@ impl MergeOperator {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
                     _ => self.sum_with_primitive_type(data_type, ranges, append_array_data_builder),
                 },
+                MergeOperator::Concat => match ranges[0].end_row - ranges[0].begin_row {
+                    1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                    _ => self.concat_with_string_type(ranges, append_array_data_builder),
+                },
             },
             _ => match self {
                 MergeOperator::UseLast => {
@@ -57,6 +77,7 @@ impl MergeOperator {
                     MergeResult::Extend(range.batch_idx, range.end_row - 1)
                 }
                 MergeOperator::Sum => self.sum_with_primitive_type(data_type, ranges, append_array_data_builder),
+                MergeOperator::Concat => self.concat_with_string_type(ranges, append_array_data_builder),
             },
         }
     }
@@ -105,6 +126,39 @@ impl MergeOperator {
                 ranges
             ),
             _ => panic!("{} doesn't support MergeOperator::Sum", dt),
+        }
+    }
+
+    fn concat_with_string_type(
+        &self,
+        ranges: &Vec<SortKeyArrayRange>,
+        append_array_data_builder: &mut Box<dyn ArrayBuilder>,
+    ) -> MergeResult {
+        let mut is_none = true;
+        let mut res = String::new();
+        for range in ranges.iter() {
+            let array = range.array();
+            let arr = as_string_array(array.as_ref());
+            for i in range.begin_row..range.end_row {
+                if !arr.is_null(i) {
+                    if !is_none {
+                        res.push(',');
+                    }
+                    is_none = false;
+                    res.push_str(arr.value(i));
+                }
+            }
+        }
+        match is_none {
+            true => MergeResult::AppendNull,
+            false => {
+                append_array_data_builder
+                    .as_any_mut()
+                    .downcast_mut::<StringBuilder>()
+                    .unwrap()
+                    .append_value(res);
+                MergeResult::AppendValue(append_array_data_builder.len() - 1)
+            }
         }
     }
 }

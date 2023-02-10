@@ -92,7 +92,7 @@ impl SortKeyBatchRange {
     #[inline(always)]
     /// Return true if the range has reached the end of batch
     pub fn is_finished(&self) -> bool {
-        self.begin_row >= self.rows.num_rows()
+        self.begin_row >= self.batch.num_rows()
     }
 
     #[inline(always)]
@@ -101,7 +101,7 @@ impl SortKeyBatchRange {
         let current = self.clone();
         self.begin_row = self.end_row;
         if !self.is_finished() {
-            while self.end_row < self.rows.num_rows() {
+            while self.end_row < self.batch.num_rows() {
                 // check if next row in this batch has same sort key
                 if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
                     self.end_row = self.end_row + 1;

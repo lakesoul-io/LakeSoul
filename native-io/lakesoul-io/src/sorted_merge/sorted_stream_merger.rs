@@ -29,8 +29,9 @@ use arrow::row::{RowConverter, SortField};
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
+use datafusion::logical_expr::col as logical_col;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
-use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
+use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream, expressions::col};
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
@@ -94,7 +95,7 @@ pub(crate) struct SortedStreamMerger {
     // /// The accumulated row indexes for the next record batch
     // in_progress: Vec<RowIndex>,
     /// The physical expressions to sort by
-    column_expressions: Vec<Arc<dyn PhysicalExpr>>,
+    column_expressions: Vec<Vec<Arc<dyn PhysicalExpr>>>,
 
     range_combiner: RangeCombiner,
 
@@ -102,7 +103,7 @@ pub(crate) struct SortedStreamMerger {
     aborted: bool,
 
     /// row converter
-    row_converter: RowConverter,
+    row_converters: Vec<RowConverter>,
 
     batch_idx_counter: usize,
 }
@@ -111,21 +112,41 @@ impl SortedStreamMerger {
     pub(crate) fn new_from_streams(
         streams: Vec<SortedStream>,
         schema: SchemaRef,
-        expressions: &[PhysicalSortExpr],
+        primary_keys:Vec<String>,
         batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Result<Self> {
         let streams_num = streams.len();
+
+        let expressions = streams
+            .iter()
+            .map(|stream| {
+                let schema = stream.stream.schema();
+                primary_keys.iter()
+                    .map(move |pk| {
+                        col(pk.as_str(), &schema.clone()).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        .collect::<Vec<_>>();
+
+        let row_converters = streams
+            .iter()
+            .map(|stream| {
+                let schema = stream.stream.schema();
+                let sort_fields = primary_keys.iter()
+                    .map(move |pk| {
+                        let data_type = schema.field_with_name(pk.as_str()).unwrap().data_type().clone();
+                        SortField::new(data_type)
+                    })
+                    .collect::<Vec<_>>();
+                RowConverter::new(sort_fields).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
-        let sort_fields = expressions
-            .iter()
-            .map(|expr| {
-                let data_type = expr.expr.data_type(&schema)?;
-                Ok(SortField::new_with_options(data_type, expr.options))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let row_converter = RowConverter::new(sort_fields).unwrap();
 
         let combiner = RangeCombiner::new(schema.clone(), streams_num, batch_size, merge_operator);
 
@@ -133,10 +154,10 @@ impl SortedStreamMerger {
             schema,
             range_finished: vec![true; streams_num],
             streams: MergingStreams::new(wrappers),
-            column_expressions: expressions.iter().map(|x| x.expr.clone()).collect(),
+            column_expressions: expressions,
             aborted: false,
             range_combiner: combiner,
-            row_converter,
+            row_converters,
             batch_idx_counter: 0,
         })
     }
@@ -164,12 +185,13 @@ impl SortedStreamMerger {
                 }
                 Some(Ok(batch)) => {
                     if batch.num_rows() > 0 {
+
                         let cols = self
-                            .column_expressions
+                            .column_expressions[idx]
                             .iter()
                             .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
                             .collect::<Result<Vec<_>>>()?;
-                        let rows = match self.row_converter.convert_columns(&cols) {
+                        let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,
                             Err(e) => {
                                 return Poll::Ready(Err(ArrowError::ExternalError(Box::new(e))));
@@ -245,7 +267,9 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch)),
+                RangeCombinerResult::RecordBatch(batch) => {
+                    return Poll::Ready(Some(batch))
+                }
             }
         }
     }
@@ -337,7 +361,7 @@ mod tests {
         }];
 
         let merge_stream =
-            SortedStreamMerger::new_from_streams(streams, schema, sort.as_slice(), 1024, vec![]).unwrap();
+            SortedStreamMerger::new_from_streams(streams, schema, vec!["int0"], 1024, vec![]).unwrap();
         let merged_result = common::collect(Box::pin(merge_stream)).await.unwrap();
 
         let mut all_rb = Vec::new();
@@ -889,5 +913,23 @@ mod tests {
             ],
             &merged
         );
+    }
+
+    #[tokio::test]
+    async fn parquet_viewer() {
+        let session_config = SessionConfig::default().with_batch_size(32);
+        let session_ctx = SessionContext::with_config(session_config);
+        let stream = session_ctx
+            .read_parquet(
+                // "/private/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/spark-a4ec95a9-cdc6-49d5-83df-96ffdf277057/range=20201101/part-00001-aae01e5a-a677-4878-bfef-0854cdb00d81_00001.c000.parquet"
+                "/private/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/spark-a4ec95a9-cdc6-49d5-83df-96ffdf277057/range=20201101/part-00000-0ecb3cff-a8b6-4874-a1c2-f08e57954d84_00000.c000.parquet"
+                , Default::default())
+            .await
+            .unwrap()
+            .execute_stream()
+            .await
+            .unwrap();
+        let rb = common::collect(stream).await.unwrap();
+        print_batches(&rb.clone());
     }
 }

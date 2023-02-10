@@ -51,6 +51,7 @@ pub struct LakeSoulIOConfig {
     pub(crate) aux_sort_cols: Vec<String>,
 
     // filtering predicates
+    pub(crate) filter_strs: Vec<String>,
     pub(crate) filters: Vec<Expr>,
     // read or write batch size
     #[derivative(Default(value = "8192"))]
@@ -66,6 +67,9 @@ pub struct LakeSoulIOConfig {
 
     // object store related configs
     pub(crate) object_store_options: HashMap<String, String>,
+
+    // merge operators
+    pub(crate) merge_operators: HashMap<String, String>,
 
     // tokio runtime related configs
     #[derivative(Default(value = "2"))]
@@ -141,13 +145,18 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
-        self.config.filters.push(expr);
+        // let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
+        self.config.filter_strs.push(filter_str);
         self
     }
 
     pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
         self.config.filters = filters;
+        self
+    }
+
+    pub fn with_merge_op(mut self, field_name: String, merge_op:String) -> Self {
+        self.config.merge_operators.insert(field_name, merge_op);
         self
     }
 
