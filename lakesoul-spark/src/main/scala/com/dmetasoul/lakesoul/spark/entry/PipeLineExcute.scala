@@ -31,8 +31,8 @@ object PipeLineExcute {
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     val yamlPath = parameter.get(PipeLineOption.YamlPath, "./PipeLine.yml")
-    val sparkSession = getSparkSession()
-    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath,sparkSession.sparkContext.getConf)
+    val sparkSession = getSparkSession(yamlPath)
+    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath, sparkSession.sparkContext.getConf)
     buildStep(pipeLineContainer.getSteps, pipeLineContainer.getSink, sparkSession)
   }
 
@@ -54,7 +54,8 @@ object PipeLineExcute {
       }
     }
   }
-  def getSparkSession():SparkSession={
+
+  def getSparkSession(yamlPath: String): SparkSession = {
     val builder = SparkSession.builder()
       .appName("STREAM PIPELINE")
       .config("spark.sql.shuffle.partitions", 4)
@@ -63,11 +64,12 @@ object PipeLineExcute {
       .config("spark.sql.parquet.mergeSchema", value = true)
       .config("spark.sql.parquet.filterPushdown", value = true)
       .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+      .config("spark.sql.extensions", "com.dmetasoul.lakesoyamlPathul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "4")
       .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
+      .config("spark.files", "file:///home/yongpeng/Filter.yml")
     builder.getOrCreate()
 
   }
@@ -95,27 +97,27 @@ object PipeLineExcute {
       case "batch" =>
         sinkDF.write.format("lakesoul")
           .option(LakeSoulOptions.PARTITION_DESC, sink.getRangPatition)
-          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",",sink.getHashPartition))
+          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)
           .option("shortTableName", sink.getSinkTableName)
       case "stream" =>
         //todo failover情况，batch无法恢复，需要测试
-//        sinkDF.writeStream.format("console")
-//          .outputMode(sink.getOutputmode)
-//          .foreachBatch { (query: DataFrame, _: Long) => {
-//            query.show(1000)
-//          }
-//          }
-//          .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
-//          .start()
-//          .awaitTermination()
+        //        sinkDF.writeStream.format("console")
+        //          .outputMode(sink.getOutputmode)
+        //          .foreachBatch { (query: DataFrame, _: Long) => {
+        //            query.show(1000)
+        //          }
+        //          }
+        //          .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
+        //          .start()
+        //          .awaitTermination()
         sinkDF.writeStream.format("lakesoul")
           .outputMode(sink.getOutputmode)
           .option("mergeSchema", "true")
           .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
           .option(LakeSoulOptions.PARTITION_DESC, sink.getRangPatition)
-          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",",sink.getHashPartition))
+          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)
           .option("shortTableName", sink.getSinkTableName)

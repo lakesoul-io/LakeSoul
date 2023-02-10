@@ -20,24 +20,23 @@
 package com.dmetasoul.lakesoul.spark.entry;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.spark.SparkConf;
+import org.apache.spark.SparkFiles;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.TimeZone;
 
 public class PipelineParser {
-    public PipeLineContainer parserYaml(String yamlPath,SparkConf sparkConf) {
-        Path path = new Path(yamlPath);
+    public PipeLineContainer parserYaml(String yamlPath, SparkConf sparkConf) {
+        // --yamlPath file:///home/yongpeng/Filter.yml
+        String[] paths = yamlPath.split("/");
+        String sparkFilePath = SparkFiles.get(paths[paths.length - 1]);
+        Path path = new Path(sparkFilePath);
         ObjectMapper obm = new ObjectMapper(new YAMLFactory());
         PipeLineContainer pc = null;
         try {
@@ -52,6 +51,7 @@ public class PipelineParser {
     }
 
     public static void main(String[] args) {
-        new PipelineParser().parserYaml("file:/d:\\groupby.yml",null);
+        String localPath = "file:///home/yongpeng/Filter.yml";
+        new PipelineParser().parserYaml(localPath, null);
     }
 }
