@@ -195,16 +195,12 @@ public class LakeSoulWriterBucket {
             closePartFile();
         }
 
-        long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
-
         // this.pendingFiles would be cleared later, we need to make a copy
         List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
         return new LakeSoulWriterBucketState(
                 tableId,
                 bucketId,
                 bucketPath,
-                time,
                 tmpPending);
     }
 
@@ -275,6 +271,7 @@ public class LakeSoulWriterBucket {
     void disposePartFile() {
         if (inProgressPartWriter != null) {
             inProgressPartWriter.dispose();
+            inProgressPartWriter = null;
         }
     }
 

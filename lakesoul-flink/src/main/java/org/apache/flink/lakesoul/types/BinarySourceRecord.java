@@ -49,8 +49,6 @@ public class BinarySourceRecord {
 
     private final String sourceRecordValue;
 
-    private long eventTime;
-
     public BinarySourceRecord(String topic, List<String> primaryKeys,
                               List<String> partitionKeys,
                               LakeSoulRowDataWrapper data,

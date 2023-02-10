@@ -16,6 +16,7 @@
 
 use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
+use arrow_schema::{Schema, SchemaRef};
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
@@ -25,7 +26,6 @@ use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
-use arrow_schema::{Schema, SchemaRef};
 use url::Url;
 
 #[derive(Derivative)]
@@ -186,7 +186,7 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
         .or_else(|| config.object_store_options.get("fs.s3a.access.key").cloned());
     let secret = std::env::var("AWS_ACCESS_KEY_ID")
         .ok()
-        .or_else(|| config.object_store_options.get("fs.s3a.access.secret").cloned());
+        .or_else(|| config.object_store_options.get("fs.s3a.secret.key").cloned());
     let region = std::env::var("AWS_REGION").ok().or_else(|| {
         std::env::var("AWS_DEFAULT_REGION")
             .ok()
@@ -228,7 +228,7 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
     // limit memory for sort writer
-    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(256 * 1024 * 1024, 1.0))?;
+    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 
     // register object store(s)
     for file_name in &config.files {

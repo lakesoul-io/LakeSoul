@@ -98,10 +98,25 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
+    public void abort() throws IOException {
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        Callback nativeCallback = new Callback((status, err) -> {
+            if (!status && err != null) {
+                errMsg.set(err);
+            }
+        }, referenceManager);
+        nativeCallback.registerReferenceKey();
+        libLakeSoulIO.abort_and_close_writer(writer, nativeCallback);
+        writer = null;
+        if (errMsg.get() != null && !errMsg.get().isEmpty()) {
+            throw new IOException("Native writer abort failed with error: " + errMsg.get());
+        }
+    }
+
     @Override
     public void close() throws Exception {
         if (writer != null) {
-            flush();
+            abort();
         }
         super.close();
     }

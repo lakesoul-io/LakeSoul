@@ -24,6 +24,7 @@ use arrow::{
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
+use smallvec::{SmallVec, smallvec};
 
 // A range in one arrow::record_batch::RecordBatch with same sorted primary key
 // This is the unit to be sorted in min heap
@@ -201,8 +202,8 @@ impl Clone for SortKeyArrayRange {
 // Multiple ranges with same sorted primary key from variant source record_batch. These ranges will be merged into ONE row of target record_batch finnally.
 #[derive(Debug)]
 pub struct SortKeyBatchRanges {
-    // vector with length=column_num that holds a Vecotor of SortKeyArrayRange to be merged for each column
-    pub(crate) sort_key_array_ranges: Vec<Vec<SortKeyArrayRange>>,
+    // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
+    pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
     pub(crate) schema: SchemaRef,
 
@@ -212,7 +213,7 @@ pub struct SortKeyBatchRanges {
 impl SortKeyBatchRanges {
     pub fn new(schema: SchemaRef) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
-            sort_key_array_ranges: (0..schema.fields().len()).map(|_| vec![]).collect(),
+            sort_key_array_ranges: (0..schema.fields().len()).map(|_| smallvec![]).collect(),
             schema: schema.clone(),
             batch_range: None,
         }
@@ -223,8 +224,8 @@ impl SortKeyBatchRanges {
         self.schema.clone()
     }
 
-    pub fn column(&self, column_idx: usize) -> Vec<SortKeyArrayRange> {
-        self.sort_key_array_ranges[column_idx].clone()
+    pub fn column(&self, column_idx: usize) -> &SmallVec<[SortKeyArrayRange; 4]> {
+        &self.sort_key_array_ranges[column_idx]
     }
 
     // insert one SortKeyBatchRange into SortKeyArrayRanges,

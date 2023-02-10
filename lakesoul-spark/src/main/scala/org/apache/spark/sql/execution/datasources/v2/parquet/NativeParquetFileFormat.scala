@@ -38,8 +38,7 @@ class NativeParquetFileFormat extends FileFormat
                              options: Map[String, String],
                              dataSchema: StructType): OutputWriterFactory = {
 
-    val timeZoneId = options.get(DateTimeUtils.TIMEZONE_OPTION)
-      .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone)
+    val timeZoneId = options.getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
 
     new OutputWriterFactory {
       override def newInstance(

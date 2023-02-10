@@ -69,7 +69,7 @@ checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 [[package]]
 name = "arrow"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "ahash",
  "arrow-arith",
@@ -92,7 +92,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -106,7 +106,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "half",
  "num",
@@ -131,7 +131,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -146,7 +146,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -164,7 +164,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -175,7 +175,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -188,7 +188,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -205,7 +205,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -218,7 +218,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "serde",
 ]
@@ -240,7 +240,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -252,7 +252,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -641,6 +641,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "dary_heap"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82eecd74c7634706917b219b767d8624fc661dd1f0007a12f0bc977bd6849902"
 
 [[package]]
 name = "dashmap"
@@ -1061,7 +1067,7 @@ dependencies = [
  "atomic-polyfill",
  "hash32",
  "rustc_version",
- "spin 0.9.4",
+ "spin 0.9.5",
  "stable_deref_trait",
 ]
 
@@ -1116,9 +1122,9 @@ checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
 
 [[package]]
 name = "hyper"
-version = "0.14.23"
+version = "0.14.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "034711faac9d2166cb1baf1a2fb0b60b1f277f8492fd72176c17f3515e1abd3c"
+checksum = "5e011372fa0b68db8350aa7a248930ecc7839bf46d8485577d69f117a75f164c"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1267,6 +1273,7 @@ dependencies = [
  "atomic_refcell",
  "bytes",
  "comfy-table",
+ "dary_heap",
  "datafusion",
  "datafusion-common",
  "derivative",
@@ -1275,6 +1282,7 @@ dependencies = [
  "object_store",
  "parquet",
  "serde",
+ "smallvec",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -1462,9 +1470,9 @@ checksum = "2a60c7ce501c71e03a9c9c0d35b861413ae925bd979cc7a4e30d060069aaac8d"
 
 [[package]]
 name = "miniz_oxide"
-version = "0.6.4"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2e212582ede878b109755efd0773a4f0f4ec851584cf0aefbeb4d9ecc114822"
+checksum = "b275950c28b37e794e8c55d88aeb5e139d0ce23fdbbeda68f8d7174abdf9e8fa"
 dependencies = [
  "adler",
 ]
@@ -1571,7 +1579,7 @@ dependencies = [
 [[package]]
 name = "object_store"
 version = "0.5.3"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1645,7 +1653,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "31.0.0"
-source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#1e29071a416ead3971a689b86c83472ec22c9704"
+source = "git+https://github.com/meta-soul/arrow-rs.git?branch=arrow-rs-31-parquet-bufferred#d57f4bdf35480eab9e45ceaca5393e07611a8ad2"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -1719,9 +1727,9 @@ checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.50"
+version = "1.0.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ef7d57beacfaf2d8aee5937dab7b7f28de3cb8b1828479bb5de2a7106f2bae2"
+checksum = "5d727cae5b39d21da60fa540906919ad737832fe0b1c165da3a34d6548c849d6"
 dependencies = [
  "unicode-ident",
 ]
@@ -1979,9 +1987,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.91"
+version = "1.0.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877c235533714907a8c2464236f5c4b2a17262ef1bd71f38f35ea592c8da6883"
+checksum = "7434af0dc1cbd59268aa98b4c22c131c0584d2232f6fb166efb993e2832e896a"
 dependencies = [
  "itoa 1.0.5",
  "ryu",
@@ -2102,9 +2110,9 @@ checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 
 [[package]]
 name = "spin"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f6002a767bff9e83f8eeecf883ecb8011875a21ae8da43bffb817a57e78cc09"
+checksum = "7dccf47db1b41fa1573ed27ccf5e08e3ca771cb994f776668c5ebda893b248fc"
 dependencies = [
  "lock_api",
 ]
@@ -2252,9 +2260,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec_macros"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
