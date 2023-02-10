@@ -111,7 +111,7 @@ object LakeSoulSQLConf {
     buildConf("native.io.scan.enable")
       .doc(
         """
-           |If ture, org.apache.spark.sql.execution.datasources.parquet.NativeVectorizedReader.NativeVectorizedReader will be used instead of org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
+           |If ture, org.apache.spark.sql.execution.datasources.parquet.NativeVectorizedReader will be used instead of org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)

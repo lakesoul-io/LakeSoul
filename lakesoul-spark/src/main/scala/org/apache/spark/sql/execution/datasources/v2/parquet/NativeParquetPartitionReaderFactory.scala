@@ -82,17 +82,12 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
 
   def createVectorizedReader(file: PartitionedFile): RecordReader[Void,ColumnarBatch] = {
     val recordReader = buildReaderBase(file, createParquetVectorizedReader)
-    if (nativeIOEnable) {
-      val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
-      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-      vectorizedReader.enableReturningBatches()
-      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
-    } else {
-      val vectorizedReader=recordReader.asInstanceOf[VectorizedParquetRecordReader]
-      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-      vectorizedReader.enableReturningBatches()
-      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
-    }
+    assert(nativeIOEnable)
+    val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
+    vectorizedReader.initBatch(partitionSchema, file.partitionValues)
+    vectorizedReader.enableReturningBatches()
+    vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+
   }
 
   override def buildColumnarReader(file: PartitionedFile): PartitionReader[ColumnarBatch] = {
@@ -205,8 +200,8 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
   RecordReader[Void,ColumnarBatch] =
   {
     val taskContext = Option(TaskContext.get())
-    val vectorizedReader = if (nativeIOEnable) {
-      val reader = if (pushed.isDefined) {
+    assert(nativeIOEnable)
+    val vectorizedReader =  if (pushed.isDefined) {
         new NativeVectorizedReader(
           convertTz.orNull,
           datetimeRebaseSpec.mode.toString,
@@ -223,25 +218,15 @@ case class NativeParquetPartitionReaderFactory(sqlConf: SQLConf,
             capacity
           )
       }
-      reader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
-      reader.setThreadNum(nativeIOThreadNum)
-      reader.setAwaitTimeout(nativeIOAwaitTimeout)
-      reader
-    } else {
-      new VectorizedParquetRecordReader(
-        convertTz.orNull,
-        datetimeRebaseSpec.mode.toString,
-        datetimeRebaseSpec.timeZone,
-        int96RebaseSpec.mode.toString,
-        int96RebaseSpec.timeZone,
-        enableOffHeapColumnVector && taskContext.isDefined,
-        capacity)
-    }
+    vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
+    vectorizedReader.setThreadNum(nativeIOThreadNum)
+    vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema ${file.partitionValues}")
-    vectorizedReader.initialize(split, hadoopAttemptContext)
+    vectorizedReader.initialize(Array(split), hadoopAttemptContext, readDataSchema)
     vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
   }
 }

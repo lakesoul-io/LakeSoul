@@ -186,18 +186,22 @@ class MergeOpInt extends MergeOperator[Int] {
   override def mergeData(input: Seq[Int]): Int = {
     input.sum
   }
+
+  override def toNativeName(): String = "Sum"
 }
 
 class MergeOpString extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
     input.mkString(",")
   }
+  override def toNativeName(): String = "Concat"
 }
 
 class MergeOpString02 extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
     input.mkString(";")
   }
+  override def toNativeName(): String = "Concat"
 }
 
 trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
