@@ -107,7 +107,6 @@ class CDCSuite
               .toDF("range", "hash", "op")
             lake.upsert(tableForUpsert)
             val data1 = spark.read.format("lakesoul").load(tablePath)
-            data1.show()
             val data2 = data1.select("range", "hash", "op")
             checkAnswer(data2, Seq(("range2", "hash2", "insert"), ("range3", "hash2", "insert"), ("range4", "hash2", "insert"), ("range4", "hash4", "insert"), ("range3", "hash3", "update")).toDF("range", "hash", "op"))
           }
@@ -137,7 +136,6 @@ class CDCSuite
               .toDF("range", "hash", "op")
             lake.upsert(tableForUpsert)
             val data1 = spark.read.format("lakesoul").load(tablePath)
-            data1.show()
             val data2 = data1.select("range", "hash", "op")
             checkAnswer(data2, Seq(("range1", "hash2", "insert"), ("range1", "hash3", "update"), ("range1", "hash4", "insert"), ("range1", "hash5", "insert")).toDF("range", "hash", "op"))
           }
@@ -171,7 +169,6 @@ class CDCSuite
               .toDF("range", "hash", "op")
             lake.upsert(tableForUpsert1)
             val data1 = spark.read.format("lakesoul").load(tablePath)
-            data1.show()
             val data2 = data1.select("range", "hash", "op")
             checkAnswer(data2, Seq(("range1", "hash2", "insert"), ("range2", "hash1", "insert"), ("range1", "hash3", "update"), ("range2", "hash4", "insert"), ("range1", "hash4", "update")).toDF("range", "hash", "op"))
           }

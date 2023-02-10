@@ -145,7 +145,6 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        // let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
         self.config.filter_strs.push(filter_str);
         self
     }

@@ -132,7 +132,7 @@ impl MergeOperator {
 
     fn concat_with_string_type(
         &self,
-        ranges: &Vec<SortKeyArrayRange>,
+        ranges: &SmallVec<[SortKeyArrayRange; 4]>,
         append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     ) -> MergeResult {
         let mut is_none = true;

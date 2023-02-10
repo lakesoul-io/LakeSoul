@@ -182,7 +182,6 @@ impl SyncSendableMutableLakeSoulReader {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
             let rb = reader.next_rb().await;
-            println!("{:?}", rb);
             f(rb);
         })
     }
