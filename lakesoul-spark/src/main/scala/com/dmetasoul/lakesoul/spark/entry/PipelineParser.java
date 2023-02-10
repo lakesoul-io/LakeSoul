@@ -22,22 +22,28 @@ package com.dmetasoul.lakesoul.spark.entry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3a.S3AFileSystem;
+import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.spark.SparkConf;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.TimeZone;
 
 public class PipelineParser {
     public PipeLineContainer parserYaml(String yamlPath,SparkConf sparkConf) {
-        File yamlFile = new File(yamlPath);
-        if (!yamlFile.exists()) {
-            System.out.println("yamlFile not exist in path : " + yamlPath);
-        }
+        Path path = new Path(yamlPath);
         ObjectMapper obm = new ObjectMapper(new YAMLFactory());
         PipeLineContainer pc = null;
         try {
-            pc = obm.readValue(yamlFile, PipeLineContainer.class);
+            FileSystem fileSystem = path.getFileSystem(new Configuration());
+            FSDataInputStream fsInput = fileSystem.open(path);
+            pc = obm.readValue((InputStream) fsInput, PipeLineContainer.class);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -46,6 +52,6 @@ public class PipelineParser {
     }
 
     public static void main(String[] args) {
-        //new PipelineParser().parserYaml("d:\\groupby.yml");
+        new PipelineParser().parserYaml("file:/d:\\groupby.yml",null);
     }
 }

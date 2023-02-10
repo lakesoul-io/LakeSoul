@@ -30,8 +30,8 @@ import org.apache.spark.sql.streaming.Trigger
 object PipeLineExcute {
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
-    val sparkSession = getSparkSession()
     val yamlPath = parameter.get(PipeLineOption.YamlPath, "./PipeLine.yml")
+    val sparkSession = getSparkSession()
     val pipeLineContainer = new PipelineParser().parserYaml(yamlPath,sparkSession.sparkContext.getConf)
     buildStep(pipeLineContainer.getSteps, pipeLineContainer.getSink, sparkSession)
   }
