@@ -151,9 +151,9 @@ impl Parser {
             DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
             DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
-            DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
+            DataType::Timestamp(_, time_zone) => Expr::Literal(ScalarValue::TimestampMicrosecond(
                 Some(value.parse::<i64>().unwrap()),
-                None,
+                time_zone,
             )),
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();

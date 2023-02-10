@@ -79,11 +79,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private long rowsReturned;
 
   /**
-   * For each column, true if the column is missing in the file and we'll instead return NULLs.
-   */
-  private boolean[] missingColumns;
-
-  /**
    * The timezone that timestamp INT96 values should be converted to. Null if no conversion. Here to
    * workaround incompatibilities between different engines when writing timestamp values.
    */
@@ -151,6 +146,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, StructType requestSchema)
           throws IOException, InterruptedException, UnsupportedOperationException {
+    assert(inputSplits.length==1);
     initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
   }
 
@@ -243,7 +239,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       reader.setPrimaryKeys(primaryKeys);
     }
 
-    Schema arrowSchema = ArrowUtils.toArrowSchema(sparkSchema, convertTz == null ? "" : convertTz.toString());
+    Schema arrowSchema = ArrowUtils.toArrowSchema(sparkSchema, convertTz == null ? "UTC" : convertTz.toString());
     reader.setSchema(arrowSchema);
 
     reader.setBatchSize(capacity);
@@ -277,7 +273,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           MemoryMode memMode,
           StructType partitionColumns,
           InternalRow partitionValues) throws IOException {
-    recreateNativeReader();
 
     if (partitionColumns != null) {
       if (memMode == MemoryMode.OFF_HEAP) {
@@ -298,16 +293,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   public void initBatch(StructType partitionColumns, InternalRow partitionValues) throws IOException {
     initBatch(MEMORY_MODE, partitionColumns, partitionValues);
-  }
-
-  /**
-   * Returns the ColumnarBatch object that will be used for all rows returned by this reader.
-   * This object is reused. Calling this enables the vectorized reader. This should be called
-   * before any calls to nextKeyValue/nextBatch.
-   */
-  public ColumnarBatch resultBatch() throws IOException {
-    if (columnarBatch == null) initBatch();
-    return columnarBatch;
   }
 
   /**
@@ -340,35 +325,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   }
 
   private void initializeInternal() throws IOException, UnsupportedOperationException {
-    // Check that the requested schema is supported.
-//    missingColumns = new boolean[requestedSchema.getFieldCount()];
-//    List<ColumnDescriptor> columns = requestedSchema.getColumns();
-//    List<String[]> paths = requestedSchema.getPaths();
-//    for (int i = 0; i < requestedSchema.getFieldCount(); ++i) {
-//      Type t = requestedSchema.getFields().get(i);
-//
-//      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
-//        throw new UnsupportedOperationException("Complex types not supported.");
-//      }
-//
-//      String[] colPath = paths.get(i);
-//      if (fileSchema.containsPath(colPath)) {
-//        ColumnDescriptor fd = fileSchema.getColumnDescription(colPath);
-//        if (!fd.equals(columns.get(i))) {
-//          throw new UnsupportedOperationException("Schema evolution not supported.");
-//        }
-//        missingColumns[i] = false;
-//      } else {
-//        if (columns.get(i).getMaxDefinitionLevel() == 0) {
-//          // Column is missing in data but the required data is non-nullable. This file is invalid.
-//          throw new IOException("Required column is missing in data file. Col: " +
-//                  Arrays.toString(colPath));
-//        }
-//        missingColumns[i] = true;
-//      }
-//    }
-
-    //initbatch with empty partition column
+    recreateNativeReader();
     initBatch();
   }
 

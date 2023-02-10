@@ -73,12 +73,7 @@ impl LakeSoulReader {
                     .read_parquet(self.config.files[0].as_str(), Default::default())
                     .await?;
 
-                // if !self.config.columns.is_empty() {
-                //     let cols: Vec<_> = self.config.columns.iter().map(String::as_str).collect();
-                //     df = df.select_columns(&cols)?;
-                // }
                 let file_schema = Arc::new(Schema::from(df.schema()));
-                // println!("{:?} {:?}", schema, df.schema());
 
 
                 let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
@@ -106,8 +101,6 @@ impl LakeSoulReader {
                         .read_parquet(self.config.files[i].as_str(), Default::default())
                         .await?;
 
-                    // let file_field_names = df.schema().clone().strip_qualifiers().field_names();
-                    // let cols = file_field_names.iter().filter(|name| schema.field_with_name(name.as_str()).is_ok()).map(String::as_str).collect::<Vec<_>>();
                     let file_schema = Arc::new(Schema::from(df.schema()));
                     let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
                     df = df.select(cols)?;   
@@ -189,6 +182,7 @@ impl SyncSendableMutableLakeSoulReader {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
             let rb = reader.next_rb().await;
+            println!("{:?}", rb);
             f(rb);
         })
     }
