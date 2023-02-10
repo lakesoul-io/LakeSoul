@@ -69,7 +69,7 @@ object PipeLineExcute {
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "4")
       .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
-      .config("spark.files", "file:///home/yongpeng/Filter.yml")
+      .config("spark.files", yamlPath)
     builder.getOrCreate()
 
   }
