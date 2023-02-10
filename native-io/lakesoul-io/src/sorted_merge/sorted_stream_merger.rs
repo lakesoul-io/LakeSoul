@@ -289,6 +289,8 @@ mod tests {
     use datafusion::physical_plan::{common, memory::MemoryExec, ExecutionPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_reader::LakeSoulReader;
     use comfy_table::{Cell, Table};
 
     use crate::sorted_merge::merge_operator::MergeOperator;
@@ -889,5 +891,50 @@ mod tests {
             ],
             &merged
         );
+    }
+
+    #[tokio::test]
+    async fn test_s3_file_merge() {
+        let schema = Schema::new(vec![
+            Field::new("uuid", DataType::Utf8, false),
+            Field::new("ip", DataType::Utf8, true),
+            Field::new("hostname", DataType::Utf8, true),
+            Field::new("requests", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("city", DataType::Utf8, true),
+            Field::new("job", DataType::Utf8, true),
+            Field::new("phonenum", DataType::Utf8, true),
+        ]);
+        let conf = LakeSoulIOConfigBuilder::new()
+            .with_primary_keys(vec!["uuid".to_string()])
+            .with_files(vec![
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-7c48cc4b-d3ff-47c5-8c2f-f7d247d624bf_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-c30b9b23-4552-4615-8431-4338b20cc935_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-fa350401-7fc2-4f25-adbb-7922551e56c2_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-fa350401-7fc2-4f25-adbb-7922551e56c2_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-9e52f965-1040-4761-a571-a04736013e1e_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-8f92dab2-a072-4196-8abe-0b7c92b8825f_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6307b19-4f10-45b6-b6e1-4b19b15cf570_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6307b19-4f10-45b6-b6e1-4b19b15cf570_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-16930665-7e76-4545-bd3d-ca2e5cd907dc_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-49fd4d31-30b8-42ce-bccd-f15fb45538c7_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-e8011728-ead5-4165-bf44-754867cb156a_00000.c000.parquet".to_string(),
+            ])
+            .with_schema(Arc::new(schema))
+            .with_thread_num(2)
+            .with_batch_size(8192)
+            .with_max_row_group_size(250000)
+            .with_object_store_option("fs.s3a.access.key".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.secret.key".to_string(), "minioadmin1".to_string())
+            .with_object_store_option("fs.s3a.endpoint".to_string(), "http://localhost:9000".to_string())
+            .build();
+        let mut reader = LakeSoulReader::new(conf).unwrap();
+        reader.start().await.unwrap();
+        let mut len = 0;
+        while let Some(rb) = reader.next_rb().await {
+            let rb = rb.unwrap();
+            len += rb.num_rows();
+        }
+        println!("total rows: {}", len);
     }
 }

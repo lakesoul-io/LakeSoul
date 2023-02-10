@@ -32,6 +32,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_array::types::*;
+use dary_heap::QuaternaryHeap;
+use smallvec::SmallVec;
 
 #[derive(Debug)]
 pub enum RangeCombiner {
@@ -77,7 +79,7 @@ pub enum RangeCombinerResult {
 #[derive(Debug)]
 pub struct MinHeapSortKeyBatchRangeCombiner {
     schema: SchemaRef,
-    heap: BinaryHeap<Reverse<SortKeyBatchRange>>,
+    heap: QuaternaryHeap<Reverse<SortKeyBatchRange>>,
     in_progress: Vec<SortKeyBatchRanges>,
     target_batch_size: usize,
     current_sort_key_range: SortKeyBatchRanges,
@@ -98,9 +100,9 @@ impl MinHeapSortKeyBatchRangeCombiner {
         };
         MinHeapSortKeyBatchRangeCombiner {
             schema: schema.clone(),
-            heap: BinaryHeap::with_capacity(streams_num),
+            heap: QuaternaryHeap::with_capacity(streams_num),
             in_progress: vec![],
-            target_batch_size: target_batch_size,
+            target_batch_size,
             current_sort_key_range: new_range,
             merge_operator: merge_op,
         }
@@ -148,7 +150,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
             .enumerate()
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
-                let ranges_per_col: Vec<Vec<SortKeyArrayRange>> = self
+                let ranges_per_col: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
                     .in_progress
                     .iter()
                     .map(|ranges_per_row| ranges_per_row.column(column_idx))
@@ -158,7 +160,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                     .clone()
                     .into_iter()
                     .flat_map(|ranges| ranges)
-                    .collect::<Vec<SortKeyArrayRange>>();
+                    .collect::<Vec<&SortKeyArrayRange>>();
 
                 flatten_array_ranges.dedup_by_key(|range| range.batch_idx);
 
@@ -172,7 +174,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                 merge_sort_key_array_ranges(
                     capacity,
                     field,
-                    &ranges_per_col,
+                    ranges_per_col,
                     &flatten_dedup_arrays,
                     &batch_idx_to_flatten_idx,
                     self.merge_operator.get(column_idx).unwrap(),
@@ -189,7 +191,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
 fn merge_sort_key_array_ranges(
     capacity: usize,
     field: &Field,
-    ranges: &Vec<Vec<SortKeyArrayRange>>,
+    ranges: Vec<&SmallVec<[SortKeyArrayRange; 4]>>,
     flatten_dedup_arrays: &Vec<ArrayRef>,
     batch_idx_to_flatten_idx: &HashMap<usize, usize>,
     merge_operator: &MergeOperator,
@@ -221,8 +223,7 @@ fn merge_sort_key_array_ranges(
     let mut extend_list: Vec<(usize, usize, usize)> = vec![(null_idx + 1, 0, 0)];
 
     for i in 0..ranges.len() {
-        let ranges_of_row = ranges[i].clone();
-        let res = merge_operator.merge(data_type.clone(), &ranges_of_row, &mut append_array_data_builder);
+        let res = merge_operator.merge(data_type.clone(), &ranges[i], &mut append_array_data_builder);
         let (flatten_idx, row_idx) = match res {
             MergeResult::AppendValue(row_idx) => (append_idx, row_idx),
             MergeResult::AppendNull => {

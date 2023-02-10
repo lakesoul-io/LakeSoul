@@ -56,3 +56,20 @@ Original parquet file size: 894.3MB, cached in memory in advance before write.
 |          | Parquet-mr | Native-IO | Improvement |
 |----------|------------|-----------|-------------|
 | Time(ms) | 27218      | 18944     | 1.44x       |
+
+## 3. Upsert Write
+
+### Settings
+Writing a base file of 20 million lines, and upsert 10 times with 5 million lines each.
+
+Data is read from local file system and written to MinIO
+
+Tested on Spark 3.3.1 with 4 local executor threads and 16G memory.
+
+### Results
+
+1. MinIO
+
+|          | Parquet-mr | Native-IO | Improvement |
+|----------|------------|-----------|-------------|
+| Time(ms) | 72612      | 59607     | 1.47x       |
