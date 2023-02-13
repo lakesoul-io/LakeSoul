@@ -30,9 +30,28 @@ jobs:
         run: |
           git lfs fetch
           git lfs checkout
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - name: Set up cargo cache
+        uses: actions/cache@v3
+        continue-on-error: false
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            native-io/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Pull images
+        run: |
+          docker pull -q bitnami/spark:3.3.1
+          docker pull -q dockcross/manylinux2014-x64:latest
       - name: Build with Maven
         run: |
-          mvn -q -B clean package -f pom.xml -DskipTests
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
@@ -49,9 +68,6 @@ jobs:
           docker compose pull -q
           docker compose up -d
           sleep 10s
-      - name: Pull spark image
-        run: |
-            docker pull -q bitnami/spark:3.3.1
       - name: Start flink task
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC

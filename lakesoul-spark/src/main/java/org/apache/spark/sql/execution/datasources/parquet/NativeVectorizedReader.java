@@ -16,13 +16,12 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.amazonaws.auth.AWSCredentials;
-import org.apache.arrow.lakesoul.io.NativeIOWrapper;
+import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
@@ -60,7 +59,7 @@ import java.util.List;
  */
 public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Object> {
   // The capacity of vectorized batch.
-  private int capacity;
+  private final int capacity;
 
   /**
    * Batch of rows that we assemble and the current index we've returned. Every time this
@@ -70,20 +69,9 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private int numBatched = 0;
 
   /**
-   * For each request column, the reader to read this column. This is NULL if this column
-   * is missing from the file, in which case we populate the attribute with NULL.
-   */
-  private VectorizedColumnReader[] columnReaders;
-
-  /**
    * The number of rows that have been returned.
    */
   private long rowsReturned;
-
-  /**
-   * The number of rows that have been reading, including the current in flight row group.
-   */
-  private long totalCountLoadedSoFar = 0;
 
   /**
    * For each column, true if the column is missing in the file and we'll instead return NULLs.
@@ -156,7 +144,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.filter = filter;
   }
 
-
   /**
    * Implementation of RecordReader API.
    */
@@ -173,7 +160,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       awsS3Bucket = s3aFileSystem.getBucket();
       s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
       s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
-      awsCredentials = S3AUtils.createAWSCredentialProviderSet(file.toUri(), taskAttemptContext.getConfiguration()).getCredentials();
+      s3aAccessKey = taskAttemptContext.getConfiguration().get("fs.s3a.access.key");
+      s3aSecretKey = taskAttemptContext.getConfiguration().get("fs.s3a.secret.key");
     }
     initializeInternal();
   }
@@ -237,54 +225,46 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.threadNum = threadNum;
   }
 
-  private void recreateNativeReader() {
+  private void recreateNativeReader() throws IOException {
     if (nativeReader != null) {
       nativeReader.close();
+      nativeReader = null;
     }
-    wrapper = new NativeIOWrapper();
-    wrapper.initialize();
-    wrapper.addFile(filePath);
+    NativeIOReader reader = new NativeIOReader();
+    reader.addFile(filePath);
     // Initialize missing columns with nulls.
     for (int i = 0; i < missingColumns.length; i++) {
       if (!missingColumns[i]) {
-        wrapper.addColumn(sparkSchema.fields()[i].name());
+        reader.addColumn(sparkSchema.fields()[i].name());
       }
     }
 
-    String schemaJson = NativeIOUtils.convertStructTypeToArrowJson(sparkSchema, convertTz == null ? "" : convertTz.toString());
-    wrapper.addSchema(schemaJson);
+    Schema arrowSchema = ArrowUtils.toArrowSchema(sparkSchema, convertTz == null ? "" : convertTz.toString());
+    reader.setSchema(arrowSchema);
 
-    wrapper.setBatchSize(capacity);
-    wrapper.setBufferSize(prefetchBufferSize);
-    wrapper.setThreadNum(threadNum);
-
+    reader.setBatchSize(capacity);
+    reader.setBufferSize(prefetchBufferSize);
+    reader.setThreadNum(threadNum);
 
     if (s3aFileSystem != null) {
-      wrapper.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), s3aRegion, awsS3Bucket, s3aEndpoint);
+      reader.setObjectStoreOptions(s3aAccessKey, s3aSecretKey, s3aRegion, awsS3Bucket, s3aEndpoint);
     }
 
     if (filter != null) {
-      wrapper.addFilter(filterEncode(filter));
+      reader.addFilter(filterEncode(filter));
     }
 
-    wrapper.createReader();
-    wrapper.startReader(bool -> {});
-
+    reader.initializeReader();
 
     totalRowCount= 0;
-    nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
+    nativeReader = new LakeSoulArrowReader(reader, awaitTimeout);
   }
 
   private String filterEncode(FilterPredicate filter) {
     return filter.toString();
   }
 
-  // Creates a columnar batch that includes the schema from the data files and the additional
-  // partition columns appended to the end of the batch.
-  // For example, if the data contains two columns, with 2 partition columns:
-  // Columns 0,1: data columns
-  // Column 2: partitionValues[0]
-  // Column 3: partitionValues[1]
+  // Create partitions' column vector
   private void initBatch(
           MemoryMode memMode,
           StructType partitionColumns,
@@ -297,7 +277,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       } else {
         partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
       }
-//    columnarBatch = new ColumnarBatch(columnVectors);
       for (int i = 0; i < partitionColumns.fields().length; i++) {
         ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
         partitionColumnVectors[i].setIsConstant();
@@ -335,7 +314,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    */
   public boolean nextBatch() throws IOException {
     if (nativeReader.hasNext()) {
-      nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
+      VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
       if (nextVectorSchemaRoot == null) {
         throw new IOException("nextVectorSchemaRoot not ready");
       } else {
@@ -350,7 +329,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     } else {
       return false;
     }
-
   }
 
   private void initializeInternal() throws IOException, UnsupportedOperationException {
@@ -386,27 +364,25 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     initBatch();
   }
 
-  private NativeIOWrapper wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
 
   private int prefetchBufferSize = 2;
 
-  private int threadNum = 1;
+  private int threadNum = 2;
 
-  private int awaitTimeout = 5000;
+  private int awaitTimeout = 10000;
 
   private String filePath;
-  private VectorSchemaRoot nextVectorSchemaRoot;
 
   private S3AFileSystem s3aFileSystem = null;
   private String s3aEndpoint = null;
   private String s3aRegion = null;
-
-  private AWSCredentials awsCredentials = null;
+  private String s3aAccessKey = null;
+  private String s3aSecretKey = null;
 
   private String awsS3Bucket = null;
 
-  private FilterPredicate filter;
+  private final FilterPredicate filter;
 }
 
 

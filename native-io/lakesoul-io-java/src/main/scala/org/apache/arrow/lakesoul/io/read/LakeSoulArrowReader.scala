@@ -17,17 +17,20 @@
 package org.apache.arrow.lakesoul.io.read
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.lakesoul.io.NativeIOWrapper
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
-import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.lakesoul.io.NativeIOReader
 import org.apache.arrow.vector.VectorSchemaRoot
 
+import java.io.IOException
 import scala.concurrent.duration.DurationInt
-import scala.concurrent.{Await, Future, Promise, TimeoutException}
+import scala.concurrent.{Await, Future, Promise}
+import scala.util.Success
 
-case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
-                               timeout: Int = 2000) extends AutoCloseable{
-  def next() = iterator.next()
+case class LakeSoulArrowReader(reader: NativeIOReader,
+                               timeout: Int = 10000) extends AutoCloseable {
+
+  var ex: Option[Throwable] = None
+
+  def next(): Option[VectorSchemaRoot] = iterator.next()
 
   def hasNext: Boolean = iterator.hasNext
 
@@ -41,46 +44,45 @@ case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
     }
   }
 
-  val allocator: BufferAllocator =
-    ArrowMemoryUtils.rootAllocator.newChildAllocator("fromLakeSoulArrowReader", 0, Long.MaxValue)
-  val provider = new CDataDictionaryProvider()
-
-
   val iterator: Iterator[Option[VectorSchemaRoot]] = new Iterator[Option[VectorSchemaRoot]] {
-    var vsrFuture:Future[Option[VectorSchemaRoot]] = _
+    var vsrFuture: Future[Option[VectorSchemaRoot]] = _
     private var finished = false
 
     override def hasNext: Boolean = {
       if (!finished) {
+        clean()
         val p = Promise[Option[VectorSchemaRoot]]()
         vsrFuture = p.future
-        val consumerSchema= ArrowSchema.allocateNew(allocator)
-        val consumerArray = ArrowArray.allocateNew(allocator)
-        wrapper.nextBatch((hasNext) => {
+        val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
+        val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
+        val provider = new CDataDictionaryProvider
+        reader.nextBatch((hasNext, err) => {
           if (hasNext) {
             val root: VectorSchemaRoot =
-                Data.importVectorSchemaRoot(allocator, consumerArray, consumerSchema, provider)
+              Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
             p.success(Some(root))
           } else {
-            p.success(None)
-            finish()
+            if (err == null) {
+              p.success(None)
+              finish()
+            } else {
+              p.failure(new IOException(err))
+            }
           }
-        },  consumerSchema.memoryAddress, consumerArray.memoryAddress)
+        }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
         try {
           Await.result(p.future, timeout milli) match {
             case Some(_) => true
-            case _ => {
+            case _ =>
               false
-            }
           }
         } catch {
-          case e: TimeoutException => {
-            println(s"wrapper.nextBatch running exceed $timeout mills; exit")
-            System.exit(1209)
+          case e: Throwable =>
+            ex = Some(e)
             false
-          }
-          case ex: Throwable =>println("found a unknown exception"+ ex)
-          false
+        } finally {
+          consumerArray.close()
+          consumerSchema.close()
         }
       } else {
         false
@@ -88,17 +90,30 @@ case class LakeSoulArrowReader(wrapper: NativeIOWrapper,
     }
 
     override def next(): Option[VectorSchemaRoot] = {
+      if (ex.isDefined) {
+        throw ex.get
+      }
       Await.result(vsrFuture, timeout milli)
     }
 
     private def finish(): Unit = {
       if (!finished) {
-          finished = true
+        finished = true
+      }
+    }
+
+    private def clean(): Unit = {
+      if (vsrFuture != null && vsrFuture.isCompleted) {
+        vsrFuture.value match {
+          case Some(Success(Some(batch))) =>
+            batch.close()
+          case _ =>
+        }
       }
     }
   }
 
   override def close(): Unit = {
-    wrapper.close()
+    reader.close()
   }
 }
