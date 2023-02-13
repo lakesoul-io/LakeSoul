@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
-#[derive(Derivative)]
+#[derive(Debug, Derivative)]
 #[derivative(Clone)]
 pub struct IOSchema(pub(crate) SchemaRef);
 
@@ -38,7 +38,7 @@ impl Default for IOSchema {
     }
 }
 
-#[derive(Derivative)]
+#[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
     // files to read or write
@@ -223,9 +223,14 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
 }
 
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
-    let sess_conf = SessionConfig::default()
+    let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
+
+    sess_conf.config_options_mut().optimizer.enable_round_robin_repartition= false; // if true, the record_batches poll from stream become unordered
+    // sess_conf.config_options_mut().optimizer.top_down_join_key_reordering= false; 
+    sess_conf.config_options_mut().optimizer.prefer_hash_join= false; //if true, panicked at 'range end out of bounds'
+        
     // limit memory for sort writer
     let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 datafusion = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-17-parquet-prefetch", features = ["simd"] }
 object_store = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["aws"] }
+
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 derivative = "2.2.0"
@@ -28,3 +29,4 @@ dary_heap = "0.3"
 [dev-dependencies]
 tempfile = "3.3.0"
 comfy-table = "6.0"
+rand = "0.8.5"

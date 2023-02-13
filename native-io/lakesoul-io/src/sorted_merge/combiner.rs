@@ -17,6 +17,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
 use crate::sorted_merge::sort_key_range::{SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges};
@@ -44,12 +45,14 @@ impl RangeCombiner {
     pub fn new(
         schema: SchemaRef,
         streams_num: usize,
+        fields_map: Arc<Vec<Vec<usize>>>,
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
         RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
             schema,
             streams_num,
+            fields_map.clone(),
             target_batch_size,
             merge_operator,
         ))
@@ -79,6 +82,7 @@ pub enum RangeCombinerResult {
 #[derive(Debug)]
 pub struct MinHeapSortKeyBatchRangeCombiner {
     schema: SchemaRef,
+    fields_map: Arc<Vec<Vec<usize>>>,
     heap: QuaternaryHeap<Reverse<SortKeyBatchRange>>,
     in_progress: Vec<SortKeyBatchRanges>,
     target_batch_size: usize,
@@ -90,16 +94,18 @@ impl MinHeapSortKeyBatchRangeCombiner {
     pub fn new(
         schema: SchemaRef,
         streams_num: usize,
+        fields_map: Arc<Vec<Vec<usize>>>,
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
-        let new_range = SortKeyBatchRanges::new(schema.clone());
+        let new_range = SortKeyBatchRanges::new(schema.clone(), fields_map.clone());
         let merge_op = match merge_operator.len() {
             0 => vec![MergeOperator::UseLast; schema.clone().fields().len()],
             _ => merge_operator,
         };
         MinHeapSortKeyBatchRangeCombiner {
             schema: schema.clone(),
+            fields_map: fields_map.clone(),
             heap: QuaternaryHeap::with_capacity(streams_num),
             in_progress: vec![],
             target_batch_size,
@@ -122,7 +128,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     } else {
                         self.in_progress.push(self.current_sort_key_range.clone());
-                        self.current_sort_key_range = SortKeyBatchRanges::new(self.schema.clone());
+                        self.current_sort_key_range = SortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone());
                         self.current_sort_key_range.add_range_in_batch(range.clone());
                     }
                     RangeCombinerResult::Range(Reverse(range))

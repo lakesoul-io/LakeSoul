@@ -162,6 +162,9 @@ public class NativeIOBase implements AutoCloseable {
 
         @Override
         public void invoke(boolean status, String err) {
+            if (err!=null) {
+                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.Callback.invoke]" + err);
+            }
             callback.accept(status, err);
             removerReferenceKey();
         }

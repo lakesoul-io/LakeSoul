@@ -25,6 +25,7 @@ import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeS
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
 
+
 class UpsertSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils {
@@ -696,6 +697,5 @@ class UpsertSuiteBase extends QueryTest
 
     })
   }
-
 
 }

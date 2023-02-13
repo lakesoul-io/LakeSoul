@@ -116,6 +116,7 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
+
   val NATIVE_IO_PREFETCHER_BUFFER_SIZE: ConfigEntry[Int] =
     buildConf("native.io.prefetch.buffer.size")
       .doc(
