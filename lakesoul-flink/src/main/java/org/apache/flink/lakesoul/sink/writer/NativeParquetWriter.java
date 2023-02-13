@@ -98,8 +98,10 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         if (this.rowsInBatch >= this.batchSize) {
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
-            this.arrowWriter.reset();
+            // in native writer, batch may be kept in memory for sorting,
+            // so we have to release ownership in java
             this.batch.clear();
+            this.arrowWriter.reset();
             this.rowsInBatch = 0;
         }
     }
