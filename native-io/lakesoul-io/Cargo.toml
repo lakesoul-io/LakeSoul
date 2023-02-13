@@ -8,9 +8,9 @@ datafusion = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch
 object_store = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["aws"] }
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "compat"]}
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
-heapless = "0.7.16"
 arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["prettyprint"] }
 arrow-schema = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["serde"] }
 arrow-array = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred" }
@@ -24,6 +24,10 @@ url = "2.2"
 async-trait = "0.1"
 smallvec = "1.10"
 dary_heap = "0.3"
+hdrs = { version = "0.2", features = ["async_file"], optional = true }
+
+[features]
+hdfs = ["dep:hdrs"]
 
 [dev-dependencies]
 tempfile = "3.3.0"

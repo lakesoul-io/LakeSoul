@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
 #![feature(io_error_more)]
@@ -23,3 +24,6 @@ pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
 pub use datafusion::arrow::error::Result;
 pub mod sorted_merge;
+
+#[cfg(feature = "hdfs")]
+mod hdfs;

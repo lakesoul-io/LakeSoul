@@ -15,7 +15,7 @@
  */
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
