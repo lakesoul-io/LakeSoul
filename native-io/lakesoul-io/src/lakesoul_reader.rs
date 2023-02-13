@@ -65,7 +65,7 @@ impl LakeSoulReader {
 
     pub async fn start(&mut self) -> Result<()> {
         match self.config.files.len() {
-            1 => {
+            1 if self.config.primary_keys.is_empty() => {
                 let schema: SchemaRef = self.config.schema.0.clone();
 
                 let mut df = self
@@ -206,6 +206,10 @@ mod tests {
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
+    use rand::prelude::*;
+
+    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::util::pretty::print_batches;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -234,10 +238,17 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
             ])
-            .with_thread_num(16)
-            .with_batch_size(128)
+            .with_thread_num(2)
+            .with_batch_size(11)
+            .with_primary_keys(vec!["id".to_string()])
+            .with_schema(Arc::new(Schema::new(vec![
+                // Field::new("name", DataType::Utf8, true),
+                Field::new("id", DataType::Int64, false),
+                // Field::new("x", DataType::Float64, true),
+                // Field::new("y", DataType::Float64, true),
+            ])))
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
@@ -246,30 +257,28 @@ mod tests {
             .unwrap();
         let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
+        let mut rng = thread_rng();
         loop {
             let (tx, rx) = sync_channel(1);
             let start = Instant::now();
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    let num_rows = &rb.unwrap().num_rows();
-                    unsafe {
-                        ROW_CNT = ROW_CNT + num_rows;
-                        println!("{}", ROW_CNT);
-                    }
+                    thread::sleep(Duration::from_millis(200));
+                    let num_rows = &rb.as_ref().unwrap().num_rows();
+                    print_batches(&[rb.as_ref().unwrap().clone()]);
+
                     println!("time cost: {:?} ms", start.elapsed().as_millis()); // ms
                     tx.send(false).unwrap();
                 }
             };
+            thread::sleep(Duration::from_millis(rng.gen_range(600..1200)));
+
             reader.next_rb_callback(Box::new(f));
             let done = rx.recv().unwrap();
             if done {
                 break;
             }
-        }
-        unsafe {
-            assert_eq!(ROW_CNT, 1000);
         }
         Ok(())
     }

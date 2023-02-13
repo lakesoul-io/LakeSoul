@@ -30,32 +30,15 @@ import java.util.function.BiConsumer;
 public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     private Pointer reader = null;
 
-    private final boolean useJavaReader;
-
-    private ArrowJavaReader.ArrowJavaReaderBuilder arrowJavaReaderBuilder;
-
-    private ArrowJavaReader arrowJavaReader;
 
     private Schema readerSchema = null;
 
     public NativeIOReader() {
-        this(false);
-    }
-
-    public NativeIOReader(boolean useJavaReader) {
         super("NativeReader");
-        this.useJavaReader = useJavaReader;
-        if (useJavaReader) {
-            arrowJavaReaderBuilder = new ArrowJavaReader.ArrowJavaReaderBuilder();
-        }
     }
 
     public void addFile(String file) {
-        if (!useJavaReader) {
-            super.addFile(file);
-        } else {
-            arrowJavaReaderBuilder.setUri(file);
-        }
+        super.addFile(file);
     }
 
     public void addFilter(String filter) {
@@ -73,34 +56,30 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     }
 
     public void initializeReader() throws IOException {
-        if (!useJavaReader) {
-            assert tokioRuntimeBuilder != null;
-            assert ioConfigBuilder != null;
+        assert tokioRuntimeBuilder != null;
+        assert ioConfigBuilder != null;
 
-            tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
-            config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
-            // tokioRuntime will be moved to reader
-            reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);
-            tokioRuntime = null;
-            Pointer p = libLakeSoulIO.check_reader_created(reader);
-            if (p != null) {
-                throw new IOException(p.getString(0));
+        tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
+        config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        // tokioRuntime will be moved to reader
+        reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);
+        tokioRuntime = null;
+        Pointer p = libLakeSoulIO.check_reader_created(reader);
+        if (p != null) {
+            throw new IOException(p.getString(0));
+        }
+        AtomicReference<String> errMsg = new AtomicReference<>();
+        // startReader in C is a blocking call
+        startReader((status, err) -> {
+            if (!status) {
+                errMsg.set("Init native reader failed with error: " + (err != null ? err : "unknown error"));
             }
-            AtomicReference<String> errMsg = new AtomicReference<>();
-            // startReader in C is a blocking call
-            startReader((status, err) -> {
-                if (!status) {
-                    errMsg.set("Init native reader failed with error: " + (err != null ? err : "unknown error"));
-                }
-            });
-            if (errMsg.get() != null) {
-                throw new IOException(errMsg.get());
-            }
-            if (readerSchema == null || readerSchema.getFields().isEmpty()) {
-                throw new IOException("Init native reader failed: Cannot retrieve native reader's schema");
-            }
-        } else {
-            arrowJavaReader = arrowJavaReaderBuilder.build();
+        });
+        if (errMsg.get() != null) {
+            throw new IOException(errMsg.get());
+        }
+        if (readerSchema == null || readerSchema.getFields().isEmpty()) {
+            throw new IOException("Init native reader failed: Cannot retrieve native reader's schema");
         }
     }
 
@@ -109,58 +88,50 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     }
 
     private Schema getReaderSchema() {
-        if (!useJavaReader) {
-            ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
-            libLakeSoulIO.lakesoul_reader_get_schema(reader, ffiSchema.memoryAddress());
-            Schema schema = Data.importSchema(allocator, ffiSchema, provider);
-            ffiSchema.close();
-            return schema;
-        } else {
-            return arrowJavaReader.getSchema();
-        }
+        ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
+        libLakeSoulIO.lakesoul_reader_get_schema(reader, ffiSchema.memoryAddress());
+        Schema schema = Data.importSchema(allocator, ffiSchema, provider);
+        ffiSchema.close();
+        return schema;
     }
 
     @Override
     public void close() throws Exception {
-        if (!useJavaReader) {
-            if (reader != null) {
-                libLakeSoulIO.free_lakesoul_reader(reader);
-                reader = null;
-            }
-            if (tokioRuntime != null) {
-                libLakeSoulIO.free_tokio_runtime(tokioRuntime);
-                tokioRuntime = null;
-            }
-        } else if (arrowJavaReader != null) {
-            arrowJavaReader.close();
+        if (reader != null) {
+            libLakeSoulIO.free_lakesoul_reader(reader);
+            reader = null;
+        }
+        if (tokioRuntime != null) {
+            libLakeSoulIO.free_tokio_runtime(tokioRuntime);
+            tokioRuntime = null;
         }
         super.close();
     }
 
     private void startReader(BiConsumer<Boolean, String> callback) {
-        if (!useJavaReader) {
-            assert reader != null;
-            BiConsumer<Boolean, String> wrapCallback = (status, err) -> {
-                if (status) {
-                    this.readerSchema = getReaderSchema();
-                }
-                callback.accept(status, err);
-            };
-            Callback nativeCallback = new Callback(wrapCallback, referenceManager);
-            nativeCallback.registerReferenceKey();
-            libLakeSoulIO.start_reader(reader, nativeCallback);
-        }
+        assert reader != null;
+        BiConsumer<Boolean, String> wrapCallback = (status, err) -> {
+            if (status) {
+                this.readerSchema = getReaderSchema();
+            }
+            if (err!=null) {
+                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOReader.startReader]err=" + err);
+            }
+            callback.accept(status, err);
+        };
+        Callback nativeCallback = new Callback(wrapCallback, referenceManager);
+        nativeCallback.registerReferenceKey();
+        libLakeSoulIO.start_reader(reader, nativeCallback);
     }
 
     public void nextBatch(BiConsumer<Boolean, String> callback, long schemaAddr, long arrayAddr) {
         Callback nativeCallback = new Callback(callback, referenceManager);
         nativeCallback.registerReferenceKey();
-        if (!useJavaReader) {
-            assert reader != null;
-            libLakeSoulIO.next_record_batch(reader, schemaAddr, arrayAddr, nativeCallback);
-        } else {
-            // disable native for testing
-            arrowJavaReader.nextRecordBatch(schemaAddr, arrayAddr, nativeCallback);
+        assert reader != null;
+        Pointer p = libLakeSoulIO.check_reader_created(reader);
+        if (p != null) {
+            throw new RuntimeException(p.getString(0));
         }
+        libLakeSoulIO.next_record_batch(reader, schemaAddr, arrayAddr, nativeCallback);
     }
 }

@@ -205,15 +205,18 @@ pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
+    fields_map: Arc<Vec<Vec<usize>>>,
+
     pub(crate) schema: SchemaRef,
 
     pub(crate) batch_range: Option<SortKeyBatchRange>,
 }
 
 impl SortKeyBatchRanges {
-    pub fn new(schema: SchemaRef) -> SortKeyBatchRanges {
+    pub fn new(schema: SchemaRef, fields_map:Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
             sort_key_array_ranges: (0..schema.fields().len()).map(|_| smallvec![]).collect(),
+            fields_map: fields_map.clone(),
             schema: schema.clone(),
             batch_range: None,
         }
@@ -233,14 +236,9 @@ impl SortKeyBatchRanges {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
         }
-        let schema = self.schema();
+        let schema = range.schema();
         for column_idx in 0..schema.fields().len() {
-            let name = schema.field(column_idx).name();
-
-            range
-                .schema()
-                .column_with_name(name)
-                .map(|(idx, _)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
+            self.sort_key_array_ranges[self.fields_map[range.stream_idx()][column_idx]].push(range.column(column_idx));
         }
     }
 
@@ -267,6 +265,7 @@ impl Clone for SortKeyBatchRanges {
     fn clone(&self) -> Self {
         SortKeyBatchRanges {
             sort_key_array_ranges: self.sort_key_array_ranges.clone(),
+            fields_map: self.fields_map.clone(),
             schema: self.schema.clone(),
             batch_range: match &self.batch_range {
                 None => None,

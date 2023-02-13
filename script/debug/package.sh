@@ -1,0 +1,1 @@
+mvn package -Prelease-linux-x86-64 -pl lakesoul-spark -am -DskipTests
