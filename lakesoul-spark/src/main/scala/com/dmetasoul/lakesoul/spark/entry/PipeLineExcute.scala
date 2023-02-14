@@ -1,6 +1,4 @@
 /*
- *
- *
  *   Copyright [2022] [DMetaSoul Team]
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,7 +34,7 @@ object PipeLineExcute {
     buildStep(pipeLineContainer.getSteps, pipeLineContainer.getSink, sparkSession)
   }
 
-  def buildStep(operators: java.util.List[Opreator], sink: PipelineSink, sparkSession: SparkSession): Unit = {
+  def buildStep(operators: java.util.List[Operator], sink: PipelineSink, sparkSession: SparkSession): Unit = {
     var preViewName = ""
     for (i <- 0 until operators.size) {
       val op = operators.get(i)
@@ -97,7 +95,7 @@ object PipeLineExcute {
     sink.getProcessType match {
       case "batch" =>
         sinkDF.write.format("lakesoul")
-          .option(LakeSoulOptions.PARTITION_DESC, sink.getRangPatition)
+          .option(LakeSoulOptions.PARTITION_DESC, String.join(",", sink.getRangePartition))
           .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)
@@ -117,7 +115,7 @@ object PipeLineExcute {
           .outputMode(sink.getOutputmode)
           .option("mergeSchema", "true")
           .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
-          .option(LakeSoulOptions.PARTITION_DESC, sink.getRangPatition)
+          .option(LakeSoulOptions.PARTITION_DESC,String.join(",", sink.getRangePartition))
           .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)

@@ -1,6 +1,4 @@
 /*
- *
- *
  *   Copyright [2022] [DMetaSoul Team]
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,14 +22,14 @@ import java.util.List;
 
 public class PipeLineContainer {
     private Resource resource;
-    private List<Opreator> steps;
+    private List<Operator> steps;
     private PipelineSink sink;
 
-    public List<Opreator> getSteps() {
+    public List<Operator> getSteps() {
         return steps;
     }
 
-    public void setSteps(List<Opreator> steps) {
+    public void setSteps(List<Operator> steps) {
         this.steps = steps;
     }
 
@@ -57,7 +55,7 @@ public class PipeLineContainer {
 }
 
 
-class Opreator {
+class Operator {
     private String viewName;
     private String sourceTableName;
     private String sourceDatabaseName = "";
@@ -325,19 +323,40 @@ class Join {
 }
 
 class Filter {
-    private String condititions;
+    private String conditions;
 
-    public String getCondititions() {
-        return condititions;
+    public String getConditions() {
+        return conditions;
     }
 
-    public void setCondititions(String condititions) {
-        this.condititions = condititions;
+    public void setConditions(String conditions) {
+        this.conditions = conditions;
     }
 
     @Override
     public String toString() {
-        return condititions;
+        return conditions;
+    }
+}
+
+class Distinct {
+    private String columnName;
+    private List<String> rangeColumn;
+
+    public String getColumnName() {
+        return columnName;
+    }
+
+    public void setColumnName(String columnName) {
+        this.columnName = columnName;
+    }
+
+    public List<String> getRangeColumn() {
+        return rangeColumn;
+    }
+
+    public void setRangeColumn(List<String> rangeColumn) {
+        this.rangeColumn = rangeColumn;
     }
 }
 
@@ -347,7 +366,7 @@ class PipelineSink {
     private int triggerTime = 2000;
     private List<String> hashPartition;
     private int hashBucketNum = 2;
-    private String rangPatition = "";
+    private List<String> rangePartition = new ArrayList<>();
     private String outputmode = "complete";
     private String processType = "stream";
     private String checkpointLocation = "/tmp/chk";
@@ -356,12 +375,12 @@ class PipelineSink {
 
     }
 
-    public String getRangPatition() {
-        return rangPatition;
+    public List<String> getRangePartition() {
+        return rangePartition;
     }
 
-    public void setRangPatition(String rangPatition) {
-        this.rangPatition = rangPatition;
+    public void setRangePartition(List<String> rangePartition) {
+        this.rangePartition = rangePartition;
     }
 
     public List<String> getHashPartition() {
