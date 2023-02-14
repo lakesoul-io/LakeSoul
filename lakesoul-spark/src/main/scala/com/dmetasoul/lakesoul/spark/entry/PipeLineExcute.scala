@@ -31,8 +31,8 @@ object PipeLineExcute {
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     val yamlPath = parameter.get(PipeLineOption.YamlPath, "./PipeLine.yml")
-    val sparkSession = getSparkSession(yamlPath)
-    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath, sparkSession.sparkContext.getConf)
+    val sparkSession = getSparkSession()
+    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath)
     buildStep(pipeLineContainer.getSteps, pipeLineContainer.getSink, sparkSession)
   }
 
@@ -55,21 +55,22 @@ object PipeLineExcute {
     }
   }
 
-  def getSparkSession(yamlPath: String): SparkSession = {
+  def getSparkSession(): SparkSession = {
     val builder = SparkSession.builder()
       .appName("STREAM PIPELINE")
+ //     .config("spark.master","local[2]")
       .config("spark.sql.shuffle.partitions", 4)
       .config("spark.sql.files.maxPartitionBytes", "1g")
       .config("spark.default.parallelism", 4)
       .config("spark.sql.parquet.mergeSchema", value = true)
       .config("spark.sql.parquet.filterPushdown", value = true)
       .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
-      .config("spark.sql.extensions", "com.dmetasoul.lakesoyamlPathul.sql.LakeSoulSparkSessionExtension")
+      .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "4")
       .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
-      .config("spark.files", yamlPath)
+   //   .config("spark.files", "d:\\test.yml")
     builder.getOrCreate()
 
   }

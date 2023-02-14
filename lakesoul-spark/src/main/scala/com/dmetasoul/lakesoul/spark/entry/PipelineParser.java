@@ -25,18 +25,16 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.spark.SparkConf;
-import org.apache.spark.SparkFiles;
-
 import java.io.IOException;
 import java.io.InputStream;
 
 public class PipelineParser {
-    public PipeLineContainer parserYaml(String yamlPath, SparkConf sparkConf) {
-        // --yamlPath file:///home/yongpeng/Filter.yml
-        String[] paths = yamlPath.split("/");
-        String sparkFilePath = SparkFiles.get(paths[paths.length - 1]);
-        Path path = new Path(sparkFilePath);
+    public PipeLineContainer parserYaml(String yamlPath) {
+        //String[] paths = yamlPath.split("/");
+        // String sparkFilePath = SparkFiles.get(paths[paths.length - 1]);
+        //String sparkFilePath = SparkFiles.get(yamlPath);
+        //String[] paths= (String[]) Arrays.stream(distname.split(",")).filter(s -> s.contains(yamlPath)).toArray();
+        Path path = new Path(yamlPath);
         ObjectMapper obm = new ObjectMapper(new YAMLFactory());
         PipeLineContainer pc = null;
         try {
@@ -51,7 +49,7 @@ public class PipelineParser {
     }
 
     public static void main(String[] args) {
-        String localPath = "file:///home/yongpeng/Filter.yml";
-        new PipelineParser().parserYaml(localPath, null);
+        String localPath = "file:/d:\\test.yml";
+        new PipelineParser().parserYaml(localPath);
     }
 }
