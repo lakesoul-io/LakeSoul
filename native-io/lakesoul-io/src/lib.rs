@@ -17,6 +17,7 @@
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
 #![feature(io_error_more)]
+#![feature(sync_unsafe_cell)]
 
 pub mod lakesoul_reader;
 pub mod filter;

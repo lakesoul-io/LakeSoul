@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+mod util;
+
+use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,12 +24,16 @@ use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
-use hdrs::Client;
+use hdrs::{Client, File};
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use parquet::data_type::AsBytes;
+use std::cell::SyncUnsafeCell;
 use std::fmt::{Debug, Display, Formatter};
+use std::io;
 use std::io::ErrorKind::NotFound;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -39,7 +46,20 @@ pub struct HDFS {
 
 impl HDFS {
     pub fn try_new(config: LakeSoulIOConfig) -> Result<Self> {
-        let client = Client::connect("default").map_err(|e| DataFusionError::IoError(e))?;
+        let uri = config
+            .object_store_options
+            .get("fs.defaultFS")
+            .ok_or(DataFusionError::IoError(io::Error::new(
+                ErrorKind::AddrNotAvailable,
+                "fs.defaultFS is not set for hdfs object store"
+            )))?;
+        let user = config.object_store_options.get("fs.hdfs.user");
+        let client = match user {
+            None => Client::connect(uri.as_str()),
+            Some(user) => Client::connect_as_user(uri.as_str(), user.as_str())
+        }
+        .map_err(|e| DataFusionError::IoError(e))?;
+
         Ok(Self {
             client: Arc::new(client),
         })
@@ -66,6 +86,34 @@ impl HDFS {
         }))
         .await
     }
+
+    async fn read_range_unblocking(
+        file: Arc<SyncUnsafeCell<File>>,
+        range: Range<usize>,
+    ) -> object_store::Result<Bytes> {
+        maybe_spawn_blocking(move || unsafe {
+            file.get()
+                .as_mut()
+                .unwrap()
+                .seek(SeekFrom::Start(range.start as u64))
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?;
+            let to_read = range.end - range.start;
+            let mut buf = vec![0; to_read];
+            file.get()
+                .as_mut()
+                .unwrap()
+                .read_exact(buf.as_mut_slice())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?;
+            Ok(buf.into())
+        })
+        .await
+    }
 }
 
 impl Display for HDFS {
@@ -83,7 +131,27 @@ impl Debug for HDFS {
 #[async_trait]
 impl ObjectStore for HDFS {
     async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
-        todo!()
+        let mut async_write = self
+            .client
+            .open_file()
+            .write(true)
+            .create(true)
+            .append(true)
+            .async_open(location.as_ref())
+            .await
+            .map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?
+            .compat();
+        async_write.write_all(bytes.as_bytes()).await.map_err(|e| Generic {
+            store: "hdfs",
+            source: Box::new(e),
+        })?;
+        async_write.shutdown().await.map_err(|e| Generic {
+            store: "hdfs",
+            source: Box::new(e),
+        })
     }
 
     async fn put_multipart(
@@ -95,6 +163,8 @@ impl ObjectStore for HDFS {
         let async_write = self
             .client
             .open_file()
+            .write(true)
+            .create(true)
             .truncate(true)
             .async_open(location.as_ref())
             .await
@@ -134,11 +204,39 @@ impl ObjectStore for HDFS {
     }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
-        todo!()
+        let file = Arc::new(SyncUnsafeCell::new(
+            self.client
+                .open_file()
+                .read(true)
+                .open(location.as_ref())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?,
+        ));
+        HDFS::read_range_unblocking(file, range).await
     }
 
     async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
-        todo!()
+        // overwrite base method so that we don't have to open file multiple times
+        // we don't use Hdrs::AsyncFile because it maintains a read pos state which makes it
+        // not Sync.
+        let file = Arc::new(SyncUnsafeCell::new(
+            self.client
+                .open_file()
+                .read(true)
+                .open(location.as_ref())
+                .map_err(|e| Generic {
+                    store: "hdfs",
+                    source: Box::new(e),
+                })?,
+        ));
+        coalesce_ranges(
+            ranges,
+            |range| HDFS::read_range_unblocking(file.clone(), range),
+            OBJECT_STORE_COALESCE_DEFAULT,
+        )
+        .await
     }
 
     async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
@@ -265,13 +363,23 @@ impl ObjectStore for HDFS {
     }
 }
 
-async fn maybe_spawn_blocking<F, T>(f: F) -> object_store::Result<T>
-where
-    F: FnOnce() -> object_store::Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => runtime.spawn_blocking(f).await?,
-        Err(_) => f(),
+#[cfg(test)]
+mod tests {
+    use crate::hdfs::HDFS;
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use object_store::path::Path;
+
+    #[tokio::test]
+    async fn test_hdfs() {
+        let conf = LakeSoulIOConfigBuilder::new()
+            .with_thread_num(2)
+            .with_batch_size(8192)
+            .with_max_row_group_size(250000)
+            .with_object_store_option("fs.defaultFS".to_string(), "hdfs://localhost:9000".to_string())
+            .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
+            .build();
+        let hdfs = HDFS::try_new(conf).unwrap();
+        let path = Path::parse(format!("input/core-site.xml")).unwrap();
+        println!("Path {} exists: {}", path, hdfs.is_file_exist(&path).await.unwrap());
     }
 }

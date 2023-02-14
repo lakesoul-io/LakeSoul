@@ -17,7 +17,7 @@ arrow-array = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arr
 arrow-buffer = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred" }
 parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["async", "arrow"] }
 bytes = "1.1"
-futures = "0.3.25"
+futures = "0.3"
 datafusion-common = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-17-parquet-prefetch" }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 url = "2.2"
@@ -32,3 +32,4 @@ hdfs = ["dep:hdrs"]
 [dev-dependencies]
 tempfile = "3.3.0"
 comfy-table = "6.0"
+whoami = "1.3"
