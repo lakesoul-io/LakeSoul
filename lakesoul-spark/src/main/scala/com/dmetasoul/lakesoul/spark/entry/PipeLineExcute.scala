@@ -30,7 +30,10 @@ object PipeLineExcute {
     val parameter = ParametersTool.fromArgs(args)
     val yamlPath = parameter.get(PipeLineOption.YamlPath, "./PipeLine.yml")
     val sparkSession = getSparkSession()
-    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath)
+    val deployMode = sparkSession.sparkContext.getConf.get("spark.submit.deployMode")
+
+    val pipeLineContainer = new PipelineParser().parserYaml(yamlPath, deployMode)
+
     buildStep(pipeLineContainer.getSteps, pipeLineContainer.getSink, sparkSession)
   }
 
@@ -55,7 +58,7 @@ object PipeLineExcute {
 
   def getSparkSession(): SparkSession = {
     val builder = SparkSession.builder()
-      .appName("STREAM PIPELINE")
+//      .appName("STREAM PIPELINE")
  //     .config("spark.master","local[2]")
       .config("spark.sql.shuffle.partitions", 4)
       .config("spark.sql.files.maxPartitionBytes", "1g")
@@ -67,7 +70,7 @@ object PipeLineExcute {
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "4")
-      .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
+//      .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
    //   .config("spark.files", "d:\\test.yml")
     builder.getOrCreate()
 
