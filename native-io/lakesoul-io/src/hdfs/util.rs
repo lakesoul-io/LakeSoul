@@ -39,8 +39,8 @@ pub async fn maybe_spawn_blocking<F, T>(f: F) -> object_store::Result<T>
 pub const OBJECT_STORE_COALESCE_DEFAULT: usize = 1 * 1024 * 1024;
 
 /// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
-pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
-pub const OBJECT_STORE_COALESCE_MAX: usize = 8 * 1024 * 1024;
+pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 4;
+pub const OBJECT_STORE_COALESCE_MAX: usize = 16 * 1024 * 1024;
 
 /// Takes a function `fetch` that can fetch a range of bytes and uses this to
 /// fetch the provided byte `ranges`

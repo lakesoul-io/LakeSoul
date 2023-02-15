@@ -51,7 +51,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
-use url::{ParseError, Url};
+use url::Url;
 
 #[async_trait]
 pub trait AsyncBatchWriter {
@@ -186,20 +186,14 @@ impl MultiPartAsyncWriter {
         let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files[0];
 
-        // parse file name. Url::parse requires file:// scheme for local files, otherwise
-        // RelativeUrlWithoutBase would be throw, in this case we directly return local object store
+        // local style path should have already been handled in create_session_context,
+        // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
         let (object_store, path) = match Url::parse(file_name.as_str()) {
             Ok(url) => Ok((
                 sess_ctx
                     .runtime_env()
                     .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
                 Path::from(url.path()),
-            )),
-            Err(ParseError::RelativeUrlWithoutBase) => Ok((
-                sess_ctx
-                    .runtime_env()
-                    .object_store(ObjectStoreUrl::local_filesystem())?,
-                Path::from(file_name.as_str()),
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
@@ -282,6 +276,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut *v).await?;
         }
         // shutdown multi part async writer to complete the upload
+        this.writer.flush().await?;
         this.writer.shutdown().await?;
         Ok(())
     }
@@ -351,7 +346,7 @@ impl SortAsyncWriter {
                         async_writer.write_record_batch(batch).await?;
                     }
                     // received abort singal
-                    Err(_) => return async_writer.abort_and_close().await
+                    Err(_) => return async_writer.abort_and_close().await,
                 }
             }
             async_writer.flush_and_close().await?;

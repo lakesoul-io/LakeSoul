@@ -17,16 +17,21 @@
 use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
+use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_common::DataFusionError::ObjectStore;
 use derivative::Derivative;
 use object_store::aws::AmazonS3Builder;
 use object_store::RetryConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
-use url::Url;
+use url::{ParseError, Url};
+
+#[cfg(feature = "hdfs")]
+use crate::hdfs::HDFS;
 
 #[derive(Derivative)]
 #[derivative(Clone)]
@@ -70,6 +75,9 @@ pub struct LakeSoulIOConfig {
     // tokio runtime related configs
     #[derivative(Default(value = "2"))]
     pub(crate) thread_num: usize,
+
+    // to be compatible with hadoop's fs.defaultFS
+    pub(crate) default_fs: String,
 }
 
 #[derive(Derivative)]
@@ -209,9 +217,86 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
-    let s3_store = s3_store_builder.build()?;
-    runtime.register_object_store("s3", bucket.unwrap(), Arc::new(s3_store));
+    let s3_store = Arc::new(s3_store_builder.build()?);
+    let bucket = bucket.unwrap();
+    runtime.register_object_store("s3", bucket.clone(), s3_store.clone());
+    runtime.register_object_store("s3a", bucket, s3_store);
     Ok(())
+}
+
+fn register_hdfs_object_store(host: &str, config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
+    #[cfg(not(feature = "hdfs"))]
+    {
+        Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
+            source: "hdfs support is not enabled".into(),
+        }))
+    }
+    #[cfg(feature = "hdfs")]
+    {
+        let hdfs = HDFS::try_new(config.clone())?;
+        runtime.register_object_store("hdfs", host, Arc::new(hdfs));
+        Ok(())
+    }
+}
+
+// try to register object store of this path string, and return normalized path string if
+// this path is local path style but fs.defaultFS config exists
+fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<String> {
+    let url = Url::parse(path.as_str());
+    match url {
+        Ok(url) => match url.scheme() {
+            "s3" | "s3a" => {
+                if runtime
+                    .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
+                    .is_ok()
+                {
+                    return Ok(path.clone());
+                }
+                if !config.object_store_options.contains_key("fs.s3a.bucket") {
+                    config
+                        .object_store_options
+                        .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
+                }
+                register_s3_object_store(config, &runtime)?;
+                Ok(path.clone())
+            }
+            "hdfs" => {
+                if url.has_host() {
+                    if runtime
+                        .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
+                        .is_ok()
+                    {
+                        return Ok(path.clone());
+                    }
+                    register_hdfs_object_store(&url[url::Position::BeforeHost..url::Position::BeforePath], config, &runtime)?;
+                    Ok(path.clone())
+                } else {
+                    // defaultFS should have been registered with hdfs,
+                    // and we convert hdfs://user/hadoop/file to
+                    // hdfs://defaultFS/user/hadoop/file
+                    let path = url.path().trim_start_matches("/");
+                    let joined_path = [config.default_fs.as_str(), path].join("/");
+                    Ok(joined_path)
+                }
+            }
+            "file" => Ok(path.clone()),
+            _ => Err(ObjectStore(object_store::Error::NotSupported {
+                source: "FileSystem not supported".into(),
+            })),
+        },
+        Err(ParseError::RelativeUrlWithoutBase) => {
+            let path = path.trim_start_matches("/");
+            if config.default_fs.is_empty() {
+                // local filesystem
+                Ok(["file://", path].join("/"))
+            } else {
+                // concat default fs and path
+                let joined_path = [config.default_fs.as_str(), path].join("/");
+                Ok(joined_path)
+            }
+        }
+        Err(e) => Err(DataFusionError::External(Box::new(e))),
+    }
 }
 
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
@@ -221,30 +306,52 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     // limit memory for sort writer
     let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 
-    // register object store(s)
-    for file_name in &config.files {
-        let url = Url::parse(file_name.as_str());
-        let s3_registered = match url {
-            Ok(url) => {
-                if url.scheme() == "s3" || url.scheme() == "s3a" {
-                    if !config.object_store_options.contains_key("fs.s3a.bucket") {
-                        config
-                            .object_store_options
-                            .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
-                    }
-                    register_s3_object_store(config, &runtime)?;
-                    true
-                } else {
-                    false
-                }
-            }
-            Err(_) => false,
-        };
-        if s3_registered {
-            break;
+    // firstly parse default fs if exist
+    let default_fs = config
+        .object_store_options
+        .get("fs.defaultFS")
+        .or(config.object_store_options.get("fs.default.name"))
+        .cloned();
+    match default_fs {
+        Some(fs) => {
+            config.default_fs = fs.clone();
+            register_object_store(&fs, config, &runtime)?;
         }
-    }
+        _ => {}
+    };
+
+    // register object store(s) for input/output files' path
+    // and replace file names with default fs concatenated if exist
+    let files = config.files.clone();
+    let normalized_filenames = files
+        .into_iter()
+        .map(|file_name| register_object_store(&file_name, config, &runtime))
+        .collect::<Result<Vec<String>>>()?;
+    config.files = normalized_filenames;
 
     // create session context
     Ok(SessionContext::with_config_rt(sess_conf, Arc::new(runtime)))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+
+    #[test]
+    fn test_path_normalize() {
+        let mut conf = LakeSoulIOConfigBuilder::new()
+            .with_files(vec![
+                "file:///some/absolute/local/file1".into(),
+                "/some/absolute/local/file2".into(),
+            ])
+            .build();
+        let _sess_ctx = create_session_context(&mut conf).unwrap();
+        assert_eq!(
+            conf.files,
+            vec![
+                "file:///some/absolute/local/file1".to_string(),
+                "file:///some/absolute/local/file2".to_string(),
+            ]
+        );
+    }
 }

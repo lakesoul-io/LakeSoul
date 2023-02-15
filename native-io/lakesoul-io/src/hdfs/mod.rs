@@ -24,12 +24,11 @@ use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
-use hdrs::{Client, File};
+use hdrs::Client;
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
-use std::cell::SyncUnsafeCell;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use std::io::ErrorKind::NotFound;
@@ -46,17 +45,20 @@ pub struct HDFS {
 
 impl HDFS {
     pub fn try_new(config: LakeSoulIOConfig) -> Result<Self> {
+        let default_uri = String::from("default");
         let uri = config
             .object_store_options
             .get("fs.defaultFS")
+            .or(config.object_store_options.get("fs.default.name"))
+            .or(Some(&default_uri))
             .ok_or(DataFusionError::IoError(io::Error::new(
                 ErrorKind::AddrNotAvailable,
-                "fs.defaultFS is not set for hdfs object store"
+                "fs.defaultFS is not set for hdfs object store",
             )))?;
         let user = config.object_store_options.get("fs.hdfs.user");
         let client = match user {
             None => Client::connect(uri.as_str()),
-            Some(user) => Client::connect_as_user(uri.as_str(), user.as_str())
+            Some(user) => Client::connect_as_user(uri.as_str(), user.as_str()),
         }
         .map_err(|e| DataFusionError::IoError(e))?;
 
@@ -66,7 +68,7 @@ impl HDFS {
     }
 
     async fn is_file_exist(&self, path: &Path) -> object_store::Result<bool> {
-        let t = path.to_string();
+        let t = add_leading_slash(path);
         let client = self.client.clone();
         maybe_spawn_blocking(Box::new(move || {
             let meta = client.metadata(t.as_str());
@@ -86,34 +88,6 @@ impl HDFS {
         }))
         .await
     }
-
-    async fn read_range_unblocking(
-        file: Arc<SyncUnsafeCell<File>>,
-        range: Range<usize>,
-    ) -> object_store::Result<Bytes> {
-        maybe_spawn_blocking(move || unsafe {
-            file.get()
-                .as_mut()
-                .unwrap()
-                .seek(SeekFrom::Start(range.start as u64))
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?;
-            let to_read = range.end - range.start;
-            let mut buf = vec![0; to_read];
-            file.get()
-                .as_mut()
-                .unwrap()
-                .read_exact(buf.as_mut_slice())
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?;
-            Ok(buf.into())
-        })
-        .await
-    }
 }
 
 impl Display for HDFS {
@@ -131,12 +105,13 @@ impl Debug for HDFS {
 #[async_trait]
 impl ObjectStore for HDFS {
     async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
+        let location = add_leading_slash(location);
         let mut async_write = self
             .client
             .open_file()
             .write(true)
             .create(true)
-            .append(true)
+            .truncate(true)
             .async_open(location.as_ref())
             .await
             .map_err(|e| Generic {
@@ -145,6 +120,10 @@ impl ObjectStore for HDFS {
             })?
             .compat();
         async_write.write_all(bytes.as_bytes()).await.map_err(|e| Generic {
+            store: "hdfs",
+            source: Box::new(e),
+        })?;
+        async_write.flush().await.map_err(|e| Generic {
             store: "hdfs",
             source: Box::new(e),
         })?;
@@ -160,6 +139,7 @@ impl ObjectStore for HDFS {
     ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
         // hdrs uses Unblocking underneath, so we don't have to
         // implement concurrent write
+        let location = add_leading_slash(location);
         let async_write = self
             .client
             .open_file()
@@ -185,7 +165,7 @@ impl ObjectStore for HDFS {
     }
 
     async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
-        let path = location.to_string();
+        let path = add_leading_slash(location);
         let async_file = self
             .client
             .open_file()
@@ -204,43 +184,44 @@ impl ObjectStore for HDFS {
     }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
-        let file = Arc::new(SyncUnsafeCell::new(
-            self.client
+        let location = add_leading_slash(location);
+        let client = self.client.clone();
+        maybe_spawn_blocking(move || {
+            let mut file = client
                 .open_file()
                 .read(true)
                 .open(location.as_ref())
                 .map_err(|e| Generic {
                     store: "hdfs",
                     source: Box::new(e),
-                })?,
-        ));
-        HDFS::read_range_unblocking(file, range).await
+                })?;
+            file.seek(SeekFrom::Start(range.start as u64)).map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?;
+            let to_read = range.end - range.start;
+            let mut buf = vec![0; to_read];
+            file.read_exact(buf.as_mut_slice()).map_err(|e| Generic {
+                store: "hdfs",
+                source: Box::new(e),
+            })?;
+            Ok(buf.into())
+        })
+        .await
     }
 
     async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
-        // overwrite base method so that we don't have to open file multiple times
-        // we don't use Hdrs::AsyncFile because it maintains a read pos state which makes it
-        // not Sync.
-        let file = Arc::new(SyncUnsafeCell::new(
-            self.client
-                .open_file()
-                .read(true)
-                .open(location.as_ref())
-                .map_err(|e| Generic {
-                    store: "hdfs",
-                    source: Box::new(e),
-                })?,
-        ));
+        // tweak coalesce size and concurrency for hdfs
         coalesce_ranges(
             ranges,
-            |range| HDFS::read_range_unblocking(file.clone(), range),
+            |range| self.get_range(location, range),
             OBJECT_STORE_COALESCE_DEFAULT,
         )
         .await
     }
 
     async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
-        let path = location.to_string();
+        let path = add_leading_slash(location);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
             let meta = client.metadata(path.as_str()).map_err(|e| Generic {
@@ -260,14 +241,15 @@ impl ObjectStore for HDFS {
     }
 
     async fn delete(&self, location: &Path) -> object_store::Result<()> {
+        let t = add_leading_slash(location);
         let location = location.clone();
         let client = self.client.clone();
-        maybe_spawn_blocking(move || match location.filename() {
-            None => client.remove_dir(location.as_ref()).map_err(|e| Generic {
+        maybe_spawn_blocking(move || match location.clone().filename() {
+            None => client.remove_dir(t.as_str()).map_err(|e| Generic {
                 store: "hdfs",
                 source: Box::new(e),
             }),
-            Some(path) => client.remove_file(path).map_err(|e| Generic {
+            Some(_) => client.remove_file(t.as_str()).map_err(|e| Generic {
                 store: "hdfs",
                 source: Box::new(e),
             }),
@@ -287,8 +269,8 @@ impl ObjectStore for HDFS {
     }
 
     async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = from.to_string();
-        let to = to.to_string();
+        let from = add_leading_slash(from);
+        let to = add_leading_slash(to);
         let mut async_read = self
             .client
             .open_file()
@@ -324,8 +306,8 @@ impl ObjectStore for HDFS {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = from.to_string();
-        let to = to.to_string();
+        let from = add_leading_slash(from);
+        let to = add_leading_slash(to);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
             client.rename_file(from.as_str(), to.as_str()).map_err(|e| Generic {
@@ -337,7 +319,7 @@ impl ObjectStore for HDFS {
     }
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let t = to.to_string();
+        let t = add_leading_slash(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
             Err(object_store::Error::AlreadyExists {
@@ -350,7 +332,7 @@ impl ObjectStore for HDFS {
     }
 
     async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let t = to.to_string();
+        let t = add_leading_slash(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
             Err(object_store::Error::AlreadyExists {
@@ -363,23 +345,146 @@ impl ObjectStore for HDFS {
     }
 }
 
+fn add_leading_slash(path: &Path) -> String {
+    ["/", path.as_ref().trim_start_matches("/")].join("")
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::hdfs::HDFS;
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use bytes::Bytes;
+    use datafusion::datasource::object_store::ObjectStoreUrl;
+    use futures::StreamExt;
     use object_store::path::Path;
+    use object_store::GetResult::Stream;
+    use object_store::ObjectStore;
+    use rand::distributions::{Alphanumeric, DistString};
+    use rand::thread_rng;
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+    use url::Url;
+
+    fn bytes_to_string(bytes: Vec<Bytes>) -> String {
+        unsafe {
+            let mut vec = Vec::new();
+            bytes.into_iter().for_each(|b| {
+                let v = b.to_vec();
+                vec.extend(v);
+            });
+            String::from_utf8_unchecked(vec)
+        }
+    }
+
+    async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
+        let file = object_store.get(&Path::from(path)).await.unwrap();
+        match file {
+            Stream(s) => {
+                let read_result = s
+                    .collect::<Vec<object_store::Result<Bytes>>>()
+                    .await
+                    .into_iter()
+                    .collect::<object_store::Result<Vec<Bytes>>>()
+                    .unwrap();
+                bytes_to_string(read_result)
+            }
+            _ => panic!("expect getting a stream"),
+        }
+    }
 
     #[tokio::test]
     async fn test_hdfs() {
-        let conf = LakeSoulIOConfigBuilder::new()
+        let files = vec![
+            format!("/user/{}/input/hdfs-site.xml", whoami::username()),
+            format!("/user/{}/input/yarn-site.xml", whoami::username()),
+            format!("/user/{}/input/core-site.xml", whoami::username()),
+        ];
+
+        let mut conf = LakeSoulIOConfigBuilder::new()
             .with_thread_num(2)
             .with_batch_size(8192)
             .with_max_row_group_size(250000)
             .with_object_store_option("fs.defaultFS".to_string(), "hdfs://localhost:9000".to_string())
             .with_object_store_option("fs.hdfs.user".to_string(), whoami::username())
+            .with_files(vec![
+                format!("hdfs://localhost:9000{}", files[0]),
+                format!("hdfs://{}", files[1]),
+                files[2].clone(),
+            ])
             .build();
-        let hdfs = HDFS::try_new(conf).unwrap();
-        let path = Path::parse(format!("input/core-site.xml")).unwrap();
-        println!("Path {} exists: {}", path, hdfs.is_file_exist(&path).await.unwrap());
+
+        let sess_ctx = create_session_context(&mut conf).unwrap();
+
+        let url = Url::parse(conf.files[0].as_str()).unwrap();
+        let object_store = sess_ctx
+            .runtime_env()
+            .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath]).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            conf.files,
+            vec![
+                format!("hdfs://localhost:9000{}", files[0]),
+                format!("hdfs://localhost:9000{}", files[1]),
+                format!("hdfs://localhost:9000{}", files[2]),
+            ]
+        );
+        let meta0 = object_store.head(&Path::from(files[0].as_str())).await.unwrap();
+        assert_eq!(meta0.location, Path::from(files[0].as_str()));
+        assert_eq!(meta0.size, 867);
+
+        let s = read_file_from_hdfs(files[1].clone(), object_store.clone()).await;
+        let path = format!("{}/etc/hadoop/yarn-site.xml", std::env::var("HADOOP_HOME").unwrap());
+        let f = std::fs::read_to_string(path).unwrap();
+        assert_eq!(s, f);
+
+        // multipart upload and multi range get
+        let write_path = format!("/user/{}/output/test.txt", whoami::username());
+        let (_, mut write) = object_store
+            .put_multipart(&Path::from(write_path.as_str()))
+            .await
+            .unwrap();
+        let mut rng = thread_rng();
+
+        let size = 64 * 1024 * 1024usize;
+        let string = Alphanumeric.sample_string(&mut rng, size);
+        let buf = string.as_bytes();
+
+        let write_concurrency = 8;
+        let step = size / write_concurrency;
+        for i in 0..write_concurrency {
+            let buf = &buf[i * step..(i + 1) * step];
+            write.write_all(buf).await.unwrap();
+        }
+        write.flush().await.unwrap();
+        write.shutdown().await.unwrap();
+        drop(write);
+
+        let read_concurrency = 16;
+        let step = size / read_concurrency;
+        let ranges = (0..read_concurrency)
+            .into_iter()
+            .map(|i| std::ops::Range::<usize> {
+                start: i * step,
+                end: (i + 1) * step,
+            })
+            .collect::<Vec<std::ops::Range<usize>>>();
+        let mut result = Vec::new();
+        for i in 0..16 {
+            result.push(
+                object_store
+                    .get_range(&Path::from(write_path.as_str()), ranges[i].clone())
+                    .await
+                    .unwrap(),
+            );
+        }
+        let result = bytes_to_string(result);
+        assert_eq!(result, string);
+
+        let result = object_store
+            .get_ranges(&Path::from(write_path.as_str()), ranges.as_slice())
+            .await
+            .unwrap();
+        let result = bytes_to_string(result);
+        assert_eq!(result, string);
     }
 }
