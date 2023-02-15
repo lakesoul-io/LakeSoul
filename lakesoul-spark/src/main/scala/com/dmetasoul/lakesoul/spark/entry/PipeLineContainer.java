@@ -17,6 +17,8 @@
 
 package com.dmetasoul.lakesoul.spark.entry;
 
+import org.apache.commons.lang.StringUtils;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -127,13 +129,28 @@ class Operator {
         if (operation.isGroupBy()) {
             String agg = operation.getGroupby().aggKeysSql();
             String metric = operation.getGroupby().metricKeysSql();
-            sql = "select " + agg + "," + metric + " from " + tableName + " group by " + agg;
+            if (StringUtils.isNotBlank(agg)) {
+                sql = String.format("select '%s', '%s' from '%s' group by '%s'", agg, metric, tableName, agg);
+            } else {
+                sql = String.format("select '%s' from '%s'", metric, tableName);
+            }
         }
         if (operation.isFilter()) {
-            sql = "select * from " + tableName + " where " + operation.getFilter().toString();
+            sql = String.format("select * from '%s' where '%s'", tableName, operation.getFilter().toString());
         }
         if (operation.isJoin()) {
-            sql = "select * from " + tableName + " " + operation.getJoin().getJoinType() + " join " + operation.getJoin().getRightTableName() + operation.getJoin().joinConditions();
+            String joinType = operation.getJoin().getJoinType();
+            String rightTable = operation.getJoin().getRightTableName();
+            String joinConditions = operation.getJoin().joinConditions();
+            sql = String.format("select * from '%s' '%s' join '%s' '%s'", tableName, joinType, rightTable, joinConditions);
+        }
+        if (operation.isDistinct()) {
+            StringBuilder selectColumn = new StringBuilder(operation.getDistinct().getColumnName());
+            if (operation.getDistinct().getRangeColumn().size() > 0) {
+                selectColumn.append(",");
+                selectColumn.append(String.join(",", operation.getDistinct().getRangeColumn()));
+            }
+            sql = String.format("select '%s' from '%s'", selectColumn, tableName);
         }
         return sql;
     }
@@ -164,6 +181,7 @@ class Operation {
     private GroupBy groupby;
     private Join join;
     private Filter filter;
+    private Distinct distinct;
 
     public GroupBy getGroupby() {
         return groupby;
@@ -189,6 +207,14 @@ class Operation {
         this.filter = filter;
     }
 
+    public Distinct getDistinct() {
+        return distinct;
+    }
+
+    public void setDistinct(Distinct distinct) {
+        this.distinct = distinct;
+    }
+
     public boolean isGroupBy() {
         return null != groupby;
     }
@@ -199,6 +225,10 @@ class Operation {
 
     public boolean isFilter() {
         return null != filter;
+    }
+
+    public boolean isDistinct() {
+        return null != distinct;
     }
 }
 
