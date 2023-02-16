@@ -130,19 +130,19 @@ class Operator {
             String agg = operation.getGroupby().aggKeysSql();
             String metric = operation.getGroupby().metricKeysSql();
             if (StringUtils.isNotBlank(agg)) {
-                sql = String.format("select '%s', '%s' from '%s' group by '%s'", agg, metric, tableName, agg);
+                sql = String.format("select %s, %s from %s group by %s", agg, metric, tableName, agg);
             } else {
-                sql = String.format("select '%s' from '%s'", metric, tableName);
+                sql = String.format("select %s from %s", metric, tableName);
             }
         }
         if (operation.isFilter()) {
-            sql = String.format("select * from '%s' where '%s'", tableName, operation.getFilter().toString());
+            sql = String.format("select * from %s where %s", tableName, operation.getFilter().toString());
         }
         if (operation.isJoin()) {
             String joinType = operation.getJoin().getJoinType();
             String rightTable = operation.getJoin().getRightTableName();
             String joinConditions = operation.getJoin().joinConditions();
-            sql = String.format("select * from '%s' '%s' join '%s' '%s'", tableName, joinType, rightTable, joinConditions);
+            sql = String.format("select * from %s %s join %s %s", tableName, joinType, rightTable, joinConditions);
         }
         if (operation.isDistinct()) {
             StringBuilder selectColumn = new StringBuilder(operation.getDistinct().getColumnName());
@@ -150,7 +150,7 @@ class Operator {
                 selectColumn.append(",");
                 selectColumn.append(String.join(",", operation.getDistinct().getRangeColumn()));
             }
-            sql = String.format("select '%s' from '%s'", selectColumn, tableName);
+            sql = String.format("select %s from %s", selectColumn, tableName);
         }
         return sql;
     }
@@ -396,7 +396,7 @@ class PipelineSink {
     private int triggerTime = 2000;
     private List<String> hashPartition;
     private int hashBucketNum = 2;
-    private List<String> rangePartition = new ArrayList<>();
+    private List<String> rangePartition;
     private String outputmode = "complete";
     private String processType = "stream";
     private String checkpointLocation = "/tmp/chk";
