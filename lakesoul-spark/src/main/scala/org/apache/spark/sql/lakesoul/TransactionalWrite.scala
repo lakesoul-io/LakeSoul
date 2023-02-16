@@ -80,7 +80,7 @@ trait TransactionalWrite {
           throw LakeSoulErrors.partitionColumnNotFoundException(col.name, output)
         }
     }
-    val hashPartitionColumns: Seq[Attribute] = hashPartitionSchema.map { col =>
+    hashPartitionSchema.map { col =>
       // schema is already normalized, therefore we can do an equality check
       output.find(f => f.name == col.name)
         .getOrElse {
@@ -88,9 +88,7 @@ trait TransactionalWrite {
         }
     }
 
-    val partitionColumns = rangePartitionColumns ++ hashPartitionColumns
-
-    if (partitionColumns.nonEmpty && partitionColumns.length == output.length) {
+    if (rangePartitionColumns.nonEmpty && rangePartitionColumns.length == output.length) {
       throw LakeSoulErrors.nonPartitionColumnAbsentException(colsDropped)
     }
     rangePartitionColumns

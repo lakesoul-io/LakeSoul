@@ -215,13 +215,6 @@ trait AppendSaveModeTests extends BatchWriterSoulTest {
         }
         assert(e1.getMessage.contains("NullType have been dropped"))
 
-        val e2 = intercept[AnalysisException] {
-          spark.read.schema(schema1).json(Seq(row1).toDS()).write
-            .option("hashPartitions", "key")
-            .option("hashBucketNum", "2")
-            .append(dir)
-        }
-        assert(e2.getMessage.contains("NullType have been dropped"))
       }
     }
   }
