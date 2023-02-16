@@ -102,12 +102,16 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_buffer_size(ioConfigBuilder, bufferSize);
     }
 
-    public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint) {
+    public void setObjectStoreOptions(String accessKey, String accessSecret,
+                                      String region, String bucketName, String endpoint,
+                                      String user, String defaultFS) {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
         setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
         setObjectStoreOption("fs.s3a.bucket", bucketName);
         setObjectStoreOption("fs.s3a.endpoint", endpoint);
+        setObjectStoreOption("fs.defaultFS", defaultFS);
+        setObjectStoreOption("fs.hdfs.user", user);
     }
 
     public void setObjectStoreOption(String key, String value) {

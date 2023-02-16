@@ -20,8 +20,6 @@ import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
@@ -38,6 +36,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
+import org.apache.spark.sql.vectorized.NativeIOOptions;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
 import java.io.IOException;
@@ -154,15 +153,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     FileSplit split = (FileSplit) inputSplit;
     this.file = split.getPath();
     this.filePath = file.toString();
-    FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());
-    if (fileSystem instanceof S3AFileSystem) {
-      s3aFileSystem = (S3AFileSystem) fileSystem;
-      awsS3Bucket = s3aFileSystem.getBucket();
-      s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
-      s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
-      s3aAccessKey = taskAttemptContext.getConfiguration().get("fs.s3a.access.key");
-      s3aSecretKey = taskAttemptContext.getConfiguration().get("fs.s3a.secret.key");
-    }
+    this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
     initializeInternal();
   }
 
@@ -246,9 +237,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     reader.setBufferSize(prefetchBufferSize);
     reader.setThreadNum(threadNum);
 
-    if (s3aFileSystem != null) {
-      reader.setObjectStoreOptions(s3aAccessKey, s3aSecretKey, s3aRegion, awsS3Bucket, s3aEndpoint);
-    }
+    NativeIOUtils.setNativeIOOptions(reader, this.nativeIOOptions);
 
     if (filter != null) {
       reader.addFilter(filterEncode(filter));
@@ -374,13 +363,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   private String filePath;
 
-  private S3AFileSystem s3aFileSystem = null;
-  private String s3aEndpoint = null;
-  private String s3aRegion = null;
-  private String s3aAccessKey = null;
-  private String s3aSecretKey = null;
-
-  private String awsS3Bucket = null;
+  private NativeIOOptions nativeIOOptions;
 
   private final FilterPredicate filter;
 }

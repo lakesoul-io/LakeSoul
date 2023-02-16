@@ -76,7 +76,6 @@ pub struct MultiPartAsyncWriter {
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
-    config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
     path: Path,
 }
@@ -85,7 +84,7 @@ pub struct MultiPartAsyncWriter {
 /// sort the batches before write to async writer
 pub struct SortAsyncWriter {
     sorter_sender: Sender<ArrowResult<RecordBatch>>,
-    sort_exec: Arc<dyn ExecutionPlan>,
+    _sort_exec: Arc<dyn ExecutionPlan>,
     join_handle: JoinHandle<Result<()>>,
 }
 
@@ -162,11 +161,11 @@ impl ExecutionPlan for ReceiverStreamExec {
         unimplemented!()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, _children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let receiver_stream = self.stream.borrow_mut().take().unwrap();
         let join_handle = self.join_handle.borrow_mut().take().unwrap();
         let stream = RecordBatchReceiverStream::create(&self.schema, receiver_stream, join_handle);
@@ -223,7 +222,6 @@ impl MultiPartAsyncWriter {
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
-            config,
             object_store,
             path,
         })
@@ -355,7 +353,7 @@ impl SortAsyncWriter {
 
         Ok(SortAsyncWriter {
             sorter_sender: tx,
-            sort_exec: exec_plan,
+            _sort_exec: exec_plan,
             join_handle,
         })
     }

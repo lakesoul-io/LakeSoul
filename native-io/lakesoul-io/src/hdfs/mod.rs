@@ -30,9 +30,8 @@ use object_store::Error::Generic;
 use object_store::{GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
 use std::io::ErrorKind::NotFound;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -44,21 +43,11 @@ pub struct HDFS {
 }
 
 impl HDFS {
-    pub fn try_new(config: LakeSoulIOConfig) -> Result<Self> {
-        let default_uri = String::from("default");
-        let uri = config
-            .object_store_options
-            .get("fs.defaultFS")
-            .or(config.object_store_options.get("fs.default.name"))
-            .or(Some(&default_uri))
-            .ok_or(DataFusionError::IoError(io::Error::new(
-                ErrorKind::AddrNotAvailable,
-                "fs.defaultFS is not set for hdfs object store",
-            )))?;
+    pub fn try_new(host: &str, config: LakeSoulIOConfig) -> Result<Self> {
         let user = config.object_store_options.get("fs.hdfs.user");
         let client = match user {
-            None => Client::connect(uri.as_str()),
-            Some(user) => Client::connect_as_user(uri.as_str(), user.as_str()),
+            None => Client::connect(host),
+            Some(user) => Client::connect_as_user(host, user.as_str()),
         }
         .map_err(|e| DataFusionError::IoError(e))?;
 
@@ -155,7 +144,7 @@ impl ObjectStore for HDFS {
         Ok((location.to_string(), Box::new(async_write.compat_write())))
     }
 
-    async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> object_store::Result<()> {
+    async fn abort_multipart(&self, location: &Path, _multipart_id: &MultipartId) -> object_store::Result<()> {
         let file_exist = self.is_file_exist(location).await?;
         if file_exist {
             self.delete(location).await
@@ -259,12 +248,12 @@ impl ObjectStore for HDFS {
 
     async fn list(
         &self,
-        prefix: Option<&Path>,
+        _prefix: Option<&Path>,
     ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
         todo!()
     }
 
-    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+    async fn list_with_delimiter(&self, _prefix: Option<&Path>) -> object_store::Result<ListResult> {
         todo!()
     }
 

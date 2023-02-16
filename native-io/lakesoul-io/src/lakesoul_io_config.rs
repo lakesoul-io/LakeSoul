@@ -233,7 +233,7 @@ fn register_hdfs_object_store(host: &str, config: &LakeSoulIOConfig, runtime: &R
     }
     #[cfg(feature = "hdfs")]
     {
-        let hdfs = HDFS::try_new(config.clone())?;
+        let hdfs = HDFS::try_new(host, config.clone())?;
         runtime.register_object_store("hdfs", host, Arc::new(hdfs));
         Ok(())
     }
@@ -268,7 +268,11 @@ fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: 
                     {
                         return Ok(path.clone());
                     }
-                    register_hdfs_object_store(&url[url::Position::BeforeHost..url::Position::BeforePath], config, &runtime)?;
+                    register_hdfs_object_store(
+                        &url[url::Position::BeforeHost..url::Position::BeforePath],
+                        config,
+                        &runtime,
+                    )?;
                     Ok(path.clone())
                 } else {
                     // defaultFS should have been registered with hdfs,
