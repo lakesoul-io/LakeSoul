@@ -710,7 +710,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sorted_stream_merger_with_sum_and_last() {
-        let session_ctx = SessionContext::new();
+        let session_config = SessionConfig::default().with_batch_size(2);
+        let session_ctx = SessionContext::with_config(session_config);
         let task_ctx = session_ctx.task_ctx();
         let s1b1 = create_batch(
             vec!["id", "a", "b", "c"],
@@ -808,7 +809,7 @@ mod tests {
             vec!["id", "a", "b", "d"],
             &[5, 7],
             &[4, 10],
-            vec![Some(1.2), None],
+            vec![None, None],
             vec!["33", "30004"],
         );
         let s3b4 = create_batch(vec!["id", "a", "b", "d"], &[], &[], vec![], vec![]);
@@ -833,7 +834,7 @@ mod tests {
                 "+----+-----+------+--------+",
                 "| 5  | 5   | 3.2  | 30001  |",
                 "| 5  | 8   | 3.2  | 30002  |",
-                "| 5  | 4   | 1.2  | 33     |",
+                "| 5  | 4   |      | 33     |",
                 "| 7  | 10  |      | 30004  |",
                 "| 7  | 5   |      | 30005  |",
                 "| 9  | 90  |      | 30006  |",
@@ -904,7 +905,7 @@ mod tests {
             vec![
                 MergeOperator::UseLast,
                 MergeOperator::Sum,
-                MergeOperator::Sum,
+                MergeOperator::UseLastNotNull,
                 MergeOperator::UseLast,
                 MergeOperator::UseLast,
             ],
@@ -913,18 +914,18 @@ mod tests {
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
         assert_batches_eq!(
             &[
-                "+----+-----+-------+-------+--------+",
-                "| id | a   | b     | c     | d      |",
-                "+----+-----+-------+-------+--------+",
-                "| 1  | 10  | 3.2   | 102   |        |",
-                "| 3  | 30  | 4.8   | 201   |        |",
-                "| 4  | 40  | 10.7  | 20003 |        |",
-                "| 5  | 50  | 25.54 | 20006 | 33     |",
-                "| 6  | 60  | 1.61  | 10011 |        |",
-                "| 7  | 70  |       | 20007 | 30005  |",
-                "| 9  | 90  |       |       | 30006  |",
-                "| 10 | 100 | 1.51  |       | 300007 |",
-                "+----+-----+-------+-------+--------+",
+                "+----+-----+------+-------+--------+",
+                "| id | a   | b    | c     | d      |",
+                "+----+-----+------+-------+--------+",
+                "| 1  | 10  | 2    | 102   |        |",
+                "| 3  | 30  | 4.8  | 201   |        |",
+                "| 4  | 40  | 1.2  | 20003 |        |",
+                "| 5  | 50  | 3.2  | 20006 | 33     |",
+                "| 6  | 60  | 1.61 | 10011 |        |",
+                "| 7  | 70  |      | 20007 | 30005  |",
+                "| 9  | 90  |      |       | 30006  |",
+                "| 10 | 100 | 1.51 |       | 300007 |",
+                "+----+-----+------+-------+--------+",
             ],
             &merged
         );

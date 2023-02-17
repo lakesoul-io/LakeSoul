@@ -24,3 +24,4 @@ pub mod lakesoul_io_config;
 pub use datafusion::arrow::error::Result;
 pub mod sorted_merge;
 pub mod default_column_stream;
+pub mod constant;
