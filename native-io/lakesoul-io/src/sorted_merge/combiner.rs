@@ -15,26 +15,25 @@
  */
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::constant::{ConstEmptyArray, ConstNullArray};
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
-use crate::sorted_merge::sort_key_range::{SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef};
-use crate::constant::{ConstNullArray, ConstEmptyArray};
+use crate::sorted_merge::sort_key_range::{
+    SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef,
+};
 
+use arrow::compute::interleave;
 use arrow::{
-    array::{
-        make_array as make_arrow_array, Array, ArrayBuilder, ArrayRef, PrimitiveBuilder,
-        StringBuilder,
-    },
+    array::{make_array as make_arrow_array, Array, ArrayBuilder, ArrayRef, PrimitiveBuilder, StringBuilder},
     datatypes::{DataType, Field, SchemaRef},
     error::ArrowError,
     error::Result as ArrowResult,
     record_batch::RecordBatch,
 };
 use arrow_array::types::*;
-use arrow::compute::interleave;
 use dary_heap::QuaternaryHeap;
 use smallvec::SmallVec;
 
@@ -165,7 +164,8 @@ impl MinHeapSortKeyBatchRangeCombiner {
             .enumerate()
             .map(|(column_idx, field)| {
                 let capacity = self.in_progress.len();
-                let ranges_per_col: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self.in_progress
+                let ranges_per_col: Vec<&SmallVec<[SortKeyArrayRange; 4]>> = self
+                    .in_progress
                     .iter()
                     .map(|ranges_per_row| ranges_per_row.column(column_idx))
                     .collect::<Vec<_>>();
@@ -178,8 +178,8 @@ impl MinHeapSortKeyBatchRangeCombiner {
                 // For the case that consecutive rows of target array are extended from the same source array
                 flatten_array_ranges.dedup_by_key(|range| range.batch_idx);
 
-                let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::new();
-                let mut flatten_dedup_arrays:Vec<ArrayRef> = flatten_array_ranges
+                let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::with_capacity(16);
+                let mut flatten_dedup_arrays: Vec<ArrayRef> = flatten_array_ranges
                     .iter()
                     .enumerate()
                     .map(|(idx, range)| {
@@ -196,7 +196,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                     ranges_per_col,
                     &mut flatten_dedup_arrays,
                     &batch_idx_to_flatten_array_idx,
-                    unsafe {self.merge_operator.get_unchecked(column_idx)},
+                    unsafe { self.merge_operator.get_unchecked(column_idx) },
                     self.const_empty_array.get(field.data_type()),
                 )
             })
@@ -212,7 +212,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     fn get_mut_current_sort_key_range(&mut self) -> &mut SortKeyBatchRanges {
-        unsafe{ Arc::get_mut_unchecked(&mut self.current_sort_key_range)}
+        unsafe { Arc::get_mut_unchecked(&mut self.current_sort_key_range) }
     }
 }
 
@@ -251,10 +251,10 @@ fn merge_sort_key_array_ranges(
     let null_idx = append_idx - 1;
     let mut null_counter = 0;
 
-    // ### build with arrow::compute::interleave ### 
+    // ### build with arrow::compute::interleave ###
     let extend_list: Vec<(usize, usize)> = ranges
         .iter()
-        .map(|ranges_per_row|{
+        .map(|ranges_per_row| {
             match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder) {
                 MergeResult::AppendValue(row_idx) => (append_idx, row_idx),
                 MergeResult::AppendNull => {
@@ -271,10 +271,17 @@ fn merge_sort_key_array_ranges(
 
     let append_array = match append_array_data_builder.len() {
         0 => empty_array,
-        _ => make_arrow_array(append_array_data_builder.finish().into_data())
+        _ => make_arrow_array(append_array_data_builder.finish().into_data()),
     };
 
-
     flatten_dedup_arrays.push(append_array);
-    interleave(flatten_dedup_arrays.iter().map(|array_ref| array_ref.as_ref()).collect::<Vec<_>>().as_slice(), extend_list.as_slice()).unwrap()
+    interleave(
+        flatten_dedup_arrays
+            .iter()
+            .map(|array_ref| array_ref.as_ref())
+            .collect::<Vec<_>>()
+            .as_slice(),
+        extend_list.as_slice(),
+    )
+    .unwrap()
 }

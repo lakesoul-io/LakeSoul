@@ -24,7 +24,7 @@ use arrow::{
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 // A range in one arrow::record_batch::RecordBatch with same sorted primary key
 // This is the unit to be sorted in min heap
@@ -214,9 +214,9 @@ pub struct SortKeyBatchRanges {
 }
 
 impl SortKeyBatchRanges {
-    pub fn new(schema: SchemaRef, fields_map:Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
+    pub fn new(schema: SchemaRef, fields_map: Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
-            sort_key_array_ranges: vec![smallvec![];schema.fields().len()],
+            sort_key_array_ranges: vec![smallvec![]; schema.fields().len()],
             fields_map: fields_map.clone(),
             schema: schema.clone(),
             batch_range: None,

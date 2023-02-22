@@ -30,7 +30,7 @@ use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream, expressions::col};
+use datafusion::physical_plan::{expressions::col, RecordBatchStream, SendableRecordBatchStream};
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
@@ -111,7 +111,7 @@ impl SortedStreamMerger {
     pub(crate) fn new_from_streams(
         streams: Vec<SortedStream>,
         target_schema: SchemaRef,
-        primary_keys:Vec<String>,
+        primary_keys: Vec<String>,
         batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Result<Self> {
@@ -121,39 +121,50 @@ impl SortedStreamMerger {
             .iter()
             .map(|stream| {
                 let schema = stream.stream.schema();
-                primary_keys.iter()
-                    .map(move |pk| {
-                        col(pk.as_str(), &schema.clone()).unwrap()
-                    })
+                primary_keys
+                    .iter()
+                    .map(move |pk| col(pk.as_str(), &schema.clone()).unwrap())
                     .collect::<Vec<_>>()
             })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
         let row_converters = streams
             .iter()
             .map(|stream| {
                 let schema = stream.stream.schema();
-                let sort_fields = primary_keys.iter()
+                let sort_fields = primary_keys
+                    .iter()
                     .map(move |pk| {
                         let data_type = schema.field_with_name(pk.as_str()).unwrap().data_type().clone();
                         SortField::new(data_type)
                     })
                     .collect::<Vec<_>>();
-                RowConverter::new(sort_fields)
-                .unwrap()
+                RowConverter::new(sort_fields).unwrap()
             })
             .collect::<Vec<_>>();
 
-
         let fields_map = streams
             .iter()
-            .map(|s| s.stream.schema().fields().iter().map(|f| target_schema.index_of(f.name()).unwrap()).collect::<Vec<_>>())
+            .map(|s| {
+                s.stream
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| target_schema.index_of(f.name()).unwrap())
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
         let fields_map = Arc::new(fields_map);
 
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
-        let combiner = RangeCombiner::new(target_schema.clone(), streams_num, fields_map.clone(), batch_size, merge_operator);
+        let combiner = RangeCombiner::new(
+            target_schema.clone(),
+            streams_num,
+            fields_map.clone(),
+            batch_size,
+            merge_operator,
+        );
 
         Ok(Self {
             schema: target_schema,
@@ -190,9 +201,7 @@ impl SortedStreamMerger {
                 }
                 Some(Ok(batch)) => {
                     if batch.num_rows() > 0 {
-
-                        let cols = self
-                            .column_expressions[idx]
+                        let cols = self.column_expressions[idx]
                             .iter()
                             .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
                             .collect::<Result<Vec<_>>>()?;
@@ -276,9 +285,7 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => {
-                    return Poll::Ready(Some(batch))
-                }
+                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch)),
             }
         }
     }
@@ -321,10 +328,10 @@ mod tests {
 
     use comfy_table::{Cell, Table};
 
-    use crate::sorted_merge::merge_operator::MergeOperator;
-    use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
+    use crate::sorted_merge::merge_operator::MergeOperator;
+    use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 
     #[tokio::test]
     async fn test_multi_file_merger() {
@@ -471,10 +478,7 @@ mod tests {
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
     }
 
-    async fn create_stream(
-        batches: Vec<RecordBatch>,
-        context: Arc<TaskContext>,
-    ) -> Result<SortedStream> {
+    async fn create_stream(batches: Vec<RecordBatch>, context: Arc<TaskContext>) -> Result<SortedStream> {
         let schema = batches[0].schema();
         let exec = MemoryExec::try_new(&[batches], schema.clone(), None).unwrap();
         let stream = exec.execute(0, context.clone()).unwrap();
@@ -514,7 +518,6 @@ mod tests {
         let s3 = create_stream(vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6], task_ctx.clone())
             .await
             .unwrap();
-
 
         let merge_stream =
             SortedStreamMerger::new_from_streams(vec![s1, s2, s3], schema, vec![String::from("a")], 2, vec![]).unwrap();
@@ -672,8 +675,14 @@ mod tests {
 
         let sort_fields = vec!["id"];
 
-        let merge_stream =
-            SortedStreamMerger::new_from_streams(vec![s1, s2, s3], Arc::new(schema), vec![String::from("id")], 2, vec![]).unwrap();
+        let merge_stream = SortedStreamMerger::new_from_streams(
+            vec![s1, s2, s3],
+            Arc::new(schema),
+            vec![String::from("id")],
+            2,
+            vec![],
+        )
+        .unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
         print_batches(&merged).unwrap();
     }
@@ -855,7 +864,6 @@ mod tests {
             Field::new("d", DataType::Utf8, true),
         ]);
 
-
         let merge_stream = SortedStreamMerger::new_from_streams(
             vec![s1, s2, s3],
             Arc::new(schema),
@@ -905,17 +913,17 @@ mod tests {
         let conf = LakeSoulIOConfigBuilder::new()
             .with_primary_keys(vec!["uuid".to_string()])
             .with_files(vec![
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-7c48cc4b-d3ff-47c5-8c2f-f7d247d624bf_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c30b9b23-4552-4615-8431-4338b20cc935_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-fa350401-7fc2-4f25-adbb-7922551e56c2_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-fa350401-7fc2-4f25-adbb-7922551e56c2_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-9e52f965-1040-4761-a571-a04736013e1e_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-8f92dab2-a072-4196-8abe-0b7c92b8825f_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6307b19-4f10-45b6-b6e1-4b19b15cf570_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6307b19-4f10-45b6-b6e1-4b19b15cf570_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-16930665-7e76-4545-bd3d-ca2e5cd907dc_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-49fd4d31-30b8-42ce-bccd-f15fb45538c7_00000.c000.parquet".to_string(),
-                "s3://lakesoul-test-bucket/datalake_table/part-00000-e8011728-ead5-4165-bf44-754867cb156a_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-c2c3071b-e566-4b2f-a67c-6648c311b9f5_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-bde11c74-f264-40cc-aa71-be7d61c2ed78_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-84dd2e3f-3bce-4dd3-b612-81791cbc701f_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-5813797f-8d93-420f-af9f-75ebeb655af9_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-659b7074-3547-43cb-b858-3867624c0236_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-ab29b003-5438-4b19-ba9d-067c0bf82800_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-c6efa765-91cc-4393-a7ef-6a53f1f0d777_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-391c2a2d-7c8c-4193-9539-ec881e046a23_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-44b1bdd7-6501-4056-aa1b-1851a40192ac_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-2c7f8088-cf5b-4418-94f1-41aece595c6b_00000.c000.parquet".to_string(),
+                "s3://lakesoul-test-bucket/datalake_table/part-00000-4c90050a-6d97-423e-a90b-3385872a03a9_00000.c000.parquet".to_string(),
             ])
             .with_schema(Arc::new(schema))
             .with_thread_num(2)
@@ -941,18 +949,23 @@ mod tests {
         let session_ctx = SessionContext::with_config(session_config);
         let stream = session_ctx
             .read_parquet(
-                "part-00000-58928ac0-5640-486e-bb94-8990262a1797_00000.c000.parquet"
-                , Default::default())
+                "part-00000-58928ac0-5640-486e-bb94-8990262a1797_00000.c000.parquet",
+                Default::default(),
+            )
             .await
-            // .unwrap()
-            // .sort(vec![logical_col("id").sort(true, true)])
             .unwrap()
             .execute_stream()
             .await
             .unwrap();
         let rb = common::collect(stream).await.unwrap();
-        println!("{}", &rb.iter().map(RecordBatch::num_rows).collect::<Vec<usize>>().iter().sum::<usize>());
-        print_batches(&rb.clone());
+        println!(
+            "{}",
+            &rb.iter()
+                .map(RecordBatch::num_rows)
+                .collect::<Vec<usize>>()
+                .iter()
+                .sum::<usize>()
+        );
+        print_batches(&rb.clone()).expect("");
     }
-
 }

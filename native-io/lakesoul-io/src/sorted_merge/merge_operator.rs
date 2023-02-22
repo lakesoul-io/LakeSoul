@@ -32,7 +32,7 @@ pub enum MergeOperator {
     Concat,
 }
 
-impl Default for MergeOperator{
+impl Default for MergeOperator {
     fn default() -> Self {
         MergeOperator::UseLast
     }
@@ -45,13 +45,13 @@ pub enum MergeResult {
 }
 
 impl MergeOperator {
-    pub fn from_name(name: &str)-> Self{
+    pub fn from_name(name: &str) -> Self {
         match name {
             "UseLast" => MergeOperator::UseLast,
             "UseLastNotNull" => MergeOperator::UseLastNotNull,
             "Sum" => MergeOperator::Sum,
             "Concat" => MergeOperator::Concat,
-            _ => panic!("Invalid MergeOperator name")
+            _ => panic!("Invalid MergeOperator name"),
         }
     }
 
@@ -76,7 +76,9 @@ impl MergeOperator {
                 },
             },
             _ => match self {
-                MergeOperator::UseLast => MergeResult::Extend(ranges.last().unwrap().batch_idx, ranges.last().unwrap().end_row - 1),
+                MergeOperator::UseLast => {
+                    MergeResult::Extend(ranges.last().unwrap().batch_idx, ranges.last().unwrap().end_row - 1)
+                }
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
                 MergeOperator::Sum => sum_with_primitive_type(data_type, ranges, append_array_data_builder),
                 MergeOperator::Concat => concat_with_string_type(ranges, append_array_data_builder),
@@ -85,17 +87,15 @@ impl MergeOperator {
     }
 }
 
-fn last_non_null(
-    ranges: &SmallVec<[SortKeyArrayRange; 4]>
-) -> MergeResult {
+fn last_non_null(ranges: &SmallVec<[SortKeyArrayRange; 4]>) -> MergeResult {
     let mut is_none = true;
     let mut non_null_row_idx = 0;
     let mut batch_idx = 0;
     let len = ranges.len();
     for range_idx in 0..ranges.len() {
-        let range = &ranges[len - range_idx -1];
+        let range = &ranges[len - range_idx - 1];
         let array = range.array();
-        for row_idx in 0..range.end_row-range.begin_row {
+        for row_idx in 0..range.end_row - range.begin_row {
             if !array.is_null(range.end_row - row_idx - 1) {
                 is_none = false;
                 non_null_row_idx = range.end_row - row_idx - 1;
@@ -103,12 +103,14 @@ fn last_non_null(
                 break;
             }
         }
-        if !is_none {break}
+        if !is_none {
+            break;
+        }
     }
-    
+
     match is_none {
         true => MergeResult::AppendNull,
-        false => MergeResult::Extend(batch_idx, non_null_row_idx)
+        false => MergeResult::Extend(batch_idx, non_null_row_idx),
     }
 }
 
@@ -206,7 +208,9 @@ macro_rules! sum_with_primitive_type_and_append_value {
             if is_none {
                 match null_buffer {
                     Some(buffer) => {
-                        is_none = is_none & (buffer.count_set_bits_offset(offset + range.begin_row, range.end_row-range.begin_row)==range.end_row-range.begin_row);
+                        is_none = is_none
+                            & (buffer.count_set_bits_offset(offset + range.begin_row, range.end_row - range.begin_row)
+                                == range.end_row - range.begin_row);
                     }
                     None => is_none = false,
                 }
