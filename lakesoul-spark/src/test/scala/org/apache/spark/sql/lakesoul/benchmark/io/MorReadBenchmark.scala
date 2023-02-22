@@ -47,12 +47,83 @@ object MorReadBenchmark {
     LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeNonNullOp", "stringNonNullMerge")
     val tablePath= "s3://lakesoul-test-bucket/datalake_table"
     val table = LakeSoulTable.forPath(tablePath)
-    spark.time({
-      val df = table.toDF
-//        .withColumn("requests", expr("longSumMerge(requests)"))
-//        .withColumn("name", expr("stringNonNullMerge(name)"))
-      df
-        .write.mode("Overwrite").parquet("/opt/spark/work-dir/result/ccf/")
-    })
+
+    if (args.length >= 2 ) {
+      val NATIVE_IO_ENABLE = args(1)
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, NATIVE_IO_ENABLE)
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
+
+      println(s"=====Reading with NATIVE_IO_ENABLE=$NATIVE_IO_ENABLE=====")
+
+      spark.time({
+        val path = "/tmp/result/ccf/result"
+        println(s"writing local parquet in $path")
+        table.toDF
+          .withColumn("requests", expr("longSumMerge(requests)"))
+          //        .withColumn("name", expr("stringNonNullMerge(name)"))
+          //        .select("uuid","name")
+          //        .where("uuid ='000007dc-d5fe-426a-acb8-dd5a5bfc042c'")
+          //        .show()
+          .write.parquet(path)
+      })
+    } else{
+      println(s"=====Reading with native io=====")
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
+      spark.time({
+        println("counting df")
+
+        val rows = table.toDF.count()
+        println(s"row count = $rows")
+      })
+      spark.time({
+        println("writing noop")
+        table.toDF
+          .withColumn("requests", expr("longSumMerge(requests)"))
+          //        .withColumn("name", expr("stringNonNullMerge(name)"))
+          .write.mode("Overwrite")
+          .format("noop")
+          .save()
+      })
+//      spark.time({
+//        println("writing local parquet")
+//        table.toDF
+//          .withColumn("requests", expr("longSumMerge(requests)"))
+//          //        .withColumn("name", expr("stringNonNullMerge(name)"))
+//          .write.parquet("/tmp/result/ccf/")
+//      })
+
+      //    spark.time({
+      //      val path = "/tmp/result/ccf/result"
+      //      println(s"writing local parquet in $path")
+      //      table.toDF
+      //        .withColumn("requests", expr("longSumMerge(requests)"))
+      ////        .withColumn("name", expr("stringNonNullMerge(name)"))
+      ////        .select("uuid","name")
+      ////        .where("uuid ='000007dc-d5fe-426a-acb8-dd5a5bfc042c'")
+      ////        .show()
+      //        .write.parquet(path)
+      //    })
+
+      println(s"=====Reading with parquet-mr=====")
+      // spark parquet-mr read
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "false")
+
+      //    spark.time({
+      //      println("counting df")
+      //      //        .withColumn("requests", expr("longSumMerge(requests)"))
+      //      //        .withColumn("name", expr("stringNonNullMerge(name)"))
+      //      val rows = table.toDF.count()
+      //      println(s"row count = $rows")
+      //    })
+      //    spark.time({
+      //      println("writing noop")
+      //      table.toDF
+      //        .write.mode("Overwrite")
+      //        .format("noop")
+      //        .save()
+      //    })
+    }
+
   }
 }

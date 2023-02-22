@@ -75,6 +75,13 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, columnPtr);
     }
 
+    public void setPrimaryKeys(Iterable<String> primaryKeys) {
+        for (String pk : primaryKeys) {
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, pk);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, ptr);
+        }
+    }
+
     public void setSchema(Schema schema) {
         assert ioConfigBuilder != null;
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
@@ -155,6 +162,9 @@ public class NativeIOBase implements AutoCloseable {
 
         @Override
         public void invoke(boolean status, String err) {
+            if (err!=null) {
+                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.Callback.invoke]" + err);
+            }
             callback.accept(status, err);
             removerReferenceKey();
         }

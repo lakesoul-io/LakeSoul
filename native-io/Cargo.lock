@@ -1281,6 +1281,7 @@ dependencies = [
  "heapless",
  "object_store",
  "parquet",
+ "rand",
  "serde",
  "smallvec",
  "tempfile",
