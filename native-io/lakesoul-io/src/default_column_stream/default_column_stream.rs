@@ -13,23 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::pin::Pin;
 use std::fmt::{Debug, Formatter};
-
-use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
 
 use arrow::datatypes::SchemaRef;
-use arrow::array::NullArray;
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
-use arrow_schema::DataType;
-use arrow_array::{ArrayRef, Int32Array, new_null_array};
+use arrow_array::new_null_array;
 
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use datafusion::error::Result;
 
 
 pub(crate) struct WrappedSendableRecordBatchStream {

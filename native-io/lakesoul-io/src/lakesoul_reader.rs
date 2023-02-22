@@ -208,7 +208,7 @@ mod tests {
     use tokio::runtime::Builder;
     use rand::prelude::*;
 
-    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::datatypes::{DataType, Field, Schema};
     use arrow::util::pretty::print_batches;
 
     #[tokio::test]

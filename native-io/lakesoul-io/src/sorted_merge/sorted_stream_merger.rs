@@ -29,8 +29,7 @@ use arrow::row::{RowConverter, SortField};
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
-use datafusion::logical_expr::col as logical_col;
-use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream, expressions::col};
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
@@ -94,26 +93,24 @@ pub(crate) struct SortedStreamMerger {
 
     // /// The accumulated row indexes for the next record batch
     // in_progress: Vec<RowIndex>,
-    /// The physical expressions to sort by
+    // The physical expressions to sort by
     column_expressions: Vec<Vec<Arc<dyn PhysicalExpr>>>,
 
     range_combiner: RangeCombiner,
 
-    /// If the stream has encountered an error
+    // If the stream has encountered an error
     aborted: bool,
 
-    /// row converter
+    // row converter
     row_converters: Vec<RowConverter>,
 
     batch_idx_counter: usize,
-
-    fields_index_map_from_streams_to_merger: Arc<Vec<Vec<usize>>>,
 }
 
 impl SortedStreamMerger {
     pub(crate) fn new_from_streams(
         streams: Vec<SortedStream>,
-        schema: SchemaRef,
+        target_schema: SchemaRef,
         primary_keys:Vec<String>,
         batch_size: usize,
         merge_operator: Vec<MergeOperator>,
@@ -150,16 +147,16 @@ impl SortedStreamMerger {
 
         let fields_map = streams
             .iter()
-            .map(|s| s.stream.schema().fields().iter().map(|f| schema.index_of(f.name()).unwrap()).collect::<Vec<_>>())
+            .map(|s| s.stream.schema().fields().iter().map(|f| target_schema.index_of(f.name()).unwrap()).collect::<Vec<_>>())
             .collect::<Vec<_>>();
         let fields_map = Arc::new(fields_map);
 
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();
 
-        let combiner = RangeCombiner::new(schema.clone(), streams_num, fields_map.clone(), batch_size, merge_operator);
+        let combiner = RangeCombiner::new(target_schema.clone(), streams_num, fields_map.clone(), batch_size, merge_operator);
 
         Ok(Self {
-            schema,
+            schema: target_schema,
             range_finished: vec![true; streams_num],
             streams: MergingStreams::new(wrappers),
             column_expressions: expressions,
@@ -167,7 +164,6 @@ impl SortedStreamMerger {
             range_combiner: combiner,
             row_converters,
             batch_idx_counter: 0,
-            fields_index_map_from_streams_to_merger: fields_map.clone(),
         })
     }
 
@@ -310,7 +306,6 @@ mod tests {
     use arrow::array::as_primitive_array;
     use arrow::array::ArrayRef;
     use arrow::array::{Int32Array, StringArray};
-    use arrow::compute::SortOptions;
     use arrow::datatypes::Int64Type;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
@@ -321,8 +316,6 @@ mod tests {
     use datafusion::execution::context::TaskContext;
     use datafusion::from_slice::FromSlice;
     use datafusion::logical_expr::col as logical_col;
-    use datafusion::physical_expr::PhysicalSortExpr;
-    use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::{common, memory::MemoryExec, ExecutionPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -370,10 +363,6 @@ mod tests {
         }
 
         let schema = get_test_file_schema();
-        let sort = vec![PhysicalSortExpr {
-            expr: col("int0", &schema).unwrap(),
-            options: SortOptions::default(),
-        }];
 
         let merge_stream =
             SortedStreamMerger::new_from_streams(streams, schema, vec![String::from("int0")], 1024, vec![]).unwrap();
@@ -483,7 +472,6 @@ mod tests {
     }
 
     async fn create_stream(
-        stream_idx: usize,
         batches: Vec<RecordBatch>,
         context: Arc<TaskContext>,
     ) -> Result<SortedStream> {
@@ -504,7 +492,7 @@ mod tests {
         let s1b3 = create_batch_one_col_i32("a", &[]);
         let s1b4 = create_batch_one_col_i32("a", &[5]);
         let s1b5 = create_batch_one_col_i32("a", &[5, 6, 6]);
-        let s1 = create_stream(0, vec![s1b1, s1b2, s1b3, s1b4, s1b5], task_ctx.clone())
+        let s1 = create_stream(vec![s1b1, s1b2, s1b3, s1b4, s1b5], task_ctx.clone())
             .await
             .unwrap();
 
@@ -513,7 +501,7 @@ mod tests {
         let s2b3 = create_batch_one_col_i32("a", &[]);
         let s2b4 = create_batch_one_col_i32("a", &[5]);
         let s2b5 = create_batch_one_col_i32("a", &[5, 7]);
-        let s2 = create_stream(1, vec![s2b1, s2b2, s2b3, s2b4, s2b5], task_ctx.clone())
+        let s2 = create_stream(vec![s2b1, s2b2, s2b3, s2b4, s2b5], task_ctx.clone())
             .await
             .unwrap();
 
@@ -523,18 +511,10 @@ mod tests {
         let s3b4 = create_batch_one_col_i32("a", &[7, 9]);
         let s3b5 = create_batch_one_col_i32("a", &[]);
         let s3b6 = create_batch_one_col_i32("a", &[10]);
-        let s3 = create_stream(2, vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6], task_ctx.clone())
+        let s3 = create_stream(vec![s3b1, s3b2, s3b3, s3b4, s3b5, s3b6], task_ctx.clone())
             .await
             .unwrap();
 
-        let sort_fields = vec!["a"];
-        let sort_exprs: Vec<_> = sort_fields
-            .into_iter()
-            .map(|field| PhysicalSortExpr {
-                expr: col(field, &schema).unwrap(),
-                options: Default::default(),
-            })
-            .collect();
 
         let merge_stream =
             SortedStreamMerger::new_from_streams(vec![s1, s2, s3], schema, vec![String::from("a")], 2, vec![]).unwrap();
@@ -658,21 +638,18 @@ mod tests {
         );
 
         let s1 = create_stream(
-            1,
             vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s2 = create_stream(
-            2,
             vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s3 = create_stream(
-            3,
             vec![
                 s3b1.clone(),
                 s3b2.clone(),
@@ -694,13 +671,6 @@ mod tests {
         ]);
 
         let sort_fields = vec!["id"];
-        let sort_exprs: Vec<_> = sort_fields
-            .into_iter()
-            .map(|field| PhysicalSortExpr {
-                expr: col(field, &schema).unwrap(),
-                options: Default::default(),
-            })
-            .collect();
 
         let merge_stream =
             SortedStreamMerger::new_from_streams(vec![s1, s2, s3], Arc::new(schema), vec![String::from("id")], 2, vec![]).unwrap();
@@ -852,21 +822,18 @@ mod tests {
         );
 
         let s1 = create_stream(
-            1,
             vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s2 = create_stream(
-            2,
             vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
             task_ctx.clone(),
         )
         .await
         .unwrap();
         let s3 = create_stream(
-            3,
             vec![
                 s3b1.clone(),
                 s3b2.clone(),
@@ -888,14 +855,6 @@ mod tests {
             Field::new("d", DataType::Utf8, true),
         ]);
 
-        let sort_fields = vec!["id"];
-        let sort_exprs: Vec<_> = sort_fields
-            .into_iter()
-            .map(|field| PhysicalSortExpr {
-                expr: col(field, &schema).unwrap(),
-                options: Default::default(),
-            })
-            .collect();
 
         let merge_stream = SortedStreamMerger::new_from_streams(
             vec![s1, s2, s3],

@@ -205,6 +205,7 @@ pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
+    // fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
 
     pub(crate) schema: SchemaRef,
@@ -215,7 +216,7 @@ pub struct SortKeyBatchRanges {
 impl SortKeyBatchRanges {
     pub fn new(schema: SchemaRef, fields_map:Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
-            sort_key_array_ranges: (0..schema.fields().len()).map(|_| smallvec![]).collect(),
+            sort_key_array_ranges: vec![smallvec![];schema.fields().len()],
             fields_map: fields_map.clone(),
             schema: schema.clone(),
             batch_range: None,
@@ -231,7 +232,7 @@ impl SortKeyBatchRanges {
         &self.sort_key_array_ranges[column_idx]
     }
 
-    // insert one SortKeyBatchRange into SortKeyArrayRanges,
+    // insert one SortKeyBatchRange into SortKeyArrayRanges
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
@@ -261,16 +262,4 @@ impl SortKeyBatchRanges {
     }
 }
 
-impl Clone for SortKeyBatchRanges {
-    fn clone(&self) -> Self {
-        SortKeyBatchRanges {
-            sort_key_array_ranges: self.sort_key_array_ranges.clone(),
-            fields_map: self.fields_map.clone(),
-            schema: self.schema.clone(),
-            batch_range: match &self.batch_range {
-                None => None,
-                Some(batch_range) => Some(batch_range.clone()),
-            },
-        }
-    }
-}
+pub type SortKeyBatchRangesRef = Arc<SortKeyBatchRanges>;

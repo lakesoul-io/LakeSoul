@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 pub use datafusion::error::{DataFusionError, Result};

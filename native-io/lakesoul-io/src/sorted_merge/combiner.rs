@@ -20,12 +20,12 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::sorted_merge::merge_operator::{MergeOperator, MergeResult};
-use crate::sorted_merge::sort_key_range::{SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges};
+use crate::sorted_merge::sort_key_range::{SortKeyArrayRange, SortKeyBatchRange, SortKeyBatchRanges, SortKeyBatchRangesRef};
 use crate::constant::{ConstNullArray, ConstEmptyArray};
 
 use arrow::{
     array::{
-        make_array as make_arrow_array, Array, ArrayBuilder, ArrayRef, MutableArrayData, PrimitiveBuilder,
+        make_array as make_arrow_array, Array, ArrayBuilder, ArrayRef, PrimitiveBuilder,
         StringBuilder,
     },
     datatypes::{DataType, Field, SchemaRef},
@@ -34,7 +34,6 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_array::types::*;
-use arrow_array::new_null_array;
 use arrow::compute::interleave;
 use dary_heap::QuaternaryHeap;
 use smallvec::SmallVec;
@@ -85,11 +84,14 @@ pub enum RangeCombinerResult {
 #[derive(Debug)]
 pub struct MinHeapSortKeyBatchRangeCombiner {
     schema: SchemaRef,
+
+    // fields_index_map from source schemas to target schema which vector index = stream_idx
     fields_map: Arc<Vec<Vec<usize>>>,
+
     heap: QuaternaryHeap<Reverse<SortKeyBatchRange>>,
-    in_progress: Vec<SortKeyBatchRanges>,
+    in_progress: Vec<SortKeyBatchRangesRef>,
     target_batch_size: usize,
-    current_sort_key_range: SortKeyBatchRanges,
+    current_sort_key_range: SortKeyBatchRangesRef,
     merge_operator: Vec<MergeOperator>,
     const_null_array: ConstNullArray,
     const_empty_array: ConstEmptyArray,
@@ -103,7 +105,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
         target_batch_size: usize,
         merge_operator: Vec<MergeOperator>,
     ) -> Self {
-        let new_range = SortKeyBatchRanges::new(schema.clone(), fields_map.clone());
+        let new_range = Arc::new(SortKeyBatchRanges::new(schema.clone(), fields_map.clone()));
         let merge_op = match merge_operator.len() {
             0 => vec![MergeOperator::UseLast; schema.clone().fields().len()],
             _ => merge_operator,
@@ -112,7 +114,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
             schema: schema.clone(),
             fields_map: fields_map.clone(),
             heap: QuaternaryHeap::with_capacity(streams_num),
-            in_progress: vec![],
+            in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,
             current_sort_key_range: new_range,
             merge_operator: merge_op,
@@ -132,11 +134,11 @@ impl MinHeapSortKeyBatchRangeCombiner {
             match self.heap.pop() {
                 Some(Reverse(range)) => {
                     if self.current_sort_key_range.match_row(&range) {
-                        self.current_sort_key_range.add_range_in_batch(range.clone());
+                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
                     } else {
                         self.in_progress.push(self.current_sort_key_range.clone());
-                        self.current_sort_key_range = SortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone());
-                        self.current_sort_key_range.add_range_in_batch(range.clone());
+                        self.init_current_sort_key_range();
+                        self.get_mut_current_sort_key_range().add_range_in_batch(range.clone());
                     }
                     RangeCombinerResult::Range(Reverse(range))
                 }
@@ -146,7 +148,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                     } else {
                         if !self.current_sort_key_range.is_empty() {
                             self.in_progress.push(self.current_sort_key_range.clone());
-                            self.current_sort_key_range.set_batch_range(None);
+                            self.get_mut_current_sort_key_range().set_batch_range(None);
                         }
                         RangeCombinerResult::RecordBatch(self.build_record_batch())
                     }
@@ -173,7 +175,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                     .flat_map(|ranges| *ranges)
                     .collect::<Vec<&SortKeyArrayRange>>();
 
-                // For the case that consecutive rows of target array extend from the same source array
+                // For the case that consecutive rows of target array are extended from the same source array
                 flatten_array_ranges.dedup_by_key(|range| range.batch_idx);
 
                 let mut batch_idx_to_flatten_array_idx = HashMap::<usize, usize>::new();
@@ -203,6 +205,14 @@ impl MinHeapSortKeyBatchRangeCombiner {
         self.in_progress.clear();
 
         RecordBatch::try_new(self.schema.clone(), columns)
+    }
+
+    fn init_current_sort_key_range(&mut self) {
+        self.current_sort_key_range = Arc::new(SortKeyBatchRanges::new(self.schema.clone(), self.fields_map.clone()));
+    }
+
+    fn get_mut_current_sort_key_range(&mut self) -> &mut SortKeyBatchRanges {
+        unsafe{ Arc::get_mut_unchecked(&mut self.current_sort_key_range)}
     }
 }
 
@@ -241,8 +251,8 @@ fn merge_sort_key_array_ranges(
     let null_idx = append_idx - 1;
     let mut null_counter = 0;
 
-    // ### build with interleave ### 
-    let mut extend_list: Vec<(usize, usize)> = ranges
+    // ### build with arrow::compute::interleave ### 
+    let extend_list: Vec<(usize, usize)> = ranges
         .iter()
         .map(|ranges_per_row|{
             match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder) {
