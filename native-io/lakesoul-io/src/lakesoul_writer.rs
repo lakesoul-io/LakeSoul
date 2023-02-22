@@ -76,6 +76,7 @@ pub struct MultiPartAsyncWriter {
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
+    _config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
     path: Path,
 }
@@ -222,6 +223,7 @@ impl MultiPartAsyncWriter {
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
+            _config: config,
             object_store,
             path,
         })

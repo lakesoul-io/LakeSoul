@@ -23,66 +23,61 @@ pub struct Parser {}
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
-        if right == "null" {
-            match op.as_str() {
-                "eq" => {
-                    let column = col(left.as_str());
-                    column.is_null()
-                }
-                "noteq" => {
-                    let column = col(left.as_str());
-                    column.is_not_null()
-                }
-                _ => Expr::Wildcard,
+        if op.eq("or") {
+            let left_expr = Parser::parse(left, schema.clone());
+            let right_expr = Parser::parse(right, schema.clone());
+            left_expr.or(right_expr)
+        }else if op.eq("and") {
+            let left_expr = Parser::parse(left, schema.clone());
+            let right_expr = Parser::parse(right, schema.clone());
+            left_expr.and(right_expr)
+        }else if op.eq("not") {
+            let inner = Parser::parse(right, schema);
+            Expr::not(inner)
+        }else {
+            if schema.column_with_name(left.as_str()).is_none() {
+                return Expr::Literal(ScalarValue::Boolean(Some(true)))
             }
-        } else {
-            match op.as_str() {
-                "not" => {
-                    let inner = Parser::parse(right, schema);
-                    Expr::not(inner)
+            let column = col(left.as_str());
+            if right == "null" {
+                match op.as_str() {
+                    "eq" => {
+                        column.is_null()
+                    }
+                    "noteq" => {
+                        column.is_not_null()
+                    }
+                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
                 }
-                "eq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.eq(value)
-                }
-                "noteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.not_eq(value)
-                }
-                "or" => {
-                    let left_expr = Parser::parse(left, schema.clone());
-                    let right_expr = Parser::parse(right, schema);
-                    left_expr.or(right_expr)
-                }
-                "and" => {
-                    let left_expr = Parser::parse(left, schema.clone());
-                    let right_expr = Parser::parse(right, schema);
-                    left_expr.and(right_expr)
-                }
-                "gt" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.gt(value)
-                }
-                "gteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.gt_eq(value)
-                }
-                "lt" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.lt(value)
-                }
-                "lteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema);
-                    column.lt_eq(value)
-                }
+            } else {
+                match op.as_str() {
+                    "eq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.eq(value)
+                    }
+                    "noteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.not_eq(value)
+                    }
+                    "gt" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.gt(value)
+                    }
+                    "gteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.gt_eq(value)
+                    }
+                    "lt" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.lt(value)
+                    }
+                    "lteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.lt_eq(value)
+                    }
 
-                _ => Expr::Wildcard,
+                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
+                }
             }
         }
     }
@@ -156,9 +151,9 @@ impl Parser {
             DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
             DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
-            DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
+            DataType::Timestamp(_, time_zone) => Expr::Literal(ScalarValue::TimestampMicrosecond(
                 Some(value.parse::<i64>().unwrap()),
-                None,
+                time_zone,
             )),
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();

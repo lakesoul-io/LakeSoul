@@ -6,14 +6,15 @@ edition = "2021"
 [dependencies]
 datafusion = { git = "https://github.com/meta-soul/arrow-datafusion.git", branch = "datafusion-17-parquet-prefetch", features = ["simd"] }
 object_store = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["aws"] }
+
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"]}
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
-arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["prettyprint"] }
+arrow = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["prettyprint", "simd"] }
 arrow-schema = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["serde"] }
-arrow-array = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred" }
+arrow-array = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["simd"] }
 arrow-buffer = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred" }
 parquet = { git = "https://github.com/meta-soul/arrow-rs.git", branch = "arrow-rs-31-parquet-bufferred", features = ["async", "arrow"] }
 futures = "0.3"

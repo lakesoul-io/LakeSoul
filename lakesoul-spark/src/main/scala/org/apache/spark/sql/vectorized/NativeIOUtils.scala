@@ -49,7 +49,7 @@ object NativeIOUtils{
       .toArray
   }
 
-  private def asArrowColumnVector(vector: ValueVector): ArrowColumnVector ={
+  private def asArrowColumnVector(vector: ValueVector): ArrowColumnVector = {
     new ArrowColumnVector(vector)
   }
 

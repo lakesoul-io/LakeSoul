@@ -234,7 +234,7 @@ class CompactionSuite extends QueryTest
 
       val df2 = Seq((1, 1, 1, "1"), (2, 1, 1, "1"), (3, 1, 1, "1"), (1, 2, 2, "2"), (1, 3, 3, "3"))
         .toDF("range", "hash", "v1", "v2")
-
+      LakeSoulTable.uncached(tableName)
       val table = LakeSoulTable.forPath(tableName)
       table.upsert(df2)
 

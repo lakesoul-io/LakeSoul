@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-use crate::filter::Parser as FilterParser;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -33,7 +32,7 @@ use url::{ParseError, Url};
 #[cfg(feature = "hdfs")]
 use crate::hdfs::HDFS;
 
-#[derive(Derivative)]
+#[derive(Debug, Derivative)]
 #[derivative(Clone)]
 pub struct IOSchema(pub(crate) SchemaRef);
 
@@ -43,7 +42,7 @@ impl Default for IOSchema {
     }
 }
 
-#[derive(Derivative)]
+#[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
     // files to read or write
@@ -56,6 +55,7 @@ pub struct LakeSoulIOConfig {
     pub(crate) aux_sort_cols: Vec<String>,
 
     // filtering predicates
+    pub(crate) filter_strs: Vec<String>,
     pub(crate) filters: Vec<Expr>,
     // read or write batch size
     #[derivative(Default(value = "8192"))]
@@ -71,6 +71,9 @@ pub struct LakeSoulIOConfig {
 
     // object store related configs
     pub(crate) object_store_options: HashMap<String, String>,
+
+    // merge operators
+    pub(crate) merge_operators: HashMap<String, String>,
 
     // tokio runtime related configs
     #[derivative(Default(value = "2"))]
@@ -149,13 +152,17 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
-        let expr = FilterParser::parse(filter_str, self.config.schema.0.clone());
-        self.config.filters.push(expr);
+        self.config.filter_strs.push(filter_str);
         self
     }
 
     pub fn with_filters(mut self, filters: Vec<Expr>) -> Self {
         self.config.filters = filters;
+        self
+    }
+
+    pub fn with_merge_op(mut self, field_name: String, merge_op:String) -> Self {
+        self.config.merge_operators.insert(field_name, merge_op);
         self
     }
 
@@ -304,9 +311,14 @@ fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: 
 }
 
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
-    let sess_conf = SessionConfig::default()
+    let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_prefetch(config.prefetch_size);
+
+    sess_conf.config_options_mut().optimizer.enable_round_robin_repartition= false; // if true, the record_batches poll from stream become unordered
+    // sess_conf.config_options_mut().optimizer.top_down_join_key_reordering= false; 
+    sess_conf.config_options_mut().optimizer.prefer_hash_join= false; //if true, panicked at 'range end out of bounds'
+        
     // limit memory for sort writer
     let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 

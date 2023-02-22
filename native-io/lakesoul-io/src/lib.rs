@@ -28,3 +28,6 @@ pub mod sorted_merge;
 
 #[cfg(feature = "hdfs")]
 mod hdfs;
+
+pub mod default_column_stream;
+pub mod constant;

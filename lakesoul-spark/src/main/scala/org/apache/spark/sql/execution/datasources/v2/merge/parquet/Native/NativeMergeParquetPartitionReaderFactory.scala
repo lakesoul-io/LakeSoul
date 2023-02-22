@@ -37,12 +37,13 @@ import org.apache.spark.sql.execution.datasources.{DataSourceUtils, RecordReader
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{NATIVE_IO_ENABLE, NATIVE_IO_PREFETCHER_BUFFER_SIZE, NATIVE_IO_READER_AWAIT_TIMEOUT, NATIVE_IO_THREAD_NUM}
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.{AtomicType, StructType}
+import org.apache.spark.sql.types.{AtomicType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import java.net.URI
 import java.time.ZoneId
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 
@@ -94,7 +95,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     assert(sqlConf.parquetVectorizedReaderEnabled && sqlConf.wholeStageEnabled &&
       resultSchema.length <= sqlConf.wholeStageMaxNumFields &&
       resultSchema.forall(_.dataType.isInstanceOf[AtomicType]))
-    false
+    true
   }
 
 
@@ -102,38 +103,61 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     throw new Exception("LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used.")
   }
 
-  def createVectorizedReader(file: MergePartitionedFile): RecordReader[Void,ColumnarBatch] = {
-    val recordReader = buildReaderBase(file, createParquetVectorizedReader)
-    if (nativeIOEnable) {
-      val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
-      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-      vectorizedReader.enableReturningBatches()
-      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+  def createVectorizedReader(files: Seq[MergePartitionedFile]): RecordReader[Void,ColumnarBatch] = {
+    assert(nativeIOEnable)
+    val recordReader = buildReaderBase(files, createParquetVectorizedReader)
+    val vectorizedReader=recordReader.asInstanceOf[NativeVectorizedReader]
+    vectorizedReader.initBatch(partitionSchema, files.head.partitionValues)
+    vectorizedReader.enableReturningBatches()
+    vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+
+  }
+
+  override def buildColumnarReader(files: Seq[MergePartitionedFile]): PartitionReader[ColumnarBatch] = {
+    if (files.isEmpty) {
+      new PartitionReader[ColumnarBatch] {
+        override def next(): Boolean = {
+          false
+        }
+
+        override def get(): ColumnarBatch = {
+          assert(false)
+          new ColumnarBatch(Array())
+        }
+
+        override def close(): Unit = {}
+      }
     } else {
-      val vectorizedReader=recordReader.asInstanceOf[VectorizedParquetRecordReader]
-      vectorizedReader.initBatch(partitionSchema, file.partitionValues)
-      vectorizedReader.enableReturningBatches()
-      vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
+      val vectorizedReader =
+        createVectorizedReader(files)
+
+      new PartitionReader[ColumnarBatch] {
+        // counter for debug
+        var batch_cnt = 0
+        var row_cnt = 0
+        var next_call_cnt = 0
+
+        override def next(): Boolean = {
+          next_call_cnt += 1
+          vectorizedReader.nextKeyValue()
+        }
+
+        override def get(): ColumnarBatch = {
+          val result = vectorizedReader.getCurrentValue
+          batch_cnt += 1
+          row_cnt += result.numRows()
+          result
+        }
+
+        override def close(): Unit = {
+          vectorizedReader.close()
+        }
+      }
     }
   }
 
-  override def buildColumnarReader(file: MergePartitionedFile): PartitionReader[ColumnarBatch] = {
-    val vectorizedReader = createVectorizedReader(file)
-
-    new PartitionReader[ColumnarBatch] {
-      override def next(): Boolean = {
-        vectorizedReader.nextKeyValue()
-      }
-
-      override def get(): ColumnarBatch = {
-        vectorizedReader.getCurrentValue
-      }
-
-      override def close(): Unit = vectorizedReader.close()
-    }
-  }
-
-  private def createParquetVectorizedReader(split: FileSplit,
+  private def createParquetVectorizedReader(splits: Seq[InputSplit],
+                                            files: Seq[MergePartitionedFile],
                                      partitionValues: InternalRow,
                                      hadoopAttemptContext: TaskAttemptContextImpl,
                                      pushed: Option[FilterPredicate],
@@ -141,8 +165,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
                                      datetimeRebaseSpec: RebaseSpec,
                                      int96RebaseSpec: RebaseSpec): RecordReader[Void,ColumnarBatch] = {
     val taskContext = Option(TaskContext.get())
-    val vectorizedReader = if (nativeIOEnable) {
-      val reader = if (pushed.isDefined) {
+    assert(nativeIOEnable)
+    val vectorizedReader = if (pushed.isDefined) {
         new NativeVectorizedReader(
           convertTz.orNull,
           datetimeRebaseSpec.mode.toString,
@@ -160,44 +184,44 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
           capacity
         )
       }
-      reader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
-      reader.setThreadNum(nativeIOThreadNum)
-      reader.setAwaitTimeout(nativeIOAwaitTimeout)
-      reader
-    } else {
-      new VectorizedParquetRecordReader(
-        convertTz.orNull,
-        datetimeRebaseSpec.mode.toString,
-        datetimeRebaseSpec.timeZone,
-        int96RebaseSpec.mode.toString,
-        int96RebaseSpec.timeZone,
-        enableOffHeapColumnVector && taskContext.isDefined,
-        capacity)
-    }
+    vectorizedReader.setPrefetchBufferSize(nativeIOPrefecherBufferSize)
+    vectorizedReader.setThreadNum(nativeIOThreadNum)
+    vectorizedReader.setAwaitTimeout(nativeIOAwaitTimeout)
+
+
     val iter = new RecordReaderIterator(vectorizedReader)
     // SPARK-23457 Register a task completion listener before `initialization`.
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema $partitionValues")
-    vectorizedReader.initialize(split, hadoopAttemptContext)
+
+    val mergeOp = mergeOperatorInfo.map(tp => (tp._1, tp._2.toNativeName()))
+
+    // multi files
+    val file = files.head
+    val primaryKeys = file.keyInfo.map(keyIndex=>file.fileInfo(keyIndex.index).fieldName)
+
+    vectorizedReader.initialize(splits.toArray, hadoopAttemptContext, primaryKeys.toArray, readDataSchema, mergeOp.asJava)
     vectorizedReader.asInstanceOf[RecordReader[Void,ColumnarBatch]]
   }
 
-  private def buildReaderBase[T](file: MergePartitionedFile,
+  private def buildReaderBase[T](files: Seq[MergePartitionedFile],
                                  buildReaderFunc: (
-                                   FileSplit, InternalRow, TaskAttemptContextImpl,
+                                   Seq[InputSplit], Seq[MergePartitionedFile], InternalRow, TaskAttemptContextImpl,
                                      Option[FilterPredicate], Option[ZoneId],
                                      RebaseSpec,
                                      RebaseSpec) => RecordReader[Void, T]): RecordReader[Void, T] = {
     val conf = broadcastedConf.value.value
-
+    val file = files.head
     val filePath = new Path(new URI(file.filePath))
-    val split =
+    val splits = files.map( file=>
       new FileSplit(
-        filePath,
+        new Path(new URI(file.filePath)),
         file.start,
         file.length,
         Array.empty,
         null)
+        .asInstanceOf[InputSplit]
+    )
 
     lazy val footerFileMetaData =
       ParquetFileReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
@@ -250,7 +274,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       ParquetInputFormat.setFilterPredicate(hadoopAttemptContext.getConfiguration, pushed.get)
     }
     val reader = buildReaderFunc(
-      split, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseSpec, int96RebaseSpec)
+      splits, files, file.partitionValues, hadoopAttemptContext, pushed, convertTz, datetimeRebaseSpec, int96RebaseSpec)
     reader
   }
 
