@@ -17,7 +17,8 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
-import org.apache.spark.SparkConf
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -25,7 +26,9 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.streaming.Trigger
 
-object PipeLineExcute {
+import scala.collection.JavaConverters
+
+object PipeLineExecute {
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     val yamlPath = parameter.get(PipeLineOption.YamlPath, "./PipeLine.yml")
@@ -95,14 +98,18 @@ object PipeLineExcute {
 
   def toSink(sinkDF: DataFrame, sink: PipelineSink): Unit = {
 
+    val rangePartition = if (sink.getRangePartition != null && sink.getRangePartition.size() > 0) String.join(",", sink.getRangePartition) else ""
+    val hashPartition = if (sink.getHashPartition != null && sink.getHashPartition.size() > 0) String.join(",", sink.getHashPartition) else ""
     sink.getProcessType match {
       case "batch" =>
         sinkDF.write.format("lakesoul")
-          .option(LakeSoulOptions.PARTITION_DESC, String.join(",", sink.getRangePartition))
-          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
+          .mode("overwrite")
+          .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)
           .option("shortTableName", sink.getSinkTableName)
+          .save()
       case "stream" =>
         //todo failover情况，batch无法恢复，需要测试
         //        sinkDF.writeStream.format("console")
@@ -118,12 +125,63 @@ object PipeLineExcute {
           .outputMode(sink.getOutputmode)
           .option("mergeSchema", "true")
           .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
-          .option(LakeSoulOptions.PARTITION_DESC,String.join(",", sink.getRangePartition))
-          .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", sink.getHashPartition))
+          .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
           .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
           .option("path", sink.getSinkPath)
           .option("shortTableName", sink.getSinkTableName)
           .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
+          .start()
+          .awaitTermination()
+      case "distinctStreamBatch" =>
+        assert(sink.getHashPartition != null && sink.getHashPartition.size() > 0, "distinct operate must set key column!")
+        val distinctColumn = sink.getHashPartition.get(0)
+        val groupByColumnList = sink.getHashPartition.subList(1, sink.getHashPartition.size())
+        val groupByColumnSeq = JavaConverters.asScalaIterator(groupByColumnList.iterator()).toSeq.map(s => col(s))
+        val timeInterval = sink.getIntervalTime
+        var lastTime = System.currentTimeMillis()
+
+        val tableName = sink.getSinkTableName
+        val distinctTableName = tableName + "_distinct_" + distinctColumn
+        val distinctTablePath = sink.getSinkPath + "_distinct_" + distinctColumn
+        sinkDF.writeStream.foreachBatch {
+          (batchDF: DataFrame, _: Long) => {
+            batchDF.toDF().show()
+            if (LakeSoulTable.isLakeSoulTable(distinctTablePath)) {
+              val distinctTable = LakeSoulTable.forName(distinctTableName)
+              distinctTable.upsert(batchDF)
+            } else {
+              batchDF.write
+                .mode("append")
+                .format("lakesoul")
+                .option("mergeSchema", "true")
+                .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+                .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
+                .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+                .option("path", distinctTablePath)
+                .option("shortTableName", distinctTableName)
+                .save()
+            }
+            if (System.currentTimeMillis() - lastTime > timeInterval) {
+              lastTime = System.currentTimeMillis()
+              val table = LakeSoulTable.forName(distinctTableName)
+              table.toDF.show()
+              val countResult = table.toDF.groupBy(groupByColumnSeq:_*).count().withColumnRenamed("count", "count_distinct_" + distinctColumn)
+              countResult.toDF().show()
+              countResult.write
+                .mode("overwrite")
+                .format("lakesoul")
+                .option("mergeSchema", "true")
+                .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+                .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", groupByColumnList))
+                .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+                .option("path", sink.getSinkPath)
+                .option("shortTableName", tableName)
+                .save()
+            }
+          }
+        }
+          .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
           .start()
           .awaitTermination()
     }

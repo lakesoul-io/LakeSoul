@@ -400,6 +400,7 @@ class PipelineSink {
     private String outputmode = "complete";
     private String processType = "stream";
     private String checkpointLocation = "/tmp/chk";
+    private long intervalTime = 10000L;
 
     public PipelineSink() {
 
@@ -476,6 +477,14 @@ class PipelineSink {
 
     public void setCheckpointLocation(String checkpointLocation) {
         this.checkpointLocation = checkpointLocation;
+    }
+
+    public long getIntervalTime() {
+        return intervalTime;
+    }
+
+    public void setIntervalTime(long intervalTime) {
+        this.intervalTime = intervalTime;
     }
 }
 
