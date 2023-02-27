@@ -21,9 +21,7 @@ import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.s3a.S3AFileSystem
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.arrow.ArrowWriter
@@ -32,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.ArrowUtils
+import org.apache.spark.sql.vectorized.NativeIOUtils
 
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {
 
@@ -43,14 +42,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   private val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
   nativeIOWriter.addFile(path)
 
-  val conf: Configuration = context.getConfiguration
-  val fileSystem: FileSystem = new Path(path).getFileSystem(conf)
-  if (fileSystem.isInstanceOf[S3AFileSystem]) {
-    setObjectStoreOption("fs.s3a.access.key", conf)
-    setObjectStoreOption("fs.s3a.secret.key", conf)
-    setObjectStoreOption("fs.s3a.endpoint", conf)
-    setObjectStoreOption("fs.s3a.endpoint.region", conf)
-  }
+  NativeIOUtils.setNativeIOOptions(nativeIOWriter, NativeIOUtils.getNativeIOOptions(context, new Path(path)))
 
   nativeIOWriter.initializeWriter()
 
@@ -60,10 +52,6 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
   private val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
   private val recordWriter: ArrowWriter = ArrowWriter.create(root)
-
-  private def setObjectStoreOption(key: String, conf: Configuration): Unit = {
-    nativeIOWriter.setObjectStoreOption(key, conf.get(key))
-  }
 
   override def write(row: InternalRow): Unit = {
 

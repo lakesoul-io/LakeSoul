@@ -16,23 +16,16 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpInt;
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator;
 import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
@@ -42,6 +35,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
+import org.apache.spark.sql.vectorized.NativeIOOptions;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
 import java.io.IOException;
@@ -72,6 +66,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * batch is used up (batchIdx == numBatched), we populated the batch.
    */
   private int batchIdx = 0;
+
   private int numBatched = 0;
 
   /**
@@ -156,19 +151,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     super.initialize(inputSplits[0], taskAttemptContext);
     FileSplit split = (FileSplit) inputSplits[0];
     this.file = split.getPath();
+    this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
     this.filePathList = new ArrayList<>();
+
     for (int i = 0; i < inputSplits.length; i++) {
       FileSplit fileSplit = (FileSplit) inputSplits[i];
       this.filePathList.add(fileSplit.getPath().toString());
-    }
-    FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());
-    if (fileSystem instanceof S3AFileSystem) {
-      s3aFileSystem = (S3AFileSystem) fileSystem;
-      awsS3Bucket = s3aFileSystem.getBucket();
-      s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
-      s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
-      s3aAccessKey = taskAttemptContext.getConfiguration().get("fs.s3a.access.key");
-      s3aSecretKey = taskAttemptContext.getConfiguration().get("fs.s3a.secret.key");
     }
 
     if (primaryKeys != null) {
@@ -241,9 +229,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     reader.setBufferSize(prefetchBufferSize);
     reader.setThreadNum(threadNum);
 
-    if (s3aFileSystem != null) {
-      reader.setObjectStoreOptions(s3aAccessKey, s3aSecretKey, s3aRegion, awsS3Bucket, s3aEndpoint);
-    }
+    NativeIOUtils.setNativeIOOptions(reader, this.nativeIOOptions);
 
     if (filter != null) {
       reader.addFilter(filterEncode(filter));
@@ -353,16 +339,12 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private int awaitTimeout = 10000;
 
   private List<String> filePathList;
+
   private List<String> primaryKeys = null;
 
-  private Map<String, String> mergeOps = null;
-  private S3AFileSystem s3aFileSystem = null;
-  private String s3aEndpoint = null;
-  private String s3aRegion = null;
-  private String s3aAccessKey = null;
-  private String s3aSecretKey = null;
+  private NativeIOOptions nativeIOOptions;
 
-  private String awsS3Bucket = null;
+  private Map<String, String> mergeOps = null;
 
   private final FilterPredicate filter;
 }

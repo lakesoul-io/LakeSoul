@@ -522,6 +522,7 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
     let mut builder = Builder::new_multi_thread();
     builder.enable_all();
     builder.worker_threads(2);
+    builder.max_blocking_threads(8);
     convert_to_opaque(builder)
 }
 

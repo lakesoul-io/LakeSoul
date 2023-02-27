@@ -208,7 +208,7 @@
                                 </goals>
                                 <configuration>
                                     <executable>cross</executable>
-                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --features lakesoul-io/hdfs --package lakesoul-io-c</commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>
