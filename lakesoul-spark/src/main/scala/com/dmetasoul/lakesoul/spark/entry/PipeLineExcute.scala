@@ -51,7 +51,7 @@ object PipeLineExecute {
         op.setSourceTableName(preViewName)
       }
       if (null != op.getSinkTableName) {
-        toSink(sparkSession.sql(op.toSql), sink)
+        toSink(sparkSession.sql(op.toSql), sink, op.getOperation.getProcessType, sparkSession)
       } else {
         sparkSession.sql(op.toSql).createOrReplaceTempView(op.getViewName)
         preViewName = op.getViewName
@@ -65,14 +65,13 @@ object PipeLineExecute {
  //     .config("spark.master","local[2]")
       .config("spark.sql.shuffle.partitions", 4)
       .config("spark.sql.files.maxPartitionBytes", "1g")
-      .config("spark.default.parallelism", 4)
       .config("spark.sql.parquet.mergeSchema", value = true)
       .config("spark.sql.parquet.filterPushdown", value = true)
       .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
-      .config("spark.default.parallelism", "4")
+      .config("spark.default.parallelism", 4)
 //      .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
    //   .config("spark.files", "d:\\test.yml")
     builder.getOrCreate()
@@ -96,11 +95,17 @@ object PipeLineExecute {
     }
   }
 
-  def toSink(sinkDF: DataFrame, sink: PipelineSink): Unit = {
+  def toSink(sinkDF: DataFrame, sink: PipelineSink, processType: String, spark: SparkSession): Unit = {
+
+    val namespace = sink.getSinkDatabaseName
+    spark.sql("use " + namespace)
+
+    LakeSoulCatalog.showCurrentNamespace()(0)
+    spark.sessionState.catalogManager.currentNamespace(0)
 
     val rangePartition = if (sink.getRangePartition != null && sink.getRangePartition.size() > 0) String.join(",", sink.getRangePartition) else ""
     val hashPartition = if (sink.getHashPartition != null && sink.getHashPartition.size() > 0) String.join(",", sink.getHashPartition) else ""
-    sink.getProcessType match {
+    processType match {
       case "batch" =>
         sinkDF.write.format("lakesoul")
           .mode("overwrite")
@@ -135,6 +140,7 @@ object PipeLineExecute {
           .awaitTermination()
       case "distinctStreamBatch" =>
         assert(sink.getHashPartition != null && sink.getHashPartition.size() > 0, "distinct operate must set key column!")
+        var firstBatch = true
         val distinctColumn = sink.getHashPartition.get(0)
         val groupByColumnList = sink.getHashPartition.subList(1, sink.getHashPartition.size())
         val groupByColumnSeq = JavaConverters.asScalaIterator(groupByColumnList.iterator()).toSeq.map(s => col(s))
@@ -148,7 +154,7 @@ object PipeLineExecute {
           (batchDF: DataFrame, _: Long) => {
             batchDF.toDF().show()
             if (LakeSoulTable.isLakeSoulTable(distinctTablePath)) {
-              val distinctTable = LakeSoulTable.forName(distinctTableName)
+              val distinctTable = LakeSoulTable.forName(distinctTableName, namespace)
               distinctTable.upsert(batchDF)
             } else {
               batchDF.write
@@ -162,11 +168,12 @@ object PipeLineExecute {
                 .option("shortTableName", distinctTableName)
                 .save()
             }
-            if (System.currentTimeMillis() - lastTime > timeInterval) {
+            if (System.currentTimeMillis() - lastTime > timeInterval || firstBatch) {
               lastTime = System.currentTimeMillis()
+              firstBatch = false
               val table = LakeSoulTable.forName(distinctTableName)
               table.toDF.show()
-              val countResult = table.toDF.groupBy(groupByColumnSeq:_*).count().withColumnRenamed("count", "count_distinct_" + distinctColumn)
+              val countResult = table.toDF.groupBy(groupByColumnSeq: _*).count().withColumnRenamed("count", "count_distinct_" + distinctColumn)
               countResult.toDF().show()
               countResult.write
                 .mode("overwrite")

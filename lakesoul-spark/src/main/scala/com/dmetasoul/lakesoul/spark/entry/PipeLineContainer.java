@@ -182,6 +182,7 @@ class Operation {
     private Join join;
     private Filter filter;
     private Distinct distinct;
+    private String processType = "stream";
 
     public GroupBy getGroupby() {
         return groupby;
@@ -229,6 +230,14 @@ class Operation {
 
     public boolean isDistinct() {
         return null != distinct;
+    }
+
+    public String getProcessType() {
+        return processType;
+    }
+
+    public void setProcessType(String processType) {
+        this.processType = processType;
     }
 }
 
@@ -391,6 +400,7 @@ class Distinct {
 }
 
 class PipelineSink {
+    private String sinkDatabaseName;
     private String sinkTableName;
     private String sinkPath;
     private int triggerTime = 2000;
@@ -398,12 +408,19 @@ class PipelineSink {
     private int hashBucketNum = 2;
     private List<String> rangePartition;
     private String outputmode = "complete";
-    private String processType = "stream";
     private String checkpointLocation = "/tmp/chk";
-    private long intervalTime = 10000L;
+    private long intervalTime = 60000L;
 
     public PipelineSink() {
 
+    }
+
+    public String getSinkDatabaseName() {
+        return sinkDatabaseName;
+    }
+
+    public void setSinkDatabaseName(String sinkDatabaseName) {
+        this.sinkDatabaseName = sinkDatabaseName;
     }
 
     public List<String> getRangePartition() {
@@ -461,14 +478,6 @@ class PipelineSink {
 
     public void setOutputmode(String outputmode) {
         this.outputmode = outputmode;
-    }
-
-    public String getProcessType() {
-        return processType;
-    }
-
-    public void setProcessType(String processType) {
-        this.processType = processType;
     }
 
     public String getCheckpointLocation() {
