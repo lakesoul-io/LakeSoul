@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -24,13 +23,9 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.schema.Type;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpInt;
-import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator;
 import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
@@ -71,6 +66,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * batch is used up (batchIdx == numBatched), we populated the batch.
    */
   private int batchIdx = 0;
+
   private int numBatched = 0;
 
   /**
@@ -343,6 +339,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   private int awaitTimeout = 10000;
 
   private List<String> filePathList;
+
   private List<String> primaryKeys = null;
 
   private NativeIOOptions nativeIOOptions;
