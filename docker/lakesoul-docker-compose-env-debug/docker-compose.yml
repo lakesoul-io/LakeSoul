@@ -1,0 +1,103 @@
+version: '3'
+
+services:
+  lakesoul-meta-db:
+    image: postgres:14.5
+    ports:
+      - "15432:5432"
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: lakesoul_test
+      POSTGRES_USER: lakesoul_test
+      POSTGRES_DB: lakesoul_test
+    volumes:
+      - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
+      - ./meta_cleanup.sql:/meta_cleanup.sql
+
+  mysql:
+    image: mysql:8
+    ports:
+      - "13306:3306"
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: test_cdc
+    command:
+      --max_connections=4096
+    volumes:
+      - ./mysql_init.sql:/docker-entrypoint-initdb.d/mysql_init.sql
+      - ./mysql_random_data_insert:/mysql_random_data_insert
+      - ../../script/benchmark/2_insert_table_data.sh:/2_insert_table_data.sh
+      - ../../script/benchmark/properties:/properties
+
+  minio:
+    image: bitnami/minio:latest
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_DEFAULT_BUCKETS: lakesoul-test-bucket:public
+      MINIO_ROOT_USER: minioadmin1
+      MINIO_ROOT_PASSWORD: minioadmin1
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 3s
+      timeout: 5s
+      retries: 3
+    hostname: minio
+
+  jobmanager:
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 3000m
+        taskmanager.memory.flink.size: 2048m
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin1
+        s3.secret-key: minioadmin1
+        s3.path.style.access: true
+      - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+      - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
+      - LAKESOUL_PG_USERNAME=lakesoul_test
+      - LAKESOUL_PG_PASSWORD=lakesoul_test
+    volumes:
+      - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+
+  taskmanager:
+    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    deploy:
+      replicas: 2
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 3000m
+        taskmanager.memory.flink.size: 2048m
+        taskmanager.numberOfTaskSlots: 4
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin1
+        s3.secret-key: minioadmin1
+        s3.path.style.access: true
+      - LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+      - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
+      - LAKESOUL_PG_USERNAME=lakesoul_test
+      - LAKESOUL_PG_PASSWORD=lakesoul_test
+    volumes:
+      - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.16.1.0/16
+          gateway: 10.16.1.1

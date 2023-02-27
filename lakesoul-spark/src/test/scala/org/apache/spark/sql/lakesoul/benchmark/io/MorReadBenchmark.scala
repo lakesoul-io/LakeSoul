@@ -34,7 +34,7 @@ object MorReadBenchmark {
       .config("spark.hadoop.fs.s3a.connection.maximum", 100)
 
     if (args.length >= 1 && args(0) == "--localtest")
-      builder.config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+      builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
         .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
@@ -45,15 +45,18 @@ object MorReadBenchmark {
 
     LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpLong", "longSumMerge")
     LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeNonNullOp", "stringNonNullMerge")
-    val tablePath= "s3://lakesoul-test-bucket/datalake_table"
-    val table = LakeSoulTable.forPath(tablePath)
+    val tablePath= "s3://lakesoul-test-bucket/datalake_table/test"
+//    val table = LakeSoulTable.forPath(tablePath)
 
     if (args.length >= 2 ) {
-      val NATIVE_IO_ENABLE = args(1)
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, NATIVE_IO_ENABLE)
+      val is_gt = args(1)
+      val tablePath = if (is_gt == "true") "s3://lakesoul-test-bucket/datalake_table/test" else "s3://lakesoul-test-bucket/datalake_table/gt"
+      println(s"tablePath = $tablePath")
+      val table = LakeSoulTable.forPath(tablePath)
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
       SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
 
-      println(s"=====Reading with NATIVE_IO_ENABLE=$NATIVE_IO_ENABLE=====")
+      println(s"=====Reading with NATIVE_IO_ENABLE=true =====")
 
       spark.time({
         val path = "/tmp/result/ccf/result"
@@ -68,6 +71,7 @@ object MorReadBenchmark {
       })
     } else{
       println(s"=====Reading with native io=====")
+          val table = LakeSoulTable.forPath(tablePath)
       SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
       SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
       spark.time({

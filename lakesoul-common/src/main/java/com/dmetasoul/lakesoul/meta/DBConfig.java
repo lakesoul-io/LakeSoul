@@ -19,6 +19,6 @@ package com.dmetasoul.lakesoul.meta;
 
 public abstract class DBConfig {
 
-    static int MAX_COMMIT_ATTEMPTS = 5;
+    static int MAX_COMMIT_ATTEMPTS = 0;
 
 }

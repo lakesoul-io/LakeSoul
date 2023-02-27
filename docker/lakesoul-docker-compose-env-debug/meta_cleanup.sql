@@ -1,0 +1,1 @@
+../../script/meta_cleanup.sql

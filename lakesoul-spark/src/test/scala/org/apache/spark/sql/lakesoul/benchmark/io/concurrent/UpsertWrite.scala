@@ -1,11 +1,16 @@
-package org.apache.spark.sql.lakesoul.benchmark.io
+package org.apache.spark.sql.lakesoul.benchmark.io.concurrent
 
+import com.dmetasoul.lakesoul.meta.DBConnector
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 
-object UpsertWriteBenchmark {
+import java.sql.{Connection, PreparedStatement, SQLException}
+
+object UpsertWrite {
+  var vector = Vector[String]()
+
   def main(args: Array[String]): Unit = {
     val builder = SparkSession.builder()
       .appName("CCF BDCI 2022 DataLake Contest")
@@ -32,13 +37,14 @@ object UpsertWriteBenchmark {
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
 
     if (args.length >= 1 && args(0) == "--localtest")
-      builder.config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+      builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
         .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
+
     SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
 
     val dataPath0 = "/opt/spark/work-dir/data/base-0.parquet"
@@ -54,27 +60,70 @@ object UpsertWriteBenchmark {
     val dataPath10 = "/opt/spark/work-dir/data/base-10.parquet"
 
     spark.time({
-      val tablePath = "s3://lakesoul-test-bucket/datalake_table"
-      val df = spark.read.format("parquet").load(dataPath0)
-      df.write.format("lakesoul")
-        .option("hashPartitions", "uuid")
-        .option("hashBucketNum", 4)
-        .mode("Overwrite").save(tablePath)
+      val tablePath = "s3://lakesoul-test-bucket/datalake_table/test"
+      //      val df = spark.read.format("parquet").load(dataPath0)
+      //      df.write.format("lakesoul")
+      //        .option("hashPartitions", "uuid")
+      //        .option("hashBucketNum", 4)
+      //        .mode("Overwrite").save(tablePath)
 
-      upsertTable(spark, tablePath, dataPath1)
-      upsertTable(spark, tablePath, dataPath2)
-      upsertTable(spark, tablePath, dataPath3)
-      upsertTable(spark, tablePath, dataPath4)
-      upsertTable(spark, tablePath, dataPath5)
-      upsertTable(spark, tablePath, dataPath6)
-      upsertTable(spark, tablePath, dataPath7)
-      upsertTable(spark, tablePath, dataPath8)
-      upsertTable(spark, tablePath, dataPath9)
-      upsertTable(spark, tablePath, dataPath10)
+
+      var start = 1
+      var end = 10
+      if (args.length >= 3 && args(0) == "--localtest") {
+        start = args(1).toInt
+        end = args(2).toInt
+      }
+      (start to end).map(index => {
+        class UpsertThread(i: Int) extends Thread {
+          override def run() {
+            upsertTable(spark, tablePath, s"/opt/spark/work-dir/data/base-$i.parquet")
+          }
+        }
+        new UpsertThread(index).start()
+      })
     })
+
+
+    //    Thread.sleep(180 * 1000)
+    //    spark.time({
+    //      val tablePath = "s3://lakesoul-test-bucket/datalake_table/gt"
+    //      val df = spark.read.format("parquet").load(dataPath0)
+    //      df.write.format("lakesoul")
+    //        .option("hashPartitions", "uuid")
+    //        .option("hashBucketNum", 4)
+    //        .mode("Overwrite").save(tablePath)
+    //      for (path <- vector) {
+    //        println(s"trying upsert $path into $tablePath start")
+    //        LakeSoulTable.forPath(tablePath).upsert(spark.read.parquet(path))
+    //        println(s"trying upsert $path into $tablePath done")
+    //      }
+    //    })
+
+
   }
 
   private def upsertTable(spark: SparkSession, tablePath: String, path: String): Unit = {
-    LakeSoulTable.forPath(tablePath).upsert(spark.read.parquet(path))
+    val waiting = scala.util.Random.nextInt(3) * 2000 * 0
+    Thread.sleep(waiting)
+    println(s"waiting $waiting mills, trying upsert $path into $tablePath  start")
+    LakeSoulTable.forPath(spark, tablePath).upsert(spark.read.parquet(path))
+    println(s"trying upsert $path into $tablePath  done")
+
+//    var conn: Connection = null
+//    var pstmt: PreparedStatement = null
+//    var result = true
+//    try {
+//      conn = DBConnector.getConn
+//      pstmt = conn.prepareStatement("insert into debug_info(log, timestamp) " + "values (?, ?)")
+//      pstmt.setString(1, path)
+//      pstmt.setLong(2, System.currentTimeMillis())
+//      pstmt.execute
+//    } catch {
+//      case e: SQLException =>
+//        result = false
+//        e.printStackTrace()
+//    } finally DBConnector.closeConn(pstmt, conn)
   }
+
 }
