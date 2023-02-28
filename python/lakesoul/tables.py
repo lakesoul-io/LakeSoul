@@ -184,15 +184,38 @@ class LakeSoulTable(object):
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
-    def forIncrementalPath(cls, sparkSession, path, partitionDesc, startTime, endTime):
+    def forIncrementalPath(cls, sparkSession, path, partitionDesc, startTime, endTime, timeZone):
+        """
+        Create a LakeSoulTable for incremental data at the given `path` startTime and endTime using the given SparkSession.
+        :param sparkSession: SparkSession to use for loading the table
+        :param partitionDesc: the range partition name of table,default ""
+        :param startTime: read start timestamp
+        :param endTime: read end timestamp
+        :param timeZone: specify the timezone of the timestamp ,default "" indicates local timezone
+        :return: :py:class:`~lakesoul.tables.LakeSoulTable`
+        Example::
+            starTable = LakeSoulTable.forIncrementalPath(spark, "/path/to/table","","2023-02-28 14:45:00","2023-02-28 14:50:00","")
+        """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forIncrementalPath(path, partitionDesc, startTime, endTime)
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
+            .forIncrementalPath(path, partitionDesc, startTime, endTime, timeZone)
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
-    def forSnapshotPath(cls, sparkSession, path, partitionDesc, endTime):
+    def forSnapshotPath(cls, sparkSession, path, partitionDesc, endTime, timeZone):
+        """
+        Create a LakeSoulTable for the data at the given `path` end timestamp using the given SparkSession.
+        :param sparkSession: SparkSession to use for loading the table
+        :param partitionDesc: the range partition name of table,default ""
+        :param endTime: read end timestamp
+        :param timeZone: specify the timezone of the timestamp ,default "" indicates local timezone
+        :return: :py:class:`~lakesoul.tables.LakeSoulTable`
+        Example::
+            starTable = LakeSoulTable.forSnapshotPath(spark, "/path/to/table","","2023-02-28 14:45:00","Asia/Shanghai")
+        """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forSnapshotPath(path, partitionDesc, endTime)
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable. \
+            forSnapshotPath(path, partitionDesc, endTime, timeZone)
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod

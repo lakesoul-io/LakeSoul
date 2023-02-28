@@ -16,6 +16,7 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
+import java.util.TimeZone
 
 class ReadSuite extends QueryTest
   with SharedSparkSession
@@ -86,7 +87,7 @@ class ReadSuite extends QueryTest
         val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
         val parDesc = "range=range1"
         // snapshot startVersion default to 0
-        val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA)
+        val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA,"America/Los_Angeles")
         val data1 = lake1.toDF.select("range", "hash", "op")
         val lake2 = spark.read.format("lakesoul")
           .option(LakeSoulOptions.PARTITION_DESC, parDesc)
@@ -232,12 +233,13 @@ class ReadSuite extends QueryTest
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC)
+          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC,"America/Los_Angeles")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
             .option(LakeSoulOptions.READ_START_TIME, versionB)
             .option(LakeSoulOptions.READ_END_TIME, versionC)
+            .option(LakeSoulOptions.TIME_ZONE,"America/Los_Angeles")
             .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")

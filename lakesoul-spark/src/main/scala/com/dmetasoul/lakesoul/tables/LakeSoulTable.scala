@@ -419,22 +419,22 @@ object LakeSoulTable {
 
   /** Snapshot Query to endTime
    */
-  def forSnapshotPath(path: String, partitionDesc: String, endTime: String): LakeSoulTable = {
+  def forSnapshotPath(path: String, partitionDesc: String, endTime: String, timeZone: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, endTime, endTime, "snapshot")
+    forPath(sparkSession, path, partitionDesc, endTime, endTime, timeZone, "snapshot")
   }
 
   /** Incremental Query from startTime to now
    */
-  def forIncrementalPath(path: String, partitionDesc: String, startTime: String, endTime: String): LakeSoulTable = {
+  def forIncrementalPath(path: String, partitionDesc: String, startTime: String, endTime: String, timeZone: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, startTime, endTime, "incremental")
+    forPath(sparkSession, path, partitionDesc, startTime, endTime, timeZone, "incremental")
   }
 
   /**
@@ -464,9 +464,10 @@ object LakeSoulTable {
   *   startTime 2022-10-01 13:45:30
   *   endTime 2022-10-01 13:46:30
   * */
-  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, readType: String): LakeSoulTable = {
-    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.getID)).parse(startTimeStamp)
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(TimeZone.getDefault.getID)).parse(endTimeStamp)
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, timeZone: String, readType: String): LakeSoulTable = {
+    val timeZoneID = if (timeZone.equals("") || !TimeZone.getAvailableIDs.contains(timeZone)) TimeZone.getDefault.getID else timeZone
+    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(startTimeStamp)
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       if (endTime < 0) {

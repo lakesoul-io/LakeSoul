@@ -232,7 +232,6 @@ class LakeSoulTableTests(LakeSoulTestCase):
         time.sleep(2)
         df = self.spark.createDataFrame([('f', 66), ('g', 77)], ["key", "value"])
         table.upsert(df)
-        time.sleep(1)
 
     def __checkAnswer(self, df, expectedAnswer, schema=["key", "value"]):
         if not expectedAnswer:
