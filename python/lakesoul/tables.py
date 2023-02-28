@@ -115,7 +115,7 @@ class LakeSoulTable(object):
         if isinstance(source, DataFrame):
             source = source._jdf
         if condition is None:
-            self._jst.upsert(source,"")
+            self._jst.upsert(source, "")
         else:
             self._jst.upsert(source, jcolumn)
 
@@ -181,6 +181,18 @@ class LakeSoulTable(object):
         assert sparkSession is not None
         jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forPath(
             sparkSession._jsparkSession, path)
+        return LakeSoulTable(sparkSession, jst)
+
+    @classmethod
+    def forIncrementalPath(cls, sparkSession, path, partitionDesc, startTime, endTime):
+        assert sparkSession is not None
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forIncrementalPath(path, partitionDesc, startTime, endTime)
+        return LakeSoulTable(sparkSession, jst)
+
+    @classmethod
+    def forSnapshotPath(cls, sparkSession, path, partitionDesc, endTime):
+        assert sparkSession is not None
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forSnapshotPath(path, partitionDesc, endTime)
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod

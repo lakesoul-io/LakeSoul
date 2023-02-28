@@ -417,24 +417,24 @@ object LakeSoulTable {
     forPath(sparkSession, path, partitionDesc, partitionVersion)
   }
 
-  /** Snapshot read to endTime
+  /** Snapshot Query to endTime
    */
-  def forPath(path: String, partitionDesc: String, endTime: String, readType: String): LakeSoulTable = {
+  def forSnapshotPath(path: String, partitionDesc: String, endTime: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, endTime, endTime, readType)
+    forPath(sparkSession, path, partitionDesc, endTime, endTime, "snapshot")
   }
 
-  /** IncrementalQuery from startTime to now
+  /** Incremental Query from startTime to now
    */
-  def forPath(path: String, partitionDesc: String, startTime: String, endTime: String, readType: String): LakeSoulTable = {
+  def forIncrementalPath(path: String, partitionDesc: String, startTime: String, endTime: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, startTime, endTime, readType)
+    forPath(sparkSession, path, partitionDesc, startTime, endTime, "incremental")
   }
 
   /**

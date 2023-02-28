@@ -86,7 +86,7 @@ class ReadSuite extends QueryTest
         val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
         val parDesc = "range=range1"
         // snapshot startVersion default to 0
-        val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionA, ReadType.SNAPSHOT_READ)
+        val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA)
         val data1 = lake1.toDF.select("range", "hash", "op")
         val lake2 = spark.read.format("lakesoul")
           .option(LakeSoulOptions.PARTITION_DESC, parDesc)
@@ -232,7 +232,7 @@ class ReadSuite extends QueryTest
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionB, versionC, ReadType.INCREMENTAL_READ)
+          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
