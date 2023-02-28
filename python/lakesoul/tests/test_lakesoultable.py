@@ -16,7 +16,7 @@
 
 import os
 import unittest
-
+import time
 from pyspark.sql.functions import col, lit, expr
 
 from lakesoul.tables import LakeSoulTable
@@ -175,6 +175,41 @@ class LakeSoulTableTests(LakeSoulTestCase):
         print(re.explain(True))
         self.__checkAnswer(re.select("key", "value"),
                            ([('a', 12), ('b', 24), ('c', 3), ('d', 4), ('e', 55), ('f', 66)]))
+
+    def test_snapshot_query(self):
+        self.__overwriteHashLakeSoulTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        table = LakeSoulTable.forPath(self.spark, self.tempFile)
+        readEndTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        time.sleep(2)
+        df = self.spark.createDataFrame([('e', 55), ('f', 66)], ["key", "value"])
+        table.upsert(df._jdf)
+        lake = self.spark.read.format("lakesoul") \
+            .option("readendtime", readEndTime) \
+            .option("readtype", "snapshot") \
+            .load(self.tempFile).show()
+        self.__checkAnswer(lake, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+
+    def test_incremental_query(self):
+        self.__overwriteHashLakeSoulTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        table = LakeSoulTable.forPath(self.spark, self.tempFile)
+        readStartTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        time.sleep(2)
+        df = self.spark.createDataFrame([('e', 55), ('f', 66)], ["key", "value"])
+        table.upsert(df._jdf)
+        time.sleep(2)
+        df = self.spark.createDataFrame([('g', 77)], ["key", "value"])
+        table.upsert(df._jdf)
+        time.sleep(1)
+        readEndTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        lake = self.spark.read.format("lakesoul") \
+            .option("readstarttime", readStartTime) \
+            .option("readendtime", readEndTime) \
+            .option("readtype", "incremental") \
+            .load(self.tempFile)
+        self.__checkAnswer(lake, [('e', 55), ('f', 66), ('g', 77)])
+
+    def test_streaming_incremental_query(self):
+        pass
 
     def __checkAnswer(self, df, expectedAnswer, schema=["key", "value"]):
         if not expectedAnswer:

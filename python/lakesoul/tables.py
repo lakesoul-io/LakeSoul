@@ -32,7 +32,7 @@ class LakeSoulTable(object):
         """
         Get a DataFrame representation of this LakeSoul table.
         """
-        return DataFrame(self._jst.toDF(), self._spark._wrapped)
+        return DataFrame(self._jst.toDF(), self._spark)
 
     def alias(self, aliasName):
         """
@@ -112,8 +112,10 @@ class LakeSoulTable(object):
         :type condition: str or pyspark.sql.Column
         """
         jcolumn = self._condition_to_jcolumn(condition)
+        if isinstance(source, DataFrame):
+            source = source._jdf
         if condition is None:
-            self._jst.upsert(source)
+            self._jst.upsert(source,"")
         else:
             self._jst.upsert(source, jcolumn)
 
@@ -177,7 +179,7 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forPath(spark, "/path/to/table")
         """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.LakeSoulTable.forPath(
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forPath(
             sparkSession._jsparkSession, path)
         return LakeSoulTable(sparkSession, jst)
 
@@ -196,7 +198,7 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forName(spark, "tblName")
         """
         assert sparkSession is not None
-        jdt = sparkSession._sc._jvm.LakeSoulTable.forName(
+        jdt = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forName(
             sparkSession._jsparkSession, tableOrViewName)
         return LakeSoulTable(sparkSession, jdt)
 
@@ -213,7 +215,7 @@ class LakeSoulTable(object):
             LakeSoulTable.isLakeSoulTable(spark, "/path/to/table")
         """
         assert sparkSession is not None
-        return sparkSession._sc._jvm.LakeSoulTable.isLakeSoulTable(
+        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.isLakeSoulTable(
             identifier)
 
     @classmethod
@@ -287,5 +289,5 @@ class LakeSoulTable(object):
 
     @classmethod
     def registerMergeOperator(cls, sparkSession, class_name, fun_name):
-        return sparkSession._sc._jvm.LakeSoulTable \
+        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
             .registerMergeOperator(sparkSession._jsparkSession, class_name, fun_name)
