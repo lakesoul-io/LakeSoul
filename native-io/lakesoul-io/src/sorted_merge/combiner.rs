@@ -275,6 +275,7 @@ fn merge_sort_key_array_ranges(
     };
 
     flatten_dedup_arrays.push(append_array);
+    println!("{:?}", flatten_dedup_arrays);
     interleave(
         flatten_dedup_arrays
             .iter()
@@ -285,3 +286,5 @@ fn merge_sort_key_array_ranges(
     )
     .unwrap()
 }
+
+

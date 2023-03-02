@@ -19,8 +19,8 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use arrow::{
-    array::ArrayRef,
-    datatypes::SchemaRef,
+    array::{ArrayRef, as_primitive_array},
+    datatypes::{SchemaRef, DataType, TimestampMicrosecondType},
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
@@ -185,6 +185,10 @@ impl SortKeyArrayRange {
     pub fn array(&self) -> ArrayRef {
         self.array.clone()
     }
+
+    pub fn with_timezone_opt(&mut self, timezone: &Option<String>) {
+        as_primitive_array::<TimestampMicrosecondType>(self.array().as_ref()).with_timezone_opt( timezone.clone());
+    }
 }
 
 impl Clone for SortKeyArrayRange {
@@ -239,7 +243,13 @@ impl SortKeyBatchRanges {
         }
         let schema = range.schema();
         for column_idx in 0..schema.fields().len() {
-            self.sort_key_array_ranges[self.fields_map[range.stream_idx()][column_idx]].push(range.column(column_idx));
+            let mut range_col = range.column(column_idx);
+            let target_schema_idx = self.fields_map[range.stream_idx()][column_idx];
+            match self.schema().fields()[target_schema_idx].data_type() {
+                DataType::Timestamp(_, opt_timezone) => range_col.with_timezone_opt(opt_timezone),
+                _ => ()
+            };
+            self.sort_key_array_ranges[target_schema_idx].push(range_col);
         }
     }
 

@@ -25,6 +25,8 @@ import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeS
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
 
+import java.sql.Timestamp
+
 
 class UpsertSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
@@ -640,6 +642,104 @@ class UpsertSuiteBase extends QueryTest
 
 
   test("create table with hash key disordered") {
+    withTempDir(dir => {
+      val tablePath = dir.getAbsolutePath
+
+      val df1 = Seq(("range", "a1", 1, "a2", "a"), ("range", "b1", 2, "b2", "b"), ("range", "c1", 3, "c2", "c"))
+        .toDF("range", "v1", "hash1", "v2", "hash2")
+
+      val df2 = Seq(("range", 1, "a11", "a22", "a"), ("range", 2, "b11", "b22", "b"), ("range", 3, "c11", "c22", "c"))
+        .toDF("range", "hash1", "v1", "v2", "hash2")
+      val df3 = Seq(("range", "d1", 4, "d2", "d"), ("range", "b111", 2, "b222", "b"), ("range", "c111", 3, "c222", "c"))
+        .toDF("range", "v1", "hash1", "v2", "hash2")
+
+      df1.write.mode("overwrite")
+        .format("lakesoul")
+        .option("rangePartitions", "range")
+        .option("hashPartitions", "hash1,hash2")
+        .option("hashBucketNum", "2")
+        .save(tablePath)
+
+
+      LakeSoulTable.uncached(tablePath)
+      val table = LakeSoulTable.forPath(tablePath)
+      table.upsert(df2)
+      table.upsert(df3)
+
+
+      val requiredDF = Seq(
+        ("range", "a11", 1, "a22", "a"),
+        ("range", "b111", 2, "b222", "b"),
+        ("range", "c111", 3, "c222", "c"),
+        ("range", "d1", 4, "d2", "d"))
+        .toDF("range", "v1", "hash1", "v2", "hash2")
+
+      checkAnswer(
+        table.toDF.select("range", "hash1", "hash2", "v1", "v2"),
+        requiredDF.select("range", "hash1", "hash2", "v1", "v2"))
+
+      checkAnswer(
+        table.toDF.select("hash2", "v1", "v2"),
+        requiredDF.select("hash2", "v1", "v2"))
+
+      checkAnswer(
+        table.toDF.select("v1", "v2"),
+        requiredDF.select("v1", "v2"))
+
+      checkAnswer(
+        table.toDF.select("range", "v2"),
+        requiredDF.select("range", "v2"))
+
+      table.compaction()
+
+      checkAnswer(
+        table.toDF.select("range", "hash1", "hash2", "v1", "v2"),
+        requiredDF.select("range", "hash1", "hash2", "v1", "v2"))
+
+
+    })
+  }
+
+  test("merge - same column with timestamp type") {
+    spark.conf.set("spark.sql.session.timeZone", "Asia/Shanghai")
+    val ts1 = Timestamp.valueOf("1000-06-14 08:28:53.123456")
+    val ts2 = Timestamp.valueOf("1582-06-15 08:28:53.123456")
+    val ts3 = Timestamp.valueOf("1900-06-16 08:28:53.123456")
+    val ts4 = Timestamp.valueOf("2018-06-17 08:28:53.123456")
+    initTable(
+      Seq((20201101, 1, 1, ts1), (20201101, 2, 2, ts2), (20201101, 3, 3, ts3), (20201102, 4, 4, ts4))
+        .toDF("range", "hash", "value", "timestamp"),
+      "range",
+      "hash")
+
+    checkUpsert(
+      Seq((20201101, 1, 11), (20201101, 3, 33), (20201101, 4, 44))
+        .toDF("range", "hash", "value"),
+      None,
+      Row(20201101, 1, 11, ts1) :: Row(20201101, 2, 2, ts2) :: Row(20201101, 3, 33, ts3) :: Row(20201101, 4, 44, null) :: Row(20201102, 4, 4, ts4) :: Nil,
+      Seq("range", "hash", "value", "timestamp"))
+  }
+
+
+  test("merge - different columns with timestamp type") {
+    initTable(
+      Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4))
+        .toDF("range", "hash", "value"),
+      "range",
+      "hash")
+
+    withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      checkUpsert(
+        Seq((20201101, 1, 11), (20201101, 3, 33), (20201101, 4, 44))
+          .toDF("range", "hash", "name"),
+        None,
+        Row(20201101, 1, 1, 11) :: Row(20201101, 2, 2, null) :: Row(20201101, 3, 3, 33) :: Row(20201101, 4, null, 44) :: Row(20201102, 4, 4, null) :: Nil,
+        Seq("range", "hash", "value", "name"))
+    }
+  }
+
+
+  test("create table with hash key disordered and timestamp type") {
     withTempDir(dir => {
       val tablePath = dir.getAbsolutePath
 
