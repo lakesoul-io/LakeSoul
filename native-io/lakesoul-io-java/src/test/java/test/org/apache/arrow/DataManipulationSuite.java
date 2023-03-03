@@ -15,9 +15,9 @@ public class DataManipulationSuite {
 
     @Test
     public void CompareVectorsForFieldEquality() {
-        try(
-            BufferAllocator allocator = new RootAllocator();
-            IntVector right = new IntVector("int", allocator);
+        try (
+                BufferAllocator allocator = new RootAllocator();
+                IntVector right = new IntVector("int", allocator);
         ) {
             right.allocateNew(3);
             right.set(0, 10);
@@ -37,11 +37,11 @@ public class DataManipulationSuite {
     @Test
     public void CompareVectorEquality() {
         try (
-            BufferAllocator allocator = new RootAllocator();
-            IntVector vector1 = new IntVector("vector1", allocator);
-            IntVector vector2 = new IntVector("vector1", allocator);
-            IntVector vector3 = new IntVector("vector1", allocator);
-        ){
+                BufferAllocator allocator = new RootAllocator();
+                IntVector vector1 = new IntVector("vector1", allocator);
+                IntVector vector2 = new IntVector("vector1", allocator);
+                IntVector vector3 = new IntVector("vector1", allocator);
+        ) {
             vector1.allocateNew(1);
             vector1.set(0, 10);
             vector1.setValueCount(1);
@@ -64,9 +64,9 @@ public class DataManipulationSuite {
     @Test
     public void CompareValuesOnArray() {
         try (
-             BufferAllocator allocator = new RootAllocator();
-             VarCharVector vec = new VarCharVector("valueindexcomparator", allocator);
-        ){
+                BufferAllocator allocator = new RootAllocator();
+                VarCharVector vec = new VarCharVector("valueindexcomparator", allocator);
+        ) {
             vec.allocateNew(3);
             vec.set(0, "ba".getBytes());
             vec.set(1, "abc".getBytes());
@@ -84,9 +84,9 @@ public class DataManipulationSuite {
     @Test
     public void LinearSearchValueOnArray() {
         try (
-            BufferAllocator allocator = new RootAllocator();
-            IntVector linearSearchVector = new IntVector("linearSearchVector", allocator);
-        ){
+                BufferAllocator allocator = new RootAllocator();
+                IntVector linearSearchVector = new IntVector("linearSearchVector", allocator);
+        ) {
             linearSearchVector.allocateNew(10);
             linearSearchVector.setValueCount(10);
             for (int i = 0; i < 10; i++) {
@@ -103,7 +103,7 @@ public class DataManipulationSuite {
         try (
                 BufferAllocator allocator = new RootAllocator();
                 IntVector linearSearchVector = new IntVector("linearSearchVector", allocator);
-        ){
+        ) {
             linearSearchVector.allocateNew(10);
             linearSearchVector.setValueCount(10);
             for (int i = 0; i < 10; i++) {
@@ -118,9 +118,9 @@ public class DataManipulationSuite {
     @Test
     public void InPlaceSorter() {
         try (
-            BufferAllocator allocator = new RootAllocator();
-            IntVector intVectorNotSorted = new IntVector("intvectornotsorted", allocator);
-        ){
+                BufferAllocator allocator = new RootAllocator();
+                IntVector intVectorNotSorted = new IntVector("intvectornotsorted", allocator);
+        ) {
             intVectorNotSorted.allocateNew(3);
             intVectorNotSorted.setValueCount(3);
             intVectorNotSorted.set(0, 10);

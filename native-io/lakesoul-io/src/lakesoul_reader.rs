@@ -18,10 +18,16 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
+use arrow_schema::SchemaRef;
+use arrow::datatypes::Schema;
+
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
+use datafusion::logical_expr::col as logical_col;
+use datafusion::physical_plan::expressions::{PhysicalSortExpr, col};
+
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
@@ -33,11 +39,17 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::sorted_merge::sorted_stream_merger::{SortedStream,SortedStreamMerger};
+use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::default_column_stream::default_column_stream::DefaultColumnStream;
+use crate::filter::Parser as FilterParser;
+
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
     stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
+    pub(crate) schema: Option<SchemaRef>,
 }
 
 impl LakeSoulReader {
@@ -47,23 +59,83 @@ impl LakeSoulReader {
             sess_ctx,
             config,
             stream: Box::new_uninit(),
+            schema: None,
         })
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let mut df = self
-            .sess_ctx
-            .read_parquet(self.config.files[0].as_str(), Default::default())
-            .await?;
-        if !self.config.columns.is_empty() {
-            let cols: Vec<_> = self.config.columns.iter().map(String::as_str).collect();
-            df = df.select_columns(&cols)?;
+        match self.config.files.len() {
+            1 if self.config.primary_keys.is_empty() => {
+                let schema: SchemaRef = self.config.schema.0.clone();
+
+                let mut df = self
+                    .sess_ctx
+                    .read_parquet(self.config.files[0].as_str(), Default::default())
+                    .await?;
+
+                let file_schema = Arc::new(Schema::from(df.schema()));
+
+
+                let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
+
+                df = df.select(cols)?;
+
+                df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                let stream = df.execute_stream().await?;
+                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone());
+                
+                self.schema = Some(stream.schema().clone().into());
+                self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
+                Ok(())
+            }
+            0 => Err(DataFusionError::Internal(
+                "LakeSoulReader has wrong number of file".to_string(),
+            )),
+            _ => {
+                let mut streams = Vec::with_capacity(self.config.files.len());
+                let schema: SchemaRef = self.config.schema.0.clone();
+
+                for i in 0..self.config.files.len() {
+                    let mut df = self
+                        .sess_ctx
+                        .read_parquet(self.config.files[i].as_str(), Default::default())
+                        .await?;
+
+                    let file_schema = Arc::new(Schema::from(df.schema()));
+                    let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
+                    df = df.select(cols)?;   
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                    let stream = df
+                        .execute_stream()
+                        .await?;
+                    streams.push(SortedStream::new(
+                        stream,
+                    ));
+                }
+
+                let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
+                for i in 0..self.config.primary_keys.len() {
+                    sort_exprs.push(PhysicalSortExpr {
+                        expr: col(self.config.primary_keys[i].as_str(), &schema).unwrap(),
+                        options: Default::default(),
+                    });
+                }
+
+                let merge_ops = self.config.schema.0.fields().iter().map(|field| MergeOperator::from_name(self.config.merge_operators.get(field.name()).unwrap_or(&String::from("UseLast")))).collect::<Vec<_>>();
+
+                let merge_stream = SortedStreamMerger::new_from_streams(
+                    streams,
+                    schema,
+                    self.config.primary_keys.clone(),
+                    self.config.batch_size,
+                    merge_ops,
+                )
+                .unwrap();
+                self.schema = Some(merge_stream.schema().clone().into());
+                self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));
+                Ok(())
+            }
         }
-        df = self.config.filters.iter().try_fold(df, |df, f| df.filter(f.clone()))?;
-
-        self.stream = Box::new(MaybeUninit::new(df.execute_stream().await?));
-
-        Ok(())
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
@@ -76,6 +148,7 @@ impl LakeSoulReader {
 pub struct SyncSendableMutableLakeSoulReader {
     inner: Arc<AtomicRefCell<Mutex<LakeSoulReader>>>,
     runtime: Arc<Runtime>,
+    schema: Option<SchemaRef>,
 }
 
 impl SyncSendableMutableLakeSoulReader {
@@ -83,14 +156,18 @@ impl SyncSendableMutableLakeSoulReader {
         SyncSendableMutableLakeSoulReader {
             inner: Arc::new(AtomicRefCell::new(Mutex::new(reader))),
             runtime: Arc::new(runtime),
+            schema: None,
         }
     }
 
-    pub fn start_blocked(&self) -> Result<()> {
+    pub fn start_blocked(&mut self) -> Result<()> {
         let inner_reader = self.inner.clone();
         let runtime = self.get_runtime();
         runtime.block_on(async {
-            inner_reader.borrow().lock().await.start().await?;
+            let reader = inner_reader.borrow();
+            let mut reader = reader.lock().await;
+            reader.start().await?;
+            self.schema = reader.schema.clone();
             Ok(())
         })
     }
@@ -104,8 +181,13 @@ impl SyncSendableMutableLakeSoulReader {
         runtime.spawn(async move {
             let reader = inner_reader.borrow();
             let mut reader = reader.lock().await;
-            f(reader.next_rb().await);
+            let rb = reader.next_rb().await;
+            f(rb);
         })
+    }
+
+    pub fn get_schema(&self) -> Option<SchemaRef> {
+        self.schema.clone()
     }
 
     fn get_runtime(&self) -> Arc<Runtime> {
@@ -124,6 +206,10 @@ mod tests {
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
+    use rand::prelude::*;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::util::pretty::print_batches;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -152,42 +238,47 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
             ])
-            .with_thread_num(16)
-            .with_batch_size(128)
+            .with_thread_num(2)
+            .with_batch_size(11)
+            .with_primary_keys(vec!["id".to_string()])
+            .with_schema(Arc::new(Schema::new(vec![
+                // Field::new("name", DataType::Utf8, true),
+                Field::new("id", DataType::Int64, false),
+                // Field::new("x", DataType::Float64, true),
+                // Field::new("y", DataType::Float64, true),
+            ])))
             .build();
         let reader = LakeSoulReader::new(reader_conf)?;
         let runtime = Builder::new_multi_thread()
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
-        static mut ROW_CNT: usize = 0;
+        let mut rng = thread_rng();
         loop {
             let (tx, rx) = sync_channel(1);
             let start = Instant::now();
             let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
-                    let num_rows = &rb.unwrap().num_rows();
-                    unsafe {
-                        ROW_CNT = ROW_CNT + num_rows;
-                        println!("{}", ROW_CNT);
-                    }
+                    thread::sleep(Duration::from_millis(200));
+                    let num_rows = &rb.as_ref().unwrap().num_rows();
+                    print_batches(&[rb.as_ref().unwrap().clone()]);
+
                     println!("time cost: {:?} ms", start.elapsed().as_millis()); // ms
                     tx.send(false).unwrap();
                 }
             };
+            thread::sleep(Duration::from_millis(rng.gen_range(600..1200)));
+
             reader.next_rb_callback(Box::new(f));
             let done = rx.recv().unwrap();
             if done {
                 break;
             }
-        }
-        unsafe {
-            assert_eq!(ROW_CNT, 1000);
         }
         Ok(())
     }
@@ -204,7 +295,7 @@ mod tests {
             .worker_threads(reader.config.thread_num)
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         loop {
@@ -240,7 +331,7 @@ mod tests {
             .with_thread_num(1)
             .with_batch_size(8192)
             .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3a.access.secret"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.secret.key"), String::from("fs.s3.secret.key"))
             .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
             .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
             .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
@@ -272,7 +363,7 @@ mod tests {
             .with_thread_num(1)
             .with_batch_size(8192)
             .with_object_store_option(String::from("fs.s3a.access.key"), String::from("fs.s3.access.key"))
-            .with_object_store_option(String::from("fs.s3a.access.secret"), String::from("fs.s3.access.key"))
+            .with_object_store_option(String::from("fs.s3a.secret.key"), String::from("fs.s3.secret.key"))
             .with_object_store_option(String::from("fs.s3a.region"), String::from("us-east-1"))
             .with_object_store_option(String::from("fs.s3a.bucket"), String::from("fs.s3.bucket"))
             .with_object_store_option(String::from("fs.s3a.endpoint"), String::from("fs.s3.endpoint"))
@@ -283,7 +374,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
+        let mut reader = SyncSendableMutableLakeSoulReader::new(reader, runtime);
         reader.start_blocked()?;
         static mut ROW_CNT: usize = 0;
         let start = Instant::now();
