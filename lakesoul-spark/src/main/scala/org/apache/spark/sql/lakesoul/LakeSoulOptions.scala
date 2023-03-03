@@ -136,6 +136,7 @@ object LakeSoulOptions {
   val READ_END_TIME = "readendtime"
   /** An option to allow read type whether snapshot or increamental. */
   val READ_TYPE = "readtype"
+  val TIME_ZONE = "timezone"
 
   object ReadType extends Enumeration {
     val FULL_READ = "fullread"

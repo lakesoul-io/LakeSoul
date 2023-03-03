@@ -23,7 +23,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
@@ -418,24 +417,24 @@ object LakeSoulTable {
     forPath(sparkSession, path, partitionDesc, partitionVersion)
   }
 
-  /** Snapshot read to endTime
+  /** Snapshot Query to endTime
    */
-  def forPath(path: String, partitionDesc: String, endTime: String, readType: String): LakeSoulTable = {
+  def forPathSnapshot(path: String, partitionDesc: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, endTime, endTime, readType)
+    forPath(sparkSession, path, partitionDesc, endTime, endTime, timeZone, LakeSoulOptions.ReadType.SNAPSHOT_READ)
   }
 
-  /** IncrementalQuery from startTime to now
+  /** Incremental Query from startTime to now
    */
-  def forPath(path: String, partitionDesc: String, startTime: String, endTime: String, readType: String): LakeSoulTable = {
+  def forPathIncremental(path: String, partitionDesc: String, startTime: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, startTime, endTime, readType)
+    forPath(sparkSession, path, partitionDesc, startTime, endTime, timeZone, LakeSoulOptions.ReadType.INCREMENTAL_READ)
   }
 
   /**
@@ -465,12 +464,12 @@ object LakeSoulTable {
   *   startTime 2022-10-01 13:45:30
   *   endTime 2022-10-01 13:46:30
   * */
-  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, readType: String): LakeSoulTable = {
-    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(startTimeStamp)
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(endTimeStamp)
+  def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, startTimeStamp: String, endTimeStamp: String, timeZone: String, readType: String): LakeSoulTable = {
+    val timeZoneID = if (timeZone.equals("") || !TimeZone.getAvailableIDs.contains(timeZone)) TimeZone.getDefault.getID else timeZone
+    val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(startTimeStamp)
+    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(endTimeStamp)
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
-      val sm = SnapshotManagement.apply(p)
       if (endTime < 0) {
         println("No version found in Table before time")
         null

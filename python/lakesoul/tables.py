@@ -32,7 +32,7 @@ class LakeSoulTable(object):
         """
         Get a DataFrame representation of this LakeSoul table.
         """
-        return DataFrame(self._jst.toDF(), self._spark._wrapped)
+        return DataFrame(self._jst.toDF(), self._spark)
 
     def alias(self, aliasName):
         """
@@ -112,8 +112,10 @@ class LakeSoulTable(object):
         :type condition: str or pyspark.sql.Column
         """
         jcolumn = self._condition_to_jcolumn(condition)
+        if isinstance(source, DataFrame):
+            source = source._jdf
         if condition is None:
-            self._jst.upsert(source)
+            self._jst.upsert(source, "")
         else:
             self._jst.upsert(source, jcolumn)
 
@@ -177,8 +179,45 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forPath(spark, "/path/to/table")
         """
         assert sparkSession is not None
-        jst = sparkSession._sc._jvm.LakeSoulTable.forPath(
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forPath(
             sparkSession._jsparkSession, path)
+        return LakeSoulTable(sparkSession, jst)
+
+    @classmethod
+    def forPathIncremental(cls, sparkSession, path, partitionDesc, startTime, endTime, timeZone=""):
+        """
+        Create a LakeSoulTable for incremental data at the given `path` startTime and endTime using the given SparkSession.
+        :param sparkSession: SparkSession to use for loading the table
+        :param partitionDesc: the range partition name of table,default "" indicates that no partition is specified
+        :param startTime: read start timestamp
+        :param endTime: read end timestamp
+        :param timeZone: optional param default "" indicates local timezone,specify the timezone of the timestamp
+        :return: :py:class:`~lakesoul.tables.LakeSoulTable`
+        Example::
+            starTable = LakeSoulTable.forIncrementalPath(spark, "/path/to/table","","2023-02-28 14:45:00","2023-02-28 14:50:00","Asia/Shanghai")
+            starTable = LakeSoulTable.forIncrementalPath(spark, "/path/to/table","","2023-02-28 14:45:00","2023-02-28 14:50:00")
+        """
+        assert sparkSession is not None
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
+            .forPathIncremental(path, partitionDesc, startTime, endTime, timeZone)
+        return LakeSoulTable(sparkSession, jst)
+
+    @classmethod
+    def forPathSnapshot(cls, sparkSession, path, partitionDesc, endTime, timeZone=""):
+        """
+        Create a LakeSoulTable for the data at the given `path` end timestamp using the given SparkSession.
+        :param sparkSession: SparkSession to use for loading the table
+        :param partitionDesc: the range partition name of table,default "" indicates that no partition is specified
+        :param endTime: read end timestamp
+        :param timeZone: optional param default "" indicates local timezone,specify the timezone of the timestamp
+        :return: :py:class:`~lakesoul.tables.LakeSoulTable`
+        Example::
+            starTable = LakeSoulTable.forSnapshotPath(spark, "/path/to/table","","2023-02-28 14:45:00","Asia/Shanghai")
+            starTable = LakeSoulTable.forSnapshotPath(spark, "/path/to/table","","2023-02-28 14:45:00")
+        """
+        assert sparkSession is not None
+        jst = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tablLos_Angeleses.LakeSoulTable. \
+            forPathSnapshot(path, partitionDesc, endTime, timeZone)
         return LakeSoulTable(sparkSession, jst)
 
     @classmethod
@@ -196,7 +235,7 @@ class LakeSoulTable(object):
             starTable = LakeSoulTable.forName(spark, "tblName")
         """
         assert sparkSession is not None
-        jdt = sparkSession._sc._jvm.LakeSoulTable.forName(
+        jdt = sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.forName(
             sparkSession._jsparkSession, tableOrViewName)
         return LakeSoulTable(sparkSession, jdt)
 
@@ -213,7 +252,7 @@ class LakeSoulTable(object):
             LakeSoulTable.isLakeSoulTable(spark, "/path/to/table")
         """
         assert sparkSession is not None
-        return sparkSession._sc._jvm.LakeSoulTable.isLakeSoulTable(
+        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable.isLakeSoulTable(
             identifier)
 
     @classmethod
@@ -287,5 +326,5 @@ class LakeSoulTable(object):
 
     @classmethod
     def registerMergeOperator(cls, sparkSession, class_name, fun_name):
-        return sparkSession._sc._jvm.LakeSoulTable \
+        return sparkSession._sc._jvm.com.dmetasoul.lakesoul.tables.LakeSoulTable \
             .registerMergeOperator(sparkSession._jsparkSession, class_name, fun_name)

@@ -549,6 +549,7 @@ private[lakesoul] object PartitionUtils {
 
   def validatePartitionColumn(schema: StructType,
                               partitionColumns: Seq[String],
+                              rangePartitionColumns: Seq[String],
                               caseSensitive: Boolean): Unit = {
     checkColumnNameDuplication(
       partitionColumns,
@@ -563,7 +564,7 @@ private[lakesoul] object PartitionUtils {
         }
     }
 
-    if (partitionColumns.nonEmpty && partitionColumns.size == schema.fields.length) {
+    if (rangePartitionColumns.nonEmpty && rangePartitionColumns.size == schema.fields.length) {
       throw new AnalysisException(s"Cannot use all columns for partition columns")
     }
   }

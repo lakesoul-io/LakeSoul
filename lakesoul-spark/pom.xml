@@ -20,6 +20,7 @@
         <schema.registry.version>7.3.1</schema.registry.version>
         <avro.version>1.11.1</avro.version>
         <mysql.version>8.0.30</mysql.version>
+        <jackson.yaml.version>2.12.7</jackson.yaml.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -177,7 +178,12 @@
             <version>${avro.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
-
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson.yaml.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
         <!--hive-->
         <dependency>
             <groupId>org.apache.spark</groupId>

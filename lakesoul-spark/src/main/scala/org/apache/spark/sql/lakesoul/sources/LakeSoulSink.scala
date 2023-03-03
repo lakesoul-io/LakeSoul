@@ -66,7 +66,7 @@ class LakeSoulSink(sqlContext: SQLContext,
       updateMetadata(
         tc,
         data,
-        configuration = Map.empty,
+        configuration = options.options,
         outputMode == OutputMode.Complete())
 
       val deletedFiles = outputMode match {

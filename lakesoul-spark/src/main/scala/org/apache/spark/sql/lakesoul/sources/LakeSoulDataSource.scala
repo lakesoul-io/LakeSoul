@@ -143,7 +143,8 @@ class LakeSoulDataSource
         if (timeStamp.equals("")) {
           return 0
         }
-        val time = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(timeStamp)
+        val timeZoneID = options.getOrDefault(LakeSoulOptions.TIME_ZONE, TimeZone.getDefault.getID)
+        val time = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(timeStamp)
         time / 1000
       }
 
