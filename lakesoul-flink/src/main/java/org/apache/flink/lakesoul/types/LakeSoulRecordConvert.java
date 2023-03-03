@@ -50,19 +50,17 @@ import java.util.Objects;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_CDC_EVENT_TIME_COLUMN;
 
 public class LakeSoulRecordConvert implements Serializable {
-    private final ZoneId serverTimeZone;
 
     boolean useCDC;
 
     List<String> partitionFields;
 
-    public LakeSoulRecordConvert(boolean useCDC, String serverTimeZone) {
-        this(useCDC, serverTimeZone, Collections.emptyList());
+    public LakeSoulRecordConvert(boolean useCDC) {
+        this(useCDC, Collections.emptyList());
     }
 
-    public LakeSoulRecordConvert(boolean useCDC, String serverTimeZone, List<String> partitionFields) {
+    public LakeSoulRecordConvert(boolean useCDC, List<String> partitionFields) {
         this.useCDC = useCDC;
-        this.serverTimeZone = ZoneId.of(serverTimeZone);
         this.partitionFields = partitionFields;
     }
 
@@ -341,7 +339,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 continue;
             }
             Schema fieldSchema = schema.field(fieldName).schema();
-            sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema, serverTimeZone);
+            sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema);
         }
         writer.writeLong(useCDC ? arity - 2 : arity - 1, eventTime);
         writer.writeRowKind(rowKind);
@@ -356,11 +354,11 @@ public class LakeSoulRecordConvert implements Serializable {
         return fieldSchema.name() == null;
     }
 
-    private void sqlSchemaAndFieldWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
+    private void sqlSchemaAndFieldWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema) {
         if (isPrimitiveType(fieldSchema)) {
             primitiveTypeWrite(writer, index, fieldValue, fieldSchema);
         } else {
-            otherTypeWrite(writer, index, fieldValue, fieldSchema, serverTimeZone);
+            otherTypeWrite(writer, index, fieldValue, fieldSchema);
         }
     }
 
@@ -395,7 +393,7 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private void otherTypeWrite(BinaryRowWriter writer, int index,
-                                Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
+                                Object fieldValue, Schema fieldSchema) {
         switch (fieldSchema.name()) {
             case Enum.LOGICAL_NAME:
             case Json.LOGICAL_NAME:
@@ -423,7 +421,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 break;
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
-                writeZonedTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
+                writeUTCTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
             default:
                 throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.name());
@@ -484,13 +482,12 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.writeInt(index, data);
     }
 
-    public Object convertToZonedTimeStamp(Object dbzObj, Schema schema, ZoneId serverTimeZone) {
+    public Object convertToUTCTimeStamp(Object dbzObj) {
         if (dbzObj instanceof String) {
             String str = (String) dbzObj;
             // TIMESTAMP_LTZ type is encoded in string type
             Instant instant = Instant.parse(str);
-            return TimestampData.fromLocalDateTime(
-                    LocalDateTime.ofInstant(instant, serverTimeZone));
+            return TimestampData.fromInstant(instant);
         }
         throw new IllegalArgumentException(
                 "Unable to convert to TimestampData from unexpected value '"
@@ -512,8 +509,8 @@ public class LakeSoulRecordConvert implements Serializable {
         }
     }
 
-    public void writeZonedTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema, ZoneId serverTimeZone) {
-        TimestampData data = (TimestampData) convertToZonedTimeStamp(dbzObj, schema, serverTimeZone);
+    public void writeUTCTimeStamp(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
+        TimestampData data = (TimestampData) convertToUTCTimeStamp(dbzObj);
         writer.writeTimestamp(index, data, getPrecision(schema));
     }
 
@@ -534,7 +531,7 @@ public class LakeSoulRecordConvert implements Serializable {
         }
         // fallback to zoned timestamp
         LocalDateTime localDateTime =
-                TemporalConversions.toLocalDateTime(dbzObj, serverTimeZone);
+                TemporalConversions.toLocalDateTime(dbzObj, ZoneId.of("UTC"));
         return TimestampData.fromLocalDateTime(localDateTime);
     }
 
