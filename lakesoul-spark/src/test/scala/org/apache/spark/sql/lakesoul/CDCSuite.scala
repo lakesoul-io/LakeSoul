@@ -17,7 +17,6 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.arrow.lakesoul.io.NativeIOBase
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -28,11 +27,8 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
@@ -217,7 +213,7 @@ class CDCSuite
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA,"")
+          val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA, "")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
@@ -273,7 +269,7 @@ class CDCSuite
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC,"")
+          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC, "")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
