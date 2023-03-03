@@ -52,8 +52,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
         super(valueVector);
         Preconditions.checkState(
                 valueVector instanceof TimeStampVector
-                        && ((ArrowType.Timestamp) valueVector.getField().getType()).getTimezone()
-                                == "UTC");
+                        && ((ArrowType.Timestamp) valueVector.getField().getType()).getTimezone().equals("UTC"));
         this.precision = precision;
     }
 
