@@ -27,7 +27,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
 
 import java.util.TimeZone
 import scala.collection.JavaConverters._
@@ -419,22 +419,22 @@ object LakeSoulTable {
 
   /** Snapshot Query to endTime
    */
-  def forSnapshotPath(path: String, partitionDesc: String, endTime: String, timeZone: String): LakeSoulTable = {
+  def forPathSnapshot(path: String, partitionDesc: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, endTime, endTime, timeZone, "snapshot")
+    forPath(sparkSession, path, partitionDesc, endTime, endTime, timeZone, LakeSoulOptions.ReadType.SNAPSHOT_READ)
   }
 
   /** Incremental Query from startTime to now
    */
-  def forIncrementalPath(path: String, partitionDesc: String, startTime: String, endTime: String, timeZone: String): LakeSoulTable = {
+  def forPathIncremental(path: String, partitionDesc: String, startTime: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, startTime, endTime, timeZone, "incremental")
+    forPath(sparkSession, path, partitionDesc, startTime, endTime, timeZone, LakeSoulOptions.ReadType.INCREMENTAL_READ)
   }
 
   /**
