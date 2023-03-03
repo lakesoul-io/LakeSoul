@@ -53,10 +53,10 @@ object MorReadBenchmark {
       val tablePath = if (is_gt == "true") "s3://lakesoul-test-bucket/datalake_table/test" else "s3://lakesoul-test-bucket/datalake_table/gt"
       println(s"tablePath = $tablePath")
       val table = LakeSoulTable.forPath(tablePath)
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "false")
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "60000")
 
-      println(s"=====Reading with NATIVE_IO_ENABLE=true =====")
+      println(s"=====Reading with NATIVE_IO_ENABLE=false =====")
 
       spark.time({
         val path = "/tmp/result/ccf/result"

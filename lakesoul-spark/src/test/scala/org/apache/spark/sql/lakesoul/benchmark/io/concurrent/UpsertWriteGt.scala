@@ -5,6 +5,7 @@ import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, PartitionInfo}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.benchmark.io.UpsertWriteBenchmark.upsertTable
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 
 import java.sql.{Connection, PreparedStatement, ResultSet, SQLException}
@@ -63,8 +64,8 @@ object UpsertWriteGt {
     val dataPath10 = "/opt/spark/work-dir/data/base-10.parquet"
 
     spark.time({
-      val list = getUpsertDebugInfo
-      println(list)
+//      val list = getUpsertDebugInfo
+//      println(list)
       val tablePath = "s3://lakesoul-test-bucket/datalake_table/gt"
             val df = spark.read.format("parquet").load(dataPath0)
             df.write.format("lakesoul")
@@ -72,9 +73,19 @@ object UpsertWriteGt {
               .option("hashBucketNum", 4)
               .mode("Overwrite").save(tablePath)
 
-      for (debugInfo <- list) {
-        upsertTable(spark, tablePath, debugInfo.getLog)
-      }
+//      for (debugInfo <- list) {
+//        upsertTable(spark, tablePath, debugInfo.getLog)
+//      }
+      upsertTable(spark, tablePath, dataPath1)
+      upsertTable(spark, tablePath, dataPath2)
+      upsertTable(spark, tablePath, dataPath3)
+//      upsertTable(spark, tablePath, dataPath4)
+//      upsertTable(spark, tablePath, dataPath5)
+//      upsertTable(spark, tablePath, dataPath6)
+//      upsertTable(spark, tablePath, dataPath7)
+//      upsertTable(spark, tablePath, dataPath8)
+//      upsertTable(spark, tablePath, dataPath9)
+//      upsertTable(spark, tablePath, dataPath10)
     })
   }
 

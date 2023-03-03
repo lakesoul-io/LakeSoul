@@ -355,13 +355,7 @@ public class DBManager {
         }
 
         Map<String, PartitionInfo> curMap = new HashMap<>();
-        while (System.currentTimeMillis() % 30000 > 300) {
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-        }
+
         List<PartitionInfo> curPartitionInfoList = partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
         for (PartitionInfo curPartition : curPartitionInfoList) {
             String partitionDesc = curPartition.getPartitionDesc();
@@ -431,21 +425,22 @@ public class DBManager {
                 case "MergeCommit":
                     notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
             }
-        } else {
-            java.sql.Connection conn = null;
-            java.sql.PreparedStatement pstmt = null;
-            try {
-                conn = DBConnector.getConn();
-                pstmt = conn.prepareStatement("insert into debug_info(log, timestamp) values (?, ?)");
-                pstmt.setString(1, snapshotList.get(0).toString());
-                pstmt.setLong(2, System.currentTimeMillis());
-                pstmt.execute();
-            } catch (java.sql.SQLException e) {
-                throw new RuntimeException(e);
-            } finally {
-                DBConnector.closeConn(pstmt, conn);
-            }
         }
+//        else {
+//            java.sql.Connection conn = null;
+//            java.sql.PreparedStatement pstmt = null;
+//            try {
+//                conn = DBConnector.getConn();
+//                pstmt = conn.prepareStatement("insert into debug_info(log, timestamp) values (?, ?)");
+//                pstmt.setString(1, snapshotList.get(0).toString());
+//                pstmt.setLong(2, System.currentTimeMillis());
+//                pstmt.execute();
+//            } catch (java.sql.SQLException e) {
+//                throw new RuntimeException(e);
+//            } finally {
+//                DBConnector.closeConn(pstmt, conn);
+//            }
+//        }
 
         return notConflict;
     }

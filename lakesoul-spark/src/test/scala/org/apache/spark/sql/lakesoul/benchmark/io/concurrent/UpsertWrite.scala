@@ -6,10 +6,25 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 
+
 import java.sql.{Connection, PreparedStatement, SQLException}
 
 object UpsertWrite {
   var vector = Vector[String]()
+
+  val fieldSeq = Seq("ip", "hostname", "requests", "name", "city", "job", "phonenum")
+
+  val dataPath0 = "/opt/spark/work-dir/data/base-0.parquet"
+  val dataPath1 = "/opt/spark/work-dir/data/base-1.parquet"
+  val dataPath2 = "/opt/spark/work-dir/data/base-2.parquet"
+  val dataPath3 = "/opt/spark/work-dir/data/base-3.parquet"
+  val dataPath4 = "/opt/spark/work-dir/data/base-4.parquet"
+  val dataPath5 = "/opt/spark/work-dir/data/base-5.parquet"
+  val dataPath6 = "/opt/spark/work-dir/data/base-6.parquet"
+  val dataPath7 = "/opt/spark/work-dir/data/base-7.parquet"
+  val dataPath8 = "/opt/spark/work-dir/data/base-8.parquet"
+  val dataPath9 = "/opt/spark/work-dir/data/base-9.parquet"
+  val dataPath10 = "/opt/spark/work-dir/data/base-10.parquet"
 
   def main(args: Array[String]): Unit = {
     val builder = SparkSession.builder()
@@ -47,17 +62,7 @@ object UpsertWrite {
 
     SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
 
-    val dataPath0 = "/opt/spark/work-dir/data/base-0.parquet"
-    val dataPath1 = "/opt/spark/work-dir/data/base-1.parquet"
-    val dataPath2 = "/opt/spark/work-dir/data/base-2.parquet"
-    val dataPath3 = "/opt/spark/work-dir/data/base-3.parquet"
-    val dataPath4 = "/opt/spark/work-dir/data/base-4.parquet"
-    val dataPath5 = "/opt/spark/work-dir/data/base-5.parquet"
-    val dataPath6 = "/opt/spark/work-dir/data/base-6.parquet"
-    val dataPath7 = "/opt/spark/work-dir/data/base-7.parquet"
-    val dataPath8 = "/opt/spark/work-dir/data/base-8.parquet"
-    val dataPath9 = "/opt/spark/work-dir/data/base-9.parquet"
-    val dataPath10 = "/opt/spark/work-dir/data/base-10.parquet"
+
 
     spark.time({
       val tablePath = "s3://lakesoul-test-bucket/datalake_table/test"
@@ -66,64 +71,40 @@ object UpsertWrite {
       //        .option("hashPartitions", "uuid")
       //        .option("hashBucketNum", 4)
       //        .mode("Overwrite").save(tablePath)
+      var threadVec = Vector[UpsertThread]()
 
-
-      var start = 1
-      var end = 10
-      if (args.length >= 3 && args(0) == "--localtest") {
-        start = args(1).toInt
-        end = args(2).toInt
-      }
-      (start to end).map(index => {
-        class UpsertThread(i: Int) extends Thread {
-          override def run() {
-            upsertTable(spark, tablePath, s"/opt/spark/work-dir/data/base-$i.parquet")
-          }
-        }
-        new UpsertThread(index).start()
+      fieldSeq.foreach(field=>{
+        val thread = new UpsertThread(spark, tablePath, field)
+        thread.start()
+        threadVec = threadVec :+ thread
       })
+
+      threadVec.foreach(thread => thread.join())
+
     })
 
-
-    //    Thread.sleep(180 * 1000)
-    //    spark.time({
-    //      val tablePath = "s3://lakesoul-test-bucket/datalake_table/gt"
-    //      val df = spark.read.format("parquet").load(dataPath0)
-    //      df.write.format("lakesoul")
-    //        .option("hashPartitions", "uuid")
-    //        .option("hashBucketNum", 4)
-    //        .mode("Overwrite").save(tablePath)
-    //      for (path <- vector) {
-    //        println(s"trying upsert $path into $tablePath start")
-    //        LakeSoulTable.forPath(tablePath).upsert(spark.read.parquet(path))
-    //        println(s"trying upsert $path into $tablePath done")
-    //      }
-    //    })
-
-
   }
 
-  private def upsertTable(spark: SparkSession, tablePath: String, path: String): Unit = {
-    val waiting = scala.util.Random.nextInt(3) * 2000 * 0
-    Thread.sleep(waiting)
-    println(s"waiting $waiting mills, trying upsert $path into $tablePath  start")
-    LakeSoulTable.forPath(spark, tablePath).upsert(spark.read.parquet(path))
-    println(s"trying upsert $path into $tablePath  done")
-
-//    var conn: Connection = null
-//    var pstmt: PreparedStatement = null
-//    var result = true
-//    try {
-//      conn = DBConnector.getConn
-//      pstmt = conn.prepareStatement("insert into debug_info(log, timestamp) " + "values (?, ?)")
-//      pstmt.setString(1, path)
-//      pstmt.setLong(2, System.currentTimeMillis())
-//      pstmt.execute
-//    } catch {
-//      case e: SQLException =>
-//        result = false
-//        e.printStackTrace()
-//    } finally DBConnector.closeConn(pstmt, conn)
+  class UpsertThread(spark: SparkSession, tablePath: String, field: String) extends Thread {
+    def doUpsert(path:String): Unit = {
+      LakeSoulTable.forPath(spark, tablePath).upsert(spark.read.parquet(path).select("uuid", field))
+    }
+    override def run() {
+      println(s"trying upsert col[$field] into $tablePath  start")
+      doUpsert(dataPath1)
+      doUpsert(dataPath2)
+      doUpsert(dataPath3)
+//      doUpsert(dataPath4)
+//      doUpsert(dataPath5)
+//      doUpsert(dataPath6)
+//      doUpsert(dataPath7)
+//      doUpsert(dataPath8)
+//      doUpsert(dataPath9)
+//      doUpsert(dataPath10)
+      println(s"trying upsert col[$field] into $tablePath  done")
+      //        LakeSoulTable.forPath(spark, tablePath).upsert(spark.read.parquet(path).select("uuid", col))
+    }
   }
+
 
 }

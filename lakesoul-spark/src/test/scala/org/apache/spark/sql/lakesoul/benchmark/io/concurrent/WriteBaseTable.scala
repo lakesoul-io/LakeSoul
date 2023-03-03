@@ -60,7 +60,7 @@ object WriteBaseTable {
       val df = spark.read.format("parquet").load(dataPath0)
       df.write.format("lakesoul")
         .option("hashPartitions", "uuid")
-        .option("hashBucketNum", 1)
+        .option("hashBucketNum", 4)
         .mode("Overwrite").save(tablePath)
     })
 
