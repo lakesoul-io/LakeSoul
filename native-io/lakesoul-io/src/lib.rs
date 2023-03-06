@@ -31,3 +31,4 @@ mod hdfs;
 
 pub mod default_column_stream;
 pub mod constant;
+pub mod transform;

@@ -185,10 +185,6 @@ impl SortKeyArrayRange {
     pub fn array(&self) -> ArrayRef {
         self.array.clone()
     }
-
-    pub fn with_timezone_opt(&mut self, timezone: &Option<String>) {
-        as_primitive_array::<TimestampMicrosecondType>(self.array().as_ref()).with_timezone_opt( timezone.clone());
-    }
 }
 
 impl Clone for SortKeyArrayRange {
@@ -243,12 +239,8 @@ impl SortKeyBatchRanges {
         }
         let schema = range.schema();
         for column_idx in 0..schema.fields().len() {
-            let mut range_col = range.column(column_idx);
+            let range_col = range.column(column_idx);
             let target_schema_idx = self.fields_map[range.stream_idx()][column_idx];
-            match self.schema().fields()[target_schema_idx].data_type() {
-                DataType::Timestamp(_, opt_timezone) => range_col.with_timezone_opt(opt_timezone),
-                _ => ()
-            };
             self.sort_key_array_ranges[target_schema_idx].push(range_col);
         }
     }

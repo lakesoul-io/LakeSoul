@@ -16,6 +16,8 @@
 
 use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig};
 use crate::lakesoul_reader::ArrowResult;
+use crate::transform::{uniform_record_batch, uniform_schema};
+
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
@@ -206,7 +208,7 @@ impl MultiPartAsyncWriter {
 
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
-            schema.clone(),
+            uniform_schema(schema.clone()).clone(),
             Some(
                 WriterProperties::builder()
                     .set_max_row_group_size(config.max_row_group_size)
@@ -219,7 +221,7 @@ impl MultiPartAsyncWriter {
         Ok(MultiPartAsyncWriter {
             in_mem_buf: in_mem_buf.clone(),
             sess_ctx,
-            schema: schema.clone(),
+            schema: uniform_schema(schema.clone()).clone(),
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
@@ -259,6 +261,8 @@ impl MultiPartAsyncWriter {
 #[async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let batch = uniform_record_batch(batch);
+        println!{"{:?}", batch.schema()};
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
@@ -422,7 +426,7 @@ impl SyncSendableMutableLakeSoulWriter {
             };
 
             let mut writer_config = config.clone();
-            writer_config.schema = IOSchema(writer_schema);
+            writer_config.schema = IOSchema(uniform_schema(writer_schema).clone());
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
 
             let schema = writer.schema.clone();
