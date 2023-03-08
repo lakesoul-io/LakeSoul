@@ -44,7 +44,7 @@ object PipeLineExecute {
     var preViewName = ""
     for (i <- 0 until operators.size) {
       val op = operators.get(i)
-      if (null != op.getSourceTableName) {
+      if (null != op.getSourceTableName && "" != op.getSourceTableName) {
         getSource(op.getSourceOption, op.getTableNameWithDatabase, sparkSession).createOrReplaceTempView(op.getSourceTableName)
         preViewName = ""
       } else {
