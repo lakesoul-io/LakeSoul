@@ -50,9 +50,11 @@ object PipeLineExecute {
       } else {
         op.setSourceTableName(preViewName)
       }
-      if (null != op.getSinkTableName) {
+      if (null != op.getSinkTableName && "" != op.getSinkTableName) {
+        println(op.toSql)
         toSink(sparkSession.sql(op.toSql), sink, op.getOperation.getProcessType, sparkSession)
       } else {
+        println(op.toSql)
         sparkSession.sql(op.toSql).createOrReplaceTempView(op.getViewName)
         preViewName = op.getViewName
       }
@@ -152,39 +154,41 @@ object PipeLineExecute {
         val distinctTablePath = sink.getSinkPath + "_distinct_" + distinctColumn
         sinkDF.writeStream.foreachBatch {
           (batchDF: DataFrame, _: Long) => {
-            batchDF.toDF().show()
-            if (LakeSoulTable.isLakeSoulTable(distinctTablePath)) {
-              val distinctTable = LakeSoulTable.forName(distinctTableName, namespace)
-              distinctTable.upsert(batchDF)
-            } else {
-              batchDF.write
-                .mode("append")
-                .format("lakesoul")
-                .option("mergeSchema", "true")
-                .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
-                .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
-                .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
-                .option("path", distinctTablePath)
-                .option("shortTableName", distinctTableName)
-                .save()
-            }
-            if (System.currentTimeMillis() - lastTime > timeInterval || firstBatch) {
-              lastTime = System.currentTimeMillis()
-              firstBatch = false
-              val table = LakeSoulTable.forName(distinctTableName)
-              table.toDF.show()
-              val countResult = table.toDF.groupBy(groupByColumnSeq: _*).count().withColumnRenamed("count", "count_distinct_" + distinctColumn)
-              countResult.toDF().show()
-              countResult.write
-                .mode("overwrite")
-                .format("lakesoul")
-                .option("mergeSchema", "true")
-                .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
-                .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", groupByColumnList))
-                .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
-                .option("path", sink.getSinkPath)
-                .option("shortTableName", tableName)
-                .save()
+            if (!batchDF.rdd.isEmpty()) {
+              batchDF.toDF().show()
+              if (LakeSoulTable.isLakeSoulTable(distinctTablePath)) {
+                val distinctTable = LakeSoulTable.forName(distinctTableName, namespace)
+                distinctTable.upsert(batchDF)
+              } else {
+                batchDF.write
+                  .mode("append")
+                  .format("lakesoul")
+                  .option("mergeSchema", "true")
+                  .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+                  .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
+                  .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+                  .option("path", distinctTablePath)
+                  .option("shortTableName", distinctTableName)
+                  .save()
+              }
+              if (System.currentTimeMillis() - lastTime > timeInterval || firstBatch) {
+                lastTime = System.currentTimeMillis()
+                firstBatch = false
+                val table = LakeSoulTable.forName(distinctTableName)
+                table.toDF.show()
+                val countResult = table.toDF.groupBy(groupByColumnSeq: _*).count().withColumnRenamed("count", "count_distinct_" + distinctColumn)
+                countResult.toDF().show()
+                countResult.write
+                  .mode("overwrite")
+                  .format("lakesoul")
+                  .option("mergeSchema", "true")
+                  .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+                  .option(LakeSoulOptions.HASH_PARTITIONS, String.join(",", groupByColumnList))
+                  .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+                  .option("path", sink.getSinkPath)
+                  .option("shortTableName", tableName)
+                  .save()
+              }
             }
           }
         }
