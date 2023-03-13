@@ -24,6 +24,7 @@ import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
@@ -165,8 +166,14 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.mergeOps = mergeOperatorInfo;
     this.requestSchema = requestSchema==null?sparkSchema:requestSchema;
     initializeInternal();
+    TaskContext.get().addTaskCompletionListener(context -> {
+      try {
+        close();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
-
 
   @Override
   public void close() throws IOException {
@@ -179,6 +186,13 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       nativeReader = null;
     }
     super.close();
+  }
+
+  public void closeCurrentBatch() {
+    if (columnarBatch != null) {
+      columnarBatch.close();
+      columnarBatch = null;
+    }
   }
 
   @Override
@@ -210,10 +224,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   }
 
   private void recreateNativeReader() throws IOException {
-    if (nativeReader != null) {
-      nativeReader.close();
-      nativeReader = null;
-    }
+    close();
     NativeIOReader reader = new NativeIOReader();
     for (String path : filePathList) {
       reader.addFile(path);
@@ -300,6 +311,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * Advances to the next batch of rows. Returns false if there are no more.
    */
   public boolean nextBatch() throws IOException {
+    closeCurrentBatch();
     if (nativeReader.hasNext()) {
       VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
       if (nextVectorSchemaRoot == null) {

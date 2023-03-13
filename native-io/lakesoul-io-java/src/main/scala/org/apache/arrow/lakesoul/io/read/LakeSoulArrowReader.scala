@@ -47,10 +47,11 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     }
   }
 
-  val iterator: Iterator[Option[VectorSchemaRoot]] = new Iterator[Option[VectorSchemaRoot]] {
-    var vsrFuture: Future[Option[VectorSchemaRoot]] = _
+  val iterator = new BatchIterator
+
+  class BatchIterator extends Iterator[Option[VectorSchemaRoot]] {
+    private var vsrFuture: Future[Option[VectorSchemaRoot]] = _
     var finished = false
-    var cnt = 0
 
     override def hasNext: Boolean = {
       if (!finished) {
@@ -110,7 +111,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
       }
     }
 
-    private def clean(): Unit = {
+    def clean(): Unit = {
       if (vsrFuture != null && vsrFuture.isCompleted) {
         vsrFuture.value match {
           case Some(Success(Some(batch))) =>
@@ -122,6 +123,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
   }
 
   override def close(): Unit = {
+    iterator.clean()
     reader.close()
   }
 }
