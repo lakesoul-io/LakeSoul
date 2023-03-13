@@ -64,4 +64,6 @@ abstract class NativeMergeFilePartitionReaderFactory(mergeOperatorInfo: Map[Stri
 
   def buildColumnarReader(partitionedFile: Seq[MergePartitionedFile]): PartitionReader[ColumnarBatch]
 
+  override def supportColumnarReads(partition: InputPartition): Boolean = true
+
 }

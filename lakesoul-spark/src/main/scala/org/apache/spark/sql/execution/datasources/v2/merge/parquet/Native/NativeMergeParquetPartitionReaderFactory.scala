@@ -90,15 +90,6 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     .map(str => mutable.Map(str.split("->")(0) -> str.split("->")(1)))
     .fold(mutable.Map[String, String]())(_ ++ _)
 
-  override def supportColumnarReads(partition: InputPartition): Boolean = {
-    //don't support columnar reads, but retain this assert
-    assert(sqlConf.parquetVectorizedReaderEnabled && sqlConf.wholeStageEnabled &&
-      resultSchema.length <= sqlConf.wholeStageMaxNumFields &&
-      resultSchema.forall(_.dataType.isInstanceOf[AtomicType]))
-    true
-  }
-
-
   override def buildReader(file: MergePartitionedFile): PartitionReader[InternalRow] = {
     throw new Exception("LakeSoul Lake Merge scan shouldn't use this method, only buildColumnarReader will be used.")
   }

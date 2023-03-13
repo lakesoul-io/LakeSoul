@@ -16,8 +16,9 @@
 
 package org.apache.arrow.lakesoul.io;
 
+import jnr.ffi.ObjectReferenceManager;
+import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
-import jnr.ffi.*;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
