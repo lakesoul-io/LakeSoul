@@ -18,16 +18,30 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
-import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestSparkSession, LakeSoulTestUtils}
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
+
 
 class UpsertSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils {
 
   import testImplicits._
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   //  protected def executeUpsert(df: DataFrame, condition: Option[String], tableName: String): Unit
   protected def executeUpsert(df: DataFrame, condition: Option[String], tableName: String): Unit = {
@@ -628,6 +642,7 @@ class UpsertSuiteBase extends QueryTest
   test("create table with hash key disordered") {
     withTempDir(dir => {
       val tablePath = dir.getAbsolutePath
+
       val df1 = Seq(("range", "a1", 1, "a2", "a"), ("range", "b1", 2, "b2", "b"), ("range", "c1", 3, "c2", "c"))
         .toDF("range", "v1", "hash1", "v2", "hash2")
 
@@ -643,9 +658,12 @@ class UpsertSuiteBase extends QueryTest
         .option("hashBucketNum", "2")
         .save(tablePath)
 
+
+      LakeSoulTable.uncached(tablePath)
       val table = LakeSoulTable.forPath(tablePath)
       table.upsert(df2)
       table.upsert(df3)
+
 
       val requiredDF = Seq(
         ("range", "a11", 1, "a22", "a"),
@@ -679,6 +697,5 @@ class UpsertSuiteBase extends QueryTest
 
     })
   }
-
 
 }

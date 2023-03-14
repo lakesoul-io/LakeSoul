@@ -1,9 +1,25 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.spark.sql.execution.datasource.parquet
 
-import org.apache.arrow.lakesoul.io.NativeIOWrapper
+import org.apache.arrow.lakesoul.io.NativeIOBase
 import org.apache.parquet.filter2.predicate.FilterApi._
-import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, UserDefinedByInstance, Column => _}
-import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate, Operators}
+import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, Column => _}
+import org.apache.parquet.filter2.predicate.{FilterPredicate, Operators}
 import org.apache.parquet.schema.MessageType
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
@@ -16,11 +32,8 @@ import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, ParquetFilters, ParquetTest, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
-import org.apache.spark.sql.functions.struct
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{LegacyBehaviorPolicy, ParquetOutputTimestampType}
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.{CORRECTED, LEGACY}
-import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType.{INT96, TIMESTAMP_MICROS, TIMESTAMP_MILLIS}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
@@ -29,15 +42,12 @@ import org.apache.spark.sql.types._
 import org.apache.spark.util.AccumulatorContext
 import org.scalatest.BeforeAndAfter
 
-import java.io.File
 import java.math.{BigDecimal => JBigDecimal}
 import java.nio.charset.StandardCharsets
 import java.sql.{Date, Timestamp}
 import java.time.{LocalDate, LocalDateTime, ZoneId}
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-
-
 
 class ParquetV2FilterSuite
   extends ParquetFilterSuite
@@ -142,7 +152,7 @@ class ParquetNativeFilterSuite
       SQLConf.PARQUET_FILTER_PUSHDOWN_TIMESTAMP_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key -> "true",
       SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_STARTSWITH_ENABLED.key -> "true",
-      NATIVE_IO_ENABLE.key -> NativeIOWrapper.isNativeIOLibExist.toString,
+      NATIVE_IO_ENABLE.key -> NativeIOBase.isNativeIOLibExist.toString,
       // Disable adding filters from constraints because it adds, for instance,
       // is-not-null to pushed filters, which makes it hard to test if the pushed
       // filter is expected or not (this had to be fixed with SPARK-13495).
@@ -194,7 +204,6 @@ class ParquetNativeFilterSuite
           assert(pushedParquetFilters.exists(_.getClass === filterClass),
             s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
 
-//          stripSparkFilter(query).show()
           checker(stripSparkFilter(query), expected)
         case _ =>
           throw new AnalysisException("Can not match ParquetTable in the query.")

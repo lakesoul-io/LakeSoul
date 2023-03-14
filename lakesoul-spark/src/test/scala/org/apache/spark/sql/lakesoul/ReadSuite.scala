@@ -1,3 +1,19 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
@@ -86,7 +102,7 @@ class ReadSuite extends QueryTest
         val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
         val parDesc = "range=range1"
         // snapshot startVersion default to 0
-        val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionA, ReadType.SNAPSHOT_READ)
+        val lake1 = LakeSoulTable.forPathSnapshot(tablePath, parDesc, versionA)
         val data1 = lake1.toDF.select("range", "hash", "op")
         val lake2 = spark.read.format("lakesoul")
           .option(LakeSoulOptions.PARTITION_DESC, parDesc)
@@ -232,12 +248,13 @@ class ReadSuite extends QueryTest
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, versionB, versionC, ReadType.INCREMENTAL_READ)
+          val lake1 = LakeSoulTable.forPathIncremental(tablePath, parDesc, versionB, versionC)
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
             .option(LakeSoulOptions.READ_START_TIME, versionB)
             .option(LakeSoulOptions.READ_END_TIME, versionC)
+            .option(LakeSoulOptions.TIME_ZONE,"America/Los_Angeles")
             .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")

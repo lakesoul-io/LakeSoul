@@ -31,7 +31,6 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
-import org.apache.flink.lakesoul.types.JsonSourceRecord;
 import org.apache.flink.lakesoul.types.LakeSoulRecordConvert;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
@@ -134,8 +133,8 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 
-    public DataStreamSink<JsonSourceRecord> printStream(DataStream<JsonSourceRecord> stream, String name) {
-        PrintSinkFunction<JsonSourceRecord> printFunction = new PrintSinkFunction<>(name, false);
+    public DataStreamSink<BinarySourceRecord> printStream(DataStream<BinarySourceRecord> stream, String name) {
+        PrintSinkFunction<BinarySourceRecord> printFunction = new PrintSinkFunction<>(name, false);
         return stream.addSink(printFunction).name(name);
     }
 

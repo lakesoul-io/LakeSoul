@@ -21,10 +21,10 @@ package org.apache.flink.lakesoul.sink.state;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
-import javax.annotation.Nullable;
-
-import static org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter.InProgressFileRecoverable;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /** States for {@link LakeSoulWriterBucket}. */
 public class LakeSoulWriterBucketState {
@@ -36,32 +36,18 @@ public class LakeSoulWriterBucketState {
     /** The directory where all the part files of the bucket are stored. */
     private final Path bucketPath;
 
-    /**
-     * The creation time of the currently open part file, or {@code Long.MAX_VALUE} if there is no
-     * open part file.
-     */
-    private final long inProgressFileCreationTime;
-
-    /**
-     * A {@link InProgressFileRecoverable} for the currently open part file, or null if there is no
-     * currently open part file.
-     */
-    @Nullable private final InProgressFileRecoverable inProgressFileRecoverable;
-
-    private final String inProgressPath;
+    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList;
 
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             String bucketId,
             Path bucketPath,
-            long inProgressFileCreationTime,
-            @Nullable InProgressFileRecoverable inProgressFileRecoverable, String inProgressPath) {
+            List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList
+            ) {
         this.identity = identity;
         this.bucketId = bucketId;
         this.bucketPath = bucketPath;
-        this.inProgressFileCreationTime = inProgressFileCreationTime;
-        this.inProgressFileRecoverable = inProgressFileRecoverable;
-        this.inProgressPath = inProgressPath;
+        this.pendingFileRecoverableList = pendingFileRecoverableList;
     }
 
     public String getBucketId() {
@@ -72,43 +58,25 @@ public class LakeSoulWriterBucketState {
         return bucketPath;
     }
 
-    public long getInProgressFileCreationTime() {
-        return inProgressFileCreationTime;
-    }
-
-    @Nullable
-    public InProgressFileRecoverable getInProgressFileRecoverable() {
-        return inProgressFileRecoverable;
-    }
-
-    public boolean hasInProgressFileRecoverable() {
-        return inProgressFileRecoverable != null;
-    }
-
     @Override
     public String toString() {
-        final StringBuilder strBuilder = new StringBuilder();
 
-        strBuilder
-                .append("BucketState for bucketId=")
-                .append(bucketId)
-                .append(" and bucketPath=")
-                .append(bucketPath)
-                .append(" and identity=")
-                .append(identity);
-
-        if (hasInProgressFileRecoverable()) {
-            strBuilder.append(", has open part file created @ ").append(inProgressFileCreationTime);
-        }
-
-        return strBuilder.toString();
+        return "BucketState for bucketId=" +
+                bucketId +
+                " and bucketPath=" +
+                bucketPath +
+                " and identity=" +
+                identity +
+                " and pendingFiles=" +
+                pendingFileRecoverableList.stream().map(Object::toString).collect(Collectors.joining("; "))
+                ;
     }
 
     public TableSchemaIdentity getIdentity() {
         return identity;
     }
 
-    public String getInProgressPath() {
-        return inProgressPath;
+    public List<InProgressFileWriter.PendingFileRecoverable> getPendingFileRecoverableList() {
+        return pendingFileRecoverableList;
     }
 }

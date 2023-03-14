@@ -13,19 +13,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.spark.sql.vectorized
 
-import com.alibaba.fastjson.serializer.SerializerFeature
-import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
+import org.apache.arrow.lakesoul.io.NativeIOBase
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
-import org.apache.spark.sql.execution.vectorized.{WritableArrowColumnVector, WritableColumnVector}
-import org.apache.spark.sql.types._
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.s3a.S3AFileSystem
+import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.spark.util.Utils
 
 import scala.collection.JavaConverters._
 
 class NativeIOUtils {
-
 }
+
+class NativeIOOptions(val s3Bucket: String,
+                      val s3Ak: String,
+                      val s3Sk: String,
+                      val s3Endpoint: String,
+                      val s3Region: String,
+                      val fsUser: String,
+                      val defaultFS: String
+                     )
 
 object NativeIOUtils{
 
@@ -34,114 +44,45 @@ object NativeIOUtils{
       .asScala
       .toSeq
       .map(vector => {
-//        println(vector.getField)
         asColumnVector(vector)
       })
       .toArray
   }
 
-  def asArrayWritableColumnVector(vectorSchemaRoot: VectorSchemaRoot): Array[WritableColumnVector] = {
-    asScalaIteratorConverter(vectorSchemaRoot.getFieldVectors.iterator())
-      .asScala
-      .toSeq
-      .map(vector => {
-        //        println(vector.getField)
-        asWritableColumnVector(vector)
-      })
-      .toArray
-  }
-
-  def asArrowColumnVector(vector: ValueVector): ArrowColumnVector ={
+  private def asArrowColumnVector(vector: ValueVector): ArrowColumnVector = {
     new ArrowColumnVector(vector)
   }
 
-
-  def asColumnVector(vector: ValueVector): ColumnVector ={
+  private def asColumnVector(vector: ValueVector): ColumnVector ={
     asArrowColumnVector(vector).asInstanceOf[ColumnVector]
   }
 
-  def asWritableColumnVector(vector: ValueVector): WritableColumnVector ={
-    asWritableArrowColumnVector(vector).asInstanceOf[WritableColumnVector]
-  }
-
-  def asWritableArrowColumnVector(vector: ValueVector): WritableArrowColumnVector ={
-    new WritableArrowColumnVector(vector)
-  }
-
-  /**
-   * Return the json required when deserializing to ArrowSchema on the rust side
-   * Expected String format:
-   * {"fields":[{"name":"a","data_type":"Int64","nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"b","data_type":"Boolean","nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"c","data_type":"Utf8","nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"d","data_type":"Binary","nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"e","data_type":{"Decimal128":[5,2]},"nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"f","data_type":"Date32","nullable":false,"dict_id":0,"dict_is_ordered":false},
-   * {"name":"g","data_type":{"Timestamp":["Microsecond",null]},"nullable":false,"dict_id":0,"dict_is_ordered":false}]}
-   *
-   * @param sparkSchema
-   * @param timeZoneId
-   * @return
-   */
-  def convertStructTypeToArrowJson(sparkSchema: StructType, timeZoneId: String): String = {
-    assert(sparkSchema != null && sparkSchema.fields.length >= 1)
-    val fields = new JSONArray()
-    sparkSchema.map { structField =>
-      val field = new JSONObject()
-      field.put("name", structField.name)
-      val dt = structField.dataType
-      dt match {
-        case TimestampType => field.put("data_type", convertTimestampType(timeZoneId))
-        case DecimalType.Fixed(precision, scale) => field.put("data_type", convertDecimalType(precision, scale))
-        case _ => field.put("data_type", convertCommonDataTypeToStr(dt))
-      }
-      field.put("nullable", structField.nullable)
-      field.put("dict_id", 0)
-      field.put("dict_is_ordered", false)
-      fields.add(field)
+  def getNativeIOOptions(taskAttemptContext: TaskAttemptContext, file: Path): NativeIOOptions = {
+    val user = Utils.getCurrentUserName
+    var defaultFS = taskAttemptContext.getConfiguration.get("fs.defaultFS")
+    if (defaultFS == null) defaultFS = taskAttemptContext.getConfiguration.get("fs.default.name")
+    val fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration)
+    fileSystem match {
+      case s3aFileSystem: S3AFileSystem =>
+        val awsS3Bucket = s3aFileSystem.getBucket
+        val s3aEndpoint = taskAttemptContext.getConfiguration.get("fs.s3a.endpoint")
+        val s3aRegion = taskAttemptContext.getConfiguration.get("fs.s3a.endpoint.region")
+        val s3aAccessKey = taskAttemptContext.getConfiguration.get("fs.s3a.access.key")
+        val s3aSecretKey = taskAttemptContext.getConfiguration.get("fs.s3a.secret.key")
+        new NativeIOOptions(awsS3Bucket, s3aAccessKey, s3aSecretKey, s3aEndpoint, s3aRegion, user, defaultFS)
+      case _ => new NativeIOOptions(null, null, null, null, null, user, defaultFS)
     }
-    val schema = new JSONObject()
-    schema.put("fields", fields)
-    JSON.toJSONString(schema, SerializerFeature.WriteMapNullValue)
   }
 
-  def convertDecimalType(precision: Int, scale: Int): JSONObject = {
-    val decimalObj = new JSONObject()
-    val decimalPrecisonAndScale = new JSONArray()
-    decimalPrecisonAndScale.add(precision)
-    decimalPrecisonAndScale.add(scale)
-    decimalObj.put("Decimal128", decimalPrecisonAndScale)
-    decimalObj
-  }
-
-  /**
-   *
-   * @param timeZoneId Reserved parameter, it may be used to convert timestamp in the future
-   * @return
-   */
-  def convertTimestampType(timeZoneId: String): JSONObject = {
-    val timestamp = new JSONObject()
-    val timestampUnitAndZone = new JSONArray()
-    timestampUnitAndZone.add("Microsecond")
-    timestampUnitAndZone.add(null)
-    timestamp.put("Timestamp", timestampUnitAndZone)
-    timestamp
-  }
-
-  def convertCommonDataTypeToStr(dt: DataType): String = {
-    dt match {
-      case BooleanType => "Boolean"
-      case ByteType => "Int8"
-      case ShortType => "Int16"
-      case IntegerType => "Int32"
-      case LongType => "Int64"
-      case FloatType => "Float32"
-      case DoubleType => "Float64"
-      case StringType => "Utf8"
-      case BinaryType => "Binary"
-      case DateType => "Date32"
-      case _ =>
-        throw new UnsupportedOperationException(s"Unsupported data type: ${dt.catalogString}")
-    }
+  def setNativeIOOptions(nativeIO: NativeIOBase, options: NativeIOOptions): Unit = {
+    nativeIO.setObjectStoreOptions(
+      options.s3Ak,
+      options.s3Sk,
+      options.s3Region,
+      options.s3Bucket,
+      options.s3Endpoint,
+      options.fsUser,
+      options.defaultFS
+    )
   }
 }

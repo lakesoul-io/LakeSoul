@@ -26,12 +26,13 @@ import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.SimpleVersionedStringSerializer;
+import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.util.function.FunctionWithException;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
-import static org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter.InProgressFileRecoverable;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -43,16 +44,15 @@ public class LakeSoulWriterBucketStateSerializer
 
     private static final int MAGIC_NUMBER = 0x1e764b79;
 
-    private final SimpleVersionedSerializer<InProgressFileRecoverable>
-            inProgressFileRecoverableSerializer;
-
     private final SimpleVersionedSerializer<TableSchemaIdentity> tableSchemaIdentitySerializer;
 
+    private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableSimpleVersionedSerializer;
+
     public LakeSoulWriterBucketStateSerializer(
-            SimpleVersionedSerializer<InProgressFileRecoverable>
-                    inProgressFileRecoverableSerializer) {
-        this.inProgressFileRecoverableSerializer =
-                checkNotNull(inProgressFileRecoverableSerializer);
+            SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
+                    pendingFileRecoverableSimpleVersionedSerializer) {
+        this.pendingFileRecoverableSimpleVersionedSerializer =
+                checkNotNull(pendingFileRecoverableSimpleVersionedSerializer);
         this.tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
     }
 
@@ -78,26 +78,19 @@ public class LakeSoulWriterBucketStateSerializer
 
     private void serialize(LakeSoulWriterBucketState state, DataOutputView dataOutputView)
             throws IOException {
-        SimpleVersionedSerialization.writeVersionAndSerialize(
-                SimpleVersionedStringSerializer.INSTANCE, state.getBucketId(), dataOutputView);
+        dataOutputView.writeUTF(state.getBucketId());
         dataOutputView.writeUTF(state.getBucketPath().toString());
-        dataOutputView.writeLong(state.getInProgressFileCreationTime());
-
-        // put the current open part file
-        if (state.hasInProgressFileRecoverable()) {
-            InProgressFileRecoverable inProgressFileRecoverable =
-                    state.getInProgressFileRecoverable();
-            dataOutputView.writeBoolean(true);
-            assert inProgressFileRecoverable != null;
-            SimpleVersionedSerialization.writeVersionAndSerialize(
-                    inProgressFileRecoverableSerializer, inProgressFileRecoverable, dataOutputView);
-            dataOutputView.writeUTF(state.getInProgressPath());
-        } else {
-            dataOutputView.writeBoolean(false);
-        }
 
         SimpleVersionedSerialization.writeVersionAndSerialize(
                 tableSchemaIdentitySerializer, state.getIdentity(), dataOutputView);
+
+        dataOutputView.writeInt(state.getPendingFileRecoverableList().size());
+        for (int i = 0; i < state.getPendingFileRecoverableList().size(); ++i) {
+            SimpleVersionedSerialization.writeVersionAndSerialize(
+                    pendingFileRecoverableSimpleVersionedSerializer, state.getPendingFileRecoverableList().get(i),
+                    dataOutputView
+            );
+        }
     }
 
     private LakeSoulWriterBucketState deserialize(DataInputView in) throws IOException {
@@ -105,37 +98,31 @@ public class LakeSoulWriterBucketStateSerializer
                 in,
                 dataInputView ->
                         SimpleVersionedSerialization.readVersionAndDeSerialize(
-                                inProgressFileRecoverableSerializer, dataInputView));
+                                pendingFileRecoverableSimpleVersionedSerializer, dataInputView));
     }
 
     private LakeSoulWriterBucketState internalDeserialize(
             DataInputView dataInputView,
-            FunctionWithException<DataInputView, InProgressFileRecoverable, IOException>
-                    inProgressFileParser)
+            FunctionWithException<DataInputView, InProgressFileWriter.PendingFileRecoverable, IOException>
+                    pendingFileDeser)
             throws IOException {
 
-        String bucketId =
-                SimpleVersionedSerialization.readVersionAndDeSerialize(
-                        SimpleVersionedStringSerializer.INSTANCE, dataInputView);
+        String bucketId = dataInputView.readUTF();
         String bucketPathStr = dataInputView.readUTF();
-        long creationTime = dataInputView.readLong();
-
-        // then get the current resumable stream
-        InProgressFileRecoverable current = null;
-        String inProgressPath = null;
-        if (dataInputView.readBoolean()) {
-            current = inProgressFileParser.apply(dataInputView);
-            inProgressPath = dataInputView.readUTF();
-        }
 
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
                 tableSchemaIdentitySerializer, dataInputView);
 
+        int pendingFileNum = dataInputView.readInt();
+        List<InProgressFileWriter.PendingFileRecoverable> pendingFileRecoverableList = new ArrayList<>();
+        for (int i = 0; i < pendingFileNum; ++i) {
+            pendingFileRecoverableList.add(pendingFileDeser.apply(dataInputView));
+        }
+
         return new LakeSoulWriterBucketState(
                 identity, bucketId,
                 new Path(bucketPathStr),
-                creationTime,
-                current, inProgressPath);
+                pendingFileRecoverableList);
     }
 
     private void validateMagicNumber(DataInputView in) throws IOException {

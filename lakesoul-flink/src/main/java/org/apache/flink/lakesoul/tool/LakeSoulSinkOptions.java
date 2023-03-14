@@ -39,6 +39,8 @@ public class LakeSoulSinkOptions {
 
   public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
 
+  public static final String LAKESOUL_CDC_EVENT_TIME_COLUMN = "__lakesoul_cdc_event_time__";
+
   public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 20000L;
 
   public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;

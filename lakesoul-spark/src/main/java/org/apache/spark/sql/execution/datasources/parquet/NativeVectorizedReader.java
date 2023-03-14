@@ -16,35 +16,35 @@
 
 package org.apache.spark.sql.execution.datasources.parquet;
 
-import com.amazonaws.auth.AWSCredentials;
-import org.apache.arrow.lakesoul.io.NativeIOWrapper;
+import org.apache.arrow.lakesoul.io.NativeIOReader;
 import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.s3a.S3AFileSystem;
-import org.apache.hadoop.fs.s3a.S3AUtils;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.schema.Type;
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
+import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
+import org.apache.spark.sql.vectorized.NativeIOOptions;
 import org.apache.spark.sql.vectorized.NativeIOUtils;
 
 import java.io.IOException;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 
 /**
@@ -60,35 +60,20 @@ import java.util.List;
  */
 public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Object> {
   // The capacity of vectorized batch.
-  private int capacity;
+  private final int capacity;
 
   /**
    * Batch of rows that we assemble and the current index we've returned. Every time this
    * batch is used up (batchIdx == numBatched), we populated the batch.
    */
   private int batchIdx = 0;
-  private int numBatched = 0;
 
-  /**
-   * For each request column, the reader to read this column. This is NULL if this column
-   * is missing from the file, in which case we populate the attribute with NULL.
-   */
-  private VectorizedColumnReader[] columnReaders;
+  private int numBatched = 0;
 
   /**
    * The number of rows that have been returned.
    */
   private long rowsReturned;
-
-  /**
-   * The number of rows that have been reading, including the current in flight row group.
-   */
-  private long totalCountLoadedSoFar = 0;
-
-  /**
-   * For each column, true if the column is missing in the file and we'll instead return NULLs.
-   */
-  private boolean[] missingColumns;
 
   /**
    * The timezone that timestamp INT96 values should be converted to. Null if no conversion. Here to
@@ -119,7 +104,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    */
   private ColumnarBatch columnarBatch;
 
-  private WritableColumnVector[] partitionColumnVectors;
+  private WritableColumnVector[] partitionColumnVectors=null;
 
   /**
    * If true, this class returns batches instead of rows.
@@ -156,38 +141,38 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.filter = filter;
   }
 
-
-  /**
-   * Implementation of RecordReader API.
-   */
-  @Override
-  public void initialize(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
+  public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, StructType requestSchema)
           throws IOException, InterruptedException, UnsupportedOperationException {
-    super.initialize(inputSplit, taskAttemptContext);
-    FileSplit split = (FileSplit) inputSplit;
-    this.file = split.getPath();
-    this.filePath = file.toString();
-    FileSystem fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration());
-    if (fileSystem instanceof S3AFileSystem) {
-      s3aFileSystem = (S3AFileSystem) fileSystem;
-      awsS3Bucket = s3aFileSystem.getBucket();
-      s3aEndpoint = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint");
-      s3aRegion = taskAttemptContext.getConfiguration().get("fs.s3a.endpoint.region");
-      awsCredentials = S3AUtils.createAWSCredentialProviderSet(file.toUri(), taskAttemptContext.getConfiguration()).getCredentials();
-    }
-    initializeInternal();
+    assert(inputSplits.length==1);
+    initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
   }
 
-  /**
-   * Utility API that will read all the data in path. This circumvents the need to create Hadoop
-   * objects to use this class. `columns` can contain the list of columns to project.
-   */
-  @Override
-  public void initialize(String path, List<String> columns) throws IOException,
-          UnsupportedOperationException {
-    super.initialize(path, columns);
-    this.filePath = path;
+  public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, String[] primaryKeys, StructType requestSchema, Map<String, String> mergeOperatorInfo)
+          throws IOException, InterruptedException, UnsupportedOperationException {
+    super.initialize(inputSplits[0], taskAttemptContext);
+    FileSplit split = (FileSplit) inputSplits[0];
+    this.file = split.getPath();
+    this.nativeIOOptions = NativeIOUtils.getNativeIOOptions(taskAttemptContext, this.file);
+    this.filePathList = new ArrayList<>();
+
+    for (int i = 0; i < inputSplits.length; i++) {
+      FileSplit fileSplit = (FileSplit) inputSplits[i];
+      this.filePathList.add(fileSplit.getPath().toString());
+    }
+
+    if (primaryKeys != null) {
+      this.primaryKeys = Arrays.asList(primaryKeys);
+    }
+    this.mergeOps = mergeOperatorInfo;
+    this.requestSchema = requestSchema==null?sparkSchema:requestSchema;
     initializeInternal();
+    TaskContext.get().addTaskCompletionListener(context -> {
+      try {
+        close();
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
 
   @Override
@@ -203,15 +188,16 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     super.close();
   }
 
+  public void closeCurrentBatch() {
+    if (columnarBatch != null) {
+      columnarBatch.close();
+      columnarBatch = null;
+    }
+  }
+
   @Override
   public boolean nextKeyValue() throws IOException {
-    if (returnColumnarBatch) return nextBatch();
-
-    if (batchIdx >= numBatched) {
-      if (!nextBatch()) return false;
-    }
-    ++batchIdx;
-    return true;
+    return nextBatch();
   }
 
   @Override
@@ -237,71 +223,72 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     this.threadNum = threadNum;
   }
 
-  private void recreateNativeReader() {
-    if (nativeReader != null) {
-      nativeReader.close();
+  private void recreateNativeReader() throws IOException {
+    close();
+    NativeIOReader reader = new NativeIOReader();
+    for (String path : filePathList) {
+      reader.addFile(path);
     }
-    wrapper = new NativeIOWrapper();
-    wrapper.initialize();
-    wrapper.addFile(filePath);
-    // Initialize missing columns with nulls.
-    for (int i = 0; i < missingColumns.length; i++) {
-      if (!missingColumns[i]) {
-        wrapper.addColumn(sparkSchema.fields()[i].name());
-      }
+    if (primaryKeys != null) {
+      reader.setPrimaryKeys(primaryKeys);
     }
 
-    String schemaJson = NativeIOUtils.convertStructTypeToArrowJson(sparkSchema, convertTz == null ? "" : convertTz.toString());
-    wrapper.addSchema(schemaJson);
+    Schema arrowSchema = ArrowUtils.toArrowSchema(requestSchema, convertTz == null ? "UTC" : convertTz.toString());
+    reader.setSchema(arrowSchema);
 
-    wrapper.setBatchSize(capacity);
-    wrapper.setBufferSize(prefetchBufferSize);
-    wrapper.setThreadNum(threadNum);
+    reader.setBatchSize(capacity);
+    reader.setBufferSize(prefetchBufferSize);
+    reader.setThreadNum(threadNum);
 
-
-    if (s3aFileSystem != null) {
-      wrapper.setObjectStoreOptions(awsCredentials.getAWSAccessKeyId(), awsCredentials.getAWSSecretKey(), s3aRegion, awsS3Bucket, s3aEndpoint);
-    }
+    NativeIOUtils.setNativeIOOptions(reader, this.nativeIOOptions);
 
     if (filter != null) {
-      wrapper.addFilter(filterEncode(filter));
+      reader.addFilter(filterEncode(filter));
     }
 
-    wrapper.createReader();
-    wrapper.startReader(bool -> {});
+    if (mergeOps != null) {
+      reader.addMergeOps(mergeOps);
+    }
 
+    reader.initializeReader();
 
     totalRowCount= 0;
-    nativeReader = new LakeSoulArrowReader(wrapper, awaitTimeout);
+    nativeReader = new LakeSoulArrowReader(reader, awaitTimeout);
+
   }
 
   private String filterEncode(FilterPredicate filter) {
     return filter.toString();
   }
 
-  // Creates a columnar batch that includes the schema from the data files and the additional
-  // partition columns appended to the end of the batch.
-  // For example, if the data contains two columns, with 2 partition columns:
-  // Columns 0,1: data columns
-  // Column 2: partitionValues[0]
-  // Column 3: partitionValues[1]
+  // Create partitions' column vector
   private void initBatch(
           MemoryMode memMode,
           StructType partitionColumns,
           InternalRow partitionValues) throws IOException {
-    recreateNativeReader();
 
     if (partitionColumns != null) {
+      StructType batchSchema = new StructType();
+      for (StructField f: requestSchema.fields()) {
+        boolean is_partition = false;
+        for (StructField partitionField : partitionColumns.fields()) {
+          if (partitionField.name().equals(f.name())) is_partition = true;
+      }
+        if (!is_partition) batchSchema = batchSchema.add(f);
+      }
+      requestSchema = batchSchema;
+      recreateNativeReader();
       if (memMode == MemoryMode.OFF_HEAP) {
         partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
       } else {
         partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
       }
-//    columnarBatch = new ColumnarBatch(columnVectors);
       for (int i = 0; i < partitionColumns.fields().length; i++) {
         ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
         partitionColumnVectors[i].setIsConstant();
       }
+    } else {
+      partitionColumnVectors = null;
     }
   }
 
@@ -311,16 +298,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   public void initBatch(StructType partitionColumns, InternalRow partitionValues) throws IOException {
     initBatch(MEMORY_MODE, partitionColumns, partitionValues);
-  }
-
-  /**
-   * Returns the ColumnarBatch object that will be used for all rows returned by this reader.
-   * This object is reused. Calling this enables the vectorized reader. This should be called
-   * before any calls to nextKeyValue/nextBatch.
-   */
-  public ColumnarBatch resultBatch() throws IOException {
-    if (columnarBatch == null) initBatch();
-    return columnarBatch;
   }
 
   /**
@@ -334,79 +311,54 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
    * Advances to the next batch of rows. Returns false if there are no more.
    */
   public boolean nextBatch() throws IOException {
+    closeCurrentBatch();
     if (nativeReader.hasNext()) {
-      nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
+      VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
       if (nextVectorSchemaRoot == null) {
         throw new IOException("nextVectorSchemaRoot not ready");
       } else {
-        totalRowCount += nextVectorSchemaRoot.getRowCount();
+        int rowCount = nextVectorSchemaRoot.getRowCount();
+        totalRowCount += rowCount;
         ColumnVector[] nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
-        ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
-        System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
+        if (partitionColumnVectors == null) {
+          columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
+        } else {
+          ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
+          System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
 
-        columnarBatch = new ColumnarBatch(resultColumnVector, nextVectorSchemaRoot.getRowCount());
+          columnarBatch = new ColumnarBatch(resultColumnVector, rowCount);
+        }
       }
       return true;
     } else {
       return false;
     }
-
   }
 
   private void initializeInternal() throws IOException, UnsupportedOperationException {
-    // Check that the requested schema is supported.
-    missingColumns = new boolean[requestedSchema.getFieldCount()];
-    List<ColumnDescriptor> columns = requestedSchema.getColumns();
-    List<String[]> paths = requestedSchema.getPaths();
-    for (int i = 0; i < requestedSchema.getFieldCount(); ++i) {
-      Type t = requestedSchema.getFields().get(i);
-
-      if (!t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED)) {
-        throw new UnsupportedOperationException("Complex types not supported.");
-      }
-
-      String[] colPath = paths.get(i);
-      if (fileSchema.containsPath(colPath)) {
-        ColumnDescriptor fd = fileSchema.getColumnDescription(colPath);
-        if (!fd.equals(columns.get(i))) {
-          throw new UnsupportedOperationException("Schema evolution not supported.");
-        }
-        missingColumns[i] = false;
-      } else {
-        if (columns.get(i).getMaxDefinitionLevel() == 0) {
-          // Column is missing in data but the required data is non-nullable. This file is invalid.
-          throw new IOException("Required column is missing in data file. Col: " +
-                  Arrays.toString(colPath));
-        }
-        missingColumns[i] = true;
-      }
-    }
-
-    //initbatch with empty partition column
+    recreateNativeReader();
     initBatch();
   }
 
-  private NativeIOWrapper wrapper = null;
   private LakeSoulArrowReader nativeReader = null;
+
+  private StructType requestSchema = null;
 
   private int prefetchBufferSize = 2;
 
-  private int threadNum = 1;
+  private int threadNum = 2;
 
-  private int awaitTimeout = 5000;
+  private int awaitTimeout = 10000;
 
-  private String filePath;
-  private VectorSchemaRoot nextVectorSchemaRoot;
+  private List<String> filePathList;
 
-  private S3AFileSystem s3aFileSystem = null;
-  private String s3aEndpoint = null;
-  private String s3aRegion = null;
+  private List<String> primaryKeys = null;
 
-  private AWSCredentials awsCredentials = null;
+  private NativeIOOptions nativeIOOptions;
 
-  private String awsS3Bucket = null;
+  private Map<String, String> mergeOps = null;
 
-  private FilterPredicate filter;
+  private final FilterPredicate filter;
 }
 
 

@@ -16,6 +16,8 @@
 
 import os
 import unittest
+import time
+import threading
 
 from pyspark.sql.functions import col, lit, expr
 
@@ -105,7 +107,7 @@ class LakeSoulTableTests(LakeSoulTestCase):
         source = self.spark.createDataFrame([('a', -1), ('b', 0), ('e', -5), ('f', -6)], ["key", "value"])
 
         table = LakeSoulTable.forPath(self.spark, self.tempFile)
-        table.upsert(source._jdf)
+        table.upsert(source)
         self.__checkAnswer(table.toDF(),
                            ([('a', -1), ('b', 0), ('c', 3), ('d', 4), ('e', -5), ('f', -6)]))
 
@@ -175,6 +177,63 @@ class LakeSoulTableTests(LakeSoulTestCase):
         print(re.explain(True))
         self.__checkAnswer(re.select("key", "value"),
                            ([('a', 12), ('b', 24), ('c', 3), ('d', 4), ('e', 55), ('f', 66)]))
+
+    def test_snapshot_query(self):
+        self.__overwriteHashLakeSoulTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        table = LakeSoulTable.forPath(self.spark, self.tempFile)
+        readEndTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        time.sleep(2)
+        df = self.spark.createDataFrame([('e', 55), ('f', 66)], ["key", "value"])
+        table.upsert(df)
+        lake1 = LakeSoulTable.forPathSnapshot(self.spark, self.tempFile, "", readEndTime,"Asia/Shanghai")
+        lake2 = self.spark.read.format("lakesoul") \
+            .option("readendtime", readEndTime) \
+            .option("timezone","Asia/Shanghai") \
+            .option("readtype", "snapshot") \
+            .load(self.tempFile).show()
+        self.__checkAnswer(lake1.toDF(), [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        self.__checkAnswer(lake2, [('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+
+    def test_incremental_query(self):
+        self.__overwriteHashLakeSoulTable([('a', 1), ('b', 2), ('c', 3), ('d', 4)])
+        table = LakeSoulTable.forPath(self.spark, self.tempFile)
+        readStartTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        time.sleep(2)
+        df = self.spark.createDataFrame([('e', 55), ('f', 66)], ["key", "value"])
+        table.upsert(df)
+        time.sleep(2)
+        df = self.spark.createDataFrame([('g', 77)], ["key", "value"])
+        table.upsert(df)
+        time.sleep(1)
+        readEndTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        lake1 = LakeSoulTable.forPathIncremental(self.spark, self.tempFile, "", readStartTime, readEndTime,"Asia/Shanghai")
+        lake2 = self.spark.read.format("lakesoul") \
+            .option("readstarttime", readStartTime) \
+            .option("readendtime", readEndTime) \
+            .option("timezone","Asia/Shanghai") \
+            .option("readtype", "incremental") \
+            .load(self.tempFile)
+        self.__checkAnswer(lake1.toDF(), [('e', 55), ('f', 66), ('g', 77)])
+        self.__checkAnswer(lake2, [('e', 55), ('f', 66), ('g', 77)])
+
+    def test_streaming_incremental_query(self):
+        self.__overwriteHashLakeSoulTable([('a', 1), ('b', 2), ('c', 3)])
+        table = LakeSoulTable.forPath(self.spark, self.tempFile)
+        readStartTime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        time.sleep(2)
+        threading.Thread(self.spark.readStream.format("lakesoul")
+                         .option("readstarttime", readStartTime)
+                         .option("readtype", "incremental")
+                         .load(self.tempfile)
+                         .writeStream.format("console")
+                         .trigger(processingTime='2 seconds')
+                         .start()
+                         .awaitTermination())
+        df = self.spark.createDataFrame([('d', 4), ('e', 55)], ["key", "value"])
+        table.upsert(df)
+        time.sleep(2)
+        df = self.spark.createDataFrame([('f', 66), ('g', 77)], ["key", "value"])
+        table.upsert(df)
 
     def __checkAnswer(self, df, expectedAnswer, schema=["key", "value"]):
         if not expectedAnswer:
