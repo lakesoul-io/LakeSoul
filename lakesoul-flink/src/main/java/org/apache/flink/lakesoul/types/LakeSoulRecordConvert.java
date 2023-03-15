@@ -47,7 +47,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_CDC_EVENT_TIME_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_FILE_INDEX;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_POSITION;
 
 public class LakeSoulRecordConvert implements Serializable {
 
@@ -105,33 +106,33 @@ public class LakeSoulRecordConvert implements Serializable {
         return false;
     }
 
-    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long eventTime) throws Exception {
+    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long binlogFileIndex, long binlogPosition) throws Exception {
         Envelope.Operation op = getOperation(sch, value);
         Schema valueSchema = value.schema();
         LakeSoulRowDataWrapper.Build build = LakeSoulRowDataWrapper.newBuild().setTableId(tableId);
         if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            RowData insert = convert(after, afterSchema, RowKind.INSERT, eventTime);
+            RowData insert = convert(after, afterSchema, RowKind.INSERT, binlogFileIndex, binlogPosition);
             RowType rt = toFlinkRowType(afterSchema);
             insert.setRowKind(RowKind.INSERT);
             build.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
         } else if (op == Envelope.Operation.DELETE) {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
             Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            RowData delete = convert(before, beforeSchema, RowKind.DELETE, eventTime);
+            RowData delete = convert(before, beforeSchema, RowKind.DELETE, binlogFileIndex, binlogPosition);
             RowType rt = toFlinkRowType(beforeSchema);
             build.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
             delete.setRowKind(RowKind.DELETE);
         } else {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
             Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, eventTime);
+            RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, binlogFileIndex, binlogPosition);
             RowType beforeRT = toFlinkRowType(beforeSchema);
             beforeData.setRowKind(RowKind.UPDATE_BEFORE);
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, eventTime);
+            RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, binlogFileIndex, binlogPosition);
             RowType afterRT = toFlinkRowType(afterSchema);
             afterData.setRowKind(RowKind.UPDATE_AFTER);
             if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
@@ -164,17 +165,19 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     public RowType toFlinkRowType(Schema schema) {
-        int arity = schema.fields().size() + 1;
+        int arity = schema.fields().size() + 2;
         if (useCDC) ++arity;
         String[] colNames = new String[arity];
         LogicalType[] colTypes = new LogicalType[arity];
         List<Field> fieldNames = schema.fields();
-        for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
+        for (int i = 0; i < (useCDC ? arity - 3 : arity - 2); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
             colTypes[i] = convertToLogical(item.schema());
         }
-        colNames[useCDC ? arity - 2 : arity - 1] = LAKESOUL_CDC_EVENT_TIME_COLUMN;
+        colNames[useCDC ? arity - 3 : arity - 2] = BINLOG_FILE_INDEX;
+        colTypes[useCDC ? arity - 3 : arity - 2] = new BigIntType();
+        colNames[useCDC ? arity - 2 : arity - 1] = BINLOG_POSITION;
         colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
         if (useCDC) {
             colNames[arity - 1] = "rowKinds";
@@ -321,16 +324,16 @@ public class LakeSoulRecordConvert implements Serializable {
         writer.writeString(fieldIndex, StringData.fromString(rowKindStr));
     }
 
-    public RowData convert(Struct struct, Schema schema, RowKind rowKind, long eventTime) throws Exception {
+    public RowData convert(Struct struct, Schema schema, RowKind rowKind, long binlogFileIndex, long binlogPosition) throws Exception {
         if (struct == null) {
             return null;
         }
-        int arity = schema.fields().size() + 1; // for extra event time field
+        int arity = schema.fields().size() + 2; // for extra event binlog file index and binlog position field
         if (useCDC) ++arity; // for extra cdc op (RowKind) field
         List<Field> fieldNames = schema.fields();
         BinaryRowData row = new BinaryRowData(arity);
         BinaryRowWriter writer = new BinaryRowWriter(row);
-        for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
+        for (int i = 0; i < (useCDC ? arity - 3 : arity - 2); i++) {
             Field field = fieldNames.get(i);
             String fieldName = field.name();
             Object fieldValue = struct.getWithoutDefault(fieldName);
@@ -341,7 +344,8 @@ public class LakeSoulRecordConvert implements Serializable {
             Schema fieldSchema = schema.field(fieldName).schema();
             sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema);
         }
-        writer.writeLong(useCDC ? arity - 2 : arity - 1, eventTime);
+        writer.writeLong(useCDC ? arity - 3 : arity - 2, binlogFileIndex);
+        writer.writeLong(useCDC ? arity - 2 : arity - 1, binlogPosition);
         writer.writeRowKind(rowKind);
         if (useCDC) {
             setCDCRowKindField(writer, rowKind, arity - 1);

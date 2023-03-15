@@ -36,10 +36,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_CDC_EVENT_TIME_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_FILE_INDEX;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_POSITION;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
     private static final Logger LOG = LoggerFactory.getLogger(NativeParquetWriter.class);
@@ -79,7 +80,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        nativeWriter.setAuxSortColumns(Collections.singletonList(LAKESOUL_CDC_EVENT_TIME_COLUMN));
+        nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
