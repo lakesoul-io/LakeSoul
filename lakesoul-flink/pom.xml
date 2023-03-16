@@ -246,6 +246,10 @@
                     <groupId>io.netty</groupId>
                     <artifactId>netty-all</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
     </dependencies>
@@ -385,6 +389,10 @@
                         <relocation>
                             <pattern>io.netty</pattern>
                             <shadedPattern>com.lakesoul.shaded.io.netty</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.arrow</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow</shadedPattern>
                         </relocation>
                     </relocations>
                     <transformers>
