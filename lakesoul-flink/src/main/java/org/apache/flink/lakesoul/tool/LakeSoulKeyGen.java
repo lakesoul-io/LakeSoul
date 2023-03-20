@@ -108,6 +108,9 @@ public class LakeSoulKeyGen implements Serializable {
       case DOUBLE:
         seed = Murmur3HashFunction.hash(field, DoubleType, seed);
         break;
+      case DATE:
+        seed = Murmur3HashFunction.hash(field,IntegerType, seed);
+        break;
       case BOOLEAN:
         seed = Murmur3HashFunction.hash(field, BooleanType, seed);
         break;
