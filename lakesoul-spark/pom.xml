@@ -375,10 +375,6 @@
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow</shadedPattern>
-                        </relocation>
                     </relocations>
                 </configuration>
             </plugin>
