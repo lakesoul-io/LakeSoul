@@ -50,20 +50,20 @@ object MorReadBenchmark {
 
     if (args.length >= 2 ) {
       val is_gt = args(1)
-      val tablePath = if (is_gt == "true") "s3://lakesoul-test-bucket/datalake_table/test" else "s3://lakesoul-test-bucket/datalake_table/gt"
+      val tablePath = if (is_gt == "true") "s3://lakesoul-test-bucket/datalake_table/join" else "s3://lakesoul-test-bucket/datalake_table/gt"
       println(s"tablePath = $tablePath")
       val table = LakeSoulTable.forPath(tablePath)
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "false")
+      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
       SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "60000")
 
-      println(s"=====Reading with NATIVE_IO_ENABLE=false =====")
+      println(s"=====Reading with NATIVE_IO_ENABLE=true =====")
 
       spark.time({
         val path = "/tmp/result/ccf/result"
         println(s"writing local parquet in $path")
         table.toDF
-          .withColumn("requests", expr("longSumMerge(requests)"))
-          //        .withColumn("name", expr("stringNonNullMerge(name)"))
+//          .withColumn("requests", expr("longSumMerge(requests)"))
+//                  .withColumn("name", expr("stringNonNullMerge(name)"))
           //        .select("uuid","name")
           //        .where("uuid ='000007dc-d5fe-426a-acb8-dd5a5bfc042c'")
           //        .show()
@@ -83,7 +83,7 @@ object MorReadBenchmark {
       spark.time({
         println("writing noop")
         table.toDF
-          .withColumn("requests", expr("longSumMerge(requests)"))
+          //.withColumn("requests", expr("longSumMerge(requests)"))
           //        .withColumn("name", expr("stringNonNullMerge(name)"))
           .write.mode("Overwrite")
           .format("noop")

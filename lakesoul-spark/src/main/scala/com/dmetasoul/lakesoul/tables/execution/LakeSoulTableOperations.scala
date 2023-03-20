@@ -18,10 +18,11 @@ package com.dmetasoul.lakesoul.tables.execution
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteFromTable, LakeSoulUpsert, UpdateTable}
-import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.functions.broadcast
+import org.apache.spark.sql.lakesoul.{LakeSoulTableRelationV2, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.PreprocessTableUpsert
@@ -30,6 +31,7 @@ import org.apache.spark.sql.lakesoul.utils.AnalysisHelper
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, SparkSession, functions}
 
+import java.text.SimpleDateFormat
 import scala.collection.mutable
 
 trait LakeSoulTableOperations extends AnalysisHelper {
@@ -95,6 +97,33 @@ trait LakeSoulTableOperations extends AnalysisHelper {
 
     toDataset(sparkSession, PreprocessTableUpsert(sparkSession.sessionState.conf)(upsert))
 
+  }
+
+
+  protected def executeJoinRightAndUpsert(deltaLeftDF: DataFrame,
+                                          rightTablePaths: Seq[String],
+                                          currentVersion: String,
+                                          condition: String = ""): Unit = {
+    rightTablePaths.foreach(rightTablePath => {
+      val rightTable = if (currentVersion == "") LakeSoulTable.forPath(rightTablePath) else LakeSoulTable.forPathSnapshot(rightTablePath, "", currentVersion)
+      val target = rightTable.toDF.queryExecution.analyzed
+      val snapshotManagement = EliminateSubqueryAliases(target) match {
+        case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+        case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+      }
+      val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
+      val deltaJoin = broadcast(deltaLeftDF).join(rightTable.toDF, hashCols, "left_outer")
+      executeUpsert(this, deltaJoin, condition)
+    })
+  }
+  protected def executeJoinLeftAndUpsert(deltaRightDF: DataFrame,
+                                         leftTablePath: String,
+                                         joinKey: Seq[String],
+                                         currentVersion: String,
+                                         condition: String = ""): Unit = {
+    val leftTable = if (currentVersion == "") LakeSoulTable.forPath(leftTablePath) else LakeSoulTable.forPathSnapshot(leftTablePath, "", currentVersion)
+    val deltaJoin = leftTable.toDF.join(broadcast(deltaRightDF), joinKey, "inner")
+    executeUpsert(this, deltaJoin, condition)
   }
 
 
