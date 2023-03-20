@@ -22,8 +22,9 @@ use std::task::{Context, Poll};
 
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
-
 use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::transform::transform_record_batch;
+
 use arrow::error::ArrowError;
 use arrow::row::{RowConverter, SortField};
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
@@ -201,6 +202,7 @@ impl SortedStreamMerger {
                 }
                 Some(Ok(batch)) => {
                     if batch.num_rows() > 0 {
+                        let batch = transform_record_batch(self.schema(), batch);
                         let cols = self.column_expressions[idx]
                             .iter()
                             .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))

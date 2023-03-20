@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.vectorized.ColumnVectorUtils;
 import org.apache.spark.sql.execution.vectorized.OffHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
@@ -233,7 +234,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       reader.setPrimaryKeys(primaryKeys);
     }
 
-    Schema arrowSchema = ArrowUtils.toArrowSchema(requestSchema, convertTz == null ? "UTC" : convertTz.toString());
+    Schema arrowSchema = ArrowUtils.toArrowSchema(requestSchema, convertTz == null ? SQLConf.get().sessionLocalTimeZone() : convertTz.toString());
     reader.setSchema(arrowSchema);
 
     reader.setBatchSize(capacity);
