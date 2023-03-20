@@ -25,6 +25,8 @@ use arrow_array::new_null_array;
 
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 
+use crate::transform::transform_record_batch;
+
 
 pub(crate) struct WrappedSendableRecordBatchStream {
     stream: SendableRecordBatchStream,
@@ -75,6 +77,7 @@ impl Stream for DefaultColumnStream {
                 return Poll::Ready(Some(Err(e)))
             }
             Some(Ok(batch)) => {
+                let batch = transform_record_batch(self.schema(), batch);
                 let columns = self
                     .schema
                     .fields()
