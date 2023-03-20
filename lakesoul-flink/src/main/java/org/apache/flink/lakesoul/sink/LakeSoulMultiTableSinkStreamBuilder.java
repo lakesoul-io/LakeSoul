@@ -67,7 +67,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public LakeSoulMultiTableSinkStreamBuilder(Context context) {
         this.context = context;
-        this.convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC));
+        this.convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC), context.conf.getString(SERVER_TIME_ZONE));
     }
 
     public DataStreamSource<BinarySourceRecord> buildMultiTableSource() {

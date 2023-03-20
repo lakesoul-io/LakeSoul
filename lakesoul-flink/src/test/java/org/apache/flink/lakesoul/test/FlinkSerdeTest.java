@@ -47,7 +47,7 @@ public class FlinkSerdeTest {
         env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
         env.setParallelism(1);
         env.getConfig().registerTypeWithKryoSerializer(RowType.class, JavaSerializer.class);
-        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC));
+        LakeSoulRecordConvert convert = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC), conf.getString(SERVER_TIME_ZONE));
 
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
                 .hostname("localhost")

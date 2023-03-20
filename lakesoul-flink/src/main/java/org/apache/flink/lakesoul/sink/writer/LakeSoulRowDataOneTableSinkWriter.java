@@ -54,7 +54,7 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
             Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig,
                 processingTimeService, bucketCheckInterval, conf);
-        this.converter = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC));
+        this.converter = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC), conf.getString(SERVER_TIME_ZONE));
         this.identity = identity;
         this.fieldGetters =
                 IntStream.range(0, this.identity.rowType.getFieldCount())
