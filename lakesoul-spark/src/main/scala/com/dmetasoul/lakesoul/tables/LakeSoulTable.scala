@@ -21,16 +21,19 @@ import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
+import org.apache.spark.sql.functions.broadcast
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableRelationV2, LakeSoulUtils, SnapshotManagement}
 
 import java.util.TimeZone
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   extends LakeSoulTableOperations with Logging {
@@ -260,6 +263,42 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
    */
   def upsert(source: DataFrame, condition: String = ""): Unit = {
     executeUpsert(this, source, condition)
+  }
+
+  /**
+   * Upsert LakeSoul join table with right delta dataframe.
+   *
+   * Example:
+   * {{{
+   *   lakeSoulTable.upsertWithJoinKey(deltaDF, Seq("uuid"))
+   *   lakeSoulTable.upsertWithJoinKey(deltaDF, Seq("uuid"), "2023-03-03 12:00:00")
+   * }}}
+   *
+   * @param deltaDF        delta dataframe from right table
+   * @param joinKey        used to join with left table
+   * @param currentVersion you can set a version to query data in left table
+   * @param condition      you can define a condition to filter LakeSoul data
+   */
+  def upsertOnJoinKey(deltaDF: DataFrame, joinKey: Seq[String], currentVersion: String = "", condition: String = ""): Unit = {
+    executeUpsertOnJoinKey(deltaDF, joinKey, currentVersion, condition)
+  }
+
+  /**
+   * Upsert LakeSoul join table with left delta dataframe.
+   *
+   * Example:
+   * {{{
+   *   lakeSoulTable.upsertWithTablePaths(deltaLeftDF, Seq("s3://lakesoul/right_table"))
+   *   lakeSoulTable.upsertWithTablePaths(deltaLeftDF, Seq("s3://lakesoul/right_table"), "2023-03-03 12:00:00")
+   * }}}
+   *
+   * @param deltaDF    left table delta dataframe
+   * @param rightTablePaths right tables which need to join with deltaDf
+   * @param currentVersion you can set a version to query data in right tables
+   * @param condition you can define a condition to filter LakeSoul data
+   */
+  def upsertWithTablePaths(deltaDF: DataFrame, rightTablePaths: Seq[String], currentVersion: String = "", condition: String = ""): Unit = {
+    executeUpsertWithTablePaths(deltaDF, rightTablePaths, currentVersion, condition)
   }
 
   //by default, force perform compaction on whole table
