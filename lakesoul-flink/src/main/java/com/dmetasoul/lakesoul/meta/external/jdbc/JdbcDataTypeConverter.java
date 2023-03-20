@@ -210,7 +210,7 @@ public class JdbcDataTypeConverter {
 //                    }
 //                    return CalendarIntervalType;
 //                }
-                return IntegerType;
+                return LongType;
             case Types.TIMESTAMP:
                 if (adaptiveTimePrecisionMode || adaptiveTimeMicrosecondsPrecisionMode) {
                     if (getTimePrecision(column) <= 3) {

@@ -230,11 +230,9 @@ public class LakeSoulRecordConvert implements Serializable {
             case EnumSet.LOGICAL_NAME:
                 return new VarCharType(Integer.MAX_VALUE);
             case Time.SCHEMA_NAME:
-                return new TimeType(3);
             case MicroTime.SCHEMA_NAME:
-                return new TimeType(6);
             case NanoTime.SCHEMA_NAME:
-                return new TimeType(9);
+                return new BigIntType();
             case Timestamp.SCHEMA_NAME:
                 return new TimestampType(3);
             case MicroTimestamp.SCHEMA_NAME:
