@@ -18,15 +18,15 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
 use arrow::datatypes::Schema;
+use arrow_schema::SchemaRef;
 
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
-use datafusion::physical_plan::expressions::{PhysicalSortExpr, col};
+use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
 
 use datafusion::prelude::SessionContext;
 
@@ -38,12 +38,11 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::sorted_merge::sorted_stream_merger::{SortedStream,SortedStreamMerger};
-use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::default_column_stream::default_column_stream::DefaultColumnStream;
 use crate::filter::Parser as FilterParser;
-
+use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -75,15 +74,21 @@ impl LakeSoulReader {
 
                 let file_schema = Arc::new(Schema::from(df.schema()));
 
-
-                let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
+                let cols = file_schema
+                    .fields()
+                    .iter()
+                    .filter(|field| schema.index_of(field.name()).is_ok())
+                    .map(|field| logical_col(field.name().as_str()))
+                    .collect::<Vec<_>>();
 
                 df = df.select(cols)?;
 
-                df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                df = self.config.filter_strs.iter().try_fold(df, |df, f| {
+                    df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                })?;
                 let stream = df.execute_stream().await?;
                 let stream = DefaultColumnStream::new_from_stream(stream, schema.clone());
-                
+
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
                 Ok(())
@@ -102,15 +107,18 @@ impl LakeSoulReader {
                         .await?;
 
                     let file_schema = Arc::new(Schema::from(df.schema()));
-                    let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
-                    df = df.select(cols)?;   
-                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
-                    let stream = df
-                        .execute_stream()
-                        .await?;
-                    streams.push(SortedStream::new(
-                        stream,
-                    ));
+                    let cols = file_schema
+                        .fields()
+                        .iter()
+                        .filter(|field| schema.index_of(field.name()).is_ok())
+                        .map(|field| logical_col(field.name().as_str()))
+                        .collect::<Vec<_>>();
+                    df = df.select(cols)?;
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| {
+                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                    })?;
+                    let stream = df.execute_stream().await?;
+                    streams.push(SortedStream::new(stream));
                 }
 
                 let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
@@ -121,7 +129,21 @@ impl LakeSoulReader {
                     });
                 }
 
-                let merge_ops = self.config.schema.0.fields().iter().map(|field| MergeOperator::from_name(self.config.merge_operators.get(field.name()).unwrap_or(&String::from("UseLast")))).collect::<Vec<_>>();
+                let merge_ops = self
+                    .config
+                    .schema
+                    .0
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        MergeOperator::from_name(
+                            self.config
+                                .merge_operators
+                                .get(field.name())
+                                .unwrap_or(&String::from("UseLast")),
+                        )
+                    })
+                    .collect::<Vec<_>>();
 
                 let merge_stream = SortedStreamMerger::new_from_streams(
                     streams,
@@ -202,11 +224,11 @@ impl SyncSendableMutableLakeSoulReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
-    use rand::prelude::*;
 
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::util::pretty::print_batches;

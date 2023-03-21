@@ -40,7 +40,7 @@ object ParquetScanBenchmark {
 
     var bucketName = "lakesoul-test-bucket"
     if (args.length >= 1 && args(0) == "--localtest") {
-      builder.config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+      builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
         .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")

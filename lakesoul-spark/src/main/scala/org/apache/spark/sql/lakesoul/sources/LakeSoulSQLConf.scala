@@ -108,10 +108,10 @@ object LakeSoulSQLConf {
       .createWithDefault(10)
 
   val NATIVE_IO_ENABLE: ConfigEntry[Boolean] =
-    buildConf("native.io.scan.enable")
+    buildConf("native.io.enable")
       .doc(
         """
-           |If ture, org.apache.spark.sql.execution.datasources.parquet.NativeVectorizedReader will be used instead of org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
+           |If ture, NativeIO would be enabled for both read and write
         """.stripMargin)
       .booleanConf
       .createWithDefault(false)
@@ -142,7 +142,7 @@ object LakeSoulSQLConf {
           |If NATIVE_IO_ENABLE=true, tokio::runtime::Runtime will be build with NATIVE_IO_THREAD_NUM thread_num
         """.stripMargin)
       .intConf
-      .createWithDefault(1)
+      .createWithDefault(2)
 
   val NATIVE_IO_READER_AWAIT_TIMEOUT: ConfigEntry[Int] =
     buildConf("native.io.await.timeout")
@@ -151,5 +151,5 @@ object LakeSoulSQLConf {
           |If NATIVE_IO_ENABLE=true, timeout for each iterate will be set to NATIVE_IO_READER_AWAIT_TIMEOUT mills
         """.stripMargin)
       .intConf
-      .createWithDefault(3000)
+      .createWithDefault(10000)
 }
