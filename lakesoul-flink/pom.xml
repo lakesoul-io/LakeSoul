@@ -390,10 +390,6 @@
                             <pattern>io.netty</pattern>
                             <shadedPattern>com.lakesoul.shaded.io.netty</shadedPattern>
                         </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow</shadedPattern>
-                        </relocation>
                     </relocations>
                     <transformers>
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
