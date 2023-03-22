@@ -24,7 +24,7 @@ import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan, StreamParquetScan}
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
@@ -131,9 +131,11 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
         sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
     } else {
-      ParquetScan(
-        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+      StreamParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, None, partitionFilters, dataFilters)
+//      ParquetScan(
+//        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
+//        readPartitionSchema(), pushedParquetFilters, options, None, partitionFilters, dataFilters)
     }
   }
 }
