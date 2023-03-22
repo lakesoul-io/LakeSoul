@@ -410,9 +410,52 @@ class PipelineSink {
     private String outputmode = "complete";
     private String checkpointLocation = "/tmp/chk";
     private long intervalTime = 60000L;
+    private String sinkType;
+    private String url;
+    private String user;
+    private String password;
+    private String saveMode;
 
     public PipelineSink() {
 
+    }
+    public String getSaveMode() {
+        return saveMode;
+    }
+
+    public void setSaveMode(String saveMode) {
+        this.saveMode = saveMode;
+    }
+    public String getSinkType() {
+        return sinkType;
+    }
+
+    public void setSinkType(String sinkType) {
+        this.sinkType = sinkType;
+    }
+
+    public String getUrl() {
+        return url;
+    }
+
+    public void setUrl(String url) {
+        this.url = url;
+    }
+
+    public String getUser() {
+        return user;
+    }
+
+    public void setUser(String user) {
+        this.user = user;
+    }
+
+    public String getPassword() {
+        return password;
+    }
+
+    public void setPassword(String password) {
+        this.password = password;
     }
 
     public String getSinkDatabaseName() {
