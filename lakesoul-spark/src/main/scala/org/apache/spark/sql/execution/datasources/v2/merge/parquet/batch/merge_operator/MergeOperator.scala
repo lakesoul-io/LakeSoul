@@ -30,6 +30,8 @@ trait MergeOperator[T] extends Serializable {
 
   def mergeData(input: Seq[T]): T
 
+  def toNativeName(): String
+
   def register(spark: SparkSession, name: String): Unit = {
     val udf = getUdf(name)
     val funIdentName = FunctionIdentifier(name)
@@ -56,12 +58,16 @@ class DefaultMergeOp[T] extends MergeOperator[T] {
   override def mergeData(input: Seq[T]): T = {
     input.last
   }
+
+  override def toNativeName(): String = "UseLast"
 }
 
 class MergeOpInt extends MergeOperator[Int] {
   override def mergeData(input: Seq[Int]): Int = {
     input.sum
   }
+
+  override def toNativeName(): String = "Sum"
 }
 
 class MergeNonNullOp[T] extends MergeOperator[T] {
@@ -69,16 +75,22 @@ class MergeNonNullOp[T] extends MergeOperator[T] {
     val output=input.filter(_!=null)
     output.filter(!_.equals("null")).last
   }
+
+  override def toNativeName(): String = "UseLast"
 }
 
 class MergeOpString extends MergeOperator[String] {
   override def mergeData(input: Seq[String]): String = {
     input.mkString(",")
   }
+
+  override def toNativeName(): String = "Concat"
 }
 
 class MergeOpLong extends MergeOperator[Long] {
   override def mergeData(input: Seq[Long]): Long = {
     input.sum
   }
+
+  override def toNativeName(): String = "Sum"
 }

@@ -39,7 +39,9 @@ public class LakeSoulSinkOptions {
 
   public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
 
-  public static final String LAKESOUL_CDC_EVENT_TIME_COLUMN = "__lakesoul_cdc_event_time__";
+  public static final String BINLOG_FILE_INDEX = "__binlog_file_index__";
+
+  public static final String BINLOG_POSITION = "__binlog_position__";
 
   public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 20000L;
 

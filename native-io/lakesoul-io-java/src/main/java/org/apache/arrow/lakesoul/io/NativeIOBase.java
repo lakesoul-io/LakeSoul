@@ -16,8 +16,9 @@
 
 package org.apache.arrow.lakesoul.io;
 
+import jnr.ffi.ObjectReferenceManager;
+import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
-import jnr.ffi.*;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
@@ -75,6 +76,13 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, columnPtr);
     }
 
+    public void setPrimaryKeys(Iterable<String> primaryKeys) {
+        for (String pk : primaryKeys) {
+            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, pk);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, ptr);
+        }
+    }
+
     public void setSchema(Schema schema) {
         assert ioConfigBuilder != null;
         ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
@@ -102,12 +110,16 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_buffer_size(ioConfigBuilder, bufferSize);
     }
 
-    public void setObjectStoreOptions(String accessKey, String accessSecret, String region, String bucketName, String endpoint) {
+    public void setObjectStoreOptions(String accessKey, String accessSecret,
+                                      String region, String bucketName, String endpoint,
+                                      String user, String defaultFS) {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
         setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
         setObjectStoreOption("fs.s3a.bucket", bucketName);
         setObjectStoreOption("fs.s3a.endpoint", endpoint);
+        setObjectStoreOption("fs.defaultFS", defaultFS);
+        setObjectStoreOption("fs.hdfs.user", user);
     }
 
     public void setObjectStoreOption(String key, String value) {
@@ -155,6 +167,9 @@ public class NativeIOBase implements AutoCloseable {
 
         @Override
         public void invoke(boolean status, String err) {
+            if (err!=null) {
+                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.Callback.invoke]" + err);
+            }
             callback.accept(status, err);
             removerReferenceKey();
         }

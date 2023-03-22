@@ -16,6 +16,8 @@
 
 use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig};
 use crate::lakesoul_reader::ArrowResult;
+use crate::transform::{uniform_record_batch, uniform_schema};
+
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
@@ -51,7 +53,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
-use url::{ParseError, Url};
+use url::Url;
 
 #[async_trait]
 pub trait AsyncBatchWriter {
@@ -76,7 +78,7 @@ pub struct MultiPartAsyncWriter {
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     multi_part_id: MultipartId,
     arrow_writer: ArrowWriter<InMemBuf>,
-    config: LakeSoulIOConfig,
+    _config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
     path: Path,
 }
@@ -85,7 +87,7 @@ pub struct MultiPartAsyncWriter {
 /// sort the batches before write to async writer
 pub struct SortAsyncWriter {
     sorter_sender: Sender<ArrowResult<RecordBatch>>,
-    sort_exec: Arc<dyn ExecutionPlan>,
+    _sort_exec: Arc<dyn ExecutionPlan>,
     join_handle: JoinHandle<Result<()>>,
 }
 
@@ -162,11 +164,11 @@ impl ExecutionPlan for ReceiverStreamExec {
         unimplemented!()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, _children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let receiver_stream = self.stream.borrow_mut().take().unwrap();
         let join_handle = self.join_handle.borrow_mut().take().unwrap();
         let stream = RecordBatchReceiverStream::create(&self.schema, receiver_stream, join_handle);
@@ -186,20 +188,14 @@ impl MultiPartAsyncWriter {
         let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files[0];
 
-        // parse file name. Url::parse requires file:// scheme for local files, otherwise
-        // RelativeUrlWithoutBase would be throw, in this case we directly return local object store
+        // local style path should have already been handled in create_session_context,
+        // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
         let (object_store, path) = match Url::parse(file_name.as_str()) {
             Ok(url) => Ok((
                 sess_ctx
                     .runtime_env()
                     .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
                 Path::from(url.path()),
-            )),
-            Err(ParseError::RelativeUrlWithoutBase) => Ok((
-                sess_ctx
-                    .runtime_env()
-                    .object_store(ObjectStoreUrl::local_filesystem())?,
-                Path::from(file_name.as_str()),
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
@@ -212,7 +208,7 @@ impl MultiPartAsyncWriter {
 
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
-            schema.clone(),
+            uniform_schema(schema.clone()).clone(),
             Some(
                 WriterProperties::builder()
                     .set_max_row_group_size(config.max_row_group_size)
@@ -225,11 +221,11 @@ impl MultiPartAsyncWriter {
         Ok(MultiPartAsyncWriter {
             in_mem_buf: in_mem_buf.clone(),
             sess_ctx,
-            schema: schema.clone(),
+            schema: uniform_schema(schema.clone()).clone(),
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
-            config,
+            _config: config,
             object_store,
             path,
         })
@@ -265,6 +261,7 @@ impl MultiPartAsyncWriter {
 #[async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let batch = uniform_record_batch(batch);
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
@@ -282,6 +279,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut *v).await?;
         }
         // shutdown multi part async writer to complete the upload
+        this.writer.flush().await?;
         this.writer.shutdown().await?;
         Ok(())
     }
@@ -351,7 +349,7 @@ impl SortAsyncWriter {
                         async_writer.write_record_batch(batch).await?;
                     }
                     // received abort singal
-                    Err(_) => return async_writer.abort_and_close().await
+                    Err(_) => return async_writer.abort_and_close().await,
                 }
             }
             async_writer.flush_and_close().await?;
@@ -360,7 +358,7 @@ impl SortAsyncWriter {
 
         Ok(SortAsyncWriter {
             sorter_sender: tx,
-            sort_exec: exec_plan,
+            _sort_exec: exec_plan,
             join_handle,
         })
     }
@@ -427,7 +425,7 @@ impl SyncSendableMutableLakeSoulWriter {
             };
 
             let mut writer_config = config.clone();
-            writer_config.schema = IOSchema(writer_schema);
+            writer_config.schema = IOSchema(uniform_schema(writer_schema).clone());
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
 
             let schema = writer.schema.clone();

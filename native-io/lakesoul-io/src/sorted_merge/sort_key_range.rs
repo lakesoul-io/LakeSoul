@@ -19,12 +19,12 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use arrow::{
-    array::ArrayRef,
-    datatypes::SchemaRef,
+    array::{ArrayRef, as_primitive_array},
+    datatypes::{SchemaRef, DataType, TimestampMicrosecondType},
     record_batch::RecordBatch,
     row::{Row, Rows},
 };
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 // A range in one arrow::record_batch::RecordBatch with same sorted primary key
 // This is the unit to be sorted in min heap
@@ -93,7 +93,7 @@ impl SortKeyBatchRange {
     #[inline(always)]
     /// Return true if the range has reached the end of batch
     pub fn is_finished(&self) -> bool {
-        self.begin_row >= self.rows.num_rows()
+        self.begin_row >= self.batch.num_rows()
     }
 
     #[inline(always)]
@@ -102,7 +102,7 @@ impl SortKeyBatchRange {
         let current = self.clone();
         self.begin_row = self.end_row;
         if !self.is_finished() {
-            while self.end_row < self.rows.num_rows() {
+            while self.end_row < self.batch.num_rows() {
                 // check if next row in this batch has same sort key
                 if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
                     self.end_row = self.end_row + 1;
@@ -205,15 +205,19 @@ pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,
 
+    // fields_index_map from source schemas to target schema which vector index = stream_idx
+    fields_map: Arc<Vec<Vec<usize>>>,
+
     pub(crate) schema: SchemaRef,
 
     pub(crate) batch_range: Option<SortKeyBatchRange>,
 }
 
 impl SortKeyBatchRanges {
-    pub fn new(schema: SchemaRef) -> SortKeyBatchRanges {
+    pub fn new(schema: SchemaRef, fields_map: Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
-            sort_key_array_ranges: (0..schema.fields().len()).map(|_| smallvec![]).collect(),
+            sort_key_array_ranges: vec![smallvec![]; schema.fields().len()],
+            fields_map: fields_map.clone(),
             schema: schema.clone(),
             batch_range: None,
         }
@@ -228,19 +232,16 @@ impl SortKeyBatchRanges {
         &self.sort_key_array_ranges[column_idx]
     }
 
-    // insert one SortKeyBatchRange into SortKeyArrayRanges,
+    // insert one SortKeyBatchRange into SortKeyArrayRanges
     pub fn add_range_in_batch(&mut self, range: SortKeyBatchRange) {
         if self.is_empty() {
             self.set_batch_range(Some(range.clone()));
         }
-        let schema = self.schema();
+        let schema = range.schema();
         for column_idx in 0..schema.fields().len() {
-            let name = schema.field(column_idx).name();
-
-            range
-                .schema()
-                .column_with_name(name)
-                .map(|(idx, _)| self.sort_key_array_ranges[column_idx].push(range.column(idx)));
+            let range_col = range.column(column_idx);
+            let target_schema_idx = self.fields_map[range.stream_idx()][column_idx];
+            self.sort_key_array_ranges[target_schema_idx].push(range_col);
         }
     }
 
@@ -263,15 +264,4 @@ impl SortKeyBatchRanges {
     }
 }
 
-impl Clone for SortKeyBatchRanges {
-    fn clone(&self) -> Self {
-        SortKeyBatchRanges {
-            sort_key_array_ranges: self.sort_key_array_ranges.clone(),
-            schema: self.schema.clone(),
-            batch_range: match &self.batch_range {
-                None => None,
-                Some(batch_range) => Some(batch_range.clone()),
-            },
-        }
-    }
-}
+pub type SortKeyBatchRangesRef = Arc<SortKeyBatchRanges>;

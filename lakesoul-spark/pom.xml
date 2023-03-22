@@ -18,8 +18,9 @@
         <scalatest.version>3.2.14</scalatest.version>
         <kafka.client.version>3.3.1</kafka.client.version>
         <schema.registry.version>7.3.1</schema.registry.version>
-        <avro.version>1.11.1</avro.version>
+        <avro.version>1.11.0</avro.version>
         <mysql.version>8.0.30</mysql.version>
+        <jackson.yaml.version>2.12.7</jackson.yaml.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -106,6 +107,12 @@
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -177,7 +184,12 @@
             <version>${avro.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
-
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson.yaml.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
         <!--hive-->
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -208,6 +220,12 @@
             <version>${spark.version}</version>
             <scope>test</scope>
             <classifier>tests</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -332,9 +350,7 @@
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
-                            <include>org.apache.arrow:arrow-algorithm</include>
-                            <include>org.apache.arrow:arrow-c-data</include>
-                            <include>org.apache.arrow:arrow-dataset</include>
+                            <include>org.apache.arrow:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>

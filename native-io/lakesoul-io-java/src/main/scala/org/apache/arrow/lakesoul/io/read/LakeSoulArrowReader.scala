@@ -32,7 +32,10 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
   def next(): Option[VectorSchemaRoot] = iterator.next()
 
-  def hasNext: Boolean = iterator.hasNext
+  def hasNext: Boolean = {
+    val result = iterator.hasNext
+    result
+  }
 
   def nextResultVectorSchemaRoot(): VectorSchemaRoot = {
     val result = next()
@@ -44,9 +47,11 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     }
   }
 
-  val iterator: Iterator[Option[VectorSchemaRoot]] = new Iterator[Option[VectorSchemaRoot]] {
-    var vsrFuture: Future[Option[VectorSchemaRoot]] = _
-    private var finished = false
+  val iterator = new BatchIterator
+
+  class BatchIterator extends Iterator[Option[VectorSchemaRoot]] {
+    private var vsrFuture: Future[Option[VectorSchemaRoot]] = _
+    var finished = false
 
     override def hasNext: Boolean = {
       if (!finished) {
@@ -73,12 +78,16 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         try {
           Await.result(p.future, timeout milli) match {
             case Some(_) => true
-            case _ =>
-              false
+            case _ => false
           }
         } catch {
+          case e:java.util.concurrent.TimeoutException =>
+            ex = Some(e)
+            println("[ERROR][org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader]native reader fetching timeout, please try a larger number with org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT")
+            false
           case e: Throwable =>
             ex = Some(e)
+            e.printStackTrace()
             false
         } finally {
           consumerArray.close()
@@ -102,7 +111,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
       }
     }
 
-    private def clean(): Unit = {
+    def clean(): Unit = {
       if (vsrFuture != null && vsrFuture.isCompleted) {
         vsrFuture.value match {
           case Some(Success(Some(batch))) =>
@@ -114,6 +123,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
   }
 
   override def close(): Unit = {
+    iterator.clean()
     reader.close()
   }
 }

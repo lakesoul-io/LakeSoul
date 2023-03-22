@@ -250,7 +250,7 @@ public final class ArrowUtils {
                 || vector instanceof TimeNanoVector) {
             return TimeWriter.forRow(vector);
         } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone() == null) {
+                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
             int precision;
             if (fieldType instanceof LocalZonedTimestampType) {
                 precision = ((LocalZonedTimestampType) fieldType).getPrecision();
@@ -312,7 +312,7 @@ public final class ArrowUtils {
                 || vector instanceof TimeNanoVector) {
             return TimeWriter.forArray(vector);
         } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone() == null) {
+                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
             int precision;
             if (fieldType instanceof LocalZonedTimestampType) {
                 precision = ((LocalZonedTimestampType) fieldType).getPrecision();
@@ -382,7 +382,7 @@ public final class ArrowUtils {
                 || vector instanceof TimeNanoVector) {
             return new ArrowTimeColumnVector(vector);
         } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone() == null) {
+                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
             return new ArrowTimestampColumnVector(vector);
         } else if (vector instanceof ListVector) {
             ListVector listVector = (ListVector) vector;
@@ -691,28 +691,26 @@ public final class ArrowUtils {
         @Override
         public ArrowType visit(LocalZonedTimestampType localZonedTimestampType) {
             if (localZonedTimestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.SECOND, "UTC");
             } else if (localZonedTimestampType.getPrecision() >= 1
                     && localZonedTimestampType.getPrecision() <= 3) {
-                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC");
             } else if (localZonedTimestampType.getPrecision() >= 4
                     && localZonedTimestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC");
             }
         }
 
         @Override
         public ArrowType visit(TimestampType timestampType) {
             if (timestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, null);
-            } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 3) {
-                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, null);
-            } else if (timestampType.getPrecision() >= 4 && timestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.SECOND, "UTC");
+            } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 6) {
+                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, null);
+                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC");
             }
         }
 

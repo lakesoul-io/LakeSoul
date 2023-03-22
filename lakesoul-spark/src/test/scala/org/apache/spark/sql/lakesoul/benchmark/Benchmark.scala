@@ -54,7 +54,9 @@ object Benchmark {
       .config("spark.hadoop.fs.s3a.multipart.size", 67108864)
       .config("spark.hadoop.fs.s3a.connection.maximum", 100)
       .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-      .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")
+      .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
+      .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
+      .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
       .config("spark.sql.shuffle.partitions", 10)
       .config("spark.sql.files.maxPartitionBytes", "1g")
       .config("spark.default.parallelism", 8)
@@ -67,6 +69,7 @@ object Benchmark {
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
+      .config("spark.dmetasoul.lakesoul.native.io.enable", "true")
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")

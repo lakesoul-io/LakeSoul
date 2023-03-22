@@ -61,7 +61,7 @@ public class LakeSoulDDLSink extends RichSinkFunction<BinarySourceRecord> {
                                             pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
                                             pt.getInt(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key()),
                                             pt.getBoolean(LakeSoulDDLSinkOptions.USE_CDC.key()));
-        if (ddlval.contains("alter") || ddlval.contains("create")) {
+        if (ddlval.contains("alter table") || ddlval.contains("create table")) {
             mysqlDbManager.importOrSyncLakeSoulTable(tablename);
         }
     }

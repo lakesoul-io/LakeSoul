@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.BucketParquetScan
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.sql.{SparkSession, Strategy}
 
 
@@ -152,6 +153,16 @@ case class withPartition(partition: Partitioning,
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
     copy(child = newChild)
   }
+
+  override def supportsColumnar: Boolean = child.supportsColumnar
+
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    if (supportsColumnar) {
+      child.executeColumnar()
+    } else {
+      super.executeColumnar()
+    }
+  }
 }
 
 case class withPartitionAndOrdering(partition: Partitioning,
@@ -167,5 +178,15 @@ case class withPartitionAndOrdering(partition: Partitioning,
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
     copy(child = newChild)
+  }
+
+  override def supportsColumnar: Boolean = child.supportsColumnar
+
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    if (supportsColumnar) {
+      child.executeColumnar()
+    } else {
+      super.executeColumnar()
+    }
   }
 }

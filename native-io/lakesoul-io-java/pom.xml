@@ -17,7 +17,7 @@
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
-        <arrow.version>7.0.0</arrow.version>
+        <arrow.version>9.0.0</arrow.version>
         <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.1.0</scalatest.version>
@@ -50,22 +50,6 @@
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-c-data</artifactId>
             <version>${arrow.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-dataset</artifactId>
-            <version>${arrow.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.arrow</groupId>
-            <artifactId>arrow-algorithm</artifactId>
-            <version>${arrow.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <!-- scala deps -->
@@ -208,7 +192,7 @@
                                 </goals>
                                 <configuration>
                                     <executable>cross</executable>
-                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --features lakesoul-io/hdfs --package lakesoul-io-c</commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>

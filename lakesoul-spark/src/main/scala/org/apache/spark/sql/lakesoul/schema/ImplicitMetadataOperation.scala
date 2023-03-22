@@ -133,6 +133,7 @@ trait ImplicitMetadataOperation extends Logging {
     PartitionUtils.validatePartitionColumn(
       mergedSchema,
       normalizedRangePartitionCols ++ normalizedHashPartitionCols,
+      normalizedRangePartitionCols,
       // LakeSoul is case insensitive regarding internal column naming
       caseSensitive = false)
 

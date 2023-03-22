@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
-import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
@@ -54,6 +54,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   }
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
+    if (snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+      return
+    }
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
     val table = LakeSoulTableV2(
       spark,
@@ -67,7 +70,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
     val scan = table.newScanBuilder(option).build()
-    if (scan.isInstanceOf[ParquetScan]) {
+    if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
       throw LakeSoulErrors.CompactionException(table_name = table.name())
     }
     val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
@@ -142,7 +145,6 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         val files = tc.filterFiles(targetOnlyPredicates)
 
         //ensure only one partition execute compaction command
-        //todo range_partitions
         val partitionSet = files.map(_.range_partitions).toSet
         if (partitionSet.isEmpty) {
           throw LakeSoulErrors.partitionColumnNotFoundException(condition.get, 0)

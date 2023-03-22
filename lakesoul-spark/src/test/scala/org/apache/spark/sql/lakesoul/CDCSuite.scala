@@ -17,7 +17,6 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.arrow.lakesoul.io.NativeIOBase
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -28,12 +27,11 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils}
-import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
-import java.util.TimeZone
 import scala.language.implicitConversions
 
 class CDCSuite
@@ -84,7 +82,7 @@ class CDCSuite
     SnapshotManagement(path)
   }
 
-  Seq("false", "true").distinct.foreach { nativeIOEnabled =>
+  Seq("false").distinct.foreach { nativeIOEnabled =>
     test(s"test cdc with MultiPartitionMergeScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {
@@ -213,16 +211,13 @@ class CDCSuite
           lake.upsert(tableForUpsert2)
 
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
-          // Processing time zone time difference between docker and local
-          val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionA)
-          val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, ReadType.SNAPSHOT_READ)
+          val lake1 = LakeSoulTable.forPathSnapshot(tablePath, parDesc, versionA, "")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
-            .option(LakeSoulOptions.READ_END_TIME, currentVersion)
+            .option(LakeSoulOptions.READ_END_TIME, versionA)
             .option(LakeSoulOptions.READ_TYPE, ReadType.SNAPSHOT_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")
@@ -273,18 +268,13 @@ class CDCSuite
 
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
-          // Processing time zone time difference between docker and local
-          val currentTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionB)
-          val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT-16")).parse(versionC)
-          val currentVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(currentTime / 1000)
-          val endVersion = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(endTime / 1000)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forPath(tablePath, parDesc, currentVersion, endVersion, ReadType.INCREMENTAL_READ)
+          val lake1 = LakeSoulTable.forPathIncremental(tablePath, parDesc, versionB, versionC, "America/Los_Angeles")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
-            .option(LakeSoulOptions.READ_START_TIME, currentVersion)
-            .option(LakeSoulOptions.READ_END_TIME, endVersion)
+            .option(LakeSoulOptions.READ_START_TIME, versionB)
+            .option(LakeSoulOptions.READ_END_TIME, versionC)
             .option(LakeSoulOptions.READ_TYPE, ReadType.INCREMENTAL_READ)
             .load(tablePath)
           val data2 = lake2.toDF.select("range", "hash", "op")

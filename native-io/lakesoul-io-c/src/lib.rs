@@ -251,6 +251,19 @@ pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_merge_op(
+    builder: NonNull<IOConfigBuilder>,
+    field: *const c_char,
+    merge_op: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let field = CStr::from_ptr(field).to_str().unwrap().to_string();
+        let merge_op = CStr::from_ptr(merge_op).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_merge_op(field, merge_op))
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     builder: NonNull<IOConfigBuilder>,
     pks: *const *const c_char,
@@ -509,6 +522,7 @@ pub extern "C" fn new_tokio_runtime_builder() -> NonNull<TokioRuntimeBuilder> {
     let mut builder = Builder::new_multi_thread();
     builder.enable_all();
     builder.worker_threads(2);
+    builder.max_blocking_threads(8);
     convert_to_opaque(builder)
 }
 
