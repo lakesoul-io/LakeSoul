@@ -17,6 +17,7 @@
 
 package com.dmetasoul.lakesoul.spark.entry
 
+import com.dmetasoul.lakesoul.sink.{ExtraSink, ExtraSinkParms, ExtraSinkType}
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -63,8 +64,8 @@ object PipeLineExecute {
 
   def getSparkSession(): SparkSession = {
     val builder = SparkSession.builder()
-//      .appName("STREAM PIPELINE")
- //     .config("spark.master","local[2]")
+      //      .appName("STREAM PIPELINE")
+      //     .config("spark.master","local[2]")
       .config("spark.sql.shuffle.partitions", 4)
       .config("spark.sql.files.maxPartitionBytes", "1g")
       .config("spark.sql.parquet.mergeSchema", value = true)
@@ -74,8 +75,8 @@ object PipeLineExecute {
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", 4)
-//      .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
-   //   .config("spark.files", "d:\\test.yml")
+    //      .config("spark.sql.warehouse.dir", "/tmp/lakesoul")
+    //   .config("spark.files", "d:\\test.yml")
     builder.getOrCreate()
 
   }
@@ -107,16 +108,31 @@ object PipeLineExecute {
 
     val rangePartition = if (sink.getRangePartition != null && sink.getRangePartition.size() > 0) String.join(",", sink.getRangePartition) else ""
     val hashPartition = if (sink.getHashPartition != null && sink.getHashPartition.size() > 0) String.join(",", sink.getHashPartition) else ""
+    val sinkType = sink.getSinkType
+    val extraSinkParms = ExtraSinkParms(
+      sinkType,
+      sinkDF,
+      processType,
+      sink.getUrl,
+      sink.getUser,
+      sink.getPassword,
+      sink.getSinkDatabaseName,
+      sink.getSinkTableName)
     processType match {
       case "batch" =>
-        sinkDF.write.format("lakesoul")
-          .mode("overwrite")
-          .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
-          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
-          .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
-          .option("path", sink.getSinkPath)
-          .option("shortTableName", sink.getSinkTableName)
-          .save()
+        if (!ExtraSinkType.isExtraSinkType(sinkType)) {
+          sinkDF.write.format("lakesoul")
+            .mode("overwrite")
+            .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+            .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
+            .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+            .option("path", sink.getSinkPath)
+            .option("shortTableName", sink.getSinkTableName)
+            .save()
+        }
+        else {
+          ExtraSink(extraSinkParms).save()
+        }
       case "stream" =>
         //todo failover情况，batch无法恢复，需要测试
         //        sinkDF.writeStream.format("console")
@@ -128,18 +144,22 @@ object PipeLineExecute {
         //          .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
         //          .start()
         //          .awaitTermination()
-        sinkDF.writeStream.format("lakesoul")
-          .outputMode(sink.getOutputmode)
-          .option("mergeSchema", "true")
-          .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
-          .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
-          .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
-          .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
-          .option("path", sink.getSinkPath)
-          .option("shortTableName", sink.getSinkTableName)
-          .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
-          .start()
-          .awaitTermination()
+        if (!ExtraSinkType.isExtraSinkType(sinkType)) {
+          sinkDF.writeStream.format("lakesoul")
+            .outputMode(sink.getOutputmode)
+            .option("mergeSchema", "true")
+            .option(SparkPipeLineOptions.CHECKPOINT_LOCATION, sink.getCheckpointLocation)
+            .option(LakeSoulOptions.PARTITION_DESC, rangePartition)
+            .option(LakeSoulOptions.HASH_PARTITIONS, hashPartition)
+            .option(LakeSoulOptions.HASH_BUCKET_NUM, sink.getHashBucketNum)
+            .option("path", sink.getSinkPath)
+            .option("shortTableName", sink.getSinkTableName)
+            .trigger(Trigger.ProcessingTime(sink.getTriggerTime))
+            .start()
+            .awaitTermination()
+        } else {
+          ExtraSink(extraSinkParms).save()
+        }
       case "distinctStreamBatch" =>
         assert(sink.getHashPartition != null && sink.getHashPartition.size() > 0, "distinct operate must set key column!")
         var firstBatch = true

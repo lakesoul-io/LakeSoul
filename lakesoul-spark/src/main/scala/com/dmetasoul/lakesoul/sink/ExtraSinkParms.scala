@@ -30,15 +30,18 @@ case class ExtraSinkParms(sinkType: String,
                           saveMode: SaveMode = SaveMode.Overwrite) {
   require(isValidate(sinkType, url, database, tableName), "ExtraSinkParms is not validate. ")
 
-  private def isValidate(sinkType: String, url: String, database: String, tableName: String): Boolean = {
-    if (ExtraSinkType.isExtraSinkType(sinkType))
-      if (url != null && url.nonEmpty
-        && database != null && database.nonEmpty
-        && tableName != null && tableName.nonEmpty)
-        true
-      else
-        throw new IllegalArgumentException(s"ExtraSinkParms url:${url}, database:${database}, tableName:${tableName} can not be null or empty. ")
-    else
-      throw new IllegalArgumentException(s"Unsupported commit sinkType '$sinkType'. ")
+  private def isValidate(sinkType: String, url: String, database: String, tableName: String): Boolean = sinkType match {
+    case sinkType if ExtraSinkType.isExtraSinkType(sinkType) => isValidateExtraParms(url, database, tableName)
+    case _ => true
+  }
+
+  private def isValidateExtraParms(url: String, database: String, tableName: String): Boolean = {
+    if (url != null && url.nonEmpty
+      && database != null && database.nonEmpty
+      && tableName != null && tableName.nonEmpty) {
+      true
+    } else {
+      throw new IllegalArgumentException(s"ExtraSinkParms url:${url}, database:${database}, tableName:${tableName} can not be null or empty. ")
+    }
   }
 }
