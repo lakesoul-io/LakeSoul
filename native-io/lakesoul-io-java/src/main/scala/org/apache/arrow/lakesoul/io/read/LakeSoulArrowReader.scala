@@ -18,6 +18,7 @@ package org.apache.arrow.lakesoul.io.read
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.lakesoul.io.NativeIOReader
+import org.apache.arrow.lakesoul.memory.FFIData
 import org.apache.arrow.vector.VectorSchemaRoot
 
 import java.io.IOException
@@ -61,10 +62,14 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val provider = new CDataDictionaryProvider
-        reader.nextBatch((hasNext, err) => {
-          if (hasNext) {
-            val root: VectorSchemaRoot =
+        reader.nextBatch((rowCount, err) => {
+          if (rowCount > 0) {
+            val root: VectorSchemaRoot = {
               Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+            }
+            if (root.getSchema.getFields.isEmpty) {
+              root.setRowCount(rowCount)
+            }
             p.success(Some(root))
           } else {
             if (err == null) {

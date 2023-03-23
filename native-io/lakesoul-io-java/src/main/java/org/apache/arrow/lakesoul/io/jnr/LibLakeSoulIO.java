@@ -74,22 +74,27 @@ public interface LibLakeSoulIO {
 
     Pointer check_writer_created(Pointer writer);
 
-    interface JavaCallback { // type representing callback
+    interface BooleanCallback { // type representing callback
         @Delegate
-        void invoke(boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+        void invoke(Boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
     }
 
-    void start_reader(Pointer reader, JavaCallback callback);
+    interface IntegerCallback { // type representing callback
+        @Delegate
+        void invoke(Integer status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+    }
 
-    void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, JavaCallback callback);
+    void start_reader(Pointer reader, BooleanCallback callback);
 
-    void write_record_batch(Pointer writer, long schemaAddr, long arrayAddr, JavaCallback callback);
+    void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, IntegerCallback callback);
+
+    void write_record_batch(Pointer writer, long schemaAddr, long arrayAddr, BooleanCallback callback);
 
     void free_lakesoul_reader(Pointer reader);
 
-    void flush_and_close_writer(Pointer writer, JavaCallback callback);
+    void flush_and_close_writer(Pointer writer, BooleanCallback callback);
 
-    void abort_and_close_writer(Pointer writer, JavaCallback callback);
+    void abort_and_close_writer(Pointer writer, BooleanCallback callback);
 
     void free_tokio_runtime(Pointer runtime);
 }

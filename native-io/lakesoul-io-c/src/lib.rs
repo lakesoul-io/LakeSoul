@@ -324,6 +324,17 @@ fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_ch
     }
 }
 
+pub type I32ResultCallback = extern "C" fn(i32, *const c_char);
+
+fn call_i32_result_callback(callback: I32ResultCallback, status: i32, err: *const c_char) {
+    callback(status, err);
+    if !err.is_null() {
+        unsafe {
+            let _ = CString::from_raw(err as *mut c_char);
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn start_reader(reader: NonNull<Result<Reader>>, callback: ResultCallback) {
     unsafe {
@@ -345,23 +356,24 @@ pub extern "C" fn next_record_batch(
     reader: NonNull<Result<Reader>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
-    callback: ResultCallback,
+    callback: I32ResultCallback,
 ) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
         let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
             None => {
-                call_result_callback(callback, false, std::ptr::null());
+                call_i32_result_callback(callback, -1, std::ptr::null());
             }
             Some(rb_result) => match rb_result {
                 Err(e) => {
-                    call_result_callback(
+                    call_i32_result_callback(
                         callback,
-                        false,
+                        -1,
                         CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
                     );
                 }
                 Ok(rb) => {
+                    let rows = rb.num_rows() as i32;
                     let batch: Arc<StructArray> = Arc::new(rb.into());
                     let result = export_array_into_raw(
                         batch,
@@ -370,12 +382,12 @@ pub extern "C" fn next_record_batch(
                     );
                     match result {
                         Ok(()) => {
-                            call_result_callback(callback, true, std::ptr::null());
+                            call_i32_result_callback(callback, rows, std::ptr::null());
                         }
                         Err(e) => {
-                            call_result_callback(
+                            call_i32_result_callback(
                                 callback,
-                                false,
+                                -1,
                                 CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
                             );
                         }
