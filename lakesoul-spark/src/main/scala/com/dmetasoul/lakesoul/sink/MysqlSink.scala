@@ -47,8 +47,6 @@ class MysqlSink(extraSinkParms: ExtraSinkParms) extends ExtraSink {
       .outputMode("complete")
       .foreachBatch {
         (batchDF: DataFrame, _: Long) => {
-          batchDF.toDF().show()
-
           batchDF.write
             .format("jdbc")
             .mode("overwrite")
