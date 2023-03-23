@@ -17,18 +17,18 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.arrow.lakesoul.io.NativeIOWrapper
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
@@ -38,6 +38,17 @@ class CDCSuite
   extends QueryTest
     with SharedSparkSession
     with LakeSoulTestUtils {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   import testImplicits._
 
@@ -71,7 +82,7 @@ class CDCSuite
     SnapshotManagement(path)
   }
 
-  Seq("false", NativeIOWrapper.isNativeIOLibExist.toString).distinct.foreach { nativeIOEnabled =>
+  Seq("false").distinct.foreach { nativeIOEnabled =>
     test(s"test cdc with MultiPartitionMergeScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {
@@ -100,6 +111,7 @@ class CDCSuite
         })
       }
     }
+
     test(s"test cdc with OnePartitionMergeBucketScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {
@@ -201,7 +213,7 @@ class CDCSuite
           val versionA: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeA)
           val parDesc = "range=range1"
           // snapshot startVersion default to 0
-          val lake1 = LakeSoulTable.forSnapshotPath(tablePath, parDesc, versionA,"")
+          val lake1 = LakeSoulTable.forPathSnapshot(tablePath, parDesc, versionA, "")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)
@@ -257,7 +269,7 @@ class CDCSuite
           val versionB: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeB)
           val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(timeC)
           val parDesc = "range=range1"
-          val lake1 = LakeSoulTable.forIncrementalPath(tablePath, parDesc, versionB, versionC,"")
+          val lake1 = LakeSoulTable.forPathIncremental(tablePath, parDesc, versionB, versionC, "America/Los_Angeles")
           val data1 = lake1.toDF.select("range", "hash", "op")
           val lake2 = spark.read.format("lakesoul")
             .option(LakeSoulOptions.PARTITION_DESC, parDesc)

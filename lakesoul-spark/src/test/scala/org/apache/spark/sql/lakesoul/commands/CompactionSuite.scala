@@ -18,16 +18,30 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, MergeOpInt}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession, MergeOpInt}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 import org.scalatest.BeforeAndAfterEach
 
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulSQLCommandTest {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   import testImplicits._
 
@@ -220,7 +234,7 @@ class CompactionSuite extends QueryTest
 
       val df2 = Seq((1, 1, 1, "1"), (2, 1, 1, "1"), (3, 1, 1, "1"), (1, 2, 2, "2"), (1, 3, 3, "3"))
         .toDF("range", "hash", "v1", "v2")
-
+      LakeSoulTable.uncached(tableName)
       val table = LakeSoulTable.forPath(tableName)
       table.upsert(df2)
 

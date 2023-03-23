@@ -60,7 +60,7 @@ public class PipeLineContainer {
 class Operator {
     private String viewName;
     private String sourceTableName;
-    private String sourceDatabaseName = "";
+    private String sourceDatabaseName = "default";
     private String sinkTableName;
     private SourceOption sourceOption;
     private Operation operation;
@@ -116,10 +116,9 @@ class Operator {
     public String getTableNameWithDatabase() {
         String tableName = "";
         if ("".equals(sourceDatabaseName)) {
-            tableName = sourceTableName;
-        } else {
-            tableName = sourceDatabaseName + "." + sourceTableName;
+            sourceDatabaseName = "default";
         }
+        tableName = sourceDatabaseName + "." + sourceTableName;
         return tableName;
     }
 
@@ -140,9 +139,9 @@ class Operator {
         }
         if (operation.isJoin()) {
             String joinType = operation.getJoin().getJoinType();
-            String rightTable = operation.getJoin().getRightTableName();
+            String rightTable = operation.getJoin().getRightTableNameWithDatabase();
             String joinConditions = operation.getJoin().joinConditions();
-            sql = String.format("select * from %s %s join %s %s", tableName, joinType, rightTable, joinConditions);
+            sql = String.format("select %s from %s %s join %s %s", operation.getJoin().selectColumnExpr(), tableName, joinType, rightTable, joinConditions);
         }
         if (operation.isDistinct()) {
             StringBuilder selectColumn = new StringBuilder(operation.getDistinct().getColumnName());
@@ -308,9 +307,26 @@ class MetricsKeys {
 }
 
 class Join {
+    private String rightTableDatabaseName = "default";
     private String rightTableName;
+    private List<TableAliasName> tableAliasNames;
     private String joinType;
     private String conditionColumns;
+
+    public String getRightTableDatabaseName() {
+        return rightTableDatabaseName;
+    }
+
+    public void setRightTableDatabaseName(String rightTableDatabaseName) {
+        this.rightTableDatabaseName = rightTableDatabaseName;
+    }
+
+    public String getRightTableNameWithDatabase() {
+        if (StringUtils.isBlank(rightTableDatabaseName)) {
+            rightTableDatabaseName = "default";
+        }
+        return String.format("%s.%s", rightTableDatabaseName, rightTableName);
+    }
 
     public String getRightTableName() {
         return rightTableName;
@@ -318,6 +334,14 @@ class Join {
 
     public void setRightTableName(String rightTableName) {
         this.rightTableName = rightTableName;
+    }
+
+    public List<TableAliasName> getTableAliasNames() {
+        return tableAliasNames;
+    }
+
+    public void setTableAliasNames(List<TableAliasName> tableAliasNames) {
+        this.tableAliasNames = tableAliasNames;
     }
 
     public String getJoinType() {
@@ -344,8 +368,8 @@ class Join {
 
             for (String item : condititions) {
                 String[] cols = item.split("=");
-                String left = cols[0].substring(cols[0].indexOf("."));
-                String right = cols[1].substring(cols[1].indexOf("."));
+                String left = cols[0].substring(cols[0].lastIndexOf(".") + 1);
+                String right = cols[1].substring(cols[1].lastIndexOf(".") + 1);
                 if (left.equals(right)) {
                     columns.add(left);
                 } else {
@@ -358,6 +382,12 @@ class Join {
             result = " using(" + conditionColumns + ")";
         }
         return result;
+    }
+
+    public String selectColumnExpr() {
+        List expr = new ArrayList<String>();
+        tableAliasNames.forEach(column -> expr.add(column.toString()));
+        return String.join(",", expr);
     }
 }
 
@@ -589,5 +619,40 @@ class Resource {
 
     public void setDriverMemory(String driverMemory) {
         this.driverMemory = driverMemory;
+    }
+}
+
+class TableAliasName {
+    private String tableName;
+    private String columnName;
+    private String aliasName;
+
+    public String getTableName() {
+        return tableName;
+    }
+
+    public void setTableName(String tableName) {
+        this.tableName = tableName;
+    }
+
+    public String getColumnName() {
+        return columnName;
+    }
+
+    public void setColumnName(String columnName) {
+        this.columnName = columnName;
+    }
+
+    public String getAliasName() {
+        return aliasName;
+    }
+
+    public void setAliasName(String aliasName) {
+        this.aliasName = aliasName;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%s.%s %s", tableName, columnName, aliasName);
     }
 }

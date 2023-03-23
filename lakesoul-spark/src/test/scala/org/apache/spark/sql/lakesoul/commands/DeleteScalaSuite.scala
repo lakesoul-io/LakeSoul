@@ -18,11 +18,26 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul
 import com.dmetasoul.lakesoul.tables.{LakeSoulTable, LakeSoulTableTestUtils}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.{Row, functions}
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
+import org.apache.spark.sql.test.TestSparkSession
+import org.apache.spark.sql.{Row, SparkSession, functions}
 
 class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   import testImplicits._
 

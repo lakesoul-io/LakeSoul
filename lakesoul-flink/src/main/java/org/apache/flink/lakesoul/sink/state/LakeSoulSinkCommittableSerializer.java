@@ -42,18 +42,12 @@ public class LakeSoulSinkCommittableSerializer
     private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
             pendingFileSerializer;
 
-    private final SimpleVersionedSerializer<InProgressFileWriter.InProgressFileRecoverable>
-            inProgressFileSerializer;
-
     private final SimpleVersionedSerializer<TableSchemaIdentity> tableSchemaIdentitySerializer;
 
     public LakeSoulSinkCommittableSerializer(
             SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
-                    pendingFileSerializer,
-            SimpleVersionedSerializer<InProgressFileWriter.InProgressFileRecoverable>
-                    inProgressFileSerializer) {
+                    pendingFileSerializer) {
         this.pendingFileSerializer = checkNotNull(pendingFileSerializer);
-        this.inProgressFileSerializer = checkNotNull(inProgressFileSerializer);
         this.tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
     }
 
@@ -86,8 +80,6 @@ public class LakeSoulSinkCommittableSerializer
 
         if (committable.hasPendingFile()) {
             assert committable.getPendingFiles() != null;
-            assert committable.getFilePaths() != null;
-            assert committable.getPendingFiles().size() == committable.getFilePaths().size();
             assert committable.getCommitId() != null;
 
             dataOutputView.writeBoolean(true);
@@ -97,22 +89,8 @@ public class LakeSoulSinkCommittableSerializer
                 SimpleVersionedSerialization.writeVersionAndSerialize(
                         pendingFileSerializer, pennding, dataOutputView);
             }
-            for (String paths : committable.getFilePaths()) {
-                dataOutputView.writeUTF(paths);
-            }
             dataOutputView.writeLong(committable.getCreationTime());
             dataOutputView.writeUTF(committable.getCommitId());
-        } else {
-            dataOutputView.writeBoolean(false);
-        }
-
-        if (committable.hasInProgressFileToCleanup()) {
-            dataOutputView.writeBoolean(true);
-            assert committable.getInProgressFileToCleanup() != null;
-            SimpleVersionedSerialization.writeVersionAndSerialize(
-                    inProgressFileSerializer,
-                    committable.getInProgressFileToCleanup(),
-                    dataOutputView);
         } else {
             dataOutputView.writeBoolean(false);
         }
@@ -124,32 +102,20 @@ public class LakeSoulSinkCommittableSerializer
 
     private LakeSoulMultiTableSinkCommittable deserializeV1(DataInputView dataInputView) throws IOException {
         List<InProgressFileWriter.PendingFileRecoverable> pendingFile = null;
-        List<String> filePaths = null;
         String commitId = null;
         long time = Long.MIN_VALUE;
         if (dataInputView.readBoolean()) {
             int size = dataInputView.readInt();
             if (size > 0) {
                 pendingFile = new ArrayList<>();
-                filePaths = new ArrayList<>();
                 for (int i = 0; i < size; ++i) {
                     pendingFile.add(
                             SimpleVersionedSerialization.readVersionAndDeSerialize(
                                     pendingFileSerializer, dataInputView));
                 }
-                for (int i = 0; i < size; ++i) {
-                    filePaths.add(dataInputView.readUTF());
-                }
                 time = dataInputView.readLong();
                 commitId = dataInputView.readUTF();
             }
-        }
-
-        InProgressFileWriter.InProgressFileRecoverable inProgressFileToCleanup = null;
-        if (dataInputView.readBoolean()) {
-            inProgressFileToCleanup =
-                    SimpleVersionedSerialization.readVersionAndDeSerialize(
-                            inProgressFileSerializer, dataInputView);
         }
 
         TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
@@ -157,7 +123,7 @@ public class LakeSoulSinkCommittableSerializer
         String bucketId = dataInputView.readUTF();
 
         return new LakeSoulMultiTableSinkCommittable(
-                bucketId, identity, pendingFile, filePaths, time, commitId, inProgressFileToCleanup);
+                bucketId, identity, pendingFile, time, commitId);
     }
 
     private static void validateMagicNumber(DataInputView in) throws IOException {

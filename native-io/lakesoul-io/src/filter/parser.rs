@@ -14,75 +14,70 @@
  * limitations under the License.
  */
 
-use arrow_schema::{DataType, Schema, Field};
+use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::{col, Expr};
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {}
 
 impl Parser {
-    pub fn parse(filter_str: String, schema_json: &String) -> Expr {
+    pub fn parse(filter_str: String, schema: SchemaRef) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
-        if right == "null" {
-            match op.as_str() {
-                "eq" => {
-                    let column = col(left.as_str());
-                    column.is_null()
-                }
-                "noteq" => {
-                    let column = col(left.as_str());
-                    column.is_not_null()
-                }
-                _ => Expr::Wildcard,
+        if op.eq("or") {
+            let left_expr = Parser::parse(left, schema.clone());
+            let right_expr = Parser::parse(right, schema.clone());
+            left_expr.or(right_expr)
+        }else if op.eq("and") {
+            let left_expr = Parser::parse(left, schema.clone());
+            let right_expr = Parser::parse(right, schema.clone());
+            left_expr.and(right_expr)
+        }else if op.eq("not") {
+            let inner = Parser::parse(right, schema);
+            Expr::not(inner)
+        }else {
+            if schema.column_with_name(left.as_str()).is_none() {
+                return Expr::Literal(ScalarValue::Boolean(Some(true)))
             }
-        } else {
-            match op.as_str() {
-                "not" => {
-                    let inner = Parser::parse(right, schema_json);
-                    Expr::not(inner)
+            let column = col(left.as_str());
+            if right == "null" {
+                match op.as_str() {
+                    "eq" => {
+                        column.is_null()
+                    }
+                    "noteq" => {
+                        column.is_not_null()
+                    }
+                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
                 }
-                "eq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.eq(value)
-                }
-                "noteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.not_eq(value)
-                }
-                "or" => {
-                    let left_expr = Parser::parse(left, schema_json);
-                    let right_expr = Parser::parse(right, schema_json);
-                    left_expr.or(right_expr)
-                }
-                "and" => {
-                    let left_expr = Parser::parse(left, schema_json);
-                    let right_expr = Parser::parse(right, schema_json);
-                    left_expr.and(right_expr)
-                }
-                "gt" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.gt(value)
-                }
-                "gteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.gt_eq(value)
-                }
-                "lt" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.lt(value)
-                }
-                "lteq" => {
-                    let column = col(left.as_str());
-                    let value = Parser::parse_literal(left, right, schema_json);
-                    column.lt_eq(value)
-                }
+            } else {
+                match op.as_str() {
+                    "eq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.eq(value)
+                    }
+                    "noteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.not_eq(value)
+                    }
+                    "gt" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.gt(value)
+                    }
+                    "gteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.gt_eq(value)
+                    }
+                    "lt" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.lt(value)
+                    }
+                    "lteq" => {
+                        let value = Parser::parse_literal(left, right, schema);
+                        column.lt_eq(value)
+                    }
 
-                _ => Expr::Wildcard,
+                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
+                }
             }
         }
     }
@@ -119,9 +114,12 @@ impl Parser {
         }
     }
 
-    fn parse_literal(column: String, value: String, schema_json: &String) -> Expr {
-        let schema: Schema = serde_json::from_str(schema_json.as_str()).unwrap();
-        let fields = schema.fields().iter().filter(|field| field.name().eq(&column)).collect::<Vec<&Field>>();
+    fn parse_literal(column: String, value: String, schema: SchemaRef) -> Expr {
+        let fields = schema
+            .fields()
+            .iter()
+            .filter(|field| field.name().eq(&column))
+            .collect::<Vec<&Field>>();
         let data_type = fields.get(0).unwrap().data_type().clone();
         match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -153,17 +151,15 @@ impl Parser {
             DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
             DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
-            DataType::Timestamp(_, _) => {
-                Expr::Literal(ScalarValue::TimestampMicrosecond(
-                    Some(value.parse::<i64>().unwrap()),
-                    None,
-                ))
-            }
+            DataType::Timestamp(_, time_zone) => Expr::Literal(ScalarValue::TimestampMicrosecond(
+                Some(value.parse::<i64>().unwrap()),
+                time_zone,
+            )),
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();
                 Expr::Literal(ScalarValue::Utf8(Some(value)))
             }
-            _ => Expr::Literal(ScalarValue::Utf8(Some(value)))
+            _ => Expr::Literal(ScalarValue::Utf8(Some(value))),
         }
     }
 
@@ -194,7 +190,6 @@ impl Parser {
 mod tests {
     use crate::filter::Parser;
     use std::result::Result;
-    use arrow_schema::{Schema, Field, DataType, TimeUnit};
 
     #[test]
     fn test_filter_parser() -> Result<(), String> {
@@ -203,29 +198,6 @@ mod tests {
         assert_eq!(op, "or");
         assert_eq!(left, "lt(a.b.c, 2.0)");
         assert_eq!(right, "gt(a.b.c, 3.0)");
-        Ok(())
-    }
-
-    #[test]
-    fn test_schema_deserialization() -> Result<(), String> {
-        let field_a = Field::new("a", DataType::Int64, false);
-        let field_b = Field::new("b", DataType::Boolean, false);
-        let field_c = Field::new("c", DataType::Utf8, false);
-        let field_d = Field::new("d", DataType::Binary, false);
-        let field_e = Field::new("e", DataType::Decimal128(5, 2), false);
-        let field_f = Field::new("f", DataType::Date32, false);
-        let field_g = Field::new("g", DataType::Timestamp(TimeUnit::Microsecond, None), false);
-        let schema = Schema::new(vec![field_a, field_b, field_c, field_d, field_e, field_f, field_g]);
-
-        let s = "{\"fields\":[{\"name\":\"a\",\"data_type\":\"Int64\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"b\",\"data_type\":\"Boolean\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"c\",\"data_type\":\"Utf8\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"d\",\"data_type\":\"Binary\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"e\",\"data_type\":{\"Decimal128\":[5,2]},\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"f\",\"data_type\":\"Date32\",\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false},\
-            {\"name\":\"g\",\"data_type\":{\"Timestamp\":[\"Microsecond\",null]},\"nullable\":false,\"dict_id\":0,\"dict_is_ordered\":false}]}";
-        let de_schema: Schema = serde_json::from_str(&s).unwrap();
-        assert_eq!(schema, de_schema);
         Ok(())
     }
 }
