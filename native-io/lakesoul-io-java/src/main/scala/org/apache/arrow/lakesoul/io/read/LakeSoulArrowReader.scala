@@ -18,7 +18,6 @@ package org.apache.arrow.lakesoul.io.read
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.lakesoul.io.NativeIOReader
-import org.apache.arrow.lakesoul.memory.FFIData
 import org.apache.arrow.vector.VectorSchemaRoot
 
 import java.io.IOException

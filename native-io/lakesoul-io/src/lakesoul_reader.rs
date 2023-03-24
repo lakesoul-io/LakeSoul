@@ -18,7 +18,7 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use arrow_schema::{SchemaRef,DataType};
+use arrow_schema::SchemaRef;
 use arrow::datatypes::Schema;
 
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
@@ -29,7 +29,7 @@ pub use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
-use datafusion::physical_plan::expressions::{PhysicalSortExpr, col};
+use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
 
 use datafusion::prelude::SessionContext;
 
@@ -91,7 +91,7 @@ impl LakeSoulReader {
                         )),
                         Err(e) => Err(DataFusionError::External(Box::new(e))),
                     }?;
-                    
+
                     if let GetResult::File(file, _)=object_store.get(&path).await.unwrap() {
                         let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
                             .await
@@ -116,23 +116,20 @@ impl LakeSoulReader {
 
                 let file_schema = Arc::new(Schema::from(df.schema()));
 
-                let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
+                let cols = file_schema
+                    .fields()
+                    .iter()
+                    .filter(|field| schema.index_of(field.name()).is_ok())
+                    .map(|field| logical_col(field.name().as_str()))
+                    .collect::<Vec<_>>();
+
                 df = df.select(cols)?;
 
-
-                let physical_fields = schema.fields().iter()
-                    .map(|field| if let Some((_, file_field))=file_schema.column_with_name(field.name()){
-                            if matches!(field.data_type(), DataType::Struct(_)) {
-                                file_field.clone()
-                            } else {field.clone()}
-                        }else {field.clone()})
-                    .collect::<Vec<_>>();
-                let physical_schema = Arc::new(Schema::new(physical_fields));
 
 
                 df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
                 let stream = df.execute_stream().await?;
-                let stream = DefaultColumnStream::new_from_stream(stream, physical_schema.clone());
+                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone());
                 
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
@@ -158,15 +155,18 @@ impl LakeSoulReader {
                         .await?;
 
                     let file_schema = Arc::new(Schema::from(df.schema()));
-                    let cols = file_schema.fields().iter().filter(|field| schema.index_of(field.name()).is_ok()).map(|field| logical_col(field.name().as_str())).collect::<Vec<_>>();
-                    df = df.select(cols)?;   
-                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
-                    let stream = df
-                        .execute_stream()
-                        .await?;
-                    streams.push(SortedStream::new(
-                        stream,
-                    ));
+                    let cols = file_schema
+                        .fields()
+                        .iter()
+                        .filter(|field| schema.index_of(field.name()).is_ok())
+                        .map(|field| logical_col(field.name().as_str()))
+                        .collect::<Vec<_>>();
+                    df = df.select(cols)?;
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| {
+                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                    })?;
+                    let stream = df.execute_stream().await?;
+                    streams.push(SortedStream::new(stream));
                 }
 
                 let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
@@ -177,7 +177,21 @@ impl LakeSoulReader {
                     });
                 }
 
-                let merge_ops = self.config.schema.0.fields().iter().map(|field| MergeOperator::from_name(self.config.merge_operators.get(field.name()).unwrap_or(&String::from("UseLast")))).collect::<Vec<_>>();
+                let merge_ops = self
+                    .config
+                    .schema
+                    .0
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        MergeOperator::from_name(
+                            self.config
+                                .merge_operators
+                                .get(field.name())
+                                .unwrap_or(&String::from("UseLast")),
+                        )
+                    })
+                    .collect::<Vec<_>>();
 
                 let merge_stream = SortedStreamMerger::new_from_streams(
                     streams,
@@ -258,11 +272,11 @@ impl SyncSendableMutableLakeSoulReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;
-    use rand::prelude::*;
 
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::util::pretty::print_batches;

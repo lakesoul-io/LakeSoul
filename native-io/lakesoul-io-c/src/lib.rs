@@ -382,7 +382,7 @@ pub extern "C" fn next_record_batch(
                     );
                     match result {
                         Ok(()) => {
-                            call_i32_result_callback(callback, rows, std::ptr::null());
+                            call_i32_result_callback(callback, rows, std::ptr::null());        
                         }
                         Err(e) => {
                             call_i32_result_callback(
@@ -621,6 +621,24 @@ mod tests {
         }
     }
 
+    static mut CALL_BACK_I32_CV: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
+    #[no_mangle]
+    pub extern "C" fn reader_i32_callback(status: i32, err: *const c_char) {
+        unsafe {
+            let mut reader_called = CALL_BACK_I32_CV.0.lock().unwrap();
+            if status > 0{
+                match err.as_ref() {
+                    Some(e) => READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()),
+                    None => {}
+                }
+                READER_FINISHED = true;
+            }
+            *reader_called = status;
+            CALL_BACK_I32_CV.1.notify_one();
+        }
+    }
+
+
     fn wait_callback() {
         unsafe {
             let mut called = CALL_BACK_CV.0.lock().unwrap();
@@ -738,7 +756,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_callback.clone(),
+                reader_i32_callback.clone(),
             );
             wait_callback();
 
@@ -870,7 +888,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_callback.clone(),
+                reader_i32_callback.clone(),
             );
             wait_callback();
 

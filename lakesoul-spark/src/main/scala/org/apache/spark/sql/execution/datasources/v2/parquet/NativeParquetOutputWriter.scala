@@ -40,6 +40,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
   private val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
+  nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
   nativeIOWriter.addFile(path)
 
   NativeIOUtils.setNativeIOOptions(nativeIOWriter, NativeIOUtils.getNativeIOOptions(context, new Path(path)))
