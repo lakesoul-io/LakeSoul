@@ -75,10 +75,13 @@ pub fn transform_array(target_datatype: DataType, array: ArrayRef) -> ArrayRef {
             ),
         DataType::Struct(target_child_fileds) => {
             let orig_array = as_struct_array(&array);
-            let child_array = target_child_fileds.iter().map(|field| (field.clone(), orig_array.column_by_name(field.name()).unwrap().clone())).collect::<Vec<_>>();
+            let child_array = 
+                target_child_fileds
+                    .iter()
+                    .map(|field| (field.clone(), transform_array(field.data_type().clone(), orig_array.column_by_name(field.name()).unwrap().clone())))
+                    .collect::<Vec<_>>();
             match orig_array.data().null_buffer() {
                 Some(buffer) => {
-                    println!("buffer.capacity() {}", buffer.capacity());
                     Arc::new(StructArray::from((child_array, buffer.clone())))
                 }
                 None => Arc::new(StructArray::from(child_array))
@@ -88,55 +91,3 @@ pub fn transform_array(target_datatype: DataType, array: ArrayRef) -> ArrayRef {
         _ => array.clone()
     }
 }
-
-// ArrayData { 
-//     data_type: Struct([
-//         Field { name: "x", data_type: Struct([
-//             Field { name: "a", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }, 
-//             Field { name: "b", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), 
-//             nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} 
-//         }, 
-//         Field { name: "y", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} 
-//     }]), 
-//     len: 1, 
-//     null_count: 0, 
-//     offset: 0, 
-//     buffers: [], 
-//     child_data: [
-//         ArrayData { 
-//             data_type: Struct([Field { name: "a", data_type: Int64, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }, Field { name: "b", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), 
-//             len: 1, 
-//             null_count: 1, 
-//             offset: 0, 
-//             buffers: [], 
-//             child_data: [
-//                 ArrayData { 
-//                     data_type: Int64, 
-//                     len: 1, 
-//                     null_count: 1, 
-//                     offset: 0, 
-//                     buffers: [Buffer { data: Bytes { ptr: 0x7ff4b883d780, len: 8, data: [0, 0, 0, 0, 0, 0, 0, 0] }, offset: 0, length: 8 }], 
-//                     child_data: [], 
-//                     null_bitmap: Some(Bitmap { bits: Buffer { data: Bytes { ptr: 0x7ff4b883d900, len: 1, data: [0] }, offset: 0, length: 1 } }) }, 
-//                 ArrayData { 
-//                     data_type: Utf8, 
-//                     len: 1, 
-//                     null_count: 1, 
-//                     offset: 0, 
-//                     buffers: [
-//                         Buffer { data: Bytes { ptr: 0x7ff4b883c680, len: 8, data: [0, 0, 0, 0, 0, 0, 0, 0] }, offset: 0, length: 8 }, 
-//                         Buffer { data: Bytes { ptr: 0x80, len: 0, data: [] }, offset: 0, length: 0 }
-//                     ], 
-//                     child_data: [], 
-//                     null_bitmap: Some(Bitmap { bits: Buffer { data: Bytes { ptr: 0x7ff4b883da00, len: 1, data: [0] }, offset: 0, length: 1 } }) 
-//                 }], 
-//             null_bitmap: Some(Bitmap { bits: Buffer { data: Bytes { ptr: 0x7ff4b883e300, len: 1, data: [0] }, offset: 0, length: 1 } }) 
-//         }, 
-//         ArrayData { 
-//             data_type: Int64, len: 1, null_count: 0, offset: 0, 
-//             buffers: [Buffer { data: Bytes { ptr: 0x7ff4b883db80, len: 8, data: [3, 0, 0, 0, 0, 0, 0, 0] }, offset: 0, length: 8 }], 
-//             child_data: [], 
-//             null_bitmap: None 
-//         }], 
-//     null_bitmap: None 
-// }
