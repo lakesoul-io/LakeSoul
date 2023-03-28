@@ -16,7 +16,7 @@
  *
  *
  */
-package org.apache.flink.lakesoul.source;
+package org.apache.flink.lakesoul.metadata;
 
 public interface JdbcMetaDataSource {
     DatabaseSchemaedTables getDatabaseAndTablesWithSchema();

@@ -17,10 +17,12 @@
  *
  */
 
-package org.apache.flink.lakesoul.source;
+package org.apache.flink.lakesoul.metadata;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.apache.flink.lakesoul.metadata.DatabaseSchemaedTables;
+import org.apache.flink.lakesoul.metadata.JdbcMetaDataSource;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;

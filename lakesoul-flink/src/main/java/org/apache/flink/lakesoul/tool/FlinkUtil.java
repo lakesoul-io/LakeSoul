@@ -21,12 +21,15 @@ package org.apache.flink.lakesoul.tool;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.arrow.lakesoul.io.NativeIOBase;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
@@ -39,15 +42,11 @@ import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -57,6 +56,9 @@ import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCom
 import static org.apache.spark.sql.types.DataTypes.StringType;
 
 public class FlinkUtil {
+
+  private static final Logger LOG = LoggerFactory.getLogger(FlinkUtil.class);
+
   private FlinkUtil() {
   }
 
@@ -236,5 +238,26 @@ public class FlinkUtil {
   public static String getDatabaseName(String fullDatabaseName) {
     String[] splited = fullDatabaseName.split("\\.");
     return splited[splited.length - 1];
+  }
+
+  public static void setFSConfigs(Configuration conf, NativeIOBase io) {
+    conf.addAll(GlobalConfiguration.loadConfiguration());
+    // try hadoop's s3 configs
+    setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
+    setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key", io);
+    setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint", io);
+    setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
+    // try flink's s3 credential configs
+    setFSConf(conf, "s3.access-key", "fs.s3a.access.key", io);
+    setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key", io);
+    setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint", io);
+  }
+
+  public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
+    String value = conf.getString(confKey, "");
+    if (!value.isEmpty()) {
+      LOG.info("Set native object store option {}={}", fsConfKey, value);
+      io.setObjectStoreOption(fsConfKey, value);
+    }
   }
 }

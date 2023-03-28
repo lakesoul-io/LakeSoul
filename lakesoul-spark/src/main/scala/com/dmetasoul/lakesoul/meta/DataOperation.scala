@@ -21,15 +21,13 @@ import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
-import org.json4s.JsonDSL.int2jvalue
 
 import java.util
 import java.util.UUID
-import scala.collection.{JavaConverters, mutable}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.{JavaConverters, mutable}
 import scala.util.control.Breaks
-import scala.util.control.Breaks.break
 
 object DataOperation extends Logging {
 
