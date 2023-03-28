@@ -46,51 +46,56 @@ class LakeSoulSink(sqlContext: SQLContext,
   override val shortTableName: Option[String] = options.shortTableName
 
 
-  override def addBatch(batchId: Long, data: DataFrame): Unit =
-    snapshotManagement.withNewTransaction(tc => {
+  def writeBatch(batchId: Long, data: DataFrame):Unit =    snapshotManagement.withNewTransaction(tc => {
+    val queryId = sqlContext.sparkContext.getLocalProperty(StreamExecution.QUERY_ID_KEY)
+    assert(queryId != null)
 
-      val queryId = sqlContext.sparkContext.getLocalProperty(StreamExecution.QUERY_ID_KEY)
-      assert(queryId != null)
+    if (SchemaUtils.typeExistsRecursively(data.schema)(_.isInstanceOf[NullType])) {
+      throw LakeSoulErrors.streamWriteNullTypeException
+    }
 
-      if (SchemaUtils.typeExistsRecursively(data.schema)(_.isInstanceOf[NullType])) {
-        throw LakeSoulErrors.streamWriteNullTypeException
-      }
+    val tableInfo = tc.tableInfo
+    if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
+      logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
+      return
+    }
 
-      val tableInfo = tc.tableInfo
-      if (StreamingRecord.getBatchId(tableInfo.table_id, queryId) >= batchId) {
-        logInfo(s"== Skipping already complete batch $batchId, in query $queryId")
-        return
-      }
+    // Streaming sinks can't blindly overwrite schema.
+    updateMetadata(
+      tc,
+      data,
+      configuration = options.options,
+      outputMode == OutputMode.Complete())
 
-      // Streaming sinks can't blindly overwrite schema.
-      updateMetadata(
-        tc,
-        data,
-        configuration = options.options,
-        outputMode == OutputMode.Complete())
+    val deletedFiles = outputMode match {
+      case o if o == OutputMode.Complete() =>
+        snapshotManagement.assertRemovable()
+        val operationTimestamp = System.currentTimeMillis()
+        tc.filterFiles().map(_.expire(operationTimestamp))
+      case _ => Nil
+    }
 
-      val deletedFiles = outputMode match {
-        case o if o == OutputMode.Complete() =>
-          snapshotManagement.assertRemovable()
-          val operationTimestamp = System.currentTimeMillis()
-          tc.filterFiles().map(_.expire(operationTimestamp))
-        case _ => Nil
-      }
+    if (tc.tableInfo.hash_partition_columns.nonEmpty) {
+      tc.setCommitType("merge")
+    }
+    val newFiles = tc.writeFiles(data, Some(options))
 
-      if (tc.tableInfo.hash_partition_columns.nonEmpty) {
-        tc.setCommitType("merge")
-      }
-      val newFiles = tc.writeFiles(data, Some(options))
+    tc.commit(newFiles, deletedFiles, queryId, batchId)
 
-      tc.commit(newFiles, deletedFiles, queryId, batchId)
-
-      //clean shuffle data
-      val map = sqlContext.sparkContext.env.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster].shuffleStatuses
-      map.keys.foreach(shuffleId => {
-        sqlContext.sparkContext.cleaner.get.doCleanupShuffle(shuffleId, blocking = false)
-      })
-
+    //clean shuffle data
+    val map = sqlContext.sparkContext.env.mapOutputTracker.asInstanceOf[MapOutputTrackerMaster].shuffleStatuses
+    map.keys.foreach(shuffleId => {
+      sqlContext.sparkContext.cleaner.get.doCleanupShuffle(shuffleId, blocking = false)
     })
+
+  })
+
+  override def addBatch(batchId: Long, data: DataFrame): Unit = {
+    val rdd = data.queryExecution.toRdd
+    implicit val enc = data.exprEnc
+    val ds = data.sparkSession.internalCreateDataFrame(rdd, data.schema)
+    writeBatch(batchId,ds)
+  }
 
   override def toString: String = s"LakeSoulSink[${snapshotManagement.table_path}]"
 }
