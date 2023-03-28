@@ -133,9 +133,6 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     } else {
       StreamParquetScan(sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
         readPartitionSchema(), pushedParquetFilters, options, None, partitionFilters, dataFilters)
-//      ParquetScan(
-//        sparkSession, hadoopConf, fileIndex, dataSchema, readDataSchema(),
-//        readPartitionSchema(), pushedParquetFilters, options, None, partitionFilters, dataFilters)
     }
   }
 }
