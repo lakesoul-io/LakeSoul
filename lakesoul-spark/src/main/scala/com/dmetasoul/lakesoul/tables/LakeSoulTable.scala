@@ -424,7 +424,7 @@ object LakeSoulTable {
       throw new IllegalArgumentException("Could not find active SparkSession")
     }
 
-    forPath(sparkSession, path, partitionDesc, endTime, endTime, timeZone, LakeSoulOptions.ReadType.SNAPSHOT_READ)
+    forPath(sparkSession, path, partitionDesc, "1970-01-01 00:00:00", endTime, timeZone, LakeSoulOptions.ReadType.SNAPSHOT_READ)
   }
 
   /** Incremental Query from startTime to now
