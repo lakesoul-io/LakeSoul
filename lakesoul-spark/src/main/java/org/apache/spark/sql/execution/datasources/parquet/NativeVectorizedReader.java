@@ -107,6 +107,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   private WritableColumnVector[] partitionColumnVectors=null;
 
+  private ColumnVector[] nativeColumnVector=null;
+
   /**
    * If true, this class returns batches instead of rows.
    */
@@ -190,8 +192,13 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
   }
 
   public void closeCurrentBatch() {
+    if (nativeColumnVector != null) {
+      for (ColumnVector c : nativeColumnVector) {
+        c.close();
+      }
+      nativeColumnVector = null;
+    }
     if (columnarBatch != null) {
-      columnarBatch.close();
       columnarBatch = null;
     }
   }
@@ -320,7 +327,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
       } else {
         int rowCount = nextVectorSchemaRoot.getRowCount();
         totalRowCount += rowCount;
-        ColumnVector[] nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+        nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
         if (partitionColumnVectors == null) {
           columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
         } else {
