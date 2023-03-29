@@ -16,20 +16,19 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
-import org.apache.arrow.lakesoul.io.NativeIOWriter
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.spark.sql.arrow.{ArrowUtils, ArrowWriter}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.arrow.ArrowWriter
 import org.apache.spark.sql.execution.datasources.OutputWriter
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.util.ArrowUtils
 import org.apache.spark.sql.vectorized.NativeIOUtils
 
 class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZoneId: String, context: TaskAttemptContext) extends OutputWriter {

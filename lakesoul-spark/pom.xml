@@ -375,6 +375,22 @@
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>org.apache.arrow.flatbuf</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.flatbuf</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.arrow.memory</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.memory</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.arrow.util</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.util</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.arrow.vector</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>
+                        </relocation>
                     </relocations>
                 </configuration>
             </plugin>

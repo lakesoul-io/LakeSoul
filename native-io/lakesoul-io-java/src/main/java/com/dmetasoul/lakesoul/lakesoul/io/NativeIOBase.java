@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io;
+package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
@@ -22,9 +22,9 @@ import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
-import org.apache.arrow.lakesoul.io.jnr.JnrLoader;
-import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -171,7 +171,7 @@ public class NativeIOBase implements AutoCloseable {
         @Override
         public void invoke(Boolean status, String err) {
             if (err!=null) {
-                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.BooleanCallback.invoke]" + err);
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.BooleanCallback.invoke]" + err);
             }
             callback.accept(status, err);
             removerReferenceKey();
@@ -203,7 +203,7 @@ public class NativeIOBase implements AutoCloseable {
         @Override
         public void invoke(Integer status, String err) {
             if (err!=null) {
-                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.IntegerCallback.invoke]" + err);
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.IntegerCallback.invoke]" + err);
             }
             callback.accept(status, err);
             removerReferenceKey();

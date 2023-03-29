@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io;
+package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
-import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 

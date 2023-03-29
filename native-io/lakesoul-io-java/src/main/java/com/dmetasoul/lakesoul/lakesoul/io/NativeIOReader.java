@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io;
+package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
-import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
@@ -115,7 +115,7 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
                 this.readerSchema = getReaderSchema();
             }
             if (err!=null) {
-                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOReader.startReader]err=" + err);
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOReader.startReader]err=" + err);
             }
             callback.accept(status, err);
         };

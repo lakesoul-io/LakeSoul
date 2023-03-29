@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io.jnr;
+package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
 import jnr.ffi.Memory;
 import jnr.ffi.Pointer;

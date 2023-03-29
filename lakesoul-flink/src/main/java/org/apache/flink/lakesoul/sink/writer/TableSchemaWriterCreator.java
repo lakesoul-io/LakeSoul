@@ -19,7 +19,7 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
-import org.apache.arrow.lakesoul.io.NativeIOBase;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.bucket.CdcPartitionComputer;
