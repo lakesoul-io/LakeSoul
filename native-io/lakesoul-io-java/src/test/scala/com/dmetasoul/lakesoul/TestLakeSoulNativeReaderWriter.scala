@@ -16,7 +16,6 @@
 
 package com.dmetasoul.lakesoul
 
-import com.dmetasoul.lakesoul
 import com.dmetasoul.lakesoul.lakesoul.io.{NativeIOReader, NativeIOWriter}
 
 case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFunSuite with org.scalatest.BeforeAndAfterAll with org.scalatest.BeforeAndAfterEach {
@@ -33,7 +32,7 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
 
     val schema = reader.getSchema
 
-    val lakesoulReader = lakesoul.LakeSoulArrowReader(reader)
+    val lakesoulReader = LakeSoulArrowReader(reader)
 
     val writer = new NativeIOWriter(schema)
     writer.addFile(System.getProperty("java.io.tmpdir") + "/" + "temp.parquet")
