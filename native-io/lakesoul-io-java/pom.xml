@@ -92,6 +92,26 @@
             <groupId>com.github.jnr</groupId>
             <artifactId>jnr-ffi</artifactId>
             <version>2.2.13</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.github.jnr</groupId>
+                    <artifactId>jffi</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- https://github.com/jnr/jffi/issues/138 -->
+        <!-- upgrade jffi version to make it work on CentOS 7 -->
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jffi</artifactId>
+            <version>1.3.11</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jffi</artifactId>
+            <version>1.3.11</version>
+            <scope>runtime</scope>
+            <classifier>native</classifier>
         </dependency>
     </dependencies>
 
