@@ -46,14 +46,17 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val provider = new CDataDictionaryProvider
         reader.nextBatch((rowCount, err) => {
-          if (rowCount > 0) {
-            val root: VectorSchemaRoot = {
-              Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+          if (hasNext) {
+            try {
+              val root: VectorSchemaRoot =
+                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+              if (root.getSchema.getFields.isEmpty) {
+                root.setRowCount(rowCount)
+              }
+              p.success(Some(root))
+            } catch {
+              case e: Throwable => p.failure(e)
             }
-            if (root.getSchema.getFields.isEmpty) {
-              root.setRowCount(rowCount)
-            }
-            p.success(Some(root))
           } else {
             if (err == null) {
               p.success(None)

@@ -289,6 +289,8 @@ impl SortedStreamMerger {
                     if !range.is_finished() {
                         self.range_combiner.push_range(Reverse(range))
                     } else {
+                        // we should mark this stream uninitalized
+                        // since its polling may return pending
                         self.initialized[stream_idx] = false;
                         self.range_finished[stream_idx] = true;
                         match futures::ready!(self.maybe_poll_stream(cx, stream_idx)) {
