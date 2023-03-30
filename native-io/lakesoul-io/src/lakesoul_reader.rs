@@ -18,8 +18,8 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
 use arrow::datatypes::Schema;
+use arrow_schema::SchemaRef;
 
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
@@ -34,25 +34,25 @@ use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
-use datafusion::physical_plan::{RecordBatchStream, EmptyRecordBatchStream};
+use datafusion::physical_plan::RecordBatchStream;
+use futures::future::try_join_all;
 use futures::StreamExt;
 
 use object_store::path::Path;
 use object_store::GetResult;
 use url::Url;
 
+use tokio::fs::File;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use tokio::fs::File;
 use tokio::task::JoinHandle;
 
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::sorted_merge::sorted_stream_merger::{SortedStream,SortedStreamMerger};
-use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::default_column_stream::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::Parser as FilterParser;
-
+use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -74,10 +74,8 @@ impl LakeSoulReader {
 
     pub async fn start(&mut self) -> Result<()> {
         let schema: SchemaRef = self.config.schema.0.clone();
-        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
         if self.config.primary_keys.is_empty() {
             if self.config.files.len() == 1 {
-
                 let mut df = self
                     .sess_ctx
                     .read_parquet(self.config.files[0].as_str(), Default::default())
@@ -90,7 +88,7 @@ impl LakeSoulReader {
                     .iter()
                     .filter_map(|field| match file_schema.column_with_name(field.name()) {
                         Some((_, file_field)) => Some(logical_col(file_field.name())),
-                        _ => None
+                        _ => None,
                     })
                     // .map(|field| logical_col(field.name().as_str()))
                     .collect::<Vec<_>>();
@@ -110,7 +108,7 @@ impl LakeSoulReader {
                         Err(e) => Err(DataFusionError::External(Box::new(e))),
                     }?;
 
-                    if let GetResult::File(file, _)=object_store.get(&path).await.unwrap() {
+                    if let GetResult::File(file, _) = object_store.get(&path).await.unwrap() {
                         let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
                             .await
                             .unwrap()
@@ -123,14 +121,13 @@ impl LakeSoulReader {
                             "LakeSoulReader fails to get_file".to_string(),
                         ));
                     }
-                } else { 
-
+                } else {
                     df = df.select(cols)?;
 
-                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| {
+                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                    })?;
                     df.execute_stream().await?
-                    
-                
                 };
                 let stream = DefaultColumnStream::new_from_stream(stream, schema.clone(), true);
                 self.schema = Some(stream.schema().clone().into());
@@ -148,30 +145,40 @@ impl LakeSoulReader {
                     "LakeSoulReader has wrong number of file".to_string(),
                 ))
             } else {
-                let mut streams = Vec::with_capacity(self.config.files.len());
                 let schema: SchemaRef = self.config.schema.0.clone();
 
+                let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
                 for i in 0..self.config.files.len() {
-                    let mut df = self
-                        .sess_ctx
-                        .read_parquet(self.config.files[i].as_str(), Default::default())
-                        .await?;
+                    let file = self.config.files[i].clone();
+                    let sess_ctx = self.sess_ctx.clone();
+                    let filter_str = self.config.filter_strs.clone();
+                    let schema = schema.clone();
+                    let future = async move {
+                        let mut df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
 
-                    let file_schema = Arc::new(Schema::from(df.schema()));
-                    let cols = file_schema
-                        .fields()
-                        .iter()
-                        .filter(|field| schema.index_of(field.name()).is_ok())
-                        .map(|field| logical_col(field.name().as_str()))
-                        .collect::<Vec<_>>();
-                    df = df.select(cols)?;
-                    df = self.config.filter_strs.iter().try_fold(df, |df, f| {
-                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                    })?;
-                    let stream = df.execute_stream().await?;
-                    let stream = Box::pin(DefaultColumnStream::new_from_stream(stream, schema.clone(), false));
-                    streams.push(SortedStream::new(stream));
+                        let file_schema = Arc::new(Schema::from(df.schema()));
+                        let cols = file_schema
+                            .fields()
+                            .iter()
+                            .filter(|field| schema.index_of(field.name()).is_ok())
+                            .map(|field| logical_col(field.name().as_str()))
+                            .collect::<Vec<_>>();
+                        df = df.select(cols)?;
+                        df = filter_str.iter().try_fold(df, |df, f| {
+                            df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                        })?;
+                        df.execute_stream().await
+                    };
+                    stream_init_futs.push(future);
                 }
+
+                let stream_res = try_join_all(stream_init_futs).await?;
+                let streams = stream_res
+                    .into_iter()
+                    .map(|s| {
+                        SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone(), false)))
+                    })
+                    .collect();
 
                 let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
                 for i in 0..self.config.primary_keys.len() {

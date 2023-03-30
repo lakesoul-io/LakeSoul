@@ -16,7 +16,6 @@
 
 use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::{col, Expr};
-use datafusion::physical_plan::expressions::Column;
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {}
@@ -28,29 +27,25 @@ impl Parser {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema.clone());
             left_expr.or(right_expr)
-        }else if op.eq("and") {
+        } else if op.eq("and") {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema.clone());
             left_expr.and(right_expr)
-        }else if op.eq("not") {
+        } else if op.eq("not") {
             let inner = Parser::parse(right, schema);
             Expr::not(inner)
-        }else {
+        } else {
             let column = qualified_col_name(left.as_str(), schema.clone());
-            match schema.column_with_name(column){
-                None =>  Expr::Literal(ScalarValue::Boolean(Some(true))),
-                Some((_, field)) => 
-                    if matches!(field.data_type(), DataType::Struct(_)){
+            match schema.column_with_name(column) {
+                None => Expr::Literal(ScalarValue::Boolean(Some(true))),
+                Some((_, field)) => {
+                    if matches!(field.data_type(), DataType::Struct(_)) {
                         col(column).is_not_null()
-                    }else if right == "null" {
+                    } else if right == "null" {
                         match op.as_str() {
-                            "eq" => {
-                                col(column).is_null()
-                            }
-                            "noteq" => {
-                                col(column).is_not_null()
-                            }
-                            _ =>  Expr::Literal(ScalarValue::Boolean(Some(true)))
+                            "eq" => col(column).is_null(),
+                            "noteq" => col(column).is_not_null(),
+                            _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     } else {
                         match op.as_str() {
@@ -82,6 +77,7 @@ impl Parser {
                             _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     }
+                }
             }
         }
     }
@@ -185,16 +181,16 @@ impl Parser {
     }
 }
 
-fn qualified_col_name(column:&str, schema:SchemaRef) -> &str{
-    if let(Ok(field))= schema.field_with_name(column) {
+fn qualified_col_name(column: &str, schema: SchemaRef) -> &str {
+    if let Ok(_field) = schema.field_with_name(column) {
         return column;
-    } else if let Some(dot)=column.find('.') {
-        if let(Ok(field)) = schema.field_with_name(&column[..dot]) {
+    } else if let Some(dot) = column.find('.') {
+        if let Ok(field) = schema.field_with_name(&column[..dot]) {
             if matches!(field.data_type(), DataType::Struct(_)) {
                 return &column[..dot];
-            } 
+            }
         }
-    }  
+    }
     column
 }
 

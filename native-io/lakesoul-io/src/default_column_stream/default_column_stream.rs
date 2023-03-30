@@ -13,21 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use std::task::{Context, Poll};
-use std::pin::Pin;
-use std::fmt::{Debug, Formatter};
 use futures::{Stream, StreamExt};
-
+use std::fmt::{Debug, Formatter};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use arrow::datatypes::SchemaRef;
 use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
-use arrow_array::new_null_array;
 
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 
-use crate::constant::ConstNullArray;
 use crate::transform::{transform_record_batch, transform_schema};
-
 
 pub(crate) struct WrappedSendableRecordBatchStream {
     stream: SendableRecordBatchStream,
@@ -47,8 +43,6 @@ impl WrappedSendableRecordBatchStream {
 
 #[derive(Debug)]
 pub(crate) struct DefaultColumnStream {
-    target_schema: SchemaRef,
-
     /// The schema of the RecordBatches yielded by this stream
     schema: SchemaRef,
 
@@ -59,17 +53,16 @@ pub(crate) struct DefaultColumnStream {
     fill_default_column: bool,
 }
 
-impl DefaultColumnStream{
+impl DefaultColumnStream {
     pub(crate) fn new_from_stream(
         stream: SendableRecordBatchStream,
         target_schema: SchemaRef,
-        fill_default_column: bool
+        fill_default_column: bool,
     ) -> Self {
-        DefaultColumnStream{
+        DefaultColumnStream {
             schema: transform_schema(target_schema.clone(), stream.schema(), fill_default_column),
-            target_schema,
             inner_stream: WrappedSendableRecordBatchStream::new(stream),
-            fill_default_column
+            fill_default_column,
         }
     }
 }
@@ -79,29 +72,14 @@ impl Stream for DefaultColumnStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let stream = &mut self.inner_stream.stream;
-        match futures::ready!(stream.poll_next_unpin(cx)) {
-            None => return Poll::Ready(None),
-            Some(Err(e)) => {
-                return Poll::Ready(Some(Err(e)))
-            }
+        return match futures::ready!(stream.poll_next_unpin(cx)) {
+            None => Poll::Ready(None),
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
             Some(Ok(batch)) => {
                 let batch = transform_record_batch(self.schema(), batch, self.fill_default_column);
-                // let columns = self
-                //     .schema
-                //     .fields()
-                //     .iter()
-                //     .map(|field| {
-                //         match batch.schema().column_with_name(field.name()) {
-                //             Some((idx, _)) => batch.column(idx).clone(),
-                //             None => new_null_array(&field.data_type().clone(), batch.num_rows())
-                            
-                //         }
-                //     })
-                //     .collect::<Vec<_>>();
-                // return Poll::Ready(Some(RecordBatch::try_new(self.schema.clone(), columns)))
-                return Poll::Ready(Some(Ok(batch)))
+                Poll::Ready(Some(Ok(batch)))
             }
-        }
+        };
     }
 }
 
