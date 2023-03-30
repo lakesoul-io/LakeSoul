@@ -17,7 +17,7 @@
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
-        <arrow.version>9.0.0</arrow.version>
+        <arrow.version>11.0.0</arrow.version>
         <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.1.0</scalatest.version>

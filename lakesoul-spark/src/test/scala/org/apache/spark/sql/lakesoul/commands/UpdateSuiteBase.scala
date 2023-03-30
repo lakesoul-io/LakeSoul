@@ -19,6 +19,7 @@ package org.apache.spark.sql.lakesoul.commands
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_ENABLE
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestUtils}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
@@ -476,6 +477,7 @@ abstract class UpdateSuiteBase
   }
 
   test("nested data support") {
+    // nested data support from ArrowColumnVector is limited
     // set a nested field
     checkUpdateJson(lakeSoulTable =
       """

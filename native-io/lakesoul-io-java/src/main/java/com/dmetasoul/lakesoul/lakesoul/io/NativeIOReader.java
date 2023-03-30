@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io;
+package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
-import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
@@ -78,7 +78,7 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
         if (errMsg.get() != null) {
             throw new IOException(errMsg.get());
         }
-        if (readerSchema == null || readerSchema.getFields().isEmpty()) {
+        if (readerSchema == null) {
             throw new IOException("Init native reader failed: Cannot retrieve native reader's schema");
         }
     }
@@ -115,23 +115,23 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
                 this.readerSchema = getReaderSchema();
             }
             if (err!=null) {
-                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOReader.startReader]err=" + err);
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOReader.startReader]err=" + err);
             }
             callback.accept(status, err);
         };
-        Callback nativeCallback = new Callback(wrapCallback, referenceManager);
-        nativeCallback.registerReferenceKey();
-        libLakeSoulIO.start_reader(reader, nativeCallback);
+        BooleanCallback nativeBooleanCallback = new BooleanCallback(wrapCallback, boolReferenceManager);
+        nativeBooleanCallback.registerReferenceKey();
+        libLakeSoulIO.start_reader(reader, nativeBooleanCallback);
     }
 
-    public void nextBatch(BiConsumer<Boolean, String> callback, long schemaAddr, long arrayAddr) {
-        Callback nativeCallback = new Callback(callback, referenceManager);
-        nativeCallback.registerReferenceKey();
+    public void nextBatch(BiConsumer<Integer, String> callback, long schemaAddr, long arrayAddr) {
+        IntegerCallback nativeIntegerCallback = new IntegerCallback(callback, intReferenceManager);
+        nativeIntegerCallback.registerReferenceKey();
         assert reader != null;
         Pointer p = libLakeSoulIO.check_reader_created(reader);
         if (p != null) {
             throw new RuntimeException(p.getString(0));
         }
-        libLakeSoulIO.next_record_batch(reader, schemaAddr, arrayAddr, nativeCallback);
+        libLakeSoulIO.next_record_batch(reader, schemaAddr, arrayAddr, nativeIntegerCallback);
     }
 }

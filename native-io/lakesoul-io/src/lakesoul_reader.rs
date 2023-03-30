@@ -18,12 +18,15 @@ use atomic_refcell::AtomicRefCell;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
 use arrow_schema::SchemaRef;
+use arrow::datatypes::Schema;
+
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
 
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
 use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
@@ -31,18 +34,25 @@ use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
 use datafusion::prelude::SessionContext;
 
 use core::pin::Pin;
-use datafusion::physical_plan::RecordBatchStream;
+use datafusion::physical_plan::{RecordBatchStream, EmptyRecordBatchStream};
 use futures::StreamExt;
+
+use object_store::path::Path;
+use object_store::GetResult;
+use url::Url;
 
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tokio::fs::File;
 use tokio::task::JoinHandle;
 
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
+use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
+use crate::sorted_merge::sorted_stream_merger::{SortedStream,SortedStreamMerger};
+use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::default_column_stream::default_column_stream::DefaultColumnStream;
 use crate::filter::Parser as FilterParser;
-use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
+
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -63,9 +73,10 @@ impl LakeSoulReader {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        match self.config.files.len() {
-            1 if self.config.primary_keys.is_empty() => {
-                let schema: SchemaRef = self.config.schema.0.clone();
+        let schema: SchemaRef = self.config.schema.0.clone();
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        if self.config.primary_keys.is_empty() {
+            if self.config.files.len() == 1 {
 
                 let mut df = self
                     .sess_ctx
@@ -74,29 +85,69 @@ impl LakeSoulReader {
 
                 let file_schema = Arc::new(Schema::from(df.schema()));
 
-                let cols = file_schema
+                let cols = schema
                     .fields()
                     .iter()
-                    .filter(|field| schema.index_of(field.name()).is_ok())
-                    .map(|field| logical_col(field.name().as_str()))
+                    .filter_map(|field| match file_schema.column_with_name(field.name()) {
+                        Some((_, file_field)) => Some(logical_col(file_field.name())),
+                        _ => None
+                    })
+                    // .map(|field| logical_col(field.name().as_str()))
                     .collect::<Vec<_>>();
 
-                df = df.select(cols)?;
+                let stream = if cols.is_empty() {
+                    let file_name = self.config.files[0].as_str();
 
-                df = self.config.filter_strs.iter().try_fold(df, |df, f| {
-                    df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                })?;
-                let stream = df.execute_stream().await?;
-                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone());
+                    // local style path should have already been handled in create_session_context,
+                    // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
+                    let (object_store, path) = match Url::parse(file_name) {
+                        Ok(url) => Ok((
+                            self.sess_ctx
+                                .runtime_env()
+                                .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
+                            Path::from(url.path()),
+                        )),
+                        Err(e) => Err(DataFusionError::External(Box::new(e))),
+                    }?;
 
+                    if let GetResult::File(file, _)=object_store.get(&path).await.unwrap() {
+                        let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
+                            .await
+                            .unwrap()
+                            .metadata()
+                            .file_metadata()
+                            .num_rows() as usize;
+                        Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))
+                    } else {
+                        return Err(DataFusionError::Internal(
+                            "LakeSoulReader fails to get_file".to_string(),
+                        ));
+                    }
+                } else { 
+
+                    df = df.select(cols)?;
+
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                    df.execute_stream().await?
+                    
+                
+                };
+                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone(), true);
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
+
                 Ok(())
+            } else {
+                Err(DataFusionError::Internal(
+                    "LakeSoulReader has wrong number of file".to_string(),
+                ))
             }
-            0 => Err(DataFusionError::Internal(
-                "LakeSoulReader has wrong number of file".to_string(),
-            )),
-            _ => {
+        } else {
+            if self.config.files.len() == 0 {
+                Err(DataFusionError::Internal(
+                    "LakeSoulReader has wrong number of file".to_string(),
+                ))
+            } else {
                 let mut streams = Vec::with_capacity(self.config.files.len());
                 let schema: SchemaRef = self.config.schema.0.clone();
 
@@ -118,6 +169,7 @@ impl LakeSoulReader {
                         df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
                     })?;
                     let stream = df.execute_stream().await?;
+                    let stream = Box::pin(DefaultColumnStream::new_from_stream(stream, schema.clone(), false));
                     streams.push(SortedStream::new(stream));
                 }
 

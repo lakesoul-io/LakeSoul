@@ -1,23 +1,7 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+package com.dmetasoul.lakesoul
 
-package org.apache.arrow.lakesoul.io.read
-
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.lakesoul.io.NativeIOReader
 import org.apache.arrow.vector.VectorSchemaRoot
 
 import java.io.IOException
@@ -61,10 +45,14 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val provider = new CDataDictionaryProvider
-        reader.nextBatch((hasNext, err) => {
-          if (hasNext) {
-            val root: VectorSchemaRoot =
+        reader.nextBatch((rowCount, err) => {
+          if (rowCount > 0) {
+            val root: VectorSchemaRoot = {
               Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+            }
+            if (root.getSchema.getFields.isEmpty) {
+              root.setRowCount(rowCount)
+            }
             p.success(Some(root))
           } else {
             if (err == null) {
@@ -81,7 +69,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
             case _ => false
           }
         } catch {
-          case e:java.util.concurrent.TimeoutException =>
+          case e: java.util.concurrent.TimeoutException =>
             ex = Some(e)
             println("[ERROR][org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader]native reader fetching timeout, please try a larger number with org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT")
             false

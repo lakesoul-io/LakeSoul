@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.vectorized
 
-import org.apache.arrow.lakesoul.io.NativeIOBase
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.s3a.S3AFileSystem
@@ -49,8 +49,8 @@ object NativeIOUtils{
       .toArray
   }
 
-  private def asArrowColumnVector(vector: ValueVector): ArrowColumnVector = {
-    new ArrowColumnVector(vector)
+  private def asArrowColumnVector(vector: ValueVector): org.apache.spark.sql.arrow.ArrowColumnVector = {
+    new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
   }
 
   private def asColumnVector(vector: ValueVector): ColumnVector ={

@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.execution.datasource.parquet
 
-import org.apache.arrow.lakesoul.io.NativeIOBase
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import org.apache.parquet.filter2.predicate.FilterApi._
 import org.apache.parquet.filter2.predicate.Operators.{Eq, Gt, GtEq, Lt, LtEq, NotEq, Column => _}
 import org.apache.parquet.filter2.predicate.{FilterPredicate, Operators}
