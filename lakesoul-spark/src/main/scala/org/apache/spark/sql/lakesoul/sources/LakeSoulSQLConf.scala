@@ -114,7 +114,7 @@ object LakeSoulSQLConf {
            |If ture, NativeIO would be enabled for both read and write
         """.stripMargin)
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
 
   val NATIVE_IO_PREFETCHER_BUFFER_SIZE: ConfigEntry[Int] =

@@ -478,7 +478,6 @@ abstract class UpdateSuiteBase
 
   test("nested data support") {
     // nested data support from ArrowColumnVector is limited
-    withSQLConf(NATIVE_IO_ENABLE.key -> "false") {
     // set a nested field
     checkUpdateJson(lakeSoulTable =
       """
@@ -604,7 +603,6 @@ abstract class UpdateSuiteBase
         """
           {"a": [-1, -11, -111], "b": 'Z'}
           {"a": [2, 22], "b": 'Y'}""")
-  }
   }
 
 

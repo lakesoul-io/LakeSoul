@@ -77,7 +77,25 @@ impl LakeSoulReader {
         let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
         if self.config.primary_keys.is_empty() {
             if self.config.files.len() == 1 {
-                if schema.fields().is_empty() {
+
+                let mut df = self
+                    .sess_ctx
+                    .read_parquet(self.config.files[0].as_str(), Default::default())
+                    .await?;
+
+                let file_schema = Arc::new(Schema::from(df.schema()));
+
+                let cols = schema
+                    .fields()
+                    .iter()
+                    .filter_map(|field| match file_schema.column_with_name(field.name()) {
+                        Some((_, file_field)) => Some(logical_col(file_field.name())),
+                        _ => None
+                    })
+                    // .map(|field| logical_col(field.name().as_str()))
+                    .collect::<Vec<_>>();
+
+                let stream = if cols.is_empty() {
                     let file_name = self.config.files[0].as_str();
 
                     // local style path should have already been handled in create_session_context,
@@ -99,40 +117,25 @@ impl LakeSoulReader {
                             .metadata()
                             .file_metadata()
                             .num_rows() as usize;
-                        self.schema = Some(Arc::new(Schema::empty()));
-                        self.stream = Box::new(MaybeUninit::new(Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))));
-                        return Ok(())
+                        Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))
                     } else {
                         return Err(DataFusionError::Internal(
                             "LakeSoulReader fails to get_file".to_string(),
-                        ))
+                        ));
                     }
-                }
+                } else { 
 
-                let mut df = self
-                    .sess_ctx
-                    .read_parquet(self.config.files[0].as_str(), Default::default())
-                    .await?;
+                    df = df.select(cols)?;
 
-                let file_schema = Arc::new(Schema::from(df.schema()));
-
-                let cols = file_schema
-                    .fields()
-                    .iter()
-                    .filter(|field| schema.index_of(field.name()).is_ok())
-                    .map(|field| logical_col(field.name().as_str()))
-                    .collect::<Vec<_>>();
-
-                df = df.select(cols)?;
-
-
-
-                df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
-                let stream = df.execute_stream().await?;
-                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone());
+                    df = self.config.filter_strs.iter().try_fold(df, |df, f| df.filter(FilterParser::parse(f.clone(), file_schema.clone())))?;
+                    df.execute_stream().await?
+                    
                 
+                };
+                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone(), true);
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
+
                 Ok(())
             } else {
                 Err(DataFusionError::Internal(
@@ -166,6 +169,7 @@ impl LakeSoulReader {
                         df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
                     })?;
                     let stream = df.execute_stream().await?;
+                    let stream = Box::pin(DefaultColumnStream::new_from_stream(stream, schema.clone(), false));
                     streams.push(SortedStream::new(stream));
                 }
 

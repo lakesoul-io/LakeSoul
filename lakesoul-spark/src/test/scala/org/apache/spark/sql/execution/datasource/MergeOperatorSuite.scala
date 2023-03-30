@@ -19,15 +19,29 @@ package org.apache.spark.sql.execution.datasource
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkException
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.test.{LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
-import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.{AnalysisException, QueryTest}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
+import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 
 class MergeOperatorSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
 
   import testImplicits._
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    // Java Merge Operator is not supported by NATIVE_IO
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, false)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   test("read by defined merge operator - long type") {
     LakeSoulTable.registerMergeOperator(spark,

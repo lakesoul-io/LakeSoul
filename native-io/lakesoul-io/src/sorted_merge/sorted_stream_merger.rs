@@ -49,8 +49,12 @@ impl SortedStream {
     pub(crate) fn new(stream: SendableRecordBatchStream) -> Self {
         Self { stream }
     }
-}
 
+    fn schema(&self) -> SchemaRef {
+        self.stream.schema().clone()
+    }
+
+}
 struct MergingStreams {
     /// The sorted input streams to merge together
     streams: Vec<Fuse<SendableRecordBatchStream>>,
@@ -202,7 +206,6 @@ impl SortedStreamMerger {
                 }
                 Some(Ok(batch)) => {
                     if batch.num_rows() > 0 {
-                        let batch = transform_record_batch(self.schema(), batch);
                         let cols = self.column_expressions[idx]
                             .iter()
                             .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
