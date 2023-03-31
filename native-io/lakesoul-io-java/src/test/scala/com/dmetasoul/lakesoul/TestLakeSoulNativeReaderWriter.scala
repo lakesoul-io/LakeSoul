@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-package test.org.apache.arrow.lakesoul
+package com.dmetasoul.lakesoul
 
-import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader
-import org.apache.arrow.lakesoul.io.{NativeIOReader, NativeIOWriter}
+import com.dmetasoul.lakesoul.lakesoul.io.{NativeIOReader, NativeIOWriter}
 
 case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFunSuite with org.scalatest.BeforeAndAfterAll with org.scalatest.BeforeAndAfterEach {
   val projectDir: String = System.getProperty("user.dir")

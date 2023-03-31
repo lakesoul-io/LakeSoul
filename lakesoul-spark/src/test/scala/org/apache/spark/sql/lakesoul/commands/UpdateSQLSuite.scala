@@ -16,12 +16,27 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import org.apache.spark.sql.Row
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
+import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
+import org.apache.spark.sql.test.TestSparkSession
 
 class UpdateSQLSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   test("explain") {
     append(Seq((2, 2)).toDF("key", "value"), "key" :: Nil)

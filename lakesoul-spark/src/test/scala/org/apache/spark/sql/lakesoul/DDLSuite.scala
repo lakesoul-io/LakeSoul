@@ -19,18 +19,30 @@ package org.apache.spark.sql.lakesoul
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
-import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
-import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
+import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
+import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
-import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
+import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
 
 import scala.collection.JavaConverters._
 
 class DDLSuite extends DDLTestBase with SharedSparkSession
   with LakeSoulSQLCommandTest {
+
+  override protected def createSparkSession: TestSparkSession = {
+    SparkSession.cleanupAnyExistingSession()
+    val session = new LakeSoulTestSparkSession(sparkConf)
+    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.sparkContext.setLogLevel("ERROR")
+
+    session
+  }
 
   override protected def verifyDescribeTable(tblName: String): Unit = {
     val res = sql(s"DESCRIBE TABLE $tblName").collect()

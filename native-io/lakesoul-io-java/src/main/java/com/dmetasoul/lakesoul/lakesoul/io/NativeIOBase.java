@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.apache.arrow.lakesoul.io;
+package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
@@ -22,9 +22,9 @@ import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
-import org.apache.arrow.lakesoul.io.jnr.JnrLoader;
-import org.apache.arrow.lakesoul.io.jnr.LibLakeSoulIO;
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -42,7 +42,9 @@ public class NativeIOBase implements AutoCloseable {
 
     protected final LibLakeSoulIO libLakeSoulIO;
 
-    protected final ObjectReferenceManager<NativeIOReader.Callback> referenceManager;
+    protected final ObjectReferenceManager<BooleanCallback> boolReferenceManager;
+
+    protected final ObjectReferenceManager<IntegerCallback> intReferenceManager;
 
     protected BufferAllocator allocator;
 
@@ -58,7 +60,8 @@ public class NativeIOBase implements AutoCloseable {
 
         libLakeSoulIO = JnrLoader.get();
 
-        referenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
+        boolReferenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
+        intReferenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
         setBatchSize(8192);
@@ -143,13 +146,13 @@ public class NativeIOBase implements AutoCloseable {
         }
     }
 
-    public static final class Callback implements LibLakeSoulIO.JavaCallback {
+    public static final class BooleanCallback implements LibLakeSoulIO.BooleanCallback {
 
         public BiConsumer<Boolean, String> callback;
         private Pointer key;
-        private final ObjectReferenceManager<Callback> referenceManager;
+        private final ObjectReferenceManager<BooleanCallback> referenceManager;
 
-        public Callback(BiConsumer<Boolean, String> callback, ObjectReferenceManager<Callback> referenceManager) {
+        public BooleanCallback(BiConsumer<Boolean, String> callback, ObjectReferenceManager<BooleanCallback> referenceManager) {
             this.callback = callback;
             this.referenceManager = referenceManager;
             key = null;
@@ -166,14 +169,47 @@ public class NativeIOBase implements AutoCloseable {
         }
 
         @Override
-        public void invoke(boolean status, String err) {
+        public void invoke(Boolean status, String err) {
             if (err!=null) {
-                System.err.println("[ERROR][org.apache.arrow.lakesoul.io.NativeIOBase.Callback.invoke]" + err);
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.BooleanCallback.invoke]" + err);
             }
             callback.accept(status, err);
             removerReferenceKey();
         }
     }
+
+    public static final class IntegerCallback implements LibLakeSoulIO.IntegerCallback {
+
+        public BiConsumer<Integer, String> callback;
+        private Pointer key;
+        private final ObjectReferenceManager<IntegerCallback> referenceManager;
+
+        public IntegerCallback(BiConsumer<Integer, String> callback, ObjectReferenceManager<IntegerCallback> referenceManager) {
+            this.callback = callback;
+            this.referenceManager = referenceManager;
+            key = null;
+        }
+
+        public void registerReferenceKey() {
+            key = referenceManager.add(this);
+        }
+
+        public void removerReferenceKey() {
+            if (key != null) {
+                referenceManager.remove(key);
+            }
+        }
+
+        @Override
+        public void invoke(Integer status, String err) {
+            if (err!=null) {
+                System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.IntegerCallback.invoke]" + err);
+            }
+            callback.accept(status, err);
+            removerReferenceKey();
+        }
+    }
+
 
     public BufferAllocator getAllocator() {
         return allocator;

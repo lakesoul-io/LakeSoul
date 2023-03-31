@@ -31,7 +31,6 @@ import org.apache.spark.sql.lakesoul.utils.AnalysisHelper
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, SparkSession, functions}
 
-import java.text.SimpleDateFormat
 import scala.collection.mutable
 
 trait LakeSoulTableOperations extends AnalysisHelper {

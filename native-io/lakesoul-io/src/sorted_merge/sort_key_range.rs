@@ -19,8 +19,8 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use arrow::{
-    array::{ArrayRef, as_primitive_array},
-    datatypes::{SchemaRef, DataType, TimestampMicrosecondType},
+    array::ArrayRef,
+    datatypes::SchemaRef,
     record_batch::RecordBatch,
     row::{Row, Rows},
 };

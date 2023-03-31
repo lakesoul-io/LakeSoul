@@ -21,19 +21,16 @@ import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOperator
-import org.apache.spark.sql.functions.broadcast
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TimestampFormatter}
-import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableRelationV2, LakeSoulUtils, SnapshotManagement}
+import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulUtils, SnapshotManagement}
 
 import java.util.TimeZone
 import scala.collection.JavaConverters._
-import scala.collection.mutable
 
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   extends LakeSoulTableOperations with Logging {

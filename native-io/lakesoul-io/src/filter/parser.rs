@@ -27,56 +27,56 @@ impl Parser {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema.clone());
             left_expr.or(right_expr)
-        }else if op.eq("and") {
+        } else if op.eq("and") {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema.clone());
             left_expr.and(right_expr)
-        }else if op.eq("not") {
+        } else if op.eq("not") {
             let inner = Parser::parse(right, schema);
             Expr::not(inner)
-        }else {
-            if schema.column_with_name(left.as_str()).is_none() {
-                return Expr::Literal(ScalarValue::Boolean(Some(true)))
-            }
-            let column = col(left.as_str());
-            if right == "null" {
-                match op.as_str() {
-                    "eq" => {
-                        column.is_null()
-                    }
-                    "noteq" => {
-                        column.is_not_null()
-                    }
-                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
-                }
-            } else {
-                match op.as_str() {
-                    "eq" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.eq(value)
-                    }
-                    "noteq" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.not_eq(value)
-                    }
-                    "gt" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.gt(value)
-                    }
-                    "gteq" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.gt_eq(value)
-                    }
-                    "lt" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.lt(value)
-                    }
-                    "lteq" => {
-                        let value = Parser::parse_literal(left, right, schema);
-                        column.lt_eq(value)
-                    }
+        } else {
+            let column = qualified_col_name(left.as_str(), schema.clone());
+            match schema.column_with_name(column) {
+                None => Expr::Literal(ScalarValue::Boolean(Some(true))),
+                Some((_, field)) => {
+                    if matches!(field.data_type(), DataType::Struct(_)) {
+                        col(column).is_not_null()
+                    } else if right == "null" {
+                        match op.as_str() {
+                            "eq" => col(column).is_null(),
+                            "noteq" => col(column).is_not_null(),
+                            _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
+                        }
+                    } else {
+                        match op.as_str() {
+                            "eq" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).eq(value)
+                            }
+                            "noteq" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).not_eq(value)
+                            }
+                            "gt" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).gt(value)
+                            }
+                            "gteq" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).gt_eq(value)
+                            }
+                            "lt" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).lt(value)
+                            }
+                            "lteq" => {
+                                let value = Parser::parse_literal(field, right);
+                                col(column).lt_eq(value)
+                            }
 
-                    _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
+                            _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
+                        }
+                    }
                 }
             }
         }
@@ -114,13 +114,8 @@ impl Parser {
         }
     }
 
-    fn parse_literal(column: String, value: String, schema: SchemaRef) -> Expr {
-        let fields = schema
-            .fields()
-            .iter()
-            .filter(|field| field.name().eq(&column))
-            .collect::<Vec<&Field>>();
-        let data_type = fields.get(0).unwrap().data_type().clone();
+    fn parse_literal(field: &Field, value: String) -> Expr {
+        let data_type = field.data_type().clone();
         match data_type {
             DataType::Decimal128(precision, scale) => {
                 if precision <= 18 {
@@ -184,6 +179,19 @@ impl Parser {
             )
         }
     }
+}
+
+fn qualified_col_name(column: &str, schema: SchemaRef) -> &str {
+    if let Ok(_field) = schema.field_with_name(column) {
+        return column;
+    } else if let Some(dot) = column.find('.') {
+        if let Ok(field) = schema.field_with_name(&column[..dot]) {
+            if matches!(field.data_type(), DataType::Struct(_)) {
+                return &column[..dot];
+            }
+        }
+    }
+    column
 }
 
 #[cfg(test)]

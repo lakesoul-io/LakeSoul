@@ -31,7 +31,7 @@ object MorReadBenchmark {
       .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/datalake_table/")
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
-      .config("spark.hadoop.fs.s3a.connection.maximum", 100)
+      .config("spark.hadoop.fs.s3a.connection.maximum", 1000)
 
     if (args.length >= 1 && args(0) == "--localtest")
       builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
@@ -41,7 +41,7 @@ object MorReadBenchmark {
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-//    SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
+    SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
 
 //    LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpLong", "longSumMerge")
 //    LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeNonNullOp", "stringNonNullMerge")
@@ -123,6 +123,5 @@ object MorReadBenchmark {
       //        .save()
       //    })
     }
-
   }
 }

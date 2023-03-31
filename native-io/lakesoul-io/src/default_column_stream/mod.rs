@@ -15,3 +15,4 @@
  */
 
  pub mod default_column_stream;
+ pub mod empty_schema_stream;

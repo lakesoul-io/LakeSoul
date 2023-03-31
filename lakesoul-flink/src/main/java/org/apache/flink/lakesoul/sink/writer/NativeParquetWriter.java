@@ -18,8 +18,8 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
-import org.apache.arrow.lakesoul.io.NativeIOWriter;
-import org.apache.arrow.lakesoul.memory.ArrowMemoryUtils;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
