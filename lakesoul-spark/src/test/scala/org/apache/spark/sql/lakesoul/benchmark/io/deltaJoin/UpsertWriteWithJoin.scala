@@ -73,15 +73,12 @@ object UpsertWriteWithJoin {
 //      dataPath4, dataPath5, dataPath6, dataPath7, dataPath8, dataPath9, dataPath10
     ))
 
-
     spark.time({
       spark.read.format("parquet").load(dataPath1)
         .write.format("lakesoul")
         .option("hashPartitions", "uuid")
         .option("hashBucketNum", 4)
         .mode("Overwrite").save(tablePathRight)
-
-
 
       spark.read.format("parquet").load(dataPath1).selectExpr("uuid", "substring(uuid, 1) as pk")
         .write.format("lakesoul")
@@ -94,7 +91,6 @@ object UpsertWriteWithJoin {
         .option("hashPartitions", "pk")
         .option("hashBucketNum", 4)
         .mode("Overwrite").save(tablePathJoin)
-
 
       // Code for concurrent test, left and right table will upsert concurrently,
       // which means one side can upsert itself when another is upserting, after both sides finish upsert, update JoinTable
@@ -174,7 +170,7 @@ object UpsertWriteWithJoin {
   }
 
   private def joinRightTable(deltaLeftDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).upsertWithTablePaths(deltaLeftDF, Seq(tablePathRight))
+    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight))
   }
 
 }

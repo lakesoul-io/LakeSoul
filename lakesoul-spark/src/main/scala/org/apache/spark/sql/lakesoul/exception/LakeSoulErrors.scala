@@ -612,6 +612,10 @@ object LakeSoulErrors {
   def illegalStreamReadStartTime(readStartTime: String): Throwable = {
     new AnalysisException(s"streamRead start time `$readStartTime` need to be less than latest timestamp")
   }
+
+  def mismatchedTableNumAndPartitionDescNum(tableNum: Int, partitionDescNum: Int): Throwable = {
+    new AnalysisException(s"table number and partitionDesc number are not equal, table number: $tableNum, partitionDesc number: $partitionDescNum")
+  }
 }
 
 
