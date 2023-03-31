@@ -231,7 +231,7 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
     Ok(())
 }
 
-fn register_hdfs_object_store(host: &str, config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
+fn register_hdfs_object_store(_host: &str, _config: &LakeSoulIOConfig, _runtime: &RuntimeEnv) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
         Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
@@ -240,8 +240,8 @@ fn register_hdfs_object_store(host: &str, config: &LakeSoulIOConfig, runtime: &R
     }
     #[cfg(feature = "hdfs")]
     {
-        let hdfs = HDFS::try_new(host, config.clone())?;
-        runtime.register_object_store("hdfs", host, Arc::new(hdfs));
+        let hdfs = HDFS::try_new(_host, _config.clone())?;
+        _runtime.register_object_store("hdfs", _host, Arc::new(hdfs));
         Ok(())
     }
 }

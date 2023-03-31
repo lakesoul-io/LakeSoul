@@ -31,7 +31,7 @@ object MorReadBenchmark {
       .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/datalake_table/")
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog")
-      .config("spark.hadoop.fs.s3a.connection.maximum", 100)
+      .config("spark.hadoop.fs.s3a.connection.maximum", 1000)
 
     if (args.length >= 1 && args(0) == "--localtest")
       builder.config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
@@ -41,89 +41,16 @@ object MorReadBenchmark {
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-//    SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
+    SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
 
-    LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeOpLong", "longSumMerge")
-    LakeSoulTable.registerMergeOperator(spark, "org.apache.spark.sql.execution.datasources.v2.merge.parquet.batch.merge_operator.MergeNonNullOp", "stringNonNullMerge")
-    val tablePath= "s3://lakesoul-test-bucket/datalake_table"
+    val tablePath = "s3://lakesoul-test-bucket/datalake_table"
     val table = LakeSoulTable.forPath(tablePath)
 
-    if (args.length >= 2 ) {
-      val NATIVE_IO_ENABLE = args(1)
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, NATIVE_IO_ENABLE)
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
-
-      println(s"=====Reading with NATIVE_IO_ENABLE=$NATIVE_IO_ENABLE=====")
-
-      spark.time({
-        val path = "/tmp/result/ccf/result"
-        println(s"writing local parquet in $path")
-        table.toDF
-          .withColumn("requests", expr("longSumMerge(requests)"))
-          //        .withColumn("name", expr("stringNonNullMerge(name)"))
-          //        .select("uuid","name")
-          //        .where("uuid ='000007dc-d5fe-426a-acb8-dd5a5bfc042c'")
-          //        .show()
-          .write.parquet(path)
-      })
-    } else{
-      println(s"=====Reading with native io=====")
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT.key, "10000")
-      spark.time({
-        println("counting df")
-
-        val rows = table.toDF.count()
-        println(s"row count = $rows")
-      })
-      spark.time({
-        println("writing noop")
-        table.toDF
-          .withColumn("requests", expr("longSumMerge(requests)"))
-          //        .withColumn("name", expr("stringNonNullMerge(name)"))
-          .write.mode("Overwrite")
-          .format("noop")
-          .save()
-      })
-//      spark.time({
-//        println("writing local parquet")
-//        table.toDF
-//          .withColumn("requests", expr("longSumMerge(requests)"))
-//          //        .withColumn("name", expr("stringNonNullMerge(name)"))
-//          .write.parquet("/tmp/result/ccf/")
-//      })
-
-      //    spark.time({
-      //      val path = "/tmp/result/ccf/result"
-      //      println(s"writing local parquet in $path")
-      //      table.toDF
-      //        .withColumn("requests", expr("longSumMerge(requests)"))
-      ////        .withColumn("name", expr("stringNonNullMerge(name)"))
-      ////        .select("uuid","name")
-      ////        .where("uuid ='000007dc-d5fe-426a-acb8-dd5a5bfc042c'")
-      ////        .show()
-      //        .write.parquet(path)
-      //    })
-
-      println(s"=====Reading with parquet-mr=====")
-      // spark parquet-mr read
-      SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "false")
-
-      //    spark.time({
-      //      println("counting df")
-      //      //        .withColumn("requests", expr("longSumMerge(requests)"))
-      //      //        .withColumn("name", expr("stringNonNullMerge(name)"))
-      //      val rows = table.toDF.count()
-      //      println(s"row count = $rows")
-      //    })
-      //    spark.time({
-      //      println("writing noop")
-      //      table.toDF
-      //        .write.mode("Overwrite")
-      //        .format("noop")
-      //        .save()
-      //    })
-    }
-
+    spark.time({
+      println(table.toDF.count())
+    })
+    spark.time({
+      table.toDF.write.format("noop").mode("overwrite").save()
+    })
   }
 }

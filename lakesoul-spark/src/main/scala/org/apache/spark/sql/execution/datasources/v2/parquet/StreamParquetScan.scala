@@ -20,43 +20,42 @@
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
-
-import scala.collection.JavaConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetInputFormat
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFactory}
 import org.apache.spark.sql.connector.read.streaming.{MicroBatchStream, Offset}
-import org.apache.spark.sql.execution.datasources.{AggregatePushDownUtils, FilePartition, PartitioningAwareFileIndex}
+import org.apache.spark.sql.connector.read.{InputPartition, PartitionReaderFactory}
+import org.apache.spark.sql.execution.datasources.AggregatePushDownUtils
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetReadSupport, ParquetWriteSupport}
 import org.apache.spark.sql.execution.datasources.v2.FileScan
 import org.apache.spark.sql.execution.streaming.LongOffset
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
-import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils.TimestampFormatter
+import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.util.SerializableConfiguration
 
 import java.util.TimeZone
+import scala.collection.JavaConverters._
 
 case class StreamParquetScan(sparkSession: SparkSession,
-                        hadoopConf: Configuration,
-                        fileIndex: LakeSoulFileIndexV2,
-                        dataSchema: StructType,
-                        readDataSchema: StructType,
-                        readPartitionSchema: StructType,
-                        pushedFilters: Array[Filter],
-                        options: CaseInsensitiveStringMap,
-                        pushedAggregate: Option[Aggregation] = None,
-                        partitionFilters: Seq[Expression] = Seq.empty,
-                        dataFilters: Seq[Expression] = Seq.empty) extends FileScan with MicroBatchStream {
+                             hadoopConf: Configuration,
+                             fileIndex: LakeSoulFileIndexV2,
+                             dataSchema: StructType,
+                             readDataSchema: StructType,
+                             readPartitionSchema: StructType,
+                             pushedFilters: Array[Filter],
+                             options: CaseInsensitiveStringMap,
+                             pushedAggregate: Option[Aggregation] = None,
+                             partitionFilters: Seq[Expression] = Seq.empty,
+                             dataFilters: Seq[Expression] = Seq.empty) extends FileScan with MicroBatchStream {
 
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
 
@@ -145,8 +144,6 @@ case class StreamParquetScan(sparkSession: SparkSession,
       Map("PushedAggregation" -> pushedAggregationsStr) ++
       Map("PushedGroupBy" -> pushedGroupByStr)
   }
-
-
 
   override def initialOffset: Offset = {
     if (!options.containsKey(LakeSoulOptions.READ_START_TIME)) {

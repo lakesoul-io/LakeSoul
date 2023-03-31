@@ -21,9 +21,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
-use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::transform::transform_record_batch;
+use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 use arrow::error::ArrowError;
 use arrow::row::{RowConverter, SortField};
@@ -49,12 +48,8 @@ impl SortedStream {
     pub(crate) fn new(stream: SendableRecordBatchStream) -> Self {
         Self { stream }
     }
-
-    fn schema(&self) -> SchemaRef {
-        self.stream.schema().clone()
-    }
-
 }
+
 struct MergingStreams {
     /// The sorted input streams to merge together
     streams: Vec<Fuse<SendableRecordBatchStream>>,
@@ -110,6 +105,8 @@ pub(crate) struct SortedStreamMerger {
     row_converters: Vec<RowConverter>,
 
     batch_idx_counter: usize,
+
+    initialized: Vec<bool>,
 }
 
 impl SortedStreamMerger {
@@ -180,6 +177,7 @@ impl SortedStreamMerger {
             range_combiner: combiner,
             row_converters,
             batch_idx_counter: 0,
+            initialized: vec![false; streams_num],
         })
     }
 
@@ -206,6 +204,7 @@ impl SortedStreamMerger {
                 }
                 Some(Ok(batch)) => {
                     if batch.num_rows() > 0 {
+                        self.initialized[idx] = true;
                         let cols = self.column_expressions[idx]
                             .iter()
                             .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
@@ -254,14 +253,24 @@ impl SortedStreamMerger {
 
         // Ensure all non-exhausted streams have a range from which
         // rows can be pulled
+        let mut pending = false;
         for i in 0..self.streams.num_streams() {
-            match futures::ready!(self.maybe_poll_stream(cx, i)) {
-                Ok(_) => {}
-                Err(e) => {
-                    self.aborted = true;
-                    return Poll::Ready(Some(Err(e)));
+            if !self.initialized[i] {
+                match self.maybe_poll_stream(cx, i) {
+                    Poll::Ready(r) => match r {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.aborted = true;
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                    },
+                    Poll::Pending => pending = true,
                 }
             }
+        }
+        if pending {
+            // not all streams have been initialized, we have to wait
+            return Poll::Pending;
         }
 
         // refer by https://docs.rs/datafusion/13.0.0/src/datafusion/physical_plan/sorts/sort_preserving_merge.rs.html#567-608
@@ -280,6 +289,9 @@ impl SortedStreamMerger {
                     if !range.is_finished() {
                         self.range_combiner.push_range(Reverse(range))
                     } else {
+                        // we should mark this stream uninitalized
+                        // since its polling may return pending
+                        self.initialized[stream_idx] = false;
                         self.range_finished[stream_idx] = true;
                         match futures::ready!(self.maybe_poll_stream(cx, stream_idx)) {
                             Ok(_) => {}
