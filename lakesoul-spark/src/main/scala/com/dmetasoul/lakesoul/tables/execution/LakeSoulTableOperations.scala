@@ -100,16 +100,19 @@ trait LakeSoulTableOperations extends AnalysisHelper {
 
   protected def executeUpsertOnJoinKey(deltaDF: DataFrame,
                                        joinKey: Seq[String],
-                                       partitionDesc: String,
+                                       partitionDesc: Seq[String],
                                        condition: String = ""): Unit = {
     val snapshotManagement = EliminateSubqueryAliases(this.toDF.queryExecution.analyzed) match {
       case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
       case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
     }
-    val partitionCols = snapshotManagement.snapshot.getTableInfo.partition_cols
+    val tableInfo = snapshotManagement.snapshot.getTableInfo
+    val partitionCols = tableInfo.partition_cols
+    val fieldNames = tableInfo.schema.fieldNames
+    joinKey.foreach(key => if (!fieldNames.contains(key)) throw LakeSoulErrors.mismatchJoinKeyException(key))
     val selectedCols = joinKey ++ partitionCols
-    val filterCondition = partitionDesc.replace(",", " and ")
-    val deltaJoin = if (partitionDesc == "")
+    val filterCondition = partitionDesc.mkString(",").replace(",", " and ")
+    val deltaJoin = if (filterCondition == "")
                       this.toDF.select(selectedCols.head, selectedCols.tail:_*).join(broadcast(deltaDF), joinKey, "inner")
                     else
                       this.toDF.select(selectedCols.head, selectedCols.tail:_*).filter(filterCondition).join(broadcast(deltaDF), joinKey, "inner")
@@ -118,50 +121,56 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   }
 
   protected def executeJoinWithTablePathsAndUpsert(deltaLeftDF: DataFrame,
-                                            rightTablePaths: Seq[String],
-                                            rightTablePartitionDesc: Seq[String],
-                                            condition: String = ""): Unit = {
-    val partitionDesc = if (rightTablePartitionDesc.isEmpty) (1 to rightTablePaths.length).map(_ => "") else rightTablePartitionDesc
-    if (rightTablePaths.length != partitionDesc.length)
-      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNum(rightTablePaths.length, partitionDesc.length)
+                                                   tablePaths: Seq[String],
+                                                   tablePartitionDesc: Seq[Seq[String]],
+                                                   condition: String = ""): Unit = {
+    val partitionDesc = if (tablePartitionDesc.isEmpty) (1 to tablePaths.length).map(_ => Seq("")) else tablePartitionDesc
+    if (tablePaths.length != partitionDesc.length)
+      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNumException(tablePaths.length, partitionDesc.length)
 
-    rightTablePaths.zip(partitionDesc).foreach(pathAndPartitionDesc => {
-      val rightTablePath = pathAndPartitionDesc._1
-      val rightPartitionDesc = pathAndPartitionDesc._2
-      val rightTable = LakeSoulTable.forPath(rightTablePath)
-      val snapshotManagement = EliminateSubqueryAliases(rightTable.toDF.queryExecution.analyzed) match {
+    tablePaths.zip(partitionDesc).foreach(pathAndPartitionDesc => {
+      val processingTablePath = pathAndPartitionDesc._1
+      val processingTablePartitionDesc = pathAndPartitionDesc._2
+      val processingTable = LakeSoulTable.forPath(processingTablePath)
+      val snapshotManagement = EliminateSubqueryAliases(processingTable.toDF.queryExecution.analyzed) match {
         case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
         case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
       }
       val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
-      val filterCondition = rightPartitionDesc.replace(",", " and ")
-      val deltaJoin = if (rightPartitionDesc == "") broadcast(deltaLeftDF).join(rightTable.toDF, hashCols, "left_outer")
-                      else broadcast(deltaLeftDF).join(rightTable.toDF.filter(filterCondition), hashCols, "left_outer")
+      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
+                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
 
       executeUpsert(this, deltaJoin, condition)
     })
   }
 
   protected def executeJoinWithTableNamesAndUpsert(deltaLeftDF: DataFrame,
-                                            rightTableNames: Seq[String],
-                                            rightTablePartitionDesc: Seq[String],
-                                            condition: String = ""): Unit = {
-    val partitionDesc = if (rightTablePartitionDesc.isEmpty) (1 to rightTableNames.length).map(_ => "") else rightTablePartitionDesc
-    if (rightTableNames.length != partitionDesc.length)
-      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNum(rightTableNames.length, partitionDesc.length)
+                                                   tableNames: Seq[String],
+                                                   tablePartitionDesc: Seq[Seq[String]],
+                                                   condition: String = ""): Unit = {
+    val partitionDesc = if (tablePartitionDesc.isEmpty) (1 to tableNames.length).map(_ => Seq("")) else tablePartitionDesc
+    if (tableNames.length != partitionDesc.length)
+      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNumException(tableNames.length, partitionDesc.length)
+    val currentTableSnapshotManagement = EliminateSubqueryAliases(this.toDF.queryExecution.analyzed) match {
+      case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+      case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+    }
+    val currentTableFieldNames = currentTableSnapshotManagement.snapshot.getTableInfo.schema.fieldNames
 
-    rightTableNames.zip(partitionDesc).foreach(pathAndPartitionDesc => {
-      val rightTableName = pathAndPartitionDesc._1
-      val rightPartitionDesc = pathAndPartitionDesc._2
-      val rightTable = LakeSoulTable.forName(rightTableName)
-      val snapshotManagement = EliminateSubqueryAliases(rightTable.toDF.queryExecution.analyzed) match {
+    tableNames.zip(partitionDesc).foreach(pathAndPartitionDesc => {
+      val processingTableName = pathAndPartitionDesc._1
+      val processingTablePartitionDesc = pathAndPartitionDesc._2
+      val processingTable = LakeSoulTable.forName(processingTableName)
+      val snapshotManagement = EliminateSubqueryAliases(processingTable.toDF.queryExecution.analyzed) match {
         case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
         case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
       }
       val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
-      val filterCondition = rightPartitionDesc.replace(",", " and ")
-      val deltaJoin = if (rightPartitionDesc == "") broadcast(deltaLeftDF).join(rightTable.toDF, hashCols, "left_outer")
-                      else broadcast(deltaLeftDF).join(rightTable.toDF.filter(filterCondition), hashCols, "left_outer")
+      hashCols.foreach(hashCol => if (!currentTableFieldNames.contains(hashCol)) throw LakeSoulErrors.mismatchJoinKeyException(hashCol))
+      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
+                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
 
       executeUpsert(this, deltaJoin, condition)
     })

@@ -1,7 +1,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.{DataFrame, QueryTest, Row, SparkSession}
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
@@ -27,7 +27,7 @@ class DeltaJoinSuite extends QueryTest
 
   val format = "lakesoul"
 
-  test("use table path to complete delta join without range partition") {
+  test("use table path to test delta join without range partition") {
     withTempDir(dir1 => {
       withTempDir(dir2 => {
         withTempDir(dir3 => {
@@ -76,7 +76,7 @@ class DeltaJoinSuite extends QueryTest
     })
   }
 
-  test("use table name to complete delta join with multiple range partition") {
+  test("use table name to test delta join with multiple range partition") {
     val leftTableName = "left_table"
     val rightTableName = "right_table"
     val joinTableName = "join_table"
@@ -142,15 +142,15 @@ class DeltaJoinSuite extends QueryTest
           val dfLeft1 = Seq((2, 1, "a1-1", "1", 1), (3, 2, "a2-1", "1", 1))
             .toDF("hashLeft", "hashRight", "v1", "rangeL1", "rangeL2")
           LakeSoulTable.forName(leftTableName).upsert(dfLeft1)
-          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft1, Seq(rightTableName), Seq("rangeR1=1,rangeR2=1"))
+          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft1, Seq(rightTableName), Seq(Seq("rangeR1=1","rangeR2=1")))
           val dfLeft2 = Seq((2, 1, "a1-1", "1", 2), (3, 2, "a2-1", "1", 2))
             .toDF("hashLeft", "hashRight", "v1", "rangeL1", "rangeL2")
           LakeSoulTable.forName(leftTableName).upsert(dfLeft2)
-          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft2, Seq(rightTableName), Seq("rangeR1=1,rangeR2=2"))
+          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft2, Seq(rightTableName), Seq(Seq("rangeR1=1","rangeR2=2")))
           val dfLeft3 = Seq((2, 1, "a1-1", "1", 3), (3, 2, "a2-1", "1", 3))
             .toDF("hashLeft", "hashRight", "v1", "rangeL1", "rangeL2")
           LakeSoulTable.forName(leftTableName).upsert(dfLeft3)
-          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft3, Seq(rightTableName), Seq("rangeR1=1,rangeR2=3"))
+          LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft3, Seq(rightTableName), Seq(Seq("rangeR1=1","rangeR2=3")))
 
           val dfRight1 = Seq((1, "b1-2", "1", 1), (2, "b2-1", "1", 1), (6, "b6-1", "1", 1))
             .toDF("hashRight", "v2", "rangeR1", "rangeR2")
@@ -158,8 +158,8 @@ class DeltaJoinSuite extends QueryTest
             .toDF("hashRight", "v2", "rangeR1", "rangeR2")
           LakeSoulTable.forName(rightTableName).upsert(dfRight1)
           LakeSoulTable.forName(rightTableName).upsert(dfRight2)
-          LakeSoulTable.forName(joinTableName).upsertOnJoinKey(dfRight1, Seq("hashRight"), "rangeL1=1,rangeL2=1")
-          LakeSoulTable.forName(joinTableName).upsertOnJoinKey(dfRight2, Seq("hashRight"), "rangeL1=2,rangeL2=2")
+          LakeSoulTable.forName(joinTableName).upsertOnJoinKey(dfRight1, Seq("hashRight"), Seq("rangeL1=1","rangeL2=1"))
+          LakeSoulTable.forName(joinTableName).upsertOnJoinKey(dfRight2, Seq("hashRight"), Seq("rangeL1=2","rangeL2=2"))
 
           val gtResult1_1 = LakeSoulTable.forName(leftTableName).toDF.filter("rangeL1=1 and rangeL2=1")
             .join(LakeSoulTable.forName(rightTableName).toDF.filter("rangeR1=1 and rangeR2=1"), Seq("hashRight"), "left_outer")
@@ -176,6 +176,59 @@ class DeltaJoinSuite extends QueryTest
           checkAnswer(LakeSoulTable.forName(joinTableName).toDF.select("hashLeft", "hashRight", "v1", "rangeL1", "rangeL2", "v2", "rangeR1", "rangeR2"),
             gtResult.select("hashLeft", "hashRight", "v1", "rangeL1", "rangeL2", "v2", "rangeR1", "rangeR2"))
         }
+      }
+    }
+  }
+
+  test("mismatched join key in delta join") {
+    val leftTableName = "left_table"
+    val rightTableName = "right_table"
+    val joinTableName = "join_table"
+    withTable(leftTableName) {
+      withTable(rightTableName) {
+          withTable(joinTableName) {
+            val dfLeftInit = Seq((1, "a1-1", 1), (2, "a2-1", 2))
+              .toDF("hashLeft", "v1", "range1")
+
+            val dfRightInit = Seq((1, "b1-1", 1), (2, "b2-1", 1), (3, "b3-1", 1), (4, "b4-1", 2))
+              .toDF("hashRight", "v2","range2")
+
+            dfLeftInit.write.mode("overwrite")
+              .format("lakesoul")
+              .option("hashPartitions", "hashLeft")
+              .option("hashBucketNum", "2")
+              .saveAsTable(leftTableName)
+
+            dfRightInit.write.mode("overwrite")
+              .format("lakesoul")
+              .option("hashPartitions", "hashRight")
+              .option("hashBucketNum", "2")
+              .saveAsTable(rightTableName)
+
+            dfLeftInit.write.mode("overwrite")
+              .format("lakesoul")
+              .option("hashPartitions", "hashLeft")
+              .option("hashBucketNum", "2")
+              .saveAsTable(joinTableName)
+
+            val missingKey = "hashRight"
+            val dfLeft1 = Seq((3, "a3-1", 1), (2, "a2-2", 2))
+              .toDF("hashLeft", "v1", "range1")
+            LakeSoulTable.forName(leftTableName).upsert(dfLeft1)
+
+            val ex = intercept[AnalysisException] {
+              LakeSoulTable.forName(joinTableName).joinWithTableNamesAndUpsert(dfLeft1, Seq(rightTableName))
+            }
+            assert(ex.getMessage.contains(s"join key $missingKey is missing in join table"))
+
+            val dfRight1 = Seq((1, "b1-1", 1), (2, "b2-1", 1), (3, "b3-1", 1), (4, "b4-1", 2))
+              .toDF("hashRight", "v2", "range2")
+            LakeSoulTable.forName(rightTableName).upsert(dfRight1)
+            val ex1 = intercept[AnalysisException] {
+              LakeSoulTable.forName(joinTableName).upsertOnJoinKey(dfRight1, Seq("hashRight"))
+            }
+            assert(ex1.getMessage.contains(s"join key $missingKey is missing in join table"))
+          }
       }
     }
   }

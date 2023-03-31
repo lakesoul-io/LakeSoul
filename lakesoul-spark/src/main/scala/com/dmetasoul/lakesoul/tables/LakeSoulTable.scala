@@ -263,54 +263,57 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   }
 
   /**
-   * Upsert LakeSoul join table with right delta dataframe.
+   * Upsert LakeSoul join table with delta dataframe from a dimension table.
    *
    * Example:
    * {{{
    *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"))
-   *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"), "range1=1, range2=2")
+   *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"), Seq("range1=1", "range2=2")
    * }}}
    *
-   * @param deltaDF   delta dataframe from right table
-   * @param joinKey   used to join with left table
-   * @param condition you can define a condition to filter LakeSoul data
+   * @param deltaDF       delta dataframe from a dimension table
+   * @param joinKey       used to join with fact table
+   * @param partitionDesc used to join with data in specific range partition
+   * @param condition     you can define a condition to filter LakeSoul data
    */
-  def upsertOnJoinKey(deltaDF: DataFrame, joinKey: Seq[String], partitionDesc: String = "", condition: String = ""): Unit = {
+  def upsertOnJoinKey(deltaDF: DataFrame, joinKey: Seq[String], partitionDesc: Seq[String] = Seq.empty[String], condition: String = ""): Unit = {
     executeUpsertOnJoinKey(deltaDF, joinKey, partitionDesc, condition)
   }
 
   /**
-   * Upsert LakeSoul join table with left delta dataframe.
+   * Upsert LakeSoul join table with delta dataframe from fact table.
    *
    * Example:
    * {{{
-   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaLeftDF, Seq("s3://lakesoul/right_table"))
-   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaLeftDF, Seq("s3://lakesoul/right_table"), Seq("range1=1,range2=2"))
+   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"))
+   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"), Seq(Seq("range1=1","range2=2")))
    * }}}
    *
-   * @param deltaDF         left table delta dataframe
-   * @param rightTablePaths paths of right tables which need to join with deltaDf
-   * @param condition       you can define a condition to filter LakeSoul data
+   * @param deltaDF            delta dataframe from fact table(join table)
+   * @param tablePaths         paths of dimension tables which need to join with deltaDf
+   * @param tablePartitionDesc used to join with data in specific range partition
+   * @param condition          you can define a condition to filter LakeSoul data
    */
-  def joinWithTablePathsAndUpsert(deltaDF: DataFrame, rightTablePaths: Seq[String], rightTablePartitionDesc: Seq[String] = Seq.empty[String], condition: String = ""): Unit = {
-    executeJoinWithTablePathsAndUpsert(deltaDF, rightTablePaths, rightTablePartitionDesc, condition)
+  def joinWithTablePathsAndUpsert(deltaDF: DataFrame, tablePaths: Seq[String], tablePartitionDesc: Seq[Seq[String]] = Seq.empty[Seq[String]], condition: String = ""): Unit = {
+    executeJoinWithTablePathsAndUpsert(deltaDF, tablePaths, tablePartitionDesc, condition)
   }
 
   /**
-   * Upsert LakeSoul join table with left delta dataframe.
+   * Upsert LakeSoul join table with delta dataframe from fact table.
    *
    * Example:
    * {{{
-   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaLeftDF, Seq("right_table_name"))
-   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaLeftDF, Seq("right_table_name""), Seq("range1=1,range2=2"))
+   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name"))
+   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name""), Seq(Seq("range1=1","range2=2")))
    * }}}
    *
-   * @param deltaDF         left table delta dataframe
-   * @param rightTableNames names of right tables which need to join with deltaDf
-   * @param condition       you can define a condition to filter LakeSoul data
+   * @param deltaDF            left table delta dataframe
+   * @param tableNames         names of dimension tables which need to join with deltaDf
+   * @param tablePartitionDesc used to join with data in specific range partition
+   * @param condition          you can define a condition to filter LakeSoul data
    */
-  def joinWithTableNamesAndUpsert(deltaDF: DataFrame, rightTableNames: Seq[String], rightTablePartitionDesc: Seq[String] = Seq.empty[String], condition: String = ""): Unit = {
-    executeJoinWithTableNamesAndUpsert(deltaDF, rightTableNames, rightTablePartitionDesc, condition)
+  def joinWithTableNamesAndUpsert(deltaDF: DataFrame, tableNames: Seq[String], tablePartitionDesc: Seq[Seq[String]] = Seq.empty[Seq[String]], condition: String = ""): Unit = {
+    executeJoinWithTableNamesAndUpsert(deltaDF, tableNames, tablePartitionDesc, condition)
   }
 
   //by default, force perform compaction on whole table

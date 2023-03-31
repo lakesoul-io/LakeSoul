@@ -161,19 +161,19 @@ object UpsertWriteWithPartitionJoin {
   }
 
   private def joinLeftTablePartitionOne(deltaRightDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), "rangeA=1")
+    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=1"))
   }
 
   private def joinLeftTablePartitionTwo(deltaRightDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), "rangeA=2")
+    LakeSoulTable.forPath(tablePathJoin).upsertOnJoinKey(deltaRightDF, Seq("uuid"), Seq("rangeA=2"))
   }
 
   private def joinRightTablePartitionOne(deltaLeftDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq("rangeB=1"))
+    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq(Seq("rangeB=1")))
   }
 
   private def joinRightTablePartitionTwo(deltaLeftDF: DataFrame): Unit = {
-    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq("rangeB=2"))
+    LakeSoulTable.forPath(tablePathJoin).joinWithTablePathsAndUpsert(deltaLeftDF, Seq(tablePathRight), Seq(Seq("rangeB=2")))
   }
 }
 
