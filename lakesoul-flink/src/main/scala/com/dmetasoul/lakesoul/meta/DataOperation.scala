@@ -1,12 +1,12 @@
 package com.dmetasoul.lakesoul.meta
 
+import com.google.common.collect.Lists
 import org.apache.hadoop.fs.Path
-
 import java.util.UUID
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
-
+import scala.util.control.Breaks
 object BucketingUtils {
   // The file name of bucketed data should have 3 parts:
   //   1. some other information in the head of file name
@@ -59,6 +59,10 @@ case class PartitionInfo(table_id: String,
 object DataOperation {
 
   val dbManager = new DBManager
+
+  def getTableDataInfo(tableId: String): Array[DataFileInfo] = {
+    getTableDataInfo(MetaVersion.getAllPartitionInfo(tableId))
+  }
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfo]): Array[DataFileInfo] = {
 
@@ -146,4 +150,97 @@ object DataOperation {
       file_arr_buf.filter(_.file_op.equals("add"))
     }
   }
+
+  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
+    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
+      if (null == partition_desc || "".equals(partition_desc)) {
+        val partitions = dbManager.getAllPartitionInfo(table_id)
+        val files_all_partitions_buf = new ArrayBuffer[DataFileInfo]()
+        partitions.forEach(partition => {
+          val preVersionTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, startTimestamp)
+          files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition.getPartitionDesc, preVersionTimestamp, endTimestamp)
+        })
+        files_all_partitions_buf
+      } else {
+        val preVersionTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition_desc, startTimestamp)
+        getSinglePartitionIncrementalDataInfos(table_id, partition_desc, preVersionTimestamp, endTimestamp)
+      }
+    } else {
+      val version = dbManager.getLastedVersionUptoTime(table_id, partition_desc, endTimestamp)
+      getSinglePartitionDataInfo(table_id, partition_desc, version)
+    }
+  }
+
+  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersionTimestamp: Long, endVersionTimestamp: Long): ArrayBuffer[DataFileInfo] = {
+    var preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
+    var compactionUUIDs = new mutable.LinkedHashSet[UUID]()
+    var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
+    var updated: Boolean = false
+    val dataCommitInfoList = dbManager.getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp).asScala.toArray
+    //    if (dataCommitInfoList.size < 2) {
+    //      println("It is the latest version")
+    //      return new ArrayBuffer[DataFileInfo]()
+    //    }
+    var count: Int = 0
+    val loop = new Breaks()
+    loop.breakable {
+      for (dataItem <- dataCommitInfoList) {
+        count += 1
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem.getTimestamp && count != 1) {
+          updated = true
+          loop.break()
+        }
+        if (startVersionTimestamp == dataItem.getTimestamp) {
+          preVersionUUIDs ++= dataItem.getSnapshot.asScala
+        } else {
+          if ("CompactionCommit".equals(dataItem.getCommitOp)) {
+            compactionUUIDs ++= dataItem.getSnapshot.asScala
+          } else {
+            incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
+          }
+        }
+      }
+    }
+    if (updated) {
+      println("Incremental query could not have update just for compaction merge and append")
+      new ArrayBuffer[DataFileInfo]()
+    } else {
+      val tmpUUIDs = incrementalAllUUIDs -- preVersionUUIDs
+      val resultUUID = tmpUUIDs -- compactionUUIDs
+      val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
+      val dupCheck = new mutable.HashSet[String]()
+      val dataCommitInfoList = dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
+      dataCommitInfoList.foreach(data_commit_info => {
+        val fileOps = data_commit_info.getFileOps.asScala.toArray
+        fileOps.foreach(file => {
+          file_arr_buf += DataFileInfo(
+            data_commit_info.getPartitionDesc,
+            file.getPath(),
+            file.getFileOp(),
+            file.getSize(),
+            data_commit_info.getTimestamp(),
+            file.getFileExistCols()
+          )
+        })
+      })
+
+      if (file_arr_buf.length > 1) {
+        for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
+          if (file_arr_buf(i).file_op.equals("del")) {
+            dupCheck.add(file_arr_buf(i).path)
+          } else {
+            if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+              file_res_arr_buf += file_arr_buf(i)
+            }
+          }
+        }
+        file_res_arr_buf.reverse
+      } else {
+        file_arr_buf.filter(_.file_op.equals("add"))
+      }
+    }
+  }
+
+
 }

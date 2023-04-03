@@ -22,6 +22,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataTypeUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.lakesoul.io.NativeIOBase;
+import org.apache.arrow.vector.FieldVector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
@@ -35,6 +36,8 @@ import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.vector.ArrayColumnVector;
+import org.apache.flink.table.data.vector.ColumnVector;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
@@ -260,4 +263,5 @@ public class FlinkUtil {
       io.setObjectStoreOption(fsConfKey, value);
     }
   }
+
 }

@@ -7,6 +7,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,14 +29,17 @@ public class LakeSoulSplitReader
 
     @Nullable private String currentSplitId;
 
-    public LakeSoulSplitReader(Configuration conf) {
+    RowType rowType;
+
+    public LakeSoulSplitReader(Configuration conf,RowType rowType) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
+        this.rowType = rowType;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return null;
+        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType);
     }
 
     @Override
