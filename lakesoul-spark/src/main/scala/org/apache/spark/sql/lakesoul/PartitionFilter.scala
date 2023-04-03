@@ -45,9 +45,14 @@ object PartitionFilter {
 
   def filesForScan(snapshot: Snapshot,
                    filters: Seq[Expression]): Array[DataFileInfo] = {
-    val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value)
-    val partitionInfo = snapshot.getPartitionInfoArray.filter(p => partitionRangeValues.contains(p.range_value))
-    DataOperation.getTableDataInfo(partitionInfo)
+    val partitionArray = snapshot.getPartitionInfoArray
+    if (filters.length < 1) {
+      DataOperation.getTableDataInfo(partitionArray)
+    } else {
+      val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value)
+      val partitionInfo =partitionArray.filter(p => partitionRangeValues.contains(p.range_value))
+      DataOperation.getTableDataInfo(partitionInfo)
+    }
   }
 
   def filterFileList(partitionSchema: StructType,
