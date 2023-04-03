@@ -33,12 +33,10 @@ import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.Expression;
+import org.apache.flink.table.factories.Factory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -64,6 +62,11 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public void close() throws CatalogException {
 
+    }
+
+    @Override
+    public Optional<Factory> getFactory() {
+        return Catalog.super.getFactory();
     }
 
     @Override
@@ -315,7 +318,7 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) throws CatalogException {
+    public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) {
         throw new CatalogException("not supported now");
     }
 

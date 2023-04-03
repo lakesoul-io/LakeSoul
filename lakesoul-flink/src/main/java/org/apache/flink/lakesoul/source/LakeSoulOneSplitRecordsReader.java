@@ -80,7 +80,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         if (curRecordId < currentVCR.getRowCount()) {
             int tmp = curRecordId;
             curRecordId++;
-            return this.curArrowReader.read(curRecordId);
+            return this.curArrowReader.read(tmp);
         } else {
             return null;
         }

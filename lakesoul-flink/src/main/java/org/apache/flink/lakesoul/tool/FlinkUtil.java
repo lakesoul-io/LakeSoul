@@ -60,208 +60,212 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
 
 public class FlinkUtil {
 
-  private static final Logger LOG = LoggerFactory.getLogger(FlinkUtil.class);
+    private static final Logger LOG = LoggerFactory.getLogger(FlinkUtil.class);
 
-  private FlinkUtil() {
-  }
-
-  private static final String NOT_NULL = " NOT NULL";
-
-  public static String convert(TableSchema schema) {
-    return schema.toRowDataType().toString();
-  }
-
-  public static String getRangeValue(CatalogPartitionSpec cps) {
-    return "Null";
-  }
-
-  public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
-    StructType stNew = new StructType();
-
-    for (int i = 0; i < tsc.getFieldCount(); i++) {
-      String name = tsc.getFieldName(i).get();
-      DataType dt = tsc.getFieldDataType(i).get();
-      String dtName = dt.getLogicalType().getTypeRoot().name();
-      stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
-    }
-    if (isCdc) {
-      stNew = stNew.add("rowKinds", StringType, true);
-    }
-    return stNew;
-  }
-
-  public static StringData rowKindToOperation(String rowKind) {
-    if ("+I".equals(rowKind)) {
-      return StringData.fromString("insert");
-    }
-    if ("-U".equals(rowKind)) {
-      return StringData.fromString("delete");
-    }
-    if ("+U".equals(rowKind)) {
-      return StringData.fromString("update");
-    }
-    if ("-D".equals(rowKind)) {
-      return StringData.fromString("delete");
-    }
-    return null;
-  }
-
-  public static StringData rowKindToOperation(RowKind rowKind) {
-    if (RowKind.INSERT.equals(rowKind)) {
-      return StringData.fromString("insert");
-    }
-    if (RowKind.UPDATE_BEFORE.equals(rowKind)) {
-      return StringData.fromString("delete");
-    }
-    if (RowKind.UPDATE_AFTER.equals(rowKind)) {
-      return StringData.fromString("update");
-    }
-    if (RowKind.DELETE.equals(rowKind)) {
-      return StringData.fromString("delete");
-    }
-    return null;
-  }
-
-  public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
-    String tableSchema = tableInfo.getTableSchema();
-    StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
-    Builder bd = Schema.newBuilder();
-    JSONObject properties = tableInfo.getProperties();
-    String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
-    boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
-    String hashColumn = properties.getString(RECORD_KEY_NAME);
-    for (StructField sf : struct.fields()) {
-      if (contains && sf.name().equals(lakesoulCdcColumnName)) {
-        continue;
-      }
-      String tyname = DataTypeUtil.convertToFlinkDatatype(sf.dataType().typeName());
-      if (!sf.nullable()) {
-        tyname += NOT_NULL;
-      }
-      bd = bd.column(sf.name(), tyname);
-    }
-    bd.primaryKey(Arrays.asList(hashColumn.split(",")));
-    List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
-    List<String> parKey;
-    if (partitionData.size()>1) {
-      parKey = Splitter.on(',').splitToList(partitionData.get(0));
-    } else {
-      parKey = new ArrayList<>();
-    }
-    HashMap<String, String> conf = new HashMap<>();
-    properties.forEach((key, value) -> conf.put(key, (String) value));
-    return CatalogTable.of(bd.build(), "", parKey, conf);
-  }
-
-  public static String stringListToString(List<String> list) {
-    if (list.isEmpty()) {
-      return "";
-    }
-    StringBuilder builder = new StringBuilder();
-    for (String s : list) {
-      builder.append(s).append(",");
-    }
-    return builder.deleteCharAt(builder.length() - 1).toString();
-  }
-
-  public static String generatePartitionPath(LinkedHashMap<String, String> partitionSpec) {
-    if (partitionSpec.isEmpty()) {
-      return "";
-    }
-    StringBuilder suffixBuf = new StringBuilder();
-    int i = 0;
-    for (Map.Entry<String, String> e : partitionSpec.entrySet()) {
-      if (i > 0) {
-        suffixBuf.append("/");
-      }
-      suffixBuf.append(escapePathName(e.getKey()));
-      suffixBuf.append('=');
-      suffixBuf.append(escapePathName(e.getValue()));
-      i++;
-    }
-    return suffixBuf.toString();
-  }
-
-  private static String escapePathName(String path) {
-    if (path == null || path.length() == 0) {
-      throw new TableException("Path should not be null or empty: " + path);
+    private FlinkUtil() {
     }
 
-    StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < path.length(); i++) {
-      char c = path.charAt(i);
-      sb.append(c);
+    private static final String NOT_NULL = " NOT NULL";
+
+    public static String convert(TableSchema schema) {
+        return schema.toRowDataType().toString();
     }
-    return sb.toString();
-  }
 
-  public static List<String> getFieldNames(DataType dataType) {
-    final LogicalType type = dataType.getLogicalType();
-    if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
-      return getFieldNames(dataType.getChildren().get(0));
-    } else if (isCompositeType(type)) {
-      return LogicalTypeChecks.getFieldNames(type);
+    public static String getRangeValue(CatalogPartitionSpec cps) {
+        return "Null";
     }
-    return Collections.emptyList();
-  }
 
-  public static List<DataTypes.Field> getFields(DataType dataType, Boolean isCdc) {
-    final List<String> names = getFieldNames(dataType);
-    final List<DataType> dataTypes = getFieldDataTypes(dataType);
-    if (isCdc) {
-      names.add("rowKinds");
-      dataTypes.add(DataTypes.VARCHAR(30));
+    public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
+        StructType stNew = new StructType();
+
+        for (int i = 0; i < tsc.getFieldCount(); i++) {
+            String name = tsc.getFieldName(i).get();
+            DataType dt = tsc.getFieldDataType(i).get();
+            String dtName = dt.getLogicalType().getTypeRoot().name();
+            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
+        }
+        if (isCdc) {
+            stNew = stNew.add("rowKinds", StringType, true);
+        }
+        return stNew;
     }
-    return IntStream.range(0, names.size())
-        .mapToObj(i -> DataTypes.FIELD(names.get(i), dataTypes.get(i)))
-        .collect(Collectors.toList());
-  }
 
-  public static List<DataType> getFieldDataTypes(DataType dataType) {
-    final LogicalType type = dataType.getLogicalType();
-    if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
-      return getFieldDataTypes(dataType.getChildren().get(0));
-    } else if (isCompositeType(type)) {
-      return dataType.getChildren();
+    public static StringData rowKindToOperation(String rowKind) {
+        if ("+I".equals(rowKind)) {
+            return StringData.fromString("insert");
+        }
+        if ("-U".equals(rowKind)) {
+            return StringData.fromString("delete");
+        }
+        if ("+U".equals(rowKind)) {
+            return StringData.fromString("update");
+        }
+        if ("-D".equals(rowKind)) {
+            return StringData.fromString("delete");
+        }
+        return null;
     }
-    return Collections.emptyList();
-  }
 
-  public static Path makeQualifiedPath(String path) throws IOException {
-    Path p = new Path(path);
-    FileSystem fileSystem = p.getFileSystem();
-    return p.makeQualified(fileSystem);
-  }
-
-  public static Path makeQualifiedPath(Path p) throws IOException {
-    FileSystem fileSystem = p.getFileSystem();
-    return p.makeQualified(fileSystem);
-  }
-
-  public static String getDatabaseName(String fullDatabaseName) {
-    String[] splited = fullDatabaseName.split("\\.");
-    return splited[splited.length - 1];
-  }
-
-  public static void setFSConfigs(Configuration conf, NativeIOBase io) {
-    conf.addAll(GlobalConfiguration.loadConfiguration());
-    // try hadoop's s3 configs
-    setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
-    setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key", io);
-    setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint", io);
-    setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
-    // try flink's s3 credential configs
-    setFSConf(conf, "s3.access-key", "fs.s3a.access.key", io);
-    setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key", io);
-    setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint", io);
-  }
-
-  public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
-    String value = conf.getString(confKey, "");
-    if (!value.isEmpty()) {
-      LOG.info("Set native object store option {}={}", fsConfKey, value);
-      io.setObjectStoreOption(fsConfKey, value);
+    public static StringData rowKindToOperation(RowKind rowKind) {
+        if (RowKind.INSERT.equals(rowKind)) {
+            return StringData.fromString("insert");
+        }
+        if (RowKind.UPDATE_BEFORE.equals(rowKind)) {
+            return StringData.fromString("delete");
+        }
+        if (RowKind.UPDATE_AFTER.equals(rowKind)) {
+            return StringData.fromString("update");
+        }
+        if (RowKind.DELETE.equals(rowKind)) {
+            return StringData.fromString("delete");
+        }
+        return null;
     }
-  }
+
+    public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
+        String tableSchema = tableInfo.getTableSchema();
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
+        Builder bd = Schema.newBuilder();
+        JSONObject properties = tableInfo.getProperties();
+        String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
+        boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
+        for (StructField sf : struct.fields()) {
+            if (contains && sf.name().equals(lakesoulCdcColumnName)) {
+                continue;
+            }
+            String tyname = DataTypeUtil.convertToFlinkDatatype(sf.dataType().typeName());
+            if (!sf.nullable()) {
+                tyname += NOT_NULL;
+            }
+            bd = bd.column(sf.name(), tyname);
+        }
+        List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
+        List<String> parKeys;
+        String parKey = partitionData.get(0);
+        String hashKey = partitionData.get(1);
+        if (!"".equals(hashKey)) {
+            List<String> hashKeys = Splitter.on(',').splitToList(hashKey);
+            bd.primaryKey(hashKeys);
+        }
+        if (!"".equals(parKey)) {
+            parKeys = Splitter.on(',').splitToList(parKey);
+        } else {
+            parKeys = new ArrayList<>();
+        }
+        HashMap<String, String> conf = new HashMap<>();
+        properties.forEach((key, value) -> conf.put(key, (String) value));
+        return CatalogTable.of(bd.build(), "", parKeys, conf);
+    }
+
+    public static String stringListToString(List<String> list) {
+        if (list.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (String s : list) {
+            builder.append(s).append(",");
+        }
+        return builder.deleteCharAt(builder.length() - 1).toString();
+    }
+
+    public static String generatePartitionPath(LinkedHashMap<String, String> partitionSpec) {
+        if (partitionSpec.isEmpty()) {
+            return "";
+        }
+        StringBuilder suffixBuf = new StringBuilder();
+        int i = 0;
+        for (Map.Entry<String, String> e : partitionSpec.entrySet()) {
+            if (i > 0) {
+                suffixBuf.append("/");
+            }
+            suffixBuf.append(escapePathName(e.getKey()));
+            suffixBuf.append('=');
+            suffixBuf.append(escapePathName(e.getValue()));
+            i++;
+        }
+        return suffixBuf.toString();
+    }
+
+    private static String escapePathName(String path) {
+        if (path == null || path.length() == 0) {
+            throw new TableException("Path should not be null or empty: " + path);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    public static List<String> getFieldNames(DataType dataType) {
+        final LogicalType type = dataType.getLogicalType();
+        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
+            return getFieldNames(dataType.getChildren().get(0));
+        } else if (isCompositeType(type)) {
+            return LogicalTypeChecks.getFieldNames(type);
+        }
+        return Collections.emptyList();
+    }
+
+    public static List<DataTypes.Field> getFields(DataType dataType, Boolean isCdc) {
+        final List<String> names = getFieldNames(dataType);
+        final List<DataType> dataTypes = getFieldDataTypes(dataType);
+        if (isCdc) {
+            names.add("rowKinds");
+            dataTypes.add(DataTypes.VARCHAR(30));
+        }
+        return IntStream.range(0, names.size())
+                .mapToObj(i -> DataTypes.FIELD(names.get(i), dataTypes.get(i)))
+                .collect(Collectors.toList());
+    }
+
+    public static List<DataType> getFieldDataTypes(DataType dataType) {
+        final LogicalType type = dataType.getLogicalType();
+        if (type.getTypeRoot() == LogicalTypeRoot.DISTINCT_TYPE) {
+            return getFieldDataTypes(dataType.getChildren().get(0));
+        } else if (isCompositeType(type)) {
+            return dataType.getChildren();
+        }
+        return Collections.emptyList();
+    }
+
+    public static Path makeQualifiedPath(String path) throws IOException {
+        Path p = new Path(path);
+        FileSystem fileSystem = p.getFileSystem();
+        return p.makeQualified(fileSystem);
+    }
+
+    public static Path makeQualifiedPath(Path p) throws IOException {
+        FileSystem fileSystem = p.getFileSystem();
+        return p.makeQualified(fileSystem);
+    }
+
+    public static String getDatabaseName(String fullDatabaseName) {
+        String[] splited = fullDatabaseName.split("\\.");
+        return splited[splited.length - 1];
+    }
+
+    public static void setFSConfigs(Configuration conf, NativeIOBase io) {
+        conf.addAll(GlobalConfiguration.loadConfiguration());
+        // try hadoop's s3 configs
+        setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
+        setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key", io);
+        setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint", io);
+        setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
+        // try flink's s3 credential configs
+        setFSConf(conf, "s3.access-key", "fs.s3a.access.key", io);
+        setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key", io);
+        setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint", io);
+    }
+
+    public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
+        String value = conf.getString(confKey, "");
+        if (!value.isEmpty()) {
+            LOG.info("Set native object store option {}={}", fsConfKey, value);
+            io.setObjectStoreOption(fsConfKey, value);
+        }
+    }
 
 }

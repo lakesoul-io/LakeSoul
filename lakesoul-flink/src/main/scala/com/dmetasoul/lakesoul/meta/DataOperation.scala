@@ -2,8 +2,9 @@ package com.dmetasoul.lakesoul.meta
 
 import com.google.common.collect.Lists
 import org.apache.hadoop.fs.Path
+
 import java.util.UUID
-import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
 import scala.util.control.Breaks
