@@ -17,10 +17,30 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+/**
+ * Singleton Data File information
+ */
 public class DataFileOp {
+  /**
+   * Physical qualified path of a parquet file
+   */
   String path;
+
+  /**
+   * Set of {add, delete}, which define the specific operation of this file
+   * add: indicates that the parquet file is newly added
+   * delete: indicates that the parquet file has been deleted
+   */
   String fileOp;
+
+  /**
+   * File size of byte-unit
+   */
   long size;
+
+  /**
+   * Columns included with this parquet file, which should be equivalent of the meta of parquet file
+   */
   String fileExistCols;
 
   public String getPath() {

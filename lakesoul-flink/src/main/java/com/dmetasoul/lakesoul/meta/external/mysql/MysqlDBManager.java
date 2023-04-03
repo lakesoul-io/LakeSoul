@@ -21,7 +21,7 @@ package com.dmetasoul.lakesoul.meta.external.mysql;
 
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
+import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
 import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;

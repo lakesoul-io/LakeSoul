@@ -15,7 +15,7 @@
  *
  */
 
-package com.dmetasoul.lakesoul.meta.entity;
+package com.dmetasoul.lakesoul.meta;
 
 import java.io.Serializable;
 

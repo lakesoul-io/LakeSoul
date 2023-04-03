@@ -19,6 +19,9 @@ package com.dmetasoul.lakesoul.meta.entity;
 
 import java.util.List;
 
+/**
+ * A collection of PartitionInfo of one TableInfo
+ */
 public class MetaInfo {
     List<PartitionInfo> listPartition;
     TableInfo tableInfo;

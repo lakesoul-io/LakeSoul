@@ -17,7 +17,6 @@
 
 package com.dmetasoul.lakesoul.meta;
 
-import com.dmetasoul.lakesoul.meta.entity.DataBaseProperty;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
