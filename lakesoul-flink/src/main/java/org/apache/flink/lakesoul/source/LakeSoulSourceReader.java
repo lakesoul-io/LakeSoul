@@ -22,8 +22,13 @@ public class LakeSoulSourceReader
     }
 
     @Override
-    protected void onSplitFinished(Map<String, LakeSoulSplit> finishedSplitIds) {
+    public void start(){
+        context.sendSplitRequest();
+    }
 
+    @Override
+    protected void onSplitFinished(Map<String, LakeSoulSplit> finishedSplitIds) {
+        context.sendSplitRequest();
     }
 
     @Override
@@ -33,6 +38,8 @@ public class LakeSoulSourceReader
 
     @Override
     protected LakeSoulSplit toSplitType(String splitId, LakeSoulSplit splitState) {
+
         return splitState;
     }
+
 }

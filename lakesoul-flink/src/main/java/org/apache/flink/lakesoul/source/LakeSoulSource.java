@@ -58,7 +58,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
 
     @Override
     public SimpleVersionedSerializer<LakeSoulSplit> getSplitSerializer() {
-        return null;
+        return new SimpleLakeSoulSerializer();
     }
 
     @Override

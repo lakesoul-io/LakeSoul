@@ -11,6 +11,7 @@ import org.apache.flink.table.connector.source.abilities.SupportsPartitionPushDo
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
 
 import java.util.List;
 import java.util.Map;
@@ -66,7 +67,8 @@ public class LakeSoulTableSource
 
     @Override
     public ChangelogMode getChangelogMode() {
-        return null;
+        //.addContainedKind(RowKind.UPDATE_BEFORE).addContainedKind(RowKind.UPDATE_AFTER).addContainedKind(RowKind.DELETE)
+        return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).build();
     }
 
     @Override

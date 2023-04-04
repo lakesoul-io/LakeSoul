@@ -124,9 +124,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
-        List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+       // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
         return new LakeSoulTableSource(
-                new TableId(io.debezium.relational.TableId.parse(objectIdentifier.getObjectName())),
+                new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
                 (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType()
         );
     }

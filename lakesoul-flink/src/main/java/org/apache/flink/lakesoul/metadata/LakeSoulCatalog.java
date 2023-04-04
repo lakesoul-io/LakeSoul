@@ -26,6 +26,7 @@ import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.*;
@@ -66,7 +67,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public Optional<Factory> getFactory() {
-        return Catalog.super.getFactory();
+        return Optional.of(new LakeSoulDynamicTableFactory());
     }
 
     @Override
@@ -319,24 +320,24 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
     public CatalogColumnStatistics getTableColumnStatistics(ObjectPath tablePath) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
     public CatalogTableStatistics getPartitionStatistics(ObjectPath tablePath,
                                                          CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
     public CatalogColumnStatistics getPartitionColumnStatistics(ObjectPath tablePath,
                                                                 CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
