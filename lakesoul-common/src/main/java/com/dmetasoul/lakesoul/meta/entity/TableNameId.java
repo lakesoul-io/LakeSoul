@@ -17,11 +17,23 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+/**
+ * Relationship between 'TableNamespace.TableName' and TableId
+ */
 public class TableNameId {
+    /**
+     * Name of table
+     */
     private String tableName;
 
+    /**
+     * Global unique identifier of table
+     */
     private String tableId;
 
+    /**
+     * Namespace of table
+     */
     private String tableNamespace;
 
     public TableNameId() {}

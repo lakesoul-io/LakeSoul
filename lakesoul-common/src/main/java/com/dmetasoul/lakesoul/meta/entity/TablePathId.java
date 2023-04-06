@@ -17,11 +17,24 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+/**
+ * Relationship between 'TableNamespace.TablePath' and TableId
+ */
 public class TablePathId {
+
+    /**
+     * Physical qualified path of table
+     */
     private String tablePath;
 
+    /**
+     * Global unique identifier of table
+     */
     private String tableId;
 
+    /**
+     * Namespace of table
+     */
     private String tableNamespace;
 
     public TablePathId() {}

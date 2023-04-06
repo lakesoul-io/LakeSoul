@@ -25,7 +25,20 @@ import com.google.common.base.Preconditions;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
+/**
+ * Namespace of tables
+ */
 public class Namespace {
+
+    /**
+     * Dot-separated-formatted namespace
+     */
+    private String namespace;
+
+    private JSONObject properties = new JSONObject();
+
+    private String comment;
+
     private static final Joiner DOT = Joiner.on('.');
     private static final Namespace EMPTY_NAMESPACE = new Namespace();
 
@@ -78,11 +91,6 @@ public class Namespace {
         return levels;
     }
 
-    private String namespace;
-
-    private JSONObject properties = new JSONObject();
-
-    private String comment;
 
     public String getNamespace() {
         return namespace;

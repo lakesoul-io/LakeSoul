@@ -21,19 +21,49 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Version information for specific table range partitions
+ */
 public class PartitionInfo {
+  /**
+   * TableId of PartitionInfo
+   */
   private String tableId;
 
+  /**
+   * Range partition description, which defines a specific range partition of the table, in the formatted of comma-separated range_colum=range_value
+   * Especially, a table without range partitions use '-5' as partitionDesc
+   */
   private String partitionDesc;
 
+  /**
+   * A version is defined as a number monotonically increasing by 1
+   */
   private int version;
 
+  /**
+   * Set of {AppendCommit, CompactionCommit, UpdateCommit, MergeCommit}, which define the specific operation of the version information
+   * AppendCommit: A commit type indicates that this DataCommit is to append files to a specific table range partition without hash partition
+   * CompactionCommit: A commit type indicates that this DataCommit is to compact files in a specific table range partition
+   * UpdateCommit: A commit type indicates that this DataCommit is to update data(add new files and delete old invalid files) in a specific table range partition
+   * MergeCommit: A commit type indicates that this DataCommit is to append files to a specific table range partition with hash partition
+   * Especially, the first commit to a specific table range partition will be set to 'AppendCommit', whether it has hash partition or not
+   */
   private String commitOp;
 
+  /**
+   * Timestamp of the PartitionInfo successfully committed
+   */
   private long timestamp;
 
+  /**
+   * Collection of commitId of DataCommitInfo included with PartitionInfo
+   */
   private List<UUID> snapshot;
 
+  /**
+   * TODO: Expression used to calculate or filter data, will be launched in the future. Now it's just a meaningless empty string.
+   */
   private String expression;
 
   public String getTableId() {

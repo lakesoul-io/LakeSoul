@@ -19,19 +19,44 @@ package com.dmetasoul.lakesoul.meta.entity;
 
 import com.alibaba.fastjson.JSONObject;
 
+/**
+ * Meta Information for LakeSoul Table
+ */
 public class TableInfo {
+
+    /**
+     * Global unique identifier of table
+     */
     private String tableId;
 
+    /**
+     * Namespace of table. A string of 'tableNamespace.tablePath' or 'tableNamespace.tableName'  maps one unique table globally
+     */
     private String tableNamespace;
 
+    /**
+     * Name of table, optional
+     */
     private String tableName;
 
+    /**
+     * Physical qualified path of table
+     */
     private String tablePath;
 
+    /**
+     * Spark-formatted schema of table
+     */
     private String tableSchema;
 
+    /**
+     * Properties of table, used to tag table with information not tracked by SQL
+     */
     private JSONObject properties;
 
+    /**
+     * Partition columns of table. Format of partitions is 'comma_separated_range_column;hash_column'
+     */
     private String partitions;
 
     public String getTableId() {
