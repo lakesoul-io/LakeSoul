@@ -18,10 +18,11 @@ package com.dmetasoul.lakesoul.tables.execution
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteFromTable, LakeSoulUpsert, UpdateTable}
-import org.apache.spark.sql.lakesoul.SnapshotManagement
+import org.apache.spark.sql.functions.broadcast
+import org.apache.spark.sql.lakesoul.{LakeSoulTableRelationV2, SnapshotManagement}
 import org.apache.spark.sql.lakesoul.commands._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.PreprocessTableUpsert
@@ -97,6 +98,83 @@ trait LakeSoulTableOperations extends AnalysisHelper {
 
   }
 
+  protected def executeUpsertOnJoinKey(deltaDF: DataFrame,
+                                       joinKey: Seq[String],
+                                       partitionDesc: Seq[String],
+                                       condition: String = ""): Unit = {
+    val snapshotManagement = EliminateSubqueryAliases(this.toDF.queryExecution.analyzed) match {
+      case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+      case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+    }
+    val tableInfo = snapshotManagement.snapshot.getTableInfo
+    val partitionCols = tableInfo.partition_cols
+    val fieldNames = tableInfo.schema.fieldNames
+    joinKey.foreach(key => if (!fieldNames.contains(key)) throw LakeSoulErrors.mismatchJoinKeyException(key))
+    val selectedCols = joinKey ++ partitionCols
+    val filterCondition = partitionDesc.mkString(",").replace(",", " and ")
+    val deltaJoin = if (filterCondition == "")
+                      this.toDF.select(selectedCols.head, selectedCols.tail:_*).join(broadcast(deltaDF), joinKey, "inner")
+                    else
+                      this.toDF.select(selectedCols.head, selectedCols.tail:_*).filter(filterCondition).join(broadcast(deltaDF), joinKey, "inner")
+
+    executeUpsert(this, deltaJoin, condition)
+  }
+
+  protected def executeJoinWithTablePathsAndUpsert(deltaLeftDF: DataFrame,
+                                                   tablePaths: Seq[String],
+                                                   tablePartitionDesc: Seq[Seq[String]],
+                                                   condition: String = ""): Unit = {
+    val partitionDesc = if (tablePartitionDesc.isEmpty) (1 to tablePaths.length).map(_ => Seq("")) else tablePartitionDesc
+    if (tablePaths.length != partitionDesc.length)
+      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNumException(tablePaths.length, partitionDesc.length)
+
+    tablePaths.zip(partitionDesc).foreach(pathAndPartitionDesc => {
+      val processingTablePath = pathAndPartitionDesc._1
+      val processingTablePartitionDesc = pathAndPartitionDesc._2
+      val processingTable = LakeSoulTable.forPath(processingTablePath)
+      val snapshotManagement = EliminateSubqueryAliases(processingTable.toDF.queryExecution.analyzed) match {
+        case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+        case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+      }
+      val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
+      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
+                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
+
+      executeUpsert(this, deltaJoin, condition)
+    })
+  }
+
+  protected def executeJoinWithTableNamesAndUpsert(deltaLeftDF: DataFrame,
+                                                   tableNames: Seq[String],
+                                                   tablePartitionDesc: Seq[Seq[String]],
+                                                   condition: String = ""): Unit = {
+    val partitionDesc = if (tablePartitionDesc.isEmpty) (1 to tableNames.length).map(_ => Seq("")) else tablePartitionDesc
+    if (tableNames.length != partitionDesc.length)
+      throw LakeSoulErrors.mismatchedTableNumAndPartitionDescNumException(tableNames.length, partitionDesc.length)
+    val currentTableSnapshotManagement = EliminateSubqueryAliases(this.toDF.queryExecution.analyzed) match {
+      case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+      case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+    }
+    val currentTableFieldNames = currentTableSnapshotManagement.snapshot.getTableInfo.schema.fieldNames
+
+    tableNames.zip(partitionDesc).foreach(pathAndPartitionDesc => {
+      val processingTableName = pathAndPartitionDesc._1
+      val processingTablePartitionDesc = pathAndPartitionDesc._2
+      val processingTable = LakeSoulTable.forName(processingTableName)
+      val snapshotManagement = EliminateSubqueryAliases(processingTable.toDF.queryExecution.analyzed) match {
+        case LakeSoulTableRelationV2(tbl) => tbl.snapshotManagement
+        case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
+      }
+      val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
+      hashCols.foreach(hashCol => if (!currentTableFieldNames.contains(hashCol)) throw LakeSoulErrors.mismatchJoinKeyException(hashCol))
+      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
+                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
+
+      executeUpsert(this, deltaJoin, condition)
+    })
+  }
 
   protected def executeCompaction(df: DataFrame,
                                   snapshotManagement: SnapshotManagement,

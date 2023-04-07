@@ -46,7 +46,9 @@ def sort_files_and_compare_md5(dirpath, MD5):
         .master("local[4]") \
         .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-    df = spark.read.parquet(dirpath).coalesce(1).sort('uuid')
+    df = spark.read.parquet(dirpath).coalesce(1).sort('pk')
+    count = df.count()
+    print(f'Records number read from {dirpath} is {count}')
     df.write.mode('overwrite').csv('/opt/spark/work-dir/result/final_single_file_csv', header=True)
     spark.stop()
     import glob
