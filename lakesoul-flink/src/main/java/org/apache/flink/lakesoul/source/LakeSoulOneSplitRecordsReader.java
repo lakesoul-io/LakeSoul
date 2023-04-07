@@ -9,11 +9,11 @@ import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.vector.ColumnVector;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.Collections;
@@ -22,6 +22,9 @@ import java.util.Set;
 public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData> {
 
     private final LakeSoulSplit split;
+
+    @Nonnull
+    private String splitId;
 
     private final Configuration conf;
 
@@ -40,6 +43,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.conf = conf;
         this.schema = schema;
 
+        this.splitId = split.splitId();
         initializeReader();
     }
 
@@ -50,7 +54,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
         Schema arrowSchema = ArrowUtils.toArrowSchema(schema);
         reader.setSchema(arrowSchema);
-        FlinkUtil.setFSConfigs(conf, reader);
+//        FlinkUtil.setFSConfigs(conf, reader);
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader, 10000);
     }
@@ -58,7 +62,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Nullable
     @Override
     public String nextSplit() {
-        return null;
+        String nextSplit = this.splitId;
+        this.splitId = null;
+        return nextSplit;
     }
 
     @Nullable
