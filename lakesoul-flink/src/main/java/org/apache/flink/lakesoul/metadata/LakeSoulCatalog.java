@@ -291,8 +291,8 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public CatalogFunction getFunction(ObjectPath tablePath) throws CatalogException {
-        throw new CatalogException("not supported now");
+    public CatalogFunction getFunction(ObjectPath tablePath) throws CatalogException, FunctionNotExistException {
+        throw new FunctionNotExistException("lakesoul",tablePath);
     }
 
     @Override
@@ -302,8 +302,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
-        throw new CatalogException("not supported now");
-
+        return ;
     }
 
     @Override

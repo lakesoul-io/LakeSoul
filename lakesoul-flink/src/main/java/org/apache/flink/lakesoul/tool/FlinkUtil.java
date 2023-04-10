@@ -36,6 +36,7 @@ import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.data.vector.ArrayColumnVector;
 import org.apache.flink.table.data.vector.ColumnVector;
 import org.apache.flink.table.types.DataType;
@@ -49,6 +50,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -57,6 +60,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLU
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
 public class FlinkUtil {
 
@@ -268,4 +272,38 @@ public class FlinkUtil {
         }
     }
 
+
+    public static Object convertStringToInternalValue(String valStr, LogicalType type) {
+        if (valStr == null) {
+            return null;
+        }
+        LogicalTypeRoot typeRoot = type.getTypeRoot();
+        switch (typeRoot) {
+            case CHAR:
+            case VARCHAR:
+                return StringData.fromString(valStr);
+            case BOOLEAN:
+                return Boolean.parseBoolean(valStr);
+            case TINYINT:
+                return Byte.parseByte(valStr);
+            case SMALLINT:
+                return Short.parseShort(valStr);
+            case INTEGER:
+                return Integer.parseInt(valStr);
+            case BIGINT:
+                return Long.parseLong(valStr);
+            case FLOAT:
+                return Float.parseFloat(valStr);
+            case DOUBLE:
+                return Double.parseDouble(valStr);
+            case DATE:
+                return (int) LocalDate.parse(valStr).toEpochDay();
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                return TimestampData.fromLocalDateTime(LocalDateTime.parse(valStr));
+            default:
+                throw new RuntimeException(
+                        String.format(
+                                "Can not convert %s to type %s for partition value", valStr, type));
+        }
+    }
 }

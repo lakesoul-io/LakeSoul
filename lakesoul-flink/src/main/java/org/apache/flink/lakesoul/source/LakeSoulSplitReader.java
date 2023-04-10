@@ -14,7 +14,10 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Queue;
+import java.util.stream.IntStream;
 
 public class LakeSoulSplitReader
         implements SplitReader<RowData, LakeSoulSplit> {
@@ -31,15 +34,17 @@ public class LakeSoulSplitReader
 
     RowType rowType;
 
-    public LakeSoulSplitReader(Configuration conf,RowType rowType) {
+    List<String> pkColumns;
+    public LakeSoulSplitReader(Configuration conf, RowType rowType, List<String> pkColumns) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
+        this.pkColumns = pkColumns;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType);
+        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType,this.pkColumns);
     }
 
     @Override

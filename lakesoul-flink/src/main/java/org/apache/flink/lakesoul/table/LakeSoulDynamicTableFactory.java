@@ -19,8 +19,11 @@
 
 package org.apache.flink.lakesoul.table;
 
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
@@ -30,6 +33,7 @@ import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.*;
+import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Collections;
@@ -124,10 +128,23 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
+        List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+        catalogTable.getPartitionKeys();
+        boolean isStreaming = true;
+        final RuntimeExecutionMode mode = context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
+        if (mode == RuntimeExecutionMode.AUTOMATIC) {
+            throw new RuntimeException(
+                    String.format("Runtime execution mode '%s' is not supported yet.", mode));
+        }else {
+            if(mode == RuntimeExecutionMode.BATCH){
+                isStreaming = false;
+            }
+        }
+
        // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
         return new LakeSoulTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType()
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(),isStreaming,pkColumns
         );
     }
 }
