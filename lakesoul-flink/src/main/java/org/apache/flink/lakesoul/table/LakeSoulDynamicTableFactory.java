@@ -21,7 +21,6 @@ package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.types.TableId;
@@ -33,15 +32,9 @@ import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.*;
-import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.ServiceLoader;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
@@ -128,23 +121,28 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
-        List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+        List<String> pkColumns;
+        if(schema.getPrimaryKey().isPresent()){
+            pkColumns = schema.getPrimaryKey().get().getColumns();
+        }else{
+            pkColumns = new ArrayList<>();
+        }
         catalogTable.getPartitionKeys();
         boolean isStreaming = true;
         final RuntimeExecutionMode mode = context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
         if (mode == RuntimeExecutionMode.AUTOMATIC) {
             throw new RuntimeException(
                     String.format("Runtime execution mode '%s' is not supported yet.", mode));
-        }else {
-            if(mode == RuntimeExecutionMode.BATCH){
+        } else {
+            if (mode == RuntimeExecutionMode.BATCH) {
                 isStreaming = false;
             }
         }
 
-       // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+        // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
         return new LakeSoulTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(),isStreaming,pkColumns
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns
         );
     }
 }

@@ -2,6 +2,7 @@ package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.lakesoul.source.LakeSoulSource;
 import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -13,6 +14,7 @@ import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushD
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.utils.PartitionPathUtils;
 import org.apache.flink.types.RowKind;
 
 import java.util.*;
@@ -32,6 +34,8 @@ public class LakeSoulTableSource
 
     int[][] projectedFields;
 
+    private List<Map<String, String>> remainingPartitions;
+
     public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns) {
         this.tableId = tableId;
         this.rowType = rowType;
@@ -44,6 +48,7 @@ public class LakeSoulTableSource
     public DynamicTableSource copy() {
         LakeSoulTableSource lsts = new LakeSoulTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns);
         lsts.projectedFields = this.projectedFields;
+        lsts.remainingPartitions = this.remainingPartitions;
         return lsts;
     }
 
@@ -64,7 +69,7 @@ public class LakeSoulTableSource
 
     @Override
     public void applyPartitions(List<Map<String, String>> remainingPartitions) {
-        return;
+        this.remainingPartitions = remainingPartitions;
     }
 
     @Override
@@ -95,6 +100,6 @@ public class LakeSoulTableSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
 
-        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), this.isStreaming, this.pkColumns));
+        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), this.isStreaming, this.pkColumns,this.remainingPartitions));
     }
 }

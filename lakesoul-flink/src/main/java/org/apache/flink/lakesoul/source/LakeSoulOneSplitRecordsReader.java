@@ -77,23 +77,31 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             List<RowType.RowField> fields = schema.getFields().stream().filter(field -> !partitionCols.contains(field.getName())).collect(Collectors.toList());
             tmp = new RowType(fields);
             this.partitionIndexes = Arrays.stream(partitionCols.toArray()).mapToInt(columnList::indexOf).toArray();
-            this.partitionTypes = Arrays.stream(partitionIndexes).mapToObj(columnTypeList::get).toArray(LogicalType[]::new);
-            this.partitionFieldGetters = IntStream.range(0, partitionTypes.length).mapToObj(i -> RowData.createFieldGetter(partitionTypes[i], partitionIndexes[i])).toArray(RowData.FieldGetter[]::new);
+            if (columnTypeList.size() != 0) {
+                this.partitionTypes = Arrays.stream(partitionIndexes).mapToObj(i -> i != -1 ? (columnTypeList.get(i)) : columnTypeList.get(0)).toArray(LogicalType[]::new);
+                this.partitionFieldGetters = IntStream.range(0, partitionTypes.length).mapToObj(i -> RowData.createFieldGetter(partitionTypes[i], partitionIndexes[i])).toArray(RowData.FieldGetter[]::new);
+            }
         } else {
             tmp = this.schema;
         }
         this.fileSchema = tmp;
-
-        List<Integer> partitionIndexList = Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
+        List<Integer> partitionIndexList;
+        if (partitionIndexes == null || partitionIndexes.length == 0) {
+            partitionIndexList = new ArrayList<>();
+        } else {
+            partitionIndexList = Arrays.stream(partitionIndexes).boxed().collect(Collectors.toList());
+        }
         this.nonPartitionIndexes = IntStream.range(0, columnList.size()).filter(c -> !partitionIndexList.contains(c)).toArray();
         this.nonPartitionTypes = Arrays.stream(nonPartitionIndexes).mapToObj(columnTypeList::get).toArray(LogicalType[]::new);
         this.nonPartitionFieldGetters = IntStream.range(0, nonPartitionTypes.length).mapToObj(i -> RowData.createFieldGetter(nonPartitionTypes[i], i)).toArray(RowData.FieldGetter[]::new);
-
-        Schema arrowSchema = ArrowUtils.toArrowSchema(fileSchema);
-        reader.setSchema(arrowSchema);
-        //FlinkUtil.setFSConfigs(conf, reader);
-        reader.initializeReader();
-        this.reader = new LakeSoulArrowReader(reader, 10000);
+        if (nonPartitionIndexes.length != 0) {
+            Schema arrowSchema = ArrowUtils.toArrowSchema(fileSchema);
+            reader.setSchema(arrowSchema);
+            reader.setPrimaryKeys(pkColumns);
+            //FlinkUtil.setFSConfigs(conf, reader);
+            reader.initializeReader();
+            this.reader = new LakeSoulArrowReader(reader, 10000);
+        }
     }
 
     @Nullable
@@ -107,36 +115,51 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Nullable
     @Override
     public RowData nextRecordFromSplit() {
-
-        if (this.currentVCR == null) {
-            if (this.reader.hasNext()) {
-                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
-                this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.schema);
-
-                if (this.currentVCR == null) {
+        if (this.nonPartitionIndexes.length == 0) {
+            if (curRecordId != 0) {
+                return null;
+            }
+            GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
+            setReuseRowWithPartition(reuseRow);
+            curRecordId++;
+            return reuseRow;
+        } else {
+            if (this.currentVCR == null) {
+                if (this.reader.hasNext()) {
+                    this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+                    this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.schema);
+                    if (this.currentVCR == null) {
+                        return null;
+                    }
+                    curRecordId = 0;
+                } else {
+                    this.reader.close();
                     return null;
                 }
-                curRecordId = 0;
+            }
+            if (curRecordId < currentVCR.getRowCount()) {
+                int tmp = curRecordId;
+                curRecordId++;
+                RowData rd = this.curArrowReader.read(tmp);
+                GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
+                for (int i = 0; i < nonPartitionIndexes.length; i++) {
+                    reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+                }
+                setReuseRowWithPartition(reuseRow);
+                return reuseRow;
             } else {
-                this.reader.close();
                 return null;
             }
         }
+    }
 
-        if (curRecordId < currentVCR.getRowCount()) {
-            int tmp = curRecordId;
-            curRecordId++;
-            RowData rd = this.curArrowReader.read(tmp);
-            GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
-            for (int i = 0; i < nonPartitionIndexes.length; i++) {
-                reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+    private void setReuseRowWithPartition(GenericRowData reuseRow) {
+        if (partitionIndexes != null && partitionIndexes.length != 0) {
+            for (int j = 0; j < partitionIndexes.length; j++) {
+                if (partitionIndexes[j] != -1) {
+                    reuseRow.setField(partitionIndexes[j], FlinkUtil.convertStringToInternalValue(partitions.get(columnList.get(partitionIndexes[j])), partitionTypes[j]));
+                }
             }
-            for (int j=0; j < partitionIndexes.length; j++) {
-                reuseRow.setField(partitionIndexes[j],FlinkUtil.convertStringToInternalValue(partitions.get(columnList.get(partitionIndexes[j])),partitionTypes[j]));
-            }
-            return reuseRow;
-        } else {
-            return null;
         }
     }
 

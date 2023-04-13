@@ -23,6 +23,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -110,8 +111,8 @@ public class LakeSoulCatalog implements Catalog {
         }
         try {
             dbManager.createNewNamespace(databaseName,
-                                         DBUtil.stringMapToJson(catalogDatabase.getProperties()),
-                                         catalogDatabase.getComment());
+                    DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+                    catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
         }
@@ -221,8 +222,8 @@ public class LakeSoulCatalog implements Catalog {
             String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
             dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                                     FlinkUtil.toSparkSchema(schema, cdcMark).json(),
-                                     properties, FlinkUtil.stringListToString(partitionKeys) + ";" + primaryKeys);
+                    FlinkUtil.toSparkSchema(schema, cdcMark).json(),
+                    properties, FlinkUtil.stringListToString(partitionKeys) + ";" + primaryKeys);
         }
     }
 
@@ -234,7 +235,7 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public List<CatalogPartitionSpec> listPartitions(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
-        if (tableExists(tablePath)) {
+        if (!tableExists(tablePath)) {
             throw new CatalogException("table path not exist");
         }
 
@@ -249,7 +250,21 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list) throws CatalogException {
-        throw new CatalogException("not supported now");
+        Map<String, String> partitionSpec = new LinkedHashMap<>();
+        list.forEach(ex -> {
+            partitionSpec.put(ex.getChildren().get(0).toString(), convertFieldType(ex.getChildren().get(1).toString()));
+        });
+        List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
+        catalogPartitionSpecs.add(new CatalogPartitionSpec(partitionSpec));
+        return catalogPartitionSpecs;
+    }
+
+    private String convertFieldType(String field) {
+        if (field.startsWith("'")) {
+            return field.substring(1, field.length() - 1);
+        } else {
+            return field;
+        }
     }
 
     @Override
@@ -292,7 +307,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public CatalogFunction getFunction(ObjectPath tablePath) throws CatalogException, FunctionNotExistException {
-        throw new FunctionNotExistException("lakesoul",tablePath);
+        throw new FunctionNotExistException("lakesoul", tablePath);
     }
 
     @Override
@@ -302,7 +317,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
-        return ;
+        return;
     }
 
     @Override
