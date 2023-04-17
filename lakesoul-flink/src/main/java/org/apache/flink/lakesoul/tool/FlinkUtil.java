@@ -19,7 +19,7 @@
 package org.apache.flink.lakesoul.tool;
 
 import com.alibaba.fastjson.JSONObject;
-import com.dmetasoul.lakesoul.meta.DataTypeUtil;
+import com.dmetasoul.lakesoul.meta.*;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.lakesoul.io.NativeIOBase;
 import org.apache.arrow.vector.FieldVector;
@@ -60,6 +60,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLU
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
+
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
 public class FlinkUtil {
@@ -305,5 +306,39 @@ public class FlinkUtil {
                         String.format(
                                 "Can not convert %s to type %s for partition value", valStr, type));
         }
+    }
+
+    public static DataFileInfo[] getTargetDataFileInfo(TableInfo tif, List<Map<String, String>> remainingPartitions) {
+        if (remainingPartitions == null || remainingPartitions.size() == 0) {
+            return DataOperation.getTableDataInfo(tif.getTableId());
+        } else {
+            List<String> partitionDescs = remainingPartitions.stream()
+                    .map(map -> map.entrySet().stream()
+                            .map(entry -> entry.getKey() + "=" + entry.getValue())
+                            .collect(Collectors.joining(",")))
+                    .collect(Collectors.toList());
+            List<PartitionInfo> partitionInfos = new ArrayList<>();
+            for (String partitionDesc : partitionDescs) {
+                partitionInfos.add(MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, ""));
+            }
+            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[partitionInfos.size()]);
+            return DataOperation.getTableDataInfo(ptinfos);
+        }
+    }
+    public static Map<String, Map<String, List<Path>>> splitDataInfosToRangeAndHashPartition(DataFileInfo[] dfinfos){
+        Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
+        for (DataFileInfo pif : dfinfos) {
+            // todo : add procession of no hashPartition
+            if (pif.file_bucket_id() != -1) {
+                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                        .computeIfAbsent(String.valueOf(pif.file_bucket_id()), v -> new ArrayList<>())
+                        .add(new Path(pif.path()));
+            } else {
+                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                        .computeIfAbsent("-1", v -> new ArrayList<>())
+                        .add(new Path(pif.path()));
+            }
+        }
+        return splitByRangeAndHashPartition;
     }
 }

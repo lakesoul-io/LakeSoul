@@ -11,6 +11,9 @@ public class LakeSoulSimpleSplitAssigner {
     public LakeSoulSimpleSplitAssigner(Collection<LakeSoulSplit> splits) {
         this.splits = new ArrayList<>(splits);
     }
+    public LakeSoulSimpleSplitAssigner() {
+        this.splits = new ArrayList<>();
+    }
 
     public Optional<LakeSoulSplit> getNext() {
         final int size = splits.size();
