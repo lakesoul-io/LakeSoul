@@ -409,22 +409,22 @@ public class DBManager {
                 if (readPartition != null) {
                     readPartitionVersion = readPartition.getVersion();
                 }
-                Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion, curVersion);
-                if (commitOp.equals("UpdateCommit")) {
-                    if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
-                        return false;
-                    }
-                } else {
-                    if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
-                        continue;
-                    }
-                }
 
                 int newVersion = curVersion + 1;
 
                 if (readPartitionVersion == curVersion) {
                     curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
                 } else {
+                    Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion, curVersion);
+                    if (commitOp.equals("UpdateCommit")) {
+                        if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
+                            throw new IllegalStateException("current operation conflicts with other write data tasks, table path: " + tableInfo.getTablePath());
+                        }
+                    } else {
+                        if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
+                            continue;
+                        }
+                    }
                     List<UUID> snapshot = new ArrayList<>();
                     snapshot.addAll(partitionInfo.getSnapshot());
                     List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
@@ -456,7 +456,7 @@ public class DBManager {
                     notConflict = compactionConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, 0);
                     break;
                 case "UpdateCommit":
-                    notConflict = updateConflict(tableId, partitionDescList, rawMap, newMap, readPartitionMap, snapshotList, 0);
+                    notConflict = updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, 0);
                     break;
                 case "MergeCommit":
                     notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
@@ -578,22 +578,22 @@ public class DBManager {
                 readPartitionVersion = readPartition.getVersion();
             }
 
-            Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion, curVersion);
-            if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
-                partitionDescList.remove(partitionDesc);
-                snapshotsList.removeAll(rawPartitionInfo.getSnapshot());
-                continue;
-            }
-
             int newVersion = curVersion + 1;
-
             if (readPartitionVersion == curVersion) {
                 curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
             } else {
+                Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion, curVersion);
+                if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
+                    partitionDescList.remove(partitionDesc);
+                    snapshotsList.removeAll(rawPartitionInfo.getSnapshot());
+                    continue;
+                }
                 List<UUID> snapshot = new ArrayList<>();
                 snapshot.addAll(rawPartitionInfo.getSnapshot());
                 List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                curSnapshot.removeAll(readPartition.getSnapshot());
+                if (readPartition != null) {
+                    curSnapshot.removeAll(readPartition.getSnapshot());
+                }
                 snapshot.addAll(curSnapshot);
                 curPartitionInfo.setSnapshot(snapshot);
             }
@@ -614,7 +614,7 @@ public class DBManager {
     }
 
     public boolean updateConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                  Map<String, PartitionInfo> newMap, Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotsList, int time) {
+                                  Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotsList, int time) {
         List<PartitionInfo> curPartitionList = partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
         Map<String, PartitionInfo> curMap = new HashMap<>();
         for (PartitionInfo curPartition : curPartitionList) {
@@ -650,12 +650,14 @@ public class DBManager {
                 //  return false directly or blowing
                 Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion, curVersion);
                 if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
-                    return false;
+                    throw new IllegalStateException("current operation conflicts with other write data tasks, table id is: " + tableId);
                 }
                 List<UUID> snapshot = new ArrayList<>();
                 snapshot.addAll(rawPartitionInfo.getSnapshot());
                 List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                curSnapshot.removeAll(readPartition.getSnapshot());
+                if (readPartition != null) {
+                    curSnapshot.removeAll(readPartition.getSnapshot());
+                }
                 snapshot.addAll(curSnapshot);
                 curPartitionInfo.setSnapshot(snapshot);
             }
@@ -667,39 +669,9 @@ public class DBManager {
             newPartitionList.add(curPartitionInfo);
         }
 
-
-//        for (PartitionInfo curPartitionInfo : curPartitionList) {
-//
-//            String partitionDesc = curPartitionInfo.getPartitionDesc();
-//            int current = curPartitionInfo.getVersion();
-//            int lastVersion = newMap.get(partitionDesc).getVersion();
-//
-//            if (current + 1 == lastVersion) {
-//                newPartitionList.add(newMap.get(partitionDesc));
-//            } else {
-//                int curVersion = curPartitionInfo.getVersion();
-//                String curCommitOp = curPartitionInfo.getCommitOp();
-//
-//                int newVersion = curVersion + 1;
-//
-//                PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-//                if (curCommitOp.equals("CompactionCommit")) {
-//                    // todo
-//                    curPartitionInfo.setVersion(newVersion);
-//                    curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
-//                    curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
-//                    curPartitionInfo.setExpression(partitionInfo.getExpression());
-//                    newPartitionList.add(curPartitionInfo);
-//                    newMap.put(partitionDesc, curPartitionInfo);
-//                } else {
-//                    // other operate conflict, so fail
-//                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
-//                }
-//            }
-//        }
         boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotsList);
         while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            conflictFlag = updateConflict(tableId, partitionDescList, rawMap, newMap, readPartitionMap, snapshotsList, time + 1);
+            conflictFlag = updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotsList, time + 1);
         }
         return conflictFlag;
     }
@@ -749,36 +721,6 @@ public class DBManager {
             }
         }
 
-//        for (PartitionInfo curPartitionInfo : curPartitionList) {
-//
-//            String partitionDesc = curPartitionInfo.getPartitionDesc();
-//            int current = curPartitionInfo.getVersion();
-//            int lastVersion = newMap.get(partitionDesc).getVersion();
-//
-//            if (current + 1 == lastVersion) {
-//                newPartitionList.add(newMap.get(partitionDesc));
-//            } else {
-//                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-//                int curVersion = curPartitionInfo.getVersion();
-//                String curCommitOp = curPartitionInfo.getCommitOp();
-//
-//                int newVersion = curVersion + 1;
-//
-//                PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-//                if (curCommitOp.equals("CompactionCommit") || curCommitOp.equals("UpdateCommit") || curCommitOp.equals("MergeCommit")) {
-//                    curSnapshot.addAll(partitionInfo.getSnapshot());
-//                    curPartitionInfo.setVersion(newVersion);
-//                    curPartitionInfo.setSnapshot(curSnapshot);
-//                    curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
-//                    curPartitionInfo.setExpression(partitionInfo.getExpression());
-//                    newPartitionList.add(curPartitionInfo);
-//                    newMap.put(partitionDesc, curPartitionInfo);
-//                } else {
-//                    // other operate conflict, so fail
-//                    throw new IllegalStateException("this tableId:" + tableId + " exists conflicting manipulation currently!");
-//                }
-//            }
-//        }
         boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotsList);
         while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
             conflictFlag = mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotsList, time + 1);
