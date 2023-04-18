@@ -50,6 +50,7 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
         for(Path path : paths){
             path.write(out);
         }
+        out.writeLong(split.getSkipRecord());
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -68,6 +69,7 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
                 paths[i] = new Path();
                 paths[i].read(in);
             }
+            final long skipLong = in.readLong();
             return new LakeSoulSplit(id, Arrays.asList(paths));
         }
         throw new IOException("Unknown version: " + version);

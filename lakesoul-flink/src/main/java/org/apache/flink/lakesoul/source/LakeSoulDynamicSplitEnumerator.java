@@ -10,6 +10,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
@@ -22,18 +23,16 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     private final LakeSoulSimpleSplitAssigner splitAssigner;
     private final long discoveryInterval;
-    TableInfo tif;
+    String tid;
     private long startTime;
     private long nextStartTime;
-    List<Map<String, String>> remainingPartitions;
     private String parDesc;
 
-    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulSimpleSplitAssigner splitAssigner, long discoveryInterval, long startTime, TableInfo tif, List<Map<String, String>> remainingPartitions,String parDesc) {
+    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulSimpleSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
-        this.tif = tif;
-        this.remainingPartitions = remainingPartitions;
+        this.tid = tid;
         this.startTime = startTime;
         this.parDesc = parDesc;
     }
@@ -41,7 +40,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     @Override
     public void start() {
         context.callAsync(
-                () -> this.enumerateSplits(tif, parDesc),
+                () -> this.enumerateSplits(tid, parDesc),
                 this::processDiscoveredSplits,
                 discoveryInterval,
                 discoveryInterval);
@@ -75,8 +74,8 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
-        LOG.info("LakeSoulStaticSplitEnumerator snapshotState");
-        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), 0);
+        LOG.info("LakeSoulDynamicSplitEnumerator snapshotState");
+        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc, this.discoveryInterval);
     }
 
     @Override
@@ -92,17 +91,17 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         splitAssigner.addSplits(splits);
     }
 
-    public Collection<LakeSoulSplit> enumerateSplits(TableInfo tif, String parDesc)
+    public Collection<LakeSoulSplit> enumerateSplits(String tid, String parDesc)
             throws IOException {
-        this.nextStartTime = MetaVersion.getLastedTimestamp(tif.getTableId(), "") + 1;
-        DataFileInfo[] dfinfos = (DataFileInfo[]) DataOperation.getSinglePartitionIncrementalDataInfos(tif.getTableId(), parDesc, this.startTime, this.nextStartTime).array();
+        this.nextStartTime = MetaVersion.getLastedTimestamp(tid, "") + 1;
+        DataFileInfo[] dfinfos = (DataFileInfo[]) DataOperation.getSinglePartitionIncrementalDataInfos(tid, parDesc, this.startTime, this.nextStartTime).array();
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
         Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dfinfos);
         for (Map.Entry<String, Map<String, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<String, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(i + "", split.getValue()));
+                splits.add(new LakeSoulSplit(i + "", split.getValue(),0));
             }
         }
         this.startTime = this.nextStartTime;

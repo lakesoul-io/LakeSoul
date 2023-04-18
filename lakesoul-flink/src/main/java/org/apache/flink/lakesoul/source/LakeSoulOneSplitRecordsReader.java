@@ -40,6 +40,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private VectorSchemaRoot currentVCR;
 
     private int curRecordId = 0;
+    private long skipRecords;
+    private int totalRecords = 0;
 
     private ArrowReader curArrowReader;
     List<String> pkColumns;
@@ -56,6 +58,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, List<String> pkColumns) throws IOException {
         this.split = split;
+        this.skipRecords = split.getSkipRecord();
         this.conf = conf;
         this.schema = schema;
         this.pkColumns = pkColumns;
@@ -122,7 +125,12 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
             setReuseRowWithPartition(reuseRow);
             curRecordId++;
-            return reuseRow;
+            totalRecords++;
+            if (skipRecords < totalRecords) {
+                return reuseRow;
+            } else {
+                return null;
+            }
         } else {
             if (this.currentVCR == null) {
                 if (this.reader.hasNext()) {
@@ -140,13 +148,19 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             if (curRecordId < currentVCR.getRowCount()) {
                 int tmp = curRecordId;
                 curRecordId++;
-                RowData rd = this.curArrowReader.read(tmp);
-                GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
-                for (int i = 0; i < nonPartitionIndexes.length; i++) {
-                    reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+                totalRecords++;
+                if (skipRecords < totalRecords) {
+                    RowData rd = this.curArrowReader.read(tmp);
+                    GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
+                    for (int i = 0; i < nonPartitionIndexes.length; i++) {
+                        reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+                    }
+                    setReuseRowWithPartition(reuseRow);
+                    return reuseRow;
+                } else {
+                    return null;
                 }
-                setReuseRowWithPartition(reuseRow);
-                return reuseRow;
+
             } else {
                 return null;
             }

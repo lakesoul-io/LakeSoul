@@ -11,12 +11,14 @@ import java.util.List;
 public class LakeSoulSplit implements SourceSplit {
 
     private final String id;
+    private long skipRecord = 0;
 
     private final List<Path> files;
 
-    public LakeSoulSplit(String id, List<Path> files) {
+    public LakeSoulSplit(String id, List<Path> files,long skipRecord) {
         this.id = id;
         this.files = files;
+        this.skipRecord = skipRecord;
     }
 
     @Override
@@ -28,10 +30,18 @@ public class LakeSoulSplit implements SourceSplit {
         return files;
     }
 
+    public void incrementRecord() {
+        this.skipRecord++;
+    }
+
     @Override
     public String toString() {
         return "LakeSoulSplit[" +
                 files.toString() +
                 "]";
+    }
+
+    public long getSkipRecord() {
+        return skipRecord;
     }
 }

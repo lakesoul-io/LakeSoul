@@ -57,7 +57,7 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulSp
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
         LOG.info("LakeSoulStaticSplitEnumerator snapshotState");
-        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), 0);
+        return null;
     }
 
     @Override

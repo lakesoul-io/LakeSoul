@@ -27,5 +27,6 @@ public class LakeSoulRecordEmitter implements RecordEmitter<RowData, RowData, La
     @Override
     public void emitRecord(RowData element, SourceOutput<RowData> output, LakeSoulSplit splitState) throws Exception {
         output.collect(element);
+        splitState.incrementRecord();
     }
 }

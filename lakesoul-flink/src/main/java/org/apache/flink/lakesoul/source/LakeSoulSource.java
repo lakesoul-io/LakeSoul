@@ -53,7 +53,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             SplitEnumeratorContext<LakeSoulSplit> enumContext) throws Exception {
         TableInfo tif = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
         if (this.isStreaming) {
-            return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(), 1000,0, tif, this.remainingPartitions,"");
+            return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(), 1000, 0, tif.getTableId(), "");
         } else {
             DataFileInfo[] dfinfos = getTargetDataFileInfo(tif);
             int capacity = 100;
@@ -62,7 +62,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dfinfos);
             for (Map.Entry<String, Map<String, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<String, List<Path>> split : entry.getValue().entrySet()) {
-                    splits.add(new LakeSoulSplit(i + "", split.getValue()));
+                    splits.add(new LakeSoulSplit(i + "", split.getValue(),0));
                 }
             }
             return new LakeSoulStaticSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(splits));
@@ -70,13 +70,13 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     }
 
     private DataFileInfo[] getTargetDataFileInfo(TableInfo tif) throws Exception {
-        return FlinkUtil.getTargetDataFileInfo(tif,this.remainingPartitions);
+        return FlinkUtil.getTargetDataFileInfo(tif, this.remainingPartitions);
     }
 
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> restoreEnumerator(
             SplitEnumeratorContext<LakeSoulSplit> enumContext, LakeSoulPendingSplits checkpoint) throws Exception {
-        return null;
+        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(checkpoint.getSplits()), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc());
     }
 
     @Override
@@ -86,6 +86,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
 
     @Override
     public SimpleVersionedSerializer<LakeSoulPendingSplits> getEnumeratorCheckpointSerializer() {
-        return null;
+        return new SimpleLakeSoulPendingSplitsSerializer();
     }
 }
