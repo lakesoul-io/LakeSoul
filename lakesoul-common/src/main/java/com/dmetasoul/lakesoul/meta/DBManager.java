@@ -387,8 +387,10 @@ public class DBManager {
                 newPartitionList.add(curPartitionInfo);
             }
         } else if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit")) {
-            for (PartitionInfo p : readPartitionInfo) {
-                readPartitionMap.put(p.getPartitionDesc(), p);
+            if (readPartitionInfo != null) {
+                for (PartitionInfo p : readPartitionInfo) {
+                    readPartitionMap.put(p.getPartitionDesc(), p);
+                }
             }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
@@ -426,7 +428,9 @@ public class DBManager {
                     List<UUID> snapshot = new ArrayList<>();
                     snapshot.addAll(partitionInfo.getSnapshot());
                     List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                    curSnapshot.removeAll(readPartition.getSnapshot());
+                    if (readPartition != null) {
+                        curSnapshot.removeAll(readPartition.getSnapshot());
+                    }
                     snapshot.addAll(curSnapshot);
                     curPartitionInfo.setSnapshot(snapshot);
                 }
