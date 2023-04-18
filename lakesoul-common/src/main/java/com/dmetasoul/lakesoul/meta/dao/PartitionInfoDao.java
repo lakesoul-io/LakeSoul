@@ -343,6 +343,7 @@ public class PartitionInfoDao {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' and version >= %d and version <= %d", tableId, partitionDesc, startVersion, endVersion);
         return getPartitionInfos(sql);
     }
+
     public List<PartitionInfo> getOnePartition(String tableId, String partitionDesc) {
         String sql = String.format("select * from partition_info where table_id = '%s' and partition_desc = '%s' limit 1", tableId, partitionDesc);
         return getPartitionInfos(sql);
@@ -372,6 +373,31 @@ public class PartitionInfoDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return rsList;
+    }
+
+    public Set<String> getCommitOpsBetweenVersions(String tableId, String partitionDesc, int firstVersion, int secondVersion) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        Set<String> commitOps = new HashSet<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement("select distinct(commit_op) from partition_info where table_id = ? and " +
+                    "partition_desc = ? and version between ? and ?");
+            pstmt.setString(1, tableId);
+            pstmt.setString(2, partitionDesc);
+            pstmt.setInt(3, firstVersion);
+            pstmt.setInt(4, secondVersion);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                commitOps.add(rs.getString("commit_op"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return commitOps;
     }
 
     private List<PartitionInfo> getPartitionInfos(String sql) {

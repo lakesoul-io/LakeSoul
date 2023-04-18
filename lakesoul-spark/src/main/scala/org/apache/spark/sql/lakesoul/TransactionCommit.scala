@@ -234,11 +234,22 @@ trait Transaction extends TransactionalWrite with Logging {
     commit(addFiles, expireFiles)
   }
 
+  /**
+   * update and compaction operation need read partition info to avoid lost data
+   * when upsert or append operation happened concurrently
+   */
+  def commit(addFiles: Seq[DataFileInfo],
+             expireFiles: Seq[DataFileInfo],
+             readPartitionInfo: Array[PartitionInfo]): Unit = {
+    commit(addFiles, expireFiles, "", -1, readPartitionInfo)
+  }
+
   @throws(classOf[ConcurrentModificationException])
   def commit(addFiles: Seq[DataFileInfo],
              expireFiles: Seq[DataFileInfo],
              query_id: String = "", //for streaming commit
-             batch_id: Long = -1L): Unit = {
+             batch_id: Long = -1L,
+             readPartitionInfo: Array[PartitionInfo] = null): Unit = {
     snapshotManagement.lockInterruptibly {
       assert(!committed, "Transaction already committed.")
       if (isFirstCommit) {
@@ -339,7 +350,8 @@ trait Transaction extends TransactionalWrite with Logging {
         partitionInfoArray = add_partition_info_arr_buf.toArray,
         commit_type = commitType.getOrElse(CommitType("append")),
         query_id = query_id,
-        batch_id = batch_id
+        batch_id = batch_id,
+        readPartitionInfo = readPartitionInfo
       )
 
       try {

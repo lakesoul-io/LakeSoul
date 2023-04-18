@@ -55,6 +55,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
     if (snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+      logInfo("=========== All Partitions Have Compacted, This Operation Will Break!!! ===========")
       return
     }
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
@@ -95,7 +96,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.setReadFiles(newReadFiles)
     tc.setCommitType("compaction")
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
-    tc.commit(newFiles, newReadFiles)
+    tc.commit(newFiles, newReadFiles, snapshotManagement.snapshot.getPartitionInfoArray)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
       val spark = SparkSession.active
