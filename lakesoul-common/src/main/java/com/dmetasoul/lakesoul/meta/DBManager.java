@@ -80,6 +80,7 @@ public class DBManager {
     }
 
     public TableNameId shortTableName(String tableName, String tableNamespace) {
+        tableNamespace = tableNamespace==null? "default":tableNamespace;
         return tableNameIdDao.findByTableName(tableName, tableNamespace);
     }
 

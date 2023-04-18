@@ -30,6 +30,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
@@ -188,8 +189,7 @@ public class LakeSoulCatalog implements Catalog {
         checkNotNull(tablePath);
         checkNotNull(table);
         TableSchema schema = table.getSchema();
-        List<String> columns = schema.getPrimaryKey().get().getColumns();
-        String primaryKeys = FlinkUtil.stringListToString(columns);
+        Optional<UniqueConstraint> primaryKeyColumns = schema.getPrimaryKey();
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
         }
@@ -197,34 +197,35 @@ public class LakeSoulCatalog implements Catalog {
             if (!ignoreIfExists) {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
             }
-        } else {
-            Map<String, String> tableOptions = table.getOptions();
-            tableOptions.put(RECORD_KEY_NAME, primaryKeys);
-            boolean cdcMark;
-            if ("true".equals(tableOptions.get(USE_CDC.key()))) {
-                cdcMark = true;
-                tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
-            } else {
-                cdcMark = false;
-            }
-            String json = JSON.toJSONString(tableOptions);
-            JSONObject properties = JSON.parseObject(json);
-            List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
-            String tableName = tablePath.getObjectName();
-            String path = tableOptions.get(TABLE_PATH);
-            String qualifiedPath = "";
-            try {
-                FileSystem fileSystem = new Path(path).getFileSystem();
-                qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-
-            dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                    FlinkUtil.toSparkSchema(schema, cdcMark).json(),
-                    properties, FlinkUtil.stringListToString(partitionKeys) + ";" + primaryKeys);
         }
+        String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
+        Map<String, String> tableOptions = table.getOptions();
+        tableOptions.put(RECORD_KEY_NAME, primaryKeys);
+        boolean cdcMark;
+        if ("true".equals(tableOptions.get(USE_CDC.key()))) {
+            cdcMark = true;
+            tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
+        } else {
+            cdcMark = false;
+        }
+        String json = JSON.toJSONString(tableOptions);
+        JSONObject properties = JSON.parseObject(json);
+        List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
+        String tableName = tablePath.getObjectName();
+        String path = tableOptions.get(TABLE_PATH);
+        String qualifiedPath = "";
+        try {
+            FileSystem fileSystem = new Path(path).getFileSystem();
+            qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
+
+        dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
+                FlinkUtil.toSparkSchema(schema, cdcMark).json(),
+                properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
+
     }
 
     @Override
@@ -380,5 +381,9 @@ public class LakeSoulCatalog implements Catalog {
                                                CatalogColumnStatistics catalogColumnStatistics, boolean b)
             throws CatalogException {
         throw new CatalogException("not supported now");
+    }
+
+    public String getName() {
+        return CATALOG_NAME;
     }
 }

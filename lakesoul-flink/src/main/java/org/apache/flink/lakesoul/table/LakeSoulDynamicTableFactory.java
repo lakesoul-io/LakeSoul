@@ -23,9 +23,11 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.connector.format.EncodingFormat;
@@ -48,7 +50,7 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
-        List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
+        List<String> pkColumns = schema.getPrimaryKey().map(UniqueConstraint::getColumns).orElse(new ArrayList<>());
 
         return new LakeSoulTableSink(
                 objectIdentifier.getObjectName(), catalogTable.getResolvedSchema().toPhysicalRowDataType(),
@@ -137,6 +139,13 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
             if (mode == RuntimeExecutionMode.BATCH) {
                 isStreaming = false;
             }
+        }
+
+        if (true) {
+            return new LakeSoulLookupTableSource(
+                    new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
+                    (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, catalogTable
+            );
         }
 
         // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();

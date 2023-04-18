@@ -26,15 +26,15 @@ public class LakeSoulTableSource
         SupportsPartitionPushDown,
         SupportsProjectionPushDown,
         ScanTableSource {
-    TableId tableId;
-    RowType rowType;
+    protected TableId tableId;
+    protected RowType rowType;
 
-    boolean isStreaming;
-    List<String> pkColumns;
+    protected boolean isStreaming;
+    protected List<String> pkColumns;
 
-    int[][] projectedFields;
+    protected int[][] projectedFields;
 
-    private List<Map<String, String>> remainingPartitions;
+    protected List<Map<String, String>> remainingPartitions;
 
     public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns) {
         this.tableId = tableId;
@@ -82,7 +82,7 @@ public class LakeSoulTableSource
         this.projectedFields = projectedFields;
     }
 
-    private RowType readFields() {
+    protected RowType readFields() {
         int[] fieldIndexs = projectedFields == null
                 ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
                 : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();

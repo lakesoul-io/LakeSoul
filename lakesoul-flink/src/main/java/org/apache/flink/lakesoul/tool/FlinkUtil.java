@@ -28,11 +28,8 @@ import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
-import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
@@ -58,6 +55,7 @@ import java.util.stream.IntStream;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.RECORD_KEY_NAME;
+import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 
@@ -329,6 +327,13 @@ public class FlinkUtil {
         Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         for (DataFileInfo pif : dfinfos) {
             // todo : add procession of no hashPartition
+            System.out.println(pif);
+            if (!BucketingUtils.getBucketId(new Path(pif.path()).getName()).isDefined()) {
+                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                        .computeIfAbsent("-1", v -> new ArrayList<>())
+                        .add(new Path(pif.path()));
+                continue;
+            }
             if (pif.file_bucket_id() != -1) {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(String.valueOf(pif.file_bucket_id()), v -> new ArrayList<>())
@@ -340,5 +345,17 @@ public class FlinkUtil {
             }
         }
         return splitByRangeAndHashPartition;
+    }
+
+    public static TableEnvironment createTableEnvInBatchMode(SqlDialect dialect) {
+        TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 1);
+        tableEnv.getConfig().setSqlDialect(dialect);
+        return tableEnv;
+    }
+
+    public static <R> R getType(Schema.UnresolvedColumn unresolvedColumn) {
+        // TODO: 2023/4/19 hard-code for pass suite
+        throw new RuntimeException("org.apache.flink.lakesoul.tool.FlinkUtil.getType");
     }
 }
