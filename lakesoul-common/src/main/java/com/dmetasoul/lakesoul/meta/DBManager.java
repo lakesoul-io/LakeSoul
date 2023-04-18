@@ -366,14 +366,7 @@ public class DBManager {
         if (commitOp.equals("AppendCommit") || commitOp.equals("MergeCommit")) {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
-                PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-                if (curPartitionInfo == null) {
-                    curPartitionInfo = new PartitionInfo();
-                    curPartitionInfo.setTableId(tableId);
-                    curPartitionInfo.setPartitionDesc(partitionDesc);
-                    curPartitionInfo.setVersion(-1);
-                    curPartitionInfo.setSnapshot(new ArrayList<>());
-                }
+                PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
                 List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
                 int curVersion = curPartitionInfo.getVersion();
                 int newVersion = curVersion + 1;
@@ -394,14 +387,7 @@ public class DBManager {
             }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
-                PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-                if (curPartitionInfo == null) {
-                    curPartitionInfo = new PartitionInfo();
-                    curPartitionInfo.setTableId(tableId);
-                    curPartitionInfo.setPartitionDesc(partitionDesc);
-                    curPartitionInfo.setVersion(-1);
-                    curPartitionInfo.setSnapshot(new ArrayList<>());
-                }
+                PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
                 int curVersion = curPartitionInfo.getVersion();
 
                 PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -425,14 +411,7 @@ public class DBManager {
                             continue;
                         }
                     }
-                    List<UUID> snapshot = new ArrayList<>();
-                    snapshot.addAll(partitionInfo.getSnapshot());
-                    List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                    if (readPartition != null) {
-                        curSnapshot.removeAll(readPartition.getSnapshot());
-                    }
-                    snapshot.addAll(curSnapshot);
-                    curPartitionInfo.setSnapshot(snapshot);
+                    updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
                 }
 
                 curPartitionInfo.setVersion(newVersion);
@@ -478,21 +457,14 @@ public class DBManager {
         }
 
         for (String partitionDesc : partitionDescList) {
-            PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-            if (curPartitionInfo == null) {
-                curPartitionInfo = new PartitionInfo();
-                curPartitionInfo.setTableId(tableId);
-                curPartitionInfo.setPartitionDesc(partitionDesc);
-                curPartitionInfo.setVersion(-1);
-                curPartitionInfo.setSnapshot(new ArrayList<>());
-            }
-            int current = curPartitionInfo.getVersion();
+            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            int curVersion = curPartitionInfo.getVersion();
+
             int lastVersion = newMap.get(partitionDesc).getVersion();
-            if (current + 1 == lastVersion) {
+            if (curVersion + 1 == lastVersion) {
                 newPartitionList.add(newMap.get(partitionDesc));
             } else {
                 List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                int curVersion = curPartitionInfo.getVersion();
                 String curCommitOp = curPartitionInfo.getCommitOp();
 
                 int newVersion = curVersion + 1;
@@ -532,13 +504,7 @@ public class DBManager {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         for (String partitionDesc : partitionDescList) {
             PartitionInfo rawPartitionInfo = rawMap.get(partitionDesc);
-            PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-            if (curPartitionInfo == null) {
-                curPartitionInfo = new PartitionInfo();
-                curPartitionInfo.setTableId(tableId);
-                curPartitionInfo.setPartitionDesc(partitionDesc);
-                curPartitionInfo.setVersion(-1);
-            }
+            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
             int curVersion = curPartitionInfo.getVersion();
 
             PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -557,14 +523,7 @@ public class DBManager {
                     snapshotsList.removeAll(rawPartitionInfo.getSnapshot());
                     continue;
                 }
-                List<UUID> snapshot = new ArrayList<>();
-                snapshot.addAll(rawPartitionInfo.getSnapshot());
-                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                if (readPartition != null) {
-                    curSnapshot.removeAll(readPartition.getSnapshot());
-                }
-                snapshot.addAll(curSnapshot);
-                curPartitionInfo.setSnapshot(snapshot);
+                updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
             }
 
             curPartitionInfo.setVersion(newVersion);
@@ -594,14 +553,7 @@ public class DBManager {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         for (String partitionDesc : partitionDescList) {
             PartitionInfo rawPartitionInfo = rawMap.get(partitionDesc);
-            PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-            if (curPartitionInfo == null) {
-                curPartitionInfo = new PartitionInfo();
-                curPartitionInfo.setTableId(tableId);
-                curPartitionInfo.setPartitionDesc(partitionDesc);
-                curPartitionInfo.setVersion(-1);
-                curPartitionInfo.setSnapshot(new ArrayList<>());
-            }
+            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
             int curVersion = curPartitionInfo.getVersion();
 
             PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -616,14 +568,7 @@ public class DBManager {
             } else if (readPartitionVersion == curVersion || (historyCommitOps.size() == 1 && historyCommitOps.contains("CompactionCommit"))) {
                 curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
             } else {
-                List<UUID> snapshot = new ArrayList<>();
-                snapshot.addAll(rawPartitionInfo.getSnapshot());
-                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                if (readPartition != null) {
-                    curSnapshot.removeAll(readPartition.getSnapshot());
-                }
-                snapshot.addAll(curSnapshot);
-                curPartitionInfo.setSnapshot(snapshot);
+                updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
             }
 
             int newVersion = curVersion + 1;
@@ -641,6 +586,17 @@ public class DBManager {
         return conflictFlag;
     }
 
+    private void updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo curPartitionInfo, PartitionInfo readPartition) {
+        List<UUID> snapshot = new ArrayList<>();
+        snapshot.addAll(rawPartitionInfo.getSnapshot());
+        List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
+        if (readPartition != null) {
+            curSnapshot.removeAll(readPartition.getSnapshot());
+        }
+        snapshot.addAll(curSnapshot);
+        curPartitionInfo.setSnapshot(snapshot);
+    }
+
     public boolean mergeConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
                                  Map<String, PartitionInfo> newMap, List<UUID> snapshotsList, int time) {
         List<PartitionInfo> curPartitionList = partitionInfoDao.findByTableIdAndParList(tableId, partitionDescList);
@@ -652,24 +608,19 @@ public class DBManager {
 
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         for (String partitionDesc : partitionDescList) {
-            PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
-            if (curPartitionInfo == null) {
-                curPartitionInfo = new PartitionInfo();
-                curPartitionInfo.setTableId(tableId);
-                curPartitionInfo.setPartitionDesc(partitionDesc);
-                curPartitionInfo.setVersion(-1);
-            }
-            int currentVersion = curPartitionInfo.getVersion();
+            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            int curVersion = curPartitionInfo.getVersion();
+
             int lastVersion = newMap.get(partitionDesc).getVersion();
 
-            if (currentVersion + 1 == lastVersion) {
+            if (curVersion + 1 == lastVersion) {
                 newPartitionList.add(newMap.get(partitionDesc));
             } else {
                 List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
                 String curCommitOp = curPartitionInfo.getCommitOp();
 
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-                int newVersion = currentVersion + 1;
+                int newVersion = curVersion + 1;
                 if (curCommitOp.equals("CompactionCommit") || curCommitOp.equals("UpdateCommit") || curCommitOp.equals("MergeCommit")) {
                     curSnapshot.addAll(partitionInfo.getSnapshot());
                     curPartitionInfo.setVersion(newVersion);
@@ -691,6 +642,18 @@ public class DBManager {
         }
 
         return conflictFlag;
+    }
+
+    private PartitionInfo getOrCreateCurPartitionInfo(Map<String, PartitionInfo> curMap, String partitionDesc, String tableId) {
+        PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
+        if (curPartitionInfo == null) {
+            curPartitionInfo = new PartitionInfo();
+            curPartitionInfo.setTableId(tableId);
+            curPartitionInfo.setPartitionDesc(partitionDesc);
+            curPartitionInfo.setVersion(-1);
+            curPartitionInfo.setSnapshot(new ArrayList<>());
+        }
+        return curPartitionInfo;
     }
 
     public List<DataCommitInfo> getTableSinglePartitionDataInfo(PartitionInfo partitionInfo) {
