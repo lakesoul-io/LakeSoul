@@ -33,7 +33,7 @@ public class LakeSoulSourceReader
 
     @Override
     protected LakeSoulSplit initializedState(LakeSoulSplit split) {
-        return null;
+        return split;
     }
 
     @Override

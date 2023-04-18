@@ -18,6 +18,7 @@
  */
 
 package com.dmetasoul.lakesoul.meta
+
 object LakeSoulOptions {
 
   /** An option to overwrite only the data that matches predicates over partition columns. */
@@ -43,6 +44,7 @@ object LakeSoulOptions {
   /** An option to allow read type whether snapshot or increamental. */
   val READ_TYPE = "readtype"
   val TIME_ZONE = "timezone"
+  val DISCOVERY_INTERVAL = "discoveryinterval"
 
   object ReadType extends Enumeration {
     val FULL_READ = "fullread"

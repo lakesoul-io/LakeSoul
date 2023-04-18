@@ -15,7 +15,7 @@ public class LakeSoulSplit implements SourceSplit {
 
     private final List<Path> files;
 
-    public LakeSoulSplit(String id, List<Path> files,long skipRecord) {
+    public LakeSoulSplit(String id, List<Path> files, long skipRecord) {
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;

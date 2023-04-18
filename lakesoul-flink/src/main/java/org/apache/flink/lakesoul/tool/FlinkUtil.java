@@ -323,17 +323,12 @@ public class FlinkUtil {
             return DataOperation.getTableDataInfo(ptinfos);
         }
     }
-    public static Map<String, Map<String, List<Path>>> splitDataInfosToRangeAndHashPartition(DataFileInfo[] dfinfos){
+
+    public static Map<String, Map<String, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid, DataFileInfo[] dfinfos) {
         Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
+        TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
-            // todo : add procession of no hashPartition
-            if (!BucketingUtils.getBucketId(new Path(pif.path()).getName()).isDefined()) {
-                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
-                        .computeIfAbsent("-1", v -> new ArrayList<>())
-                        .add(new Path(pif.path()));
-                continue;
-            }
-            if (pif.file_bucket_id() != -1) {
+            if (isExistHashPartition(tif) && pif.file_bucket_id() != -1) {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(String.valueOf(pif.file_bucket_id()), v -> new ArrayList<>())
                         .add(new Path(pif.path()));
@@ -361,5 +356,14 @@ public class FlinkUtil {
     public static <R> R getType(Schema.UnresolvedColumn unresolvedColumn) {
         // TODO: 2023/4/19 hard-code for pass suite
         throw new RuntimeException("org.apache.flink.lakesoul.tool.FlinkUtil.getType");
+    }
+
+    public static boolean isExistHashPartition(TableInfo tif) {
+        JSONObject tableProperties = tif.getProperties();
+        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+            return false;
+        } else {
+            return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
+        }
     }
 }

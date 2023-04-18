@@ -19,11 +19,13 @@
 
 package org.apache.flink.lakesoul.table;
 
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
@@ -124,9 +126,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
         List<String> pkColumns;
-        if(schema.getPrimaryKey().isPresent()){
+        if (schema.getPrimaryKey().isPresent()) {
             pkColumns = schema.getPrimaryKey().get().getColumns();
-        }else{
+        } else {
             pkColumns = new ArrayList<>();
         }
         catalogTable.getPartitionKeys();
@@ -151,7 +153,7 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
         return new LakeSoulTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns,options.toMap()
         );
     }
 }

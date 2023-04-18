@@ -69,8 +69,8 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
                 paths[i] = new Path();
                 paths[i].read(in);
             }
-            final long skipLong = in.readLong();
-            return new LakeSoulSplit(id, Arrays.asList(paths));
+            final long skipRecord = in.readLong();
+            return new LakeSoulSplit(id, Arrays.asList(paths),skipRecord);
         }
         throw new IOException("Unknown version: " + version);
     }

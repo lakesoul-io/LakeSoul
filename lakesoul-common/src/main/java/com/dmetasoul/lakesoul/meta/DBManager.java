@@ -96,6 +96,10 @@ public class DBManager {
         return getTableInfoByNameAndNamespace(tableName, "default");
     }
 
+    public TableInfo getTableInfoByTableId(String tableId) {
+        return tableInfoDao.selectByTableId(tableId);
+    }
+
     public TableInfo getTableInfoByNameAndNamespace(String tableName, String namespace) {
         return tableInfoDao.selectByTableNameAndNameSpace(tableName, namespace);
     }

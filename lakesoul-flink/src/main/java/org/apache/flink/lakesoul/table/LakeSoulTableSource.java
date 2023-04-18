@@ -33,20 +33,22 @@ public class LakeSoulTableSource
     protected List<String> pkColumns;
 
     protected int[][] projectedFields;
+    Map<String, String> optionParams;
 
     protected List<Map<String, String>> remainingPartitions;
 
-    public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns) {
+    public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, Map<String, String> optionParams) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.isStreaming = isStreaming;
         this.pkColumns = pkColumns;
+        this.optionParams = optionParams;
     }
 
 
     @Override
     public DynamicTableSource copy() {
-        LakeSoulTableSource lsts = new LakeSoulTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns);
+        LakeSoulTableSource lsts = new LakeSoulTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns, this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
         return lsts;
@@ -100,6 +102,6 @@ public class LakeSoulTableSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
 
-        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), this.isStreaming, this.pkColumns,this.remainingPartitions));
+        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), this.isStreaming, this.pkColumns, this.optionParams, this.remainingPartitions));
     }
 }

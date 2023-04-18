@@ -8,6 +8,7 @@ import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferCo
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
 import scala.util.control.Breaks
+
 object BucketingUtils {
   // The file name of bucketed data should have 3 parts:
   //   1. some other information in the head of file name
@@ -150,6 +151,11 @@ object DataOperation {
     } else {
       file_arr_buf.filter(_.file_op.equals("add"))
     }
+  }
+
+  def getIncrementalPartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): Array[DataFileInfo] = {
+    val endTime = if (endTimestamp == 0) Long.MaxValue else endTimestamp
+    getSinglePartitionDataInfo(table_id, partition_desc, startTimestamp, endTime, readType).toArray
   }
 
   def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
