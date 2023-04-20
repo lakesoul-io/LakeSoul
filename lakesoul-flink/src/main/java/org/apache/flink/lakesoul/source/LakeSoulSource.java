@@ -47,7 +47,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
         return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.pkColumns);
+            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.pkColumns,null!=this.remainingPartitions && this.remainingPartitions.size()==0);
         }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 
@@ -61,7 +61,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             return new LakeSoulDynamicSplitEnumerator(
                     enumContext,
                     new LakeSoulSimpleSplitAssigner(),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "1000")),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "10000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
                     optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "-5")

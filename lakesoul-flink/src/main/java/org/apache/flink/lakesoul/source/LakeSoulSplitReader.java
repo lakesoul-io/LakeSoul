@@ -33,18 +33,20 @@ public class LakeSoulSplitReader
     @Nullable private String currentSplitId;
 
     RowType rowType;
+    boolean partitionNon;
 
     List<String> pkColumns;
-    public LakeSoulSplitReader(Configuration conf, RowType rowType, List<String> pkColumns) {
+    public LakeSoulSplitReader(Configuration conf, RowType rowType, List<String> pkColumns,boolean partitionNon) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
         this.pkColumns = pkColumns;
+        this.partitionNon = partitionNon;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType,this.pkColumns);
+        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType,this.pkColumns,this.partitionNon);
     }
 
     @Override

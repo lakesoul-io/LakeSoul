@@ -29,14 +29,17 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
+import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.factories.Factory;
+import org.apache.spark.sql.util.PartitioningUtils;
 
 import java.io.IOException;
 import java.util.*;
@@ -241,24 +244,73 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException("table path not exist");
         }
 
-        return new ArrayList<>();
+        return listPartitions(tablePath, null);
     }
 
     @Override
     public List<CatalogPartitionSpec> listPartitions(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec)
             throws CatalogException {
-        throw new CatalogException("not supported now");
+        if (!tableExists(tablePath)) {
+            throw new CatalogException("table path not exist");
+        }
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+                tablePath.getObjectName(),
+                tablePath.getDatabaseName());
+        List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
+        HashSet<String> partitions = new HashSet<>(100);
+        for (PartitionInfo pif : allPartitionInfo) {
+            partitions.add(pif.getPartitionDesc());
+        }
+        ArrayList<CatalogPartitionSpec> al = new ArrayList<>(100);
+        for (String item : partitions) {
+            if (null == item || "".equals(item)) {
+                throw new CatalogException("partition not exist");
+            } else {
+                LinkedHashMap<String, String> lhmap = new LinkedHashMap<>();
+                if ("-5".equals(item)) {
+                    lhmap.put("", "-5");
+                } else {
+                    List<String> partitionData = Splitter.on(",").splitToList(item);
+                    for (String kv : partitionData) {
+                        List<String> kvs = Splitter.on("=").splitToList(kv);
+                        lhmap.put(kvs.get(0), kvs.get(1));
+                    }
+                }
+                al.add(new CatalogPartitionSpec(lhmap));
+            }
+        }
+        return al;
     }
 
     @Override
     public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list) throws CatalogException {
-        Map<String, String> partitionSpec = new LinkedHashMap<>();
-        list.forEach(ex -> {
-            partitionSpec.put(ex.getChildren().get(0).toString(), convertFieldType(ex.getChildren().get(1).toString()));
-        });
+        List<CatalogPartitionSpec> partitions = listPartitions(tablePath);
         List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
-        catalogPartitionSpecs.add(new CatalogPartitionSpec(partitionSpec));
+        for (Expression exp : list) {
+            if(exp instanceof CallExpression){
+                if(!"equals".equals(((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get().toLowerCase())){
+                    throw new CatalogException("just support equal;such as range=val and range=val2");
+                }
+            }
+        }
+        for (CatalogPartitionSpec cps : partitions) {
+            boolean allAnd = true;
+            for (Expression exp : list) {
+                String key = exp.getChildren().get(0).toString();
+                String value = convertFieldType(exp.getChildren().get(1).toString());
+                if (cps.getPartitionSpec().containsKey(key) && cps.getPartitionSpec().get(key).equals(value)) {
+                    continue;
+                } else {
+                    allAnd = false;
+                    break;
+                }
+            }
+            if (allAnd) {
+                catalogPartitionSpecs.add(cps);
+            }
+        }
         return catalogPartitionSpecs;
+
     }
 
     private String convertFieldType(String field) {

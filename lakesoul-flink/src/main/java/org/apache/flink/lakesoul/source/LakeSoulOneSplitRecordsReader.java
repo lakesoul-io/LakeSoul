@@ -55,14 +55,17 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private LogicalType[] nonPartitionTypes;
     private RowData.FieldGetter[] nonPartitionFieldGetters;
 
+    private boolean partitionsNon;
 
-    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, List<String> pkColumns) throws IOException {
+
+    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, List<String> pkColumns, boolean partitionsNon) throws IOException {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = conf;
         this.schema = schema;
         this.pkColumns = pkColumns;
         this.splitId = split.splitId();
+        this.partitionsNon = partitionsNon;
         initializeReader();
     }
 
@@ -119,7 +122,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Override
     public RowData nextRecordFromSplit() {
         if (this.nonPartitionIndexes.length == 0) {
-            if (curRecordId != 0) {
+            if (curRecordId != 0 || this.partitionsNon) {
                 return null;
             }
             GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
