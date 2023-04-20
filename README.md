@@ -22,6 +22,7 @@ Please find tutorials in doc site:
 * Checkout [Multi Stream Merge and Build Wide Table Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/mutil-stream-merge/) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
 * Checkout [Upsert Data and Merge UDF Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/upsert-and-merge-udf/) on how to upsert data and Merge UDF to customize merge logic.
 * Checkout [Snapshot API Usage](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/snapshot-manage/) on how to do snapshot read (time travel), snapshot rollback and cleanup.
+* Checkout [Incremental Query Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/incremental-query/) on how to do incremental query in Spark in batch or stream mode.
 
 # Usage Documentations
 Please find usage documentations in doc site:
@@ -51,6 +52,7 @@ Please find usage documentations in doc site:
     - [x] Snapshot Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
     - [x] Incremental Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
     - [x] Incremental Streaming Source ([#130](https://github.com/meta-soul/LakeSoul/issues/130))
+    - [ ] Flink Stream/Batch Source
   - [ ] Materialized View
     - [ ] Incremental MV Build
     - [ ] Auto query rewrite
@@ -68,6 +70,10 @@ Please find usage documentations in doc site:
     - [x] Support Spark 3.3, 3.2 and 3.1
 * Flink Integration and CDC Ingestion ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
+    - [x] Stream Sink
+    - [ ] Batch Sink
+    - [ ] Batch/Stream source
+    - [ ] Stream Source as ChangeLog Stream
   - [x] Flink CDC
     - [x] Exactly Once Sink
     - [x] Auto Schema Change (DDL) Sync
@@ -85,7 +91,7 @@ Please find usage documentations in doc site:
     - [ ] Apache Doris
 * Cloud and Native IO ([#66](https://github.com/meta-soul/LakeSoul/issues/66))
   - [x] Object storage IO optimization
-  - [ ] Native merge on read
+  - [x] Native merge on read
   - [ ] Multi-layer storage classes support with data tiering
 
 # Community guidelines
