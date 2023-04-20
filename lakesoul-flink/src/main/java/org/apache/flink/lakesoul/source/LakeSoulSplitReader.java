@@ -28,25 +28,30 @@ public class LakeSoulSplitReader
 
     private final Queue<LakeSoulSplit> splits;
 
-    @Nullable private LakeSoulArrowReader currentReader;
+    @Nullable
+    private LakeSoulArrowReader currentReader;
 
-    @Nullable private String currentSplitId;
+    @Nullable
+    private String currentSplitId;
 
     RowType rowType;
+    RowType rowTypeWithPk;
     boolean partitionNon;
 
     List<String> pkColumns;
-    public LakeSoulSplitReader(Configuration conf, RowType rowType, List<String> pkColumns,boolean partitionNon) {
+
+    public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns, boolean partitionNon) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
+        this.rowTypeWithPk = rowTypeWithPk;
         this.pkColumns = pkColumns;
         this.partitionNon = partitionNon;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf,splits.peek(),this.rowType,this.pkColumns,this.partitionNon);
+        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk, this.pkColumns, this.partitionNon);
     }
 
     @Override

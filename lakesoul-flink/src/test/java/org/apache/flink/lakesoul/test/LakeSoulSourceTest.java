@@ -55,13 +55,15 @@ public class LakeSoulSourceTest {
         String testSql1 = "select ui.order_id,sum(oi.price) as total_price,count(*) as total " +
                 "from user_info as ui inner join order_info as oi " +
                 "on ui.order_id=oi.id group by ui.order_id having ui.order_id>2";
-        String testSql2 = "select name,`date` from user_date where `date`='0320'";
+        String testSql2 = "select * from user_date ";
         String testSql3 = "select order_id,`range`,name from user_range where `range`='0321'";
         String testSql4 = "select * from user_only_range where `range` = '0320'";
         String testSql5 = "select * from user_none";
         String testSql6 = "select name,op from `merge` where order_id='1'";
         String testSql7 = "select * from user_info as ui inner join order_info as oi on ui.order_id=oi.id order by oi.price";
         String testSql8 = "select order_id from user_info";
-        tEnvs.executeSql(testSql8).print();
+        String testSql9 = "select id,score from user_multi_hash where `date`='0320'";
+        String testSql10 = "select name,score from user_multi ";
+        tEnvs.executeSql(testSql2).print();
     }
 }

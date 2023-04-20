@@ -20,15 +20,18 @@ import java.util.*;
 public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPendingSplits> {
     TableId tableId;
     RowType rowType;
+
+    RowType rowTypeWithPk;
     boolean isStreaming;
     List<String> pkColumns;
 
     Map<String, String> optionParams;
     List<Map<String, String>> remainingPartitions;
 
-    public LakeSoulSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, Map<String, String> optionParams, List<Map<String, String>> remainingPartitions) {
+    public LakeSoulSource(TableId tableId, RowType rowType, RowType rowTypeWithPk, boolean isStreaming, List<String> pkColumns, Map<String, String> optionParams, List<Map<String, String>> remainingPartitions) {
         this.tableId = tableId;
         this.rowType = rowType;
+        this.rowTypeWithPk = rowTypeWithPk;
         this.isStreaming = isStreaming;
         this.pkColumns = pkColumns;
         this.optionParams = optionParams;
@@ -47,7 +50,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
         return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.pkColumns,null!=this.remainingPartitions && this.remainingPartitions.size()==0);
+            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0);
         }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 

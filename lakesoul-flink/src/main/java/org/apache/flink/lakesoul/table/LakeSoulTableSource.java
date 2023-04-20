@@ -93,6 +93,25 @@ public class LakeSoulTableSource
         return RowType.of(projectTypes, projectNames);
     }
 
+    private RowType readFieldsAddPk() {
+        int[] fieldIndexs = projectedFields == null
+                ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
+                : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
+        List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
+        List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
+        List<String> pkNamesNotExistInReadFields = new ArrayList<>();
+        List<LogicalType> pkTypesNotExistInReadFields = new ArrayList<>();
+        for (String pk : pkColumns) {
+            if (!projectNames.contains(pk)) {
+                pkNamesNotExistInReadFields.add(pk);
+                pkTypesNotExistInReadFields.add(this.rowType.getTypeAt(rowType.getFieldIndex(pk)));
+            }
+        }
+        projectNames.addAll(pkNamesNotExistInReadFields);
+        projectTypes.addAll(pkTypesNotExistInReadFields);
+        return RowType.of(projectTypes.toArray(new LogicalType[0]), projectNames.toArray(new String[0]));
+    }
+
     @Override
     public ChangelogMode getChangelogMode() {
         //.addContainedKind(RowKind.UPDATE_BEFORE).addContainedKind(RowKind.UPDATE_AFTER).addContainedKind(RowKind.DELETE)
@@ -102,6 +121,6 @@ public class LakeSoulTableSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
 
-        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), this.isStreaming, this.pkColumns, this.optionParams, this.remainingPartitions));
+        return SourceProvider.of(new LakeSoulSource(this.tableId, readFields(), readFieldsAddPk(), this.isStreaming, this.pkColumns, this.optionParams, this.remainingPartitions));
     }
 }

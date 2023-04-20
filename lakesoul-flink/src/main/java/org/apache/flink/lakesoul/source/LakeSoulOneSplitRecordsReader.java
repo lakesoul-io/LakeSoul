@@ -33,6 +33,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private Configuration conf;
 
     private final RowType schema;
+
+    private final RowType schemaWithPk;
     private RowType fileSchema;
 
     private LakeSoulArrowReader reader;
@@ -58,11 +60,12 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private boolean partitionsNon;
 
 
-    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, List<String> pkColumns, boolean partitionsNon) throws IOException {
+    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, RowType schemaWithPk, List<String> pkColumns, boolean partitionsNon) throws IOException {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = conf;
         this.schema = schema;
+        this.schemaWithPk = schemaWithPk;
         this.pkColumns = pkColumns;
         this.splitId = split.splitId();
         this.partitionsNon = partitionsNon;
@@ -80,7 +83,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         List<LogicalType> columnTypeList = schema.getChildren();
         RowType tmp;
         if (null != partitionCols && partitionCols.size() > 0) {
-            List<RowType.RowField> fields = schema.getFields().stream().filter(field -> !partitionCols.contains(field.getName())).collect(Collectors.toList());
+            List<RowType.RowField> fields = schemaWithPk.getFields().stream().filter(field -> !partitionCols.contains(field.getName())).collect(Collectors.toList());
             tmp = new RowType(fields);
             this.partitionIndexes = Arrays.stream(partitionCols.toArray()).mapToInt(columnList::indexOf).toArray();
             if (columnTypeList.size() != 0) {
@@ -88,7 +91,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 this.partitionFieldGetters = IntStream.range(0, partitionTypes.length).mapToObj(i -> RowData.createFieldGetter(partitionTypes[i], partitionIndexes[i])).toArray(RowData.FieldGetter[]::new);
             }
         } else {
-            tmp = this.schema;
+            tmp = this.schemaWithPk;
         }
         this.fileSchema = tmp;
         List<Integer> partitionIndexList;
@@ -138,7 +141,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             if (this.currentVCR == null) {
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
-                    this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.schema);
+                    this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.fileSchema);
                     if (this.currentVCR == null) {
                         return null;
                     }
