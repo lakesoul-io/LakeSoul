@@ -95,6 +95,7 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
     public void eval(Object... values) {
         // TODO: 2023/4/19 hard-code for pass suite
         checkCacheReload();
+        System.out.println(cache);
         RowData lookupKey = GenericRowData.of(values);
         List<RowData> matchedRows = cache.get(lookupKey);
         if (matchedRows != null) {
@@ -126,11 +127,14 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                 partitionReader.open(partitionFetcher.fetch(fetcherContext));
                 RowData row;
                 while ((row = partitionReader.read(reuse)) != null) {
+
                     count++;
                     RowData rowData = serializer.copy(row);
+                    System.out.println(rowData);
                     RowData key = extractLookupKey(rowData);
                     List<RowData> rows = cache.computeIfAbsent(key, k -> new ArrayList<>());
                     rows.add(rowData);
+
                     if (cache.size() >= CACHE_MAX_SIZE) {
                         System.out.println("Warning: Lookup Cache has cached " + cache.size() + " records with " +count+ " rows, other rows will not be cached");
                         LOG.warn(

@@ -101,7 +101,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                                             ))));
             return partValueList;
         };
-        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields());
+        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields(), this.pkColumns);
 
         return new LakeSoulTableLookupFunction<>(
                 partitionFetcher,
@@ -156,8 +156,15 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 //        int i = 0;
             Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dataFileInfos);
             System.out.println(splitByRangeAndHashPartition);
+            List<Path> paths = new ArrayList<>();
+            splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
+                rangeValue.forEach((hashKey, hashValue) -> {
+                    hashValue.forEach(path -> paths.add(path));
+                });
+            });
 
-            return Optional.of(new LakeSoulPartition(splitByRangeAndHashPartition.get("-5").get("2")));
+            return Optional.of(new LakeSoulPartition(paths));
+//            return Optional.of(new LakeSoulPartition(splitByRangeAndHashPartition.get("-5").get("2")));
         }
     }
 

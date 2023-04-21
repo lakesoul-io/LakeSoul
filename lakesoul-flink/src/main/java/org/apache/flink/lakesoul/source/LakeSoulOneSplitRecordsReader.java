@@ -1,7 +1,7 @@
 package org.apache.flink.lakesoul.source;
 
-import org.apache.arrow.lakesoul.io.NativeIOReader;
-import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;

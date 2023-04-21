@@ -1,7 +1,7 @@
 package org.apache.flink.lakesoul.connector;
 
-import org.apache.arrow.lakesoul.io.NativeIOReader;
-import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
@@ -16,6 +16,7 @@ import org.apache.flink.table.types.logical.RowType;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartition, RowData> {
@@ -34,9 +35,9 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     private int curRecordId = -1;
 
 
-    public LakeSoulPartitionReader(RowType schema) {
+    public LakeSoulPartitionReader(RowType schema, List<String> primaryKeys) {
         this.filePathList = null;
-        this.primaryKeys = null;
+        this.primaryKeys = primaryKeys;
         this.schema = schema;
         this.capacity = 1;
         this.threadNum = 2;

@@ -80,7 +80,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+        // TODO: need to determine when to set auxSortCols(useCDC ? set : no_set)
+//        nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);

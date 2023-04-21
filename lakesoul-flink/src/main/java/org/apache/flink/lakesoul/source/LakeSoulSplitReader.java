@@ -1,6 +1,6 @@
 package org.apache.flink.lakesoul.source;
 
-import org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader;
+import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;

@@ -653,7 +653,7 @@ public class DBManager {
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) throws IOException {
         String tableId = dataCommitInfo.getTableId();
-        String partitionDesc = dataCommitInfo.getPartitionDesc();
+        String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", ",");
         UUID commitId = dataCommitInfo.getCommitId();
         String commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);

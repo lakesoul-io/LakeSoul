@@ -61,20 +61,35 @@ public class LakeSoulLookupJoinCase {
                         + "with ('connector'='COLLECTION','is-bounded' = 'false')");
 
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-        // create the lakesoul non-partitioned table
+        // create the lakesoul non-partitioned non-hashed table
         tableEnv.executeSql(
                 String.format(
                         "create table bounded_table (x int, y string, z int) with ('format'='','%s'='5min', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_table"));
-//
-//        // create the hive partitioned table
-//        tableEnv.executeSql(
-//                String.format(
-//                        "create table bounded_partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-//                                + " pt_year, pt_mon, pt_day)"
-//                                + " with ('format'='','%s'='5min', 'path'='%s')",
-//                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_table"));
-//
+
+        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
+        // create the lakesoul non-partitioned hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table bounded_hash_table (x int, y string, z int, primary key(x) not enforced) with ('format'='','%s'='5min', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_hash_table"));
+
+        // create the lakesoul partitioned non-hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table bounded_partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='','%s'='5min', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_table"));
+
+        // create the lakesoul partitioned hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table bounded_partition_hash_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string, primary key(x) not enforced) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='','%s'='5min', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_hash_table"));
+
 //        // create the hive partitioned table
 //        tableEnv.executeSql(
 //                String.format(
@@ -247,6 +262,27 @@ public class LakeSoulLookupJoinCase {
     }
 
     @Test
+    public void testLookupJoinBoundedHashTable() throws Exception {
+        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
+        TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        batchEnv.useCatalog(lakeSoulCatalog.getName());
+//        batchEnv.executeSql(
+//                        "insert into bounded_hash_table values (1,'a',10),(2,'a',21),(2,'b',22),(3,'c',33)")
+//
+////                        "insert into bounded_hash_table values (1,'a',10),(2,'b',22),(3,'c',33)")
+//                .await();
+        TableImpl flinkTable =
+                (TableImpl)
+                        tableEnv.sqlQuery(
+                                "select p.x, p.y, b.z from "
+                                        + " default_catalog.default_database.probe as p "
+                                        + " join bounded_hash_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        assertThat(results.toString()).isEqualTo("[+I[1, a, 10], +I[2, b, 22], +I[3, c, 33]]");
+    }
+
+    @Test
     public void testLookupJoinBoundedPartitionedTable() throws Exception {
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
@@ -269,7 +305,35 @@ public class LakeSoulLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString())
                 .isEqualTo(
-                        "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+//                        "[+I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+        "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+    }
+
+    @Test
+    public void testLookupJoinBoundedPartitionedHashedTable() throws Exception {
+        // constructs test data using dynamic partition
+        TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        batchEnv.useCatalog(lakeSoulCatalog.getName());
+        batchEnv.executeSql(
+                        "insert overwrite bounded_partition_hash_table values "
+//                                + "(1,'a',08,2019,'08','01'),"
+                                + "(1,'a',10,2020,'08','31'),"
+                                + "(2,'a',21,2020,'08','31'),"
+                                + "(2,'b',22,2020,'08','31')")
+                .await();
+
+        TableImpl flinkTable =
+                (TableImpl)
+                        tableEnv.sqlQuery(
+                                "select p.x, p.y, b.z, b.pt_year, b.pt_mon, b.pt_day from "
+                                        + " default_catalog.default_database.probe as p"
+                                        + " join bounded_partition_hash_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        assertThat(results.toString())
+                .isEqualTo(
+                        "[+I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+//        "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
     }
 
     @Test
@@ -450,7 +514,9 @@ public class LakeSoulLookupJoinCase {
     @AfterClass
     public static void tearDown() {
         tableEnv.executeSql("drop table bounded_table");
-//        tableEnv.executeSql("drop table bounded_partition_table");
+        tableEnv.executeSql("drop table bounded_hash_table");
+        tableEnv.executeSql("drop table bounded_partition_table");
+        tableEnv.executeSql("drop table bounded_partition_hash_table");
 //        tableEnv.executeSql("drop table partition_table");
 //        tableEnv.executeSql("drop table partition_table_1");
 //        tableEnv.executeSql("drop table partition_table_2");

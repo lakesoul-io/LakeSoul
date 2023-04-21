@@ -19,9 +19,9 @@
 package org.apache.flink.lakesoul.tool;
 
 import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.meta.*;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.arrow.lakesoul.io.NativeIOBase;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
