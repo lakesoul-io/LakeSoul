@@ -24,12 +24,15 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.postgresql.PGConnection
 
-import java.util.concurrent.Executors
+import java.util.Collections
+import java.util.concurrent.{ConcurrentHashMap, Executors}
 
 object CompactionTask {
 
   val COMPACTION_THREADPOOL_SIZE = 10
   val NOTIFY_CHANNEL_NAME = "lakesoul_compaction_notify"
+
+  val threadSet: java.util.Set[String] = Collections.newSetFromMap(new ConcurrentHashMap)
 
   def main(args: Array[String]): Unit = {
 
@@ -87,12 +90,16 @@ object CompactionTask {
         val notifications = pgconn.getNotifications
         if (notifications.length > 0) {
           notifications.foreach(notification => {
-            val jsonObj = jsonParser.parse(notification.getParameter).asInstanceOf[JsonObject]
-            println(jsonObj)
-            val tablePath = jsonObj.get("table_path").getAsString
-            val partitionDesc = jsonObj.get("table_partition_desc").getAsString
-            val rsPartitionDesc = partitionDesc.replace("=", "='") + "'"
-            threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc))
+            val notificationParameter = notification.getParameter
+            if (!threadSet.contains(notificationParameter)) {
+              threadSet.add(notificationParameter)
+              val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
+              println(jsonObj)
+              val tablePath = jsonObj.get("table_path").getAsString
+              val partitionDesc = jsonObj.get("table_partition_desc").getAsString
+              val rsPartitionDesc = partitionDesc.replace("=", "='") + "'"
+              threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
+            }
           })
         }
         Thread.sleep(10000)
@@ -100,12 +107,11 @@ object CompactionTask {
     }
   }
 
-  class CompactionTableInfo(path: String, partitionDesc: String) extends Thread {
+  class CompactionTableInfo(path: String, partitionDesc: String, setValue: String) extends Thread {
     override def run(): Unit = {
-      println("table_path: " + path)
-      println("table_partition_desc: " + partitionDesc)
       val table = LakeSoulTable.forPath(path)
       table.compaction(partitionDesc)
+      threadSet.remove(setValue)
     }
   }
 }
