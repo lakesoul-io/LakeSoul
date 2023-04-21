@@ -8,6 +8,7 @@ import org.apache.flink.api.connector.source.*;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
@@ -50,49 +51,66 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
         return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0);
+            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0,this.isStreaming,this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
         }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> createEnumerator(
-            SplitEnumeratorContext<LakeSoulSplit> enumContext) throws Exception {
+            SplitEnumeratorContext<LakeSoulSplit> enumContext) {
         TableInfo tif = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
         List<String> readStartTimestampWithTimeZone = Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_START_TIME(), ""),
                 optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+        String readType = optionParams.getOrDefault(LakeSoulOptions.READ_TYPE(), "");
         if (this.isStreaming) {
             return new LakeSoulDynamicSplitEnumerator(
                     enumContext,
                     new LakeSoulSimpleSplitAssigner(),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "10000")),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "2000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
-                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "-5")
+                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "")
             );
         } else {
-            List<String> readEndTimestampWithTimeZone = Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
-                    optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
-            DataFileInfo[] dfinfos = getTargetDataFileInfo(tif);
-            int capacity = 100;
-            ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
-            int i = 0;
-            Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
-            if (FlinkUtil.isExistHashPartition(tif)) {
-                for (Map.Entry<String, Map<String, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
-                    for (Map.Entry<String, List<Path>> split : entry.getValue().entrySet()) {
-                        splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
-                    }
-                }
-            } else {
-                for (DataFileInfo dfinfo : dfinfos) {
-                    ArrayList<Path> tmp = new ArrayList<>();
-                    tmp.add(new Path(dfinfo.path()));
-                    splits.add(new LakeSoulSplit(i + "", tmp, 0));
-                }
-            }
-            return new LakeSoulStaticSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(splits));
+            return staticSplitEnumerator(enumContext, tif, readStartTimestampWithTimeZone, readType);
         }
     }
+
+    private LakeSoulStaticSplitEnumerator staticSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> enumContext, TableInfo tif, List<String> readStartTimestampWithTimeZone, String readType) {
+        List<String> readEndTimestampWithTimeZone = Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
+                optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+        DataFileInfo[] dfinfos;
+        if (readType.equals("") || readType.equals("fullread")) {
+            dfinfos = getTargetDataFileInfo(tif);
+        } else {
+            dfinfos = DataOperation.getIncrementalPartitionDataInfo(
+                    tif.getTableId(),
+                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), ""),
+                    convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
+                    convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
+                    readType
+            );
+        }
+        int capacity = 100;
+        ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
+        int i = 0;
+        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
+        if (FlinkUtil.isExistHashPartition(tif)) {
+            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
+                    splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
+                }
+            }
+        } else {
+            for (DataFileInfo dfinfo : dfinfos) {
+                ArrayList<Path> tmp = new ArrayList<>();
+                tmp.add(new Path(dfinfo.path()));
+                splits.add(new LakeSoulSplit(i + "", tmp, 0));
+            }
+        }
+        return new LakeSoulStaticSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(splits));
+    }
+
 
     private DataFileInfo[] getTargetDataFileInfo(TableInfo tif) {
         return FlinkUtil.getTargetDataFileInfo(tif, this.remainingPartitions);

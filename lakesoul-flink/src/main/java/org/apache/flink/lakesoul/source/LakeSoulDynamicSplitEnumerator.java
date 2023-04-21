@@ -109,16 +109,16 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         splitAssigner.addSplits(splits);
     }
 
-    public Collection<LakeSoulSplit> enumerateSplits(String tid, String parDesc)
-            throws IOException {
+    public Collection<LakeSoulSplit> enumerateSplits(String tid, String parDesc) {
         this.nextStartTime = MetaVersion.getLastedTimestamp(tid, parDesc) + 1;
         DataFileInfo[] dfinfos = DataOperation.getIncrementalPartitionDataInfo(tid, parDesc, this.startTime, this.nextStartTime, "incremental");
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
-        Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
-        for (Map.Entry<String, Map<String, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
-            for (Map.Entry<String, List<Path>> split : entry.getValue().entrySet()) {
+        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
+        // todo:流式增量读split取消分组，不需要支持 merge on read
+        for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+            for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                 splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
             }
         }

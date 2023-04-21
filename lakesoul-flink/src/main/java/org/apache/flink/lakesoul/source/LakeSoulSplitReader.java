@@ -39,19 +39,23 @@ public class LakeSoulSplitReader
     boolean partitionNon;
 
     List<String> pkColumns;
+    boolean isStreaming;
+    String cdcColumn;
 
-    public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns, boolean partitionNon) {
+    public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns, boolean partitionNon,boolean isStreaming,String cdcColumn) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
         this.rowTypeWithPk = rowTypeWithPk;
         this.pkColumns = pkColumns;
+        this.isStreaming = isStreaming;
+        this.cdcColumn = cdcColumn;
         this.partitionNon = partitionNon;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk, this.pkColumns, this.partitionNon);
+        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk, this.pkColumns, this.partitionNon,this.isStreaming,this.cdcColumn);
     }
 
     @Override

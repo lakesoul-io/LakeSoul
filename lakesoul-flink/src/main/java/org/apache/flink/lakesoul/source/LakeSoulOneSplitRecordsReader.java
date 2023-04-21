@@ -10,10 +10,12 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import javax.annotation.Nonnull;
@@ -58,9 +60,12 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private RowData.FieldGetter[] nonPartitionFieldGetters;
 
     private boolean partitionsNon;
+    boolean isStreaming;
+    String cdcColumn;
+    RowData.FieldGetter cdcFieldGetter;
 
 
-    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, RowType schemaWithPk, List<String> pkColumns, boolean partitionsNon) throws IOException {
+    public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, RowType schemaWithPk, List<String> pkColumns, boolean partitionsNon, boolean isStreaming, String cdcColumn) throws IOException {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = conf;
@@ -69,6 +74,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.pkColumns = pkColumns;
         this.splitId = split.splitId();
         this.partitionsNon = partitionsNon;
+        this.isStreaming = isStreaming;
+        this.cdcColumn = cdcColumn;
         initializeReader();
     }
 
@@ -94,6 +101,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             tmp = this.schemaWithPk;
         }
         this.fileSchema = tmp;
+        if (!"".equals(this.cdcColumn)) {
+            cdcFieldGetter = RowData.createFieldGetter(new VarCharType(), this.fileSchema.getFieldCount() - 1);
+        }
         List<Integer> partitionIndexList;
         if (partitionIndexes == null || partitionIndexes.length == 0) {
             partitionIndexList = new ArrayList<>();
@@ -160,6 +170,15 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
                     for (int i = 0; i < nonPartitionIndexes.length; i++) {
                         reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+                    }
+                    if (!"".equals(this.cdcColumn)) {
+                        if(this.isStreaming){
+                            reuseRow.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
+                        }else{
+                            if(FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))){
+                                return null;
+                            }
+                        }
                     }
                     setReuseRowWithPartition(reuseRow);
                     return reuseRow;

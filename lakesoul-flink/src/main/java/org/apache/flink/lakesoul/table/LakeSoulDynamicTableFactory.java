@@ -19,7 +19,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
@@ -153,7 +152,7 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
         return new LakeSoulTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns,options.toMap()
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, options.toMap()
         );
     }
 }

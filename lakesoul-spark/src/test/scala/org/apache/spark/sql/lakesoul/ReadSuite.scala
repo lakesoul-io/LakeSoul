@@ -82,7 +82,6 @@ class ReadSuite extends QueryTest
           .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
           .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
           .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-          .partitionBy("range")
           .save(tablePath)
         val lake = LakeSoulTable.forPath(tablePath)
         val tableForUpsert = Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-5", "insert"),
@@ -180,7 +179,6 @@ class ReadSuite extends QueryTest
           .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
           .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
           .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-          .partitionBy("range")
           .save(tablePath)
         val lake = LakeSoulTable.forPath(tablePath)
         val tableForUpsert = Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-5", "insert"),
@@ -225,7 +223,6 @@ class ReadSuite extends QueryTest
             .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-            .partitionBy("range")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))
@@ -332,7 +329,6 @@ class ReadSuite extends QueryTest
             .option(LakeSoulOptions.RANGE_PARTITIONS, "range")
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
-            .partitionBy("range")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))

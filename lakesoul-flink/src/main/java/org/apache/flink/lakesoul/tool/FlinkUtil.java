@@ -125,6 +125,26 @@ public class FlinkUtil {
         return null;
     }
 
+    public static RowKind operationToRowKind(StringData operation) {
+        if (StringData.fromString("insert").equals(operation)) {
+            return RowKind.INSERT;
+        }
+        if (StringData.fromString("update").equals(operation)) {
+            return RowKind.UPDATE_AFTER;
+        }
+        if (StringData.fromString("delete").equals(operation)) {
+            return RowKind.DELETE;
+        }
+        return null;
+    }
+    public static boolean isCDCDelete(StringData operation){
+        if (StringData.fromString("delete").equals(operation)) {
+            return true;
+        }else{
+            return false;
+        }
+    }
+
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
@@ -324,17 +344,17 @@ public class FlinkUtil {
         }
     }
 
-    public static Map<String, Map<String, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid, DataFileInfo[] dfinfos) {
-        Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
+    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid, DataFileInfo[] dfinfos) {
+        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
             if (isExistHashPartition(tif) && pif.file_bucket_id() != -1) {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
-                        .computeIfAbsent(String.valueOf(pif.file_bucket_id()), v -> new ArrayList<>())
+                        .computeIfAbsent(pif.file_bucket_id(), v -> new ArrayList<>())
                         .add(new Path(pif.path()));
             } else {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
-                        .computeIfAbsent("-1", v -> new ArrayList<>())
+                        .computeIfAbsent(-1, v -> new ArrayList<>())
                         .add(new Path(pif.path()));
             }
         }
