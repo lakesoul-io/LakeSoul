@@ -103,16 +103,15 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
         readPartitionSchema(), pushedParquetFilters, options, partitionFilters, dataFilters)
     } else if (tableInfo.hash_partition_columns.isEmpty) {
       parquetScan()
-    }
-    else if (onlyOnePartition) {
-      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+    } else if (onlyOnePartition) {
+      if (fileIndex.snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit")
+        && p.read_files.length == 1)) {
         parquetScan()
       } else {
         OnePartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),
           readPartitionSchema(), pushedParquetFilters, options, tableInfo, partitionFilters, dataFilters)
       }
-    }
-    else {
+    } else {
       if (sparkSession.sessionState.conf
         .getConf(LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE)) {
         MultiPartitionMergeBucketScan(sparkSession, hadoopConf, fileIndex, dataSchema, mergeReadDataSchema(),

@@ -188,11 +188,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           }
         })
       })
-
-
     }
-
-
     Seq.empty
   }
 
