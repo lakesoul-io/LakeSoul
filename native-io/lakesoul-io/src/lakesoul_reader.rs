@@ -26,6 +26,7 @@ use parquet::arrow::ParquetRecordBatchStreamBuilder;
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
@@ -75,61 +76,65 @@ impl LakeSoulReader {
     pub async fn start(&mut self) -> Result<()> {
         let schema: SchemaRef = self.config.schema.0.clone();
         if self.config.primary_keys.is_empty() {
-            if self.config.files.len() == 1 {
-                let mut df = self
-                    .sess_ctx
-                    .read_parquet(self.config.files[0].as_str(), Default::default())
-                    .await?;
+            if self.config.files.len() > 0 {
+                let mut stream_vec = Vec::<SendableRecordBatchStream>::with_capacity(self.config.files.len());
+                for i in 0..self.config.files.len() {
+                    let mut df = self
+                        .sess_ctx
+                        .read_parquet(self.config.files[i].as_str(), Default::default())
+                        .await?;
 
-                let file_schema = Arc::new(Schema::from(df.schema()));
+                    let file_schema = Arc::new(Schema::from(df.schema()));
 
-                let cols = schema
-                    .fields()
-                    .iter()
-                    .filter_map(|field| match file_schema.column_with_name(field.name()) {
-                        Some((_, file_field)) => Some(logical_col(file_field.name())),
-                        _ => None,
-                    })
-                    // .map(|field| logical_col(field.name().as_str()))
-                    .collect::<Vec<_>>();
+                    let cols = schema
+                        .fields()
+                        .iter()
+                        .filter_map(|field| match file_schema.column_with_name(field.name()) {
+                            Some((_, file_field)) => Some(logical_col(file_field.name())),
+                            _ => None,
+                        })
+                        // .map(|field| logical_col(field.name().as_str()))
+                        .collect::<Vec<_>>();
 
-                let stream = if cols.is_empty() {
-                    let file_name = self.config.files[0].as_str();
+                    let stream = if cols.is_empty() {
+                        let file_name = self.config.files[i].as_str();
 
-                    // local style path should have already been handled in create_session_context,
-                    // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
-                    let (object_store, path) = match Url::parse(file_name) {
-                        Ok(url) => Ok((
-                            self.sess_ctx
-                                .runtime_env()
-                                .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
-                            Path::from(url.path()),
-                        )),
-                        Err(e) => Err(DataFusionError::External(Box::new(e))),
-                    }?;
+                        // local style path should have already been handled in create_session_context,
+                        // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
+                        let (object_store, path) = match Url::parse(file_name) {
+                            Ok(url) => Ok((
+                                self.sess_ctx
+                                    .runtime_env()
+                                    .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
+                                Path::from(url.path()),
+                            )),
+                            Err(e) => Err(DataFusionError::External(Box::new(e))),
+                        }?;
 
-                    if let GetResult::File(file, _) = object_store.get(&path).await.unwrap() {
-                        let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
-                            .await
-                            .unwrap()
-                            .metadata()
-                            .file_metadata()
-                            .num_rows() as usize;
-                        Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))
+                        if let GetResult::File(file, _) = object_store.get(&path).await.unwrap() {
+                            let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
+                                .await
+                                .unwrap()
+                                .metadata()
+                                .file_metadata()
+                                .num_rows() as usize;
+                            Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))
+                        } else {
+                            return Err(DataFusionError::Internal(
+                                "LakeSoulReader fails to get_file".to_string(),
+                            ));
+                        }
                     } else {
-                        return Err(DataFusionError::Internal(
-                            "LakeSoulReader fails to get_file".to_string(),
-                        ));
-                    }
-                } else {
-                    df = df.select(cols)?;
+                        df = df.select(cols)?;
 
-                    df = self.config.filter_strs.iter().try_fold(df, |df, f| {
-                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                    })?;
-                    df.execute_stream().await?
-                };
-                let stream = DefaultColumnStream::new_from_stream(stream, schema.clone(), true);
+                        df = self.config.filter_strs.iter().try_fold(df, |df, f| {
+                            df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                        })?;
+                        df.execute_stream().await?
+                    };
+                    stream_vec.push(stream);
+                }
+                let stream = DefaultColumnStream::new_from_streams(stream_vec, schema.clone(), true);
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
 

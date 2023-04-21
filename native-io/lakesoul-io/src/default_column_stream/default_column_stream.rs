@@ -48,9 +48,11 @@ pub(crate) struct DefaultColumnStream {
 
     /// The sorted input streams to merge together
     // streams: MergingStreams,
-    inner_stream: WrappedSendableRecordBatchStream,
+    inner_stream: Vec<WrappedSendableRecordBatchStream>,
 
     fill_default_column: bool,
+
+    cur_stream_idx: usize,
 }
 
 impl DefaultColumnStream {
@@ -61,8 +63,22 @@ impl DefaultColumnStream {
     ) -> Self {
         DefaultColumnStream {
             schema: transform_schema(target_schema.clone(), stream.schema(), fill_default_column),
-            inner_stream: WrappedSendableRecordBatchStream::new(stream),
+            inner_stream: vec![WrappedSendableRecordBatchStream::new(stream)],
             fill_default_column,
+            cur_stream_idx: 0,
+        }
+    }
+
+    pub(crate) fn new_from_streams(
+        streams: Vec<SendableRecordBatchStream>,
+        target_schema: SchemaRef,
+        fill_default_column: bool,
+    ) -> Self {
+        DefaultColumnStream {
+            schema: target_schema.clone(),
+            inner_stream: streams.into_iter().map(WrappedSendableRecordBatchStream::new).collect::<Vec<_>>(),
+            fill_default_column,
+            cur_stream_idx: 0,
         }
     }
 }
@@ -71,15 +87,24 @@ impl Stream for DefaultColumnStream {
     type Item = ArrowResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let stream = &mut self.inner_stream.stream;
-        return match futures::ready!(stream.poll_next_unpin(cx)) {
-            None => Poll::Ready(None),
-            Some(Err(e)) => Poll::Ready(Some(Err(e))),
-            Some(Ok(batch)) => {
-                let batch = transform_record_batch(self.schema(), batch, self.fill_default_column);
-                Poll::Ready(Some(Ok(batch)))
+        loop {
+            if self.cur_stream_idx >= self.inner_stream.len() {
+                return Poll::Ready(None);
             }
-        };
+            let idx = self.cur_stream_idx;
+            let stream = &mut self.inner_stream[idx].stream;
+            return match futures::ready!(stream.poll_next_unpin(cx)) {
+                None => {
+                    self.cur_stream_idx += 1;
+                    continue;
+                },
+                Some(Err(e)) => Poll::Ready(Some(Err(e))),
+                Some(Ok(batch)) => {
+                    let batch = transform_record_batch(self.schema(), batch, self.fill_default_column);
+                    Poll::Ready(Some(Ok(batch)))
+                }
+            };
+        }
     }
 }
 
