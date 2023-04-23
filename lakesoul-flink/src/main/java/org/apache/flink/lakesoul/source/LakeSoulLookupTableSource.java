@@ -2,6 +2,7 @@ package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.connector.LakeSoulPartition;
@@ -49,6 +50,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         this.catalogTable = catalogTable;
         this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
         this.configuration = new Configuration();
+        System.out.println("[debug][yuchanghui] partitionKeys are" + catalogTable.getPartitionKeys());
         catalogTable.getOptions().forEach(configuration::setString);
         validateLookupConfigurations();
     }
@@ -88,19 +90,50 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     private TableFunction<RowData> getLookupFunction(int[] keys) {
         PartitionFetcher.Context<LakeSoulPartition> fetcherContext = new LakeSoulTablePartitionFetcherContext(tableId);
 
-        final PartitionFetcher<LakeSoulPartition> partitionFetcher = context -> {
-            List<LakeSoulPartition> partValueList = new ArrayList<>();
+        final PartitionFetcher<LakeSoulPartition> partitionFetcher;
+        // TODO: support reading latest partition for streaming-read
+        if (catalogTable.getPartitionKeys().isEmpty()) {
+            // non-partitioned table, the fetcher fetches the partition which represents the given table
+            partitionFetcher = context -> {
+                List<LakeSoulPartition> partValueList = new ArrayList<>();
 
-            partValueList.add(
-                    context.getPartition(new ArrayList<>())
-                            .orElseThrow(
-                                    () ->
-                                            new IllegalArgumentException(
-                                                    String.format(
-                                                            "Fetch partition fail for hive table %s.", ""
+                partValueList.add(
+                        context.getPartition(new ArrayList<>())
+                                .orElseThrow(
+                                        () ->
+                                                new IllegalArgumentException(
+                                                        String.format(
+                                                                "Fetch partition fail for lakesoul table %s.", ""
+                                                        ))));
+                return partValueList;
+            };
+        } else {
+            // bounded-read partitioned table, the fetcher fetches all partitions of the given table
+            partitionFetcher = context -> {
+                List<LakeSoulPartition> partValueList = new ArrayList<>();
+                List<PartitionFetcher.Context.ComparablePartitionValue> comparablePartitionValues = context.getComparablePartitionValueList();
+                for (PartitionFetcher.Context.ComparablePartitionValue comparablePartitionValue: comparablePartitionValues) {
+                    partValueList.add(
+                            context.getPartition(
+                                            (List<String>)
+                                                    comparablePartitionValue.getPartitionValue())
+                                    .orElseThrow(
+                                            () ->
+                                                    new IllegalArgumentException(
+                                                            String.format(
+                                                                    "Fetch partition fail for lakesoul table %s.", ""
                                                             ))));
-            return partValueList;
-        };
+                }
+                System.out.println("[debug][yuchanghui] context fetch result is: ");
+                for (LakeSoulPartition partition: partValueList) {
+                    for (Path path: partition.getPaths()) System.out.println(path);
+                    System.out.println("[debug][yuchanghui]-------------");
+                }
+                return partValueList;
+            };
+
+        }
+
         PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields(), this.pkColumns);
 
         return new LakeSoulTableLookupFunction<>(
@@ -147,23 +180,56 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         @Override
         public Optional<LakeSoulPartition> getPartition(List<String> partValues) throws Exception {
             TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+            if (partValues.isEmpty() || partValues.get(0).equals("-5")) {
+
 //        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+                List<PartitionInfo> partitionInfos = DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
+                System.out.println("[debug][yuchanghui] partitionInfos is " + partitionInfos);
+                partitionInfos.forEach(partitionInfo -> System.out.println(partitionInfo.getPartitionDesc()));
 //
-            DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
+                DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
 //            System.out.println(dataFileInfos[0]);
 //        int capacity = 100;
 //        ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
 //        int i = 0;
-            Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dataFileInfos);
-            System.out.println(splitByRangeAndHashPartition);
-            List<Path> paths = new ArrayList<>();
-            splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
-                rangeValue.forEach((hashKey, hashValue) -> {
-                    hashValue.forEach(path -> paths.add(path));
+                Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dataFileInfos);
+                System.out.println(splitByRangeAndHashPartition);
+                List<Path> paths = new ArrayList<>();
+                splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
+                    rangeValue.forEach((hashKey, hashValue) -> {
+                        hashValue.forEach(path -> paths.add(path));
+                    });
                 });
-            });
 
-            return Optional.of(new LakeSoulPartition(paths));
+                return Optional.of(new LakeSoulPartition(paths));
+            } else {
+                String actualPartValue = partValues.get(0);
+                DataFileInfo[] dataFileInfos = FlinkUtil.getSinglePartitionDataFileInfo(tableInfo, actualPartValue);
+                List<Path> paths = new ArrayList<>();
+                for (DataFileInfo dif: dataFileInfos) paths.add(new Path(dif.path()));
+                return Optional.of(new LakeSoulPartition(paths));
+            }
+//            TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+////        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+//            List<PartitionInfo> partitionInfos = DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
+//            System.out.println("[debug][yuchanghui] partitionInfos is " + partitionInfos);
+//            partitionInfos.forEach(partitionInfo -> System.out.println(partitionInfo.getPartitionDesc()));
+////
+//            DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
+////            System.out.println(dataFileInfos[0]);
+////        int capacity = 100;
+////        ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
+////        int i = 0;
+//            Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dataFileInfos);
+//            System.out.println(splitByRangeAndHashPartition);
+//            List<Path> paths = new ArrayList<>();
+//            splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
+//                rangeValue.forEach((hashKey, hashValue) -> {
+//                    hashValue.forEach(path -> paths.add(path));
+//                });
+//            });
+//
+//            return Optional.of(new LakeSoulPartition(paths));
 //            return Optional.of(new LakeSoulPartition(splitByRangeAndHashPartition.get("-5").get("2")));
         }
     }

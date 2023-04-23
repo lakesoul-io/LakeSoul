@@ -18,6 +18,7 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.table.filesystem.FileSystemConnectorOptions;
 import org.apache.flink.table.filesystem.PartitionFetcher;
 import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
@@ -107,22 +108,23 @@ public class LakeSoulLookupJoinCase {
 ////                        STREAMING_SOURCE_PARTITION_ORDER.key(),
 ////                        STREAMING_SOURCE_MONITOR_INTERVAL.key()));
 //
-//        // create the hive partitioned table3 which uses default 'partition-name'.
+        // create the hive partitioned table3 which uses default 'partition-name'.
 //        tableEnv.executeSql(
 //                String.format(
 //                    "create table partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
 //                            + " pt_year, pt_mon, pt_day)"
 //                            + " with ('format'='','%s'='5min', 'path'='%s')",
 //                    JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/partition_table_1"));
-//
-////        tableEnv.executeSql(
-////                String.format(
-////                        "create table partition_table_1 (x int, y string, z int) partitioned by ("
-////                                + " pt_year int, pt_mon string, pt_day string)"
-////                                + " tblproperties ('%s' = 'true', '%s' = 'latest', '%s'='120min')",
-////                        HiveOptions.STREAMING_SOURCE_ENABLE.key(),
-////                        HiveOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-////                        HiveOptions.STREAMING_SOURCE_MONITOR_INTERVAL.key()));
+
+//        tableEnv.executeSql(
+//                String.format(
+//                        "create table partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
+//                                + " pt_year, pt_mon, pt_day)"
+//                                + " with ('%s' = 'true', '%s' = 'latest', '%s'='120min', 'path'='%s')",
+//                        FileSystemConnectorOptions.STREAMING_SOURCE_ENABLE.key(),
+//                        FileSystemConnectorOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+//                        FileSystemConnectorOptions.STREAMING_SOURCE_MONITOR_INTERVAL.key(),
+//                        "tmp/partition_table_1"));
 //
 //        // create the hive partitioned table3 which uses 'partition-time'.
 //        tableEnv.executeSql(
@@ -513,14 +515,14 @@ public class LakeSoulLookupJoinCase {
 
     @AfterClass
     public static void tearDown() {
-        tableEnv.executeSql("drop table bounded_table");
-        tableEnv.executeSql("drop table bounded_hash_table");
+        tableEnv.executeSql("drop table if exists bounded_table");
+        tableEnv.executeSql("drop table if exists bounded_hash_table");
         tableEnv.executeSql("drop table bounded_partition_table");
-        tableEnv.executeSql("drop table bounded_partition_hash_table");
-//        tableEnv.executeSql("drop table partition_table");
-//        tableEnv.executeSql("drop table partition_table_1");
-//        tableEnv.executeSql("drop table partition_table_2");
-//        tableEnv.executeSql("drop table partition_table_3");
+        tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
+        tableEnv.executeSql("drop table if exists partition_table");
+        tableEnv.executeSql("drop table if exists partition_table_1");
+        tableEnv.executeSql("drop table if exists partition_table_2");
+        tableEnv.executeSql("drop table if exists partition_table_3");
 
         if (lakeSoulCatalog != null) {
             lakeSoulCatalog.close();

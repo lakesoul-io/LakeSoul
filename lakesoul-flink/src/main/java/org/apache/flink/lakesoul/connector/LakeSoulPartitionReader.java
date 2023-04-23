@@ -34,6 +34,10 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     private ArrowReader curArrowReader;
     private int curRecordId = -1;
 
+    private int curPartitionId;
+
+    private List<LakeSoulPartition> partitions;
+
 
     public LakeSoulPartitionReader(RowType schema, List<String> primaryKeys) {
         this.filePathList = null;
@@ -43,6 +47,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         this.threadNum = 2;
         this.conf = null;
         this.awaitTimeout = 10000;
+        this.curPartitionId = 0;
     }
     /**
      * Opens the reader with given partitions.
@@ -51,35 +56,9 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
      */
     @Override
     public void open(List<LakeSoulPartition> partitions) throws IOException {
-        nativeIOReader = new NativeIOReader();
+        this.partitions = partitions;
 
-        for (Path path : partitions.get(0).getPaths()) {
-            nativeIOReader.addFile(path.getPath());
-        }
-        if (primaryKeys != null) {
-            nativeIOReader.setPrimaryKeys(primaryKeys);
-        }
-
-        Schema arrowSchema = ArrowUtils.toArrowSchema(schema);
-        nativeIOReader.setSchema(arrowSchema);
-
-        nativeIOReader.setBatchSize(capacity);
-        nativeIOReader.setThreadNum(threadNum);
-
-//        FlinkUtil.setFSConfigs(conf, nativeIOReader);
-
-
-//        if (filter != null) {
-//            reader.addFilter(filterEncode(filter));
-//        }
-//
-//        if (mergeOps != null) {
-//            reader.addMergeOps(mergeOps);
-//        }
-
-        nativeIOReader.initializeReader();
-
-        lakesoulArrowReader = new LakeSoulArrowReader(nativeIOReader, awaitTimeout);
+        recreateInnerReaderForSinglePartition(0);
     }
 
     /**
@@ -93,7 +72,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     @Nullable
     @Override
     public RowData read(RowData reuse) throws IOException {
-        if (this.currentVSR == null || curRecordId >= currentVSR.getRowCount()) {
+        if (curRecordId >= currentVSR.getRowCount()) {
             if (this.lakesoulArrowReader.hasNext()) {
                 this.currentVSR = this.lakesoulArrowReader.nextResultVectorSchemaRoot();
                 this.curArrowReader = ArrowUtils.createArrowReader(currentVSR, this.schema);
@@ -103,12 +82,42 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
                 curRecordId = 0;
             } else {
                 this.lakesoulArrowReader.close();
-                return null;
+                curPartitionId++;
+                if (curPartitionId == partitions.size()) return null;
+                recreateInnerReaderForSinglePartition(curPartitionId);
             }
         }
+
         RowData rd = this.curArrowReader.read(curRecordId);
         curRecordId++;
         return rd;
+    }
+
+    private void recreateInnerReaderForSinglePartition(int partitionIndex) throws IOException {
+        nativeIOReader = new NativeIOReader();
+        for (Path path: partitions.get(partitionIndex).getPaths()) {
+            nativeIOReader.addFile(path.getPath());
+        }
+        if (primaryKeys != null) {
+            nativeIOReader.setPrimaryKeys(primaryKeys);
+        }
+        Schema arrowSchema = ArrowUtils.toArrowSchema(schema);
+        nativeIOReader.setSchema(arrowSchema);
+        nativeIOReader.setBatchSize(capacity);
+        nativeIOReader.setThreadNum(threadNum);
+        nativeIOReader.initializeReader();
+
+        lakesoulArrowReader = new LakeSoulArrowReader(nativeIOReader, awaitTimeout);
+        if (lakesoulArrowReader.hasNext()) {
+            currentVSR = lakesoulArrowReader.nextResultVectorSchemaRoot();
+            if (this.currentVSR == null) {
+                throw new IOException("nextVectorSchemaRoot not ready");
+            }
+            curArrowReader = ArrowUtils.createArrowReader(currentVSR, this.schema);
+            curRecordId = 0;
+        } else {
+            throw new IOException("A newly initialized LakeSoulArrowReader doesn't have VectorSchemaRoot");
+        }
     }
 
     /**

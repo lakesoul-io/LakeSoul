@@ -124,10 +124,10 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             try {
                 long count = 0;
                 GenericRowData reuse = new GenericRowData(rowType.getFieldCount());
+//                List<LakeSoulPartition> partitionList = (List<LakeSoulPartition>) partitionFetcher.fetch(fetcherContext);
                 partitionReader.open(partitionFetcher.fetch(fetcherContext));
                 RowData row;
                 while ((row = partitionReader.read(reuse)) != null) {
-
                     count++;
                     RowData rowData = serializer.copy(row);
                     System.out.println(rowData);
