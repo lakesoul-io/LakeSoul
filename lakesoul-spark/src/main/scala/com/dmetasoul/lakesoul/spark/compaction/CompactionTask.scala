@@ -97,7 +97,7 @@ object CompactionTask {
               println(jsonObj)
               val tablePath = jsonObj.get("table_path").getAsString
               val partitionDesc = jsonObj.get("table_partition_desc").getAsString
-              val rsPartitionDesc = partitionDesc.replace("=", "='") + "'"
+              val rsPartitionDesc = if (partitionDesc.equals("-5")) "" else partitionDesc.replace("=", "='") + "'"
               threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
             }
           })
