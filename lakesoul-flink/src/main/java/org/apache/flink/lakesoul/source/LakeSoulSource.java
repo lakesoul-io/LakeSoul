@@ -51,7 +51,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
         return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0,this.isStreaming,this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
+            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0, this.isStreaming, this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
         }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 
@@ -95,17 +95,17 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
-        if (FlinkUtil.isExistHashPartition(tif)) {
-            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
-                for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                    splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
-                }
-            }
-        } else {
+        if (!FlinkUtil.isExistHashPartition(tif) || readType.equals("incremental")) {
             for (DataFileInfo dfinfo : dfinfos) {
                 ArrayList<Path> tmp = new ArrayList<>();
                 tmp.add(new Path(dfinfo.path()));
                 splits.add(new LakeSoulSplit(i + "", tmp, 0));
+            }
+        } else {
+            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
+                    splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
+                }
             }
         }
         return new LakeSoulStaticSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(splits));

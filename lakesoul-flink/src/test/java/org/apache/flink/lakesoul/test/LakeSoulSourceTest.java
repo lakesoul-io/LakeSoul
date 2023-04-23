@@ -3,6 +3,8 @@ package org.apache.flink.lakesoul.test;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.runtime.state.FileStateBackendTest;
+import org.apache.flink.runtime.state.testutils.BackendForTestStream;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -68,5 +70,26 @@ public class LakeSoulSourceTest {
         String testSql10 = "select name,score,`date` from user_multi /*+ OPTIONS('readstarttime'='2023-04-21 10:00:00','readendtime'='2023-04-21 16:20:00','readtype'='incremental')*/";
         String testSql11 = "select * from user_cdc /*+ OPTIONS('lakesoul_cdc_change_column'='order_id')*/";
         tEnvs.executeSql(testSql11).print();
+    }
+
+    @Test
+    public void lakeSoulStreamFailoverTest() {
+        StreamTableEnvironment tEnvs;
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+        env.setParallelism(4);
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(10 * 1000, CheckpointingMode.EXACTLY_ONCE);
+        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+        env.getCheckpointConfig().setCheckpointTimeout(60 * 1000);
+        env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
+        env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink/");
+
+        tEnvs = StreamTableEnvironment.create(env);
+        Catalog lakesoulCatalog = new LakeSoulCatalog();
+        tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
+        tEnvs.useCatalog("lakeSoul");
+        tEnvs.useDatabase("default");
+        String testSql = "select * from user_info /*+ OPTIONS('readendtime'='2023-04-23 10:00:00')*/";
+        tEnvs.executeSql(testSql).print();
     }
 }

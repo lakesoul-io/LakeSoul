@@ -6,7 +6,6 @@ import com.dmetasoul.lakesoul.meta.MetaVersion;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -115,12 +114,10 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
-        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
-        // todo:流式增量读split取消分组，不需要支持 merge on read
-        for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
-            for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
-            }
+        for (DataFileInfo dfinfo : dfinfos) {
+            ArrayList<Path> tmp = new ArrayList<>();
+            tmp.add(new Path(dfinfo.path()));
+            splits.add(new LakeSoulSplit(i + "", tmp, 0));
         }
         this.startTime = this.nextStartTime;
         return splits;

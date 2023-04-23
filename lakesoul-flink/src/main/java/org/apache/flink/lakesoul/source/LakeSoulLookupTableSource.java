@@ -42,7 +42,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
 
     public LakeSoulLookupTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, ResolvedCatalogTable catalogTable) {
-        super(tableId, rowType, isStreaming, pkColumns);
+        super(tableId, rowType, isStreaming, pkColumns, new HashMap<>());
         this.catalogTable = catalogTable;
         this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
         this.configuration = new Configuration();
@@ -189,13 +189,13 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
         }
 
-        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields(), this.pkColumns);
+        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields(""), this.pkColumns);
 
         return new LakeSoulTableLookupFunction<>(
                 partitionFetcher,
                 fetcherContext,
                 partitionReader,
-                readFields(),
+                readFields(""),
                 keys,
                 lakeSoulTableReloadInterval);
     }
@@ -266,7 +266,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                 partitionInfos.forEach(partitionInfo -> System.out.println(partitionInfo.getPartitionDesc()));
 //
                 DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
-                Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(dataFileInfos);
+                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tableId.table(), dataFileInfos);
                 System.out.println(splitByRangeAndHashPartition);
                 List<Path> paths = new ArrayList<>();
                 splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {

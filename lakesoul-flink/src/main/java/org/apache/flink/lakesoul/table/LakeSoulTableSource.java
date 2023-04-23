@@ -3,8 +3,6 @@ package org.apache.flink.lakesoul.table;
 import org.apache.flink.lakesoul.source.LakeSoulSource;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
-import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
@@ -16,7 +14,6 @@ import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
-import org.apache.flink.table.utils.PartitionPathUtils;
 import org.apache.flink.types.RowKind;
 
 import java.util.*;
@@ -86,32 +83,21 @@ public class LakeSoulTableSource
         this.projectedFields = projectedFields;
     }
 
-    private RowType readFields(String cdcColumn) {
-        int[] fieldIndexs = projectedFields == null
+    protected RowType readFields(String cdcColumn) {
+        int[] fieldIndexs = (projectedFields == null || projectedFields.length == 0)
                 ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
                 : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
         List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
         List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
-//        if (!cdcColumn.equals("")) {
-//            for (String colField : projectNames) {
-//                if(colField.equals(cdcColumn)) {
-//                    int index = projectNames.indexOf(colField);
-//                    projectTypes.remove(index);
-//                    projectNames.remove(index);
-//                    break;
-//                }
-//            }
-//        }
         return RowType.of(projectTypes.toArray(new LogicalType[0]), projectNames.toArray(new String[0]));
     }
 
     private RowType readFieldsAddPk(String cdcColumn) {
-        int[] fieldIndexs = projectedFields == null
+        int[] fieldIndexs =  (projectedFields == null || projectedFields.length == 0)
                 ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
                 : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
         List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
         List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
-        int cdcColumnIndex = -1;
         List<String> pkNamesNotExistInReadFields = new ArrayList<>();
         List<LogicalType> pkTypesNotExistInReadFields = new ArrayList<>();
         for (String pk : pkColumns) {
