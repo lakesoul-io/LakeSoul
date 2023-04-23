@@ -60,3 +60,29 @@ create table if not exists partition_info (
     expression text,
     primary key(table_id, partition_desc, version)
 );
+
+CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS $$
+    DECLARE
+        rs_version integer;
+        rs_table_path text;
+    BEGIN
+        if NEW.commit_op <> 'CompactionCommit' then
+            select version INTO rs_version from partition_info where table_id = NEW.table_id and partition_desc = NEW.partition_desc and version != NEW.version and commit_op = 'CompactionCommit' order by version desc limit 1;
+            if rs_version >= 0 then
+                if NEW.version - rs_version >= 10 then
+                    select table_path into rs_table_path from table_info where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify', concat('{"table_path":"', rs_table_path, '","table_partition_desc":"', NEW.partition_desc, '"}'));
+                end if;
+            else
+                if NEW.version >= 10 then
+                    select table_path into rs_table_path from table_info where table_id = NEW.table_id;
+                    perform pg_notify('lakesoul_compaction_notify', concat('{"table_path":"', rs_table_path, '","table_partition_desc":"', NEW.partition_desc, '"}'));
+                end if;
+            end if;
+            RETURN NULL;
+        end if;
+        RETURN NULL;
+    END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER partition_table_change AFTER INSERT ON partition_info FOR EACH ROW EXECUTE PROCEDURE partition_insert();
