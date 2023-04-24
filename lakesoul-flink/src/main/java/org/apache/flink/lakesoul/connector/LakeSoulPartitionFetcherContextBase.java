@@ -2,16 +2,14 @@ package org.apache.flink.lakesoul.connector;
 
 import com.dmetasoul.lakesoul.meta.*;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.source.LakeSoulSplit;
+import com.google.common.base.Splitter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.filesystem.PartitionFetcher;
+import org.apache.flink.table.utils.PartitionPathUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
-
-import static org.apache.flink.table.filesystem.DefaultPartTimeExtractor.toMills;
 
 /** Base class for table partition fetcher context. */
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
@@ -24,12 +22,17 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
         return tableId;
     }
 
-    private List<String> partitionKeys;
+    protected final List<String> partitionKeys;
+
+    protected final String partitionOrderKeys;
+
 
     protected transient DBManager dbManager;
 
-    public LakeSoulPartitionFetcherContextBase(TableId tableId){
+    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys){
         this.tableId = tableId;
+        this.partitionKeys = partitionKeys;
+        this.partitionOrderKeys = null;
     }
 
     /**
@@ -57,32 +60,52 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
     public List<ComparablePartitionValue> getComparablePartitionValueList() throws Exception {
         List<ComparablePartitionValue> partitionValueList = new ArrayList<>();
         TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<String> partitionInfos = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
+        List<String> partitionDescs = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
                 .map(partitionInfo -> partitionInfo.getPartitionDesc()).collect(Collectors.toList());
-        for (String partitionInfo: partitionInfos) {
-            partitionValueList.add(getComparablePartitionByName(partitionInfo));
+        for (String partitionDesc: partitionDescs) {
+            partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }
         return partitionValueList;
 //        return new ArrayList<>();
     }
 
     private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(
-            String partitionName) {
+            String partitionDesc) {
         return new ComparablePartitionValue<List<String>, String>() {
             private static final long serialVersionUID = 1L;
 
             @Override
             public List<String> getPartitionValue() {
-                return new ArrayList<String>(){{add(partitionName);}};
+                return extractPartitionValues(partitionDesc.replaceAll(",", "/"));
             }
 
             @Override
             public String getComparator() {
-                // order by partition name in alphabetical order
-                // partition name format: pt_year=2020,pt_month=10,pt_day=14
-                return partitionName;
+                // order by partition-order-key name in alphabetical order
+                // partition-order-key name format: pt_year=2020,pt_month=10,pt_day=14
+                StringBuilder comparator = new StringBuilder();
+                if (partitionOrderKeys == null) {
+                    comparator.append(partitionDesc);
+                } else {
+                    Set<String> partitionOrderKeySet = new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
+                    List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
+                    singleParDescList.forEach(singleParDesc -> {
+                        if (partitionOrderKeySet.contains(Splitter.on("=").splitToList(singleParDesc).get(0))) {
+                            comparator.append(singleParDesc);
+                            comparator.append(",");
+                        }
+                    });
+                    comparator.deleteCharAt(comparator.length() - 1);
+                }
+//                System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
+                return comparator.toString();
             }
         };
+    }
+
+    private static List<String> extractPartitionValues(String partitionName) {
+        return PartitionPathUtils.extractPartitionValues(
+                new org.apache.flink.core.fs.Path(partitionName));
     }
 
     /**

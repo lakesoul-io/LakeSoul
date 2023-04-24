@@ -16,7 +16,7 @@ public class LakeSoulPartition implements Serializable {
 
     private List<Path> paths;
 
-    private List<String> partitionKeys=new ArrayList<>(), getPartitionValues=new ArrayList<>();
+    private List<String> partitionKeys= new ArrayList<>(), getPartitionValues= new ArrayList<>();
 
     public LakeSoulPartition(List<Path> paths) {
         this.paths = paths;

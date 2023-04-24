@@ -58,7 +58,6 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     @Override
     public void open(List<LakeSoulPartition> partitions) throws IOException {
         this.partitions = partitions;
-
         recreateInnerReaderForSinglePartition(0);
     }
 
@@ -73,7 +72,8 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     @Nullable
     @Override
     public RowData read(RowData reuse) throws IOException {
-        if (curRecordId >= currentVSR.getRowCount()) {
+        if (curPartitionId >= partitions.size()) return null;
+        if (currentVSR == null || curRecordId >= currentVSR.getRowCount()) {
             if (this.lakesoulArrowReader.hasNext()) {
                 this.currentVSR = this.lakesoulArrowReader.nextResultVectorSchemaRoot();
                 this.curArrowReader = ArrowUtils.createArrowReader(currentVSR, this.schema);
@@ -95,6 +95,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     }
 
     private void recreateInnerReaderForSinglePartition(int partitionIndex) throws IOException {
+        if (partitionIndex >= partitions.size()) return;
         nativeIOReader = new NativeIOReader();
         LakeSoulPartition partition = partitions.get(partitionIndex);
         for (Path path: partition.getPaths()) {
@@ -115,16 +116,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         nativeIOReader.initializeReader();
 
         lakesoulArrowReader = new LakeSoulArrowReader(nativeIOReader, awaitTimeout);
-        if (lakesoulArrowReader.hasNext()) {
-            currentVSR = lakesoulArrowReader.nextResultVectorSchemaRoot();
-            if (this.currentVSR == null) {
-                throw new IOException("nextVectorSchemaRoot not ready");
-            }
-            curArrowReader = ArrowUtils.createArrowReader(currentVSR, this.schema);
-            curRecordId = 0;
-        } else {
-            throw new IOException("A newly initialized LakeSoulArrowReader doesn't have VectorSchemaRoot");
-        }
+        currentVSR = null;
     }
 
     /**

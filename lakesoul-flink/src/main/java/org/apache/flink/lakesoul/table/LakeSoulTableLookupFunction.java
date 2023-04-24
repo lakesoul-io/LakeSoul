@@ -3,12 +3,8 @@ package org.apache.flink.lakesoul.table;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.lakesoul.connector.LakeSoulPartition;
-import org.apache.flink.lakesoul.connector.LakeSoulPartitionReader;
-import org.apache.flink.lakesoul.connector.TestPartitionReader;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.filesystem.PartitionFetcher;
 import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.functions.FunctionContext;
@@ -65,11 +61,9 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             Duration reloadInterval) {
         this.rowType = rowType;
         this.reloadInterval = reloadInterval;
-
         this.fetcherContext = fetcherContext;
         this.partitionFetcher = partitionFetcher;
         this.partitionReader = partitionReader;
-//        this.partitionReader = (PartitionReader<P, RowData>) new TestPartitionReader(); // TODO: 2023-04-20 use LakeSoulTestPartitionReader to pass suite
         this.lookupFieldGetters = new RowData.FieldGetter[lookupKeys.length];
         for (int i = 0; i < lookupKeys.length; i++) {
             lookupFieldGetters[i] =
