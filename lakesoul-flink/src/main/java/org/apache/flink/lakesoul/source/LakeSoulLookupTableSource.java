@@ -88,7 +88,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     }
 
     private TableFunction<RowData> getLookupFunction(int[] keys) {
-        PartitionFetcher.Context<LakeSoulPartition> fetcherContext = new LakeSoulTablePartitionFetcherContext(tableId);
+        PartitionFetcher.Context<LakeSoulPartition> fetcherContext = new LakeSoulTablePartitionFetcherContext(tableId, catalogTable.getPartitionKeys());
 
         final PartitionFetcher<LakeSoulPartition> partitionFetcher;
         // TODO: support reading latest partition for streaming-read
@@ -172,9 +172,8 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
         private static final long serialVersionUID = 1L;
 
-        public LakeSoulTablePartitionFetcherContext(TableId tableId) {
-            super(tableId);
-            System.out.println(this.tableId);
+        public LakeSoulTablePartitionFetcherContext(TableId tableId, List<String> partitionKeys) {
+            super(tableId, partitionKeys);
         }
 
         @Override

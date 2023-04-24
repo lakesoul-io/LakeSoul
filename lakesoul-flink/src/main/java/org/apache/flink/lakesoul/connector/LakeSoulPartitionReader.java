@@ -13,6 +13,7 @@ import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.spark.sql.types.StructField;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -95,9 +96,15 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
 
     private void recreateInnerReaderForSinglePartition(int partitionIndex) throws IOException {
         nativeIOReader = new NativeIOReader();
-        for (Path path: partitions.get(partitionIndex).getPaths()) {
+        LakeSoulPartition partition = partitions.get(partitionIndex);
+        for (Path path: partition.getPaths()) {
             nativeIOReader.addFile(path.getPath());
         }
+
+        for (int i = 0; i < partition.getPartitionKeys().size(); i++) {
+            nativeIOReader.setDefaultColumnValue(partition.getPartitionKeys().get(i), partition.getGetPartitionValues().get(i));
+        }
+
         if (primaryKeys != null) {
             nativeIOReader.setPrimaryKeys(primaryKeys);
         }
