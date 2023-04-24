@@ -25,7 +25,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 
 public class DBManager {
 
@@ -396,17 +403,23 @@ public class DBManager {
                 if (readPartitionVersion == curVersion) {
                     curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
                 } else {
-                    Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
+                    Set<String> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
                     if (commitOp.equals("UpdateCommit")) {
-                        if (historyCommitOps.contains("UpdateCommit") || (historyCommitOps.size() > 1 && historyCommitOps.contains("CompactionCommit"))) {
+                        if (middleCommitOps.contains("UpdateCommit") || (middleCommitOps.size() > 1 && middleCommitOps.contains("CompactionCommit"))) {
                             throw new IllegalStateException("current operation conflicts with other data writing tasks, table path: " + tableInfo.getTablePath());
-                        } else if (historyCommitOps.size() == 1 && historyCommitOps.contains("CompactionCommit")) {
+                        } else if (middleCommitOps.size() == 1 && middleCommitOps.contains("CompactionCommit")) {
+                            List<PartitionInfo> midPartitions = getIncrementalPartitions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
+                            for (PartitionInfo p : midPartitions) {
+                                if (p.getCommitOp().equals("CompactionCommit") && p.getSnapshot().size() > 1) {
+                                    throw new IllegalStateException("current operation conflicts with other data writing tasks, table path: " + tableInfo.getTablePath());
+                                }
+                            }
                             curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
                         } else {
                             updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
                         }
                     } else {
-                        if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
+                        if (middleCommitOps.contains("UpdateCommit") || middleCommitOps.contains("CompactionCommit")) {
                             partitionDescList.remove(partitionDesc);
                             snapshotList.removeAll(partitionInfo.getSnapshot());
                             continue;
@@ -508,8 +521,8 @@ public class DBManager {
             if (readPartitionVersion == curVersion) {
                 curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
             } else {
-                Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
-                if (historyCommitOps.contains("UpdateCommit") || historyCommitOps.contains("CompactionCommit")) {
+                Set<String> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
+                if (middleCommitOps.contains("UpdateCommit") || middleCommitOps.contains("CompactionCommit")) {
                     partitionDescList.remove(i);
                     snapshotList.removeAll(rawPartitionInfo.getSnapshot());
                     i = i - 1;
@@ -549,13 +562,23 @@ public class DBManager {
                 readPartitionVersion = readPartition.getVersion();
             }
 
-            Set<String> historyCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
-            if (historyCommitOps.contains("UpdateCommit") || (historyCommitOps.size() > 1 && historyCommitOps.contains("CompactionCommit"))) {
-                throw new IllegalStateException("current operation conflicts with other write data tasks, table id is: " + tableId);
-            } else if (readPartitionVersion == curVersion || (historyCommitOps.size() == 1 && historyCommitOps.contains("CompactionCommit"))) {
+            if (readPartitionVersion == curVersion) {
                 curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
             } else {
-                updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
+                Set<String> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
+                if (middleCommitOps.contains("UpdateCommit") || (middleCommitOps.size() > 1 && middleCommitOps.contains("CompactionCommit"))) {
+                    throw new IllegalStateException("current operation conflicts with other write data tasks, table id is: " + tableId);
+                } else if (middleCommitOps.size() == 1 && middleCommitOps.contains("CompactionCommit")) {
+                    List<PartitionInfo> midPartitions = getIncrementalPartitions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
+                    for (PartitionInfo p : midPartitions) {
+                        if (p.getCommitOp().equals("CompactionCommit") && p.getSnapshot().size() > 1) {
+                            throw new IllegalStateException("current operation conflicts with other data writing tasks, table id: " + tableId);
+                        }
+                    }
+                    curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
+                } else {
+                    updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
+                }
             }
 
             int newVersion = curVersion + 1;
@@ -616,8 +639,7 @@ public class DBManager {
     }
 
     private void updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo curPartitionInfo, PartitionInfo readPartition) {
-        List<UUID> snapshot = new ArrayList<>();
-        snapshot.addAll(rawPartitionInfo.getSnapshot());
+        List<UUID> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshot());
         List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
         if (readPartition != null) {
             curSnapshot.removeAll(readPartition.getSnapshot());
@@ -692,7 +714,7 @@ public class DBManager {
         return partitionInfoDao.insert(partitionInfo);
     }
 
-    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) throws IOException {
+    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc();
         UUID commitId = dataCommitInfo.getCommitId();
@@ -748,8 +770,7 @@ public class DBManager {
     }
 
     public Namespace getNamespaceByNamespace(String namespace) {
-        Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
-        return namespaceEntity;
+        return namespaceDao.findByNamespace(namespace);
     }
 
     public void updateNamespaceProperties(String namespace, JSONObject properties) {

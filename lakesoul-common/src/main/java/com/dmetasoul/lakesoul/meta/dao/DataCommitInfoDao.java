@@ -21,7 +21,10 @@ import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -127,13 +130,7 @@ public class DataCommitInfoDao {
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 dataCommitInfo = new DataCommitInfo();
-                dataCommitInfo.setTableId(rs.getString("table_id"));
-                dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
-                dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
-                dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
-                dataCommitInfo.setCommitOp(rs.getString("commit_op"));
-                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
-                dataCommitInfo.setCommitted(rs.getBoolean("committed"));
+                createDataCommitInfoFromRs(rs, dataCommitInfo);
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -155,13 +152,7 @@ public class DataCommitInfoDao {
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 dataCommitInfo = new DataCommitInfo();
-                dataCommitInfo.setTableId(rs.getString("table_id"));
-                dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
-                dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
-                dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
-                dataCommitInfo.setCommitOp(rs.getString("commit_op"));
-                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
-                dataCommitInfo.setCommitted(rs.getBoolean("committed"));
+                createDataCommitInfoFromRs(rs, dataCommitInfo);
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -192,13 +183,7 @@ public class DataCommitInfoDao {
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
-                dataCommitInfo.setTableId(rs.getString("table_id"));
-                dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
-                dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
-                dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
-                dataCommitInfo.setCommitOp(rs.getString("commit_op"));
-                dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
-                dataCommitInfo.setCommitted(rs.getBoolean("committed"));
+                createDataCommitInfoFromRs(rs, dataCommitInfo);
                 commitInfoList.add(dataCommitInfo);
             }
         } catch (SQLException e) {
@@ -207,6 +192,16 @@ public class DataCommitInfoDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return commitInfoList;
+    }
+
+    private void createDataCommitInfoFromRs(ResultSet rs, DataCommitInfo dataCommitInfo) throws SQLException {
+        dataCommitInfo.setTableId(rs.getString("table_id"));
+        dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
+        dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
+        dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
+        dataCommitInfo.setCommitOp(rs.getString("commit_op"));
+        dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
+        dataCommitInfo.setCommitted(rs.getBoolean("committed"));
     }
 
     public boolean batchInsert(List<DataCommitInfo> listData) {
@@ -225,7 +220,9 @@ public class DataCommitInfoDao {
         } catch (SQLException e) {
             result = false;
             try {
-                conn.rollback();
+                if (conn != null) {
+                    conn.rollback();
+                }
             } catch (SQLException ex) {
                 ex.printStackTrace();
             }
@@ -250,7 +247,6 @@ public class DataCommitInfoDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from data_commit_info;";
         try {
             conn = DBConnector.getConn();
