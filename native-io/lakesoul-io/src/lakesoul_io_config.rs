@@ -75,6 +75,9 @@ pub struct LakeSoulIOConfig {
     // merge operators
     pub(crate) merge_operators: HashMap<String, String>,
 
+    // default column value
+    pub(crate) default_column_value: HashMap<String, String>,
+
     // tokio runtime related configs
     #[derivative(Default(value = "2"))]
     pub(crate) thread_num: usize,
@@ -165,6 +168,12 @@ impl LakeSoulIOConfigBuilder {
         self.config.merge_operators.insert(field_name, merge_op);
         self
     }
+
+    pub fn with_default_column_value(mut self, field_name: String, value:String) -> Self {
+        self.config.default_column_value.insert(field_name, value);
+        self
+    }
+
 
     pub fn with_object_store_option(mut self, key: String, value: String) -> Self {
         self.config.object_store_options.insert(key, value);

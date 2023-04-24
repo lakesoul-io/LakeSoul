@@ -48,6 +48,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::default_column_stream;
 use crate::default_column_stream::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::Parser as FilterParser;
@@ -134,7 +135,7 @@ impl LakeSoulReader {
                     };
                     stream_vec.push(stream);
                 }
-                let stream = DefaultColumnStream::new_from_streams(stream_vec, schema.clone(), true);
+                let stream = DefaultColumnStream::new_from_streams_with_default(stream_vec, schema.clone(), Arc::new(self.config.default_column_value.clone()));
                 self.schema = Some(stream.schema().clone().into());
                 self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
 
@@ -150,7 +151,8 @@ impl LakeSoulReader {
                     "LakeSoulReader has wrong number of file".to_string(),
                 ))
             } else {
-                let schema: SchemaRef = self.config.schema.0.clone();
+                let finalize_schema: SchemaRef = self.config.schema.0.clone();
+                let schema: SchemaRef = Arc::new(Schema::new(finalize_schema.fields.iter().filter_map(|field|if self.config.default_column_value.get(field.name()).is_none() {Some(field.clone())} else {None}).collect::<Vec<_>>())); //merge_schema
 
                 let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
                 for i in 0..self.config.files.len() {
@@ -181,7 +183,7 @@ impl LakeSoulReader {
                 let streams = stream_res
                     .into_iter()
                     .map(|s| {
-                        SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone(), false)))
+                        SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone())))
                     })
                     .collect();
 
@@ -211,14 +213,15 @@ impl LakeSoulReader {
 
                 let merge_stream = SortedStreamMerger::new_from_streams(
                     streams,
-                    schema,
+                    schema.clone(),
                     self.config.primary_keys.clone(),
                     self.config.batch_size,
                     merge_ops,
                 )
                 .unwrap();
-                self.schema = Some(merge_stream.schema().clone().into());
-                self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));
+                let finalized_stream = DefaultColumnStream::new_from_streams_with_default(vec![Box::pin(merge_stream)], finalize_schema.clone(), Arc::new(self.config.default_column_value.clone()));
+                self.schema = Some(finalized_stream.schema().clone().into());
+                self.stream = Box::new(MaybeUninit::new(Box::pin(finalized_stream)));
                 Ok(())
             }
         }

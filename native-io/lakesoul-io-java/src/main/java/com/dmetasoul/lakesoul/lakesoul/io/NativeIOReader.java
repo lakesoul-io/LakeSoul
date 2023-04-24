@@ -20,6 +20,7 @@ import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
@@ -53,6 +54,12 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             Pointer mergeOpPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, entry.getValue());
             ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_merge_op(ioConfigBuilder, fieldPtr, mergeOpPtr);
         }
+    }
+
+    public void setDefaultColumnValue(String column, String value) {
+        Pointer colPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
+        Pointer valPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_default_column_value(ioConfigBuilder, column, value);
     }
 
     public void initializeReader() throws IOException {
