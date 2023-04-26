@@ -16,10 +16,12 @@ public class LakeSoulPartition implements Serializable {
 
     private List<Path> paths;
 
-    private List<String> partitionKeys= new ArrayList<>(), getPartitionValues= new ArrayList<>();
+    private List<String> partitionKeys= new ArrayList<>(), partitionValues= new ArrayList<>();
 
-    public LakeSoulPartition(List<Path> paths) {
+    public LakeSoulPartition(List<Path> paths, List<String> partitionKeys, List<String> partitionValues) {
         this.paths = paths;
+        this.partitionKeys = partitionKeys;
+        this.partitionValues = partitionValues;
     }
 
     public List<Path> getPaths() {
@@ -30,7 +32,7 @@ public class LakeSoulPartition implements Serializable {
         return partitionKeys;
     }
 
-    public List<String> getGetPartitionValues() {
-        return getPartitionValues;
+    public List<String> getPartitionValues() {
+        return partitionValues;
     }
 }

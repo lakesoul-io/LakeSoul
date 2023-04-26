@@ -1,9 +1,11 @@
 package org.apache.flink.lakesoul.test.connector;
 
+import com.google.crypto.tink.subtle.Random;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
@@ -16,6 +18,7 @@ import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -23,6 +26,22 @@ import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 
 public class CHBenchmark {
+
+
+    public static final int customRecordNum =100;
+
+    public static final int customerNum=50;
+
+    public static final int updateCustomerInterval = 1000;
+
+    public static final int orderNumPerBatch = 20;
+
+    public static final int newOrderInterval = 10000;
+
+    public static final int insertTimes = 6;
+
+
+
     static final String[] drop_table = {
 //            "DROP TABLE IF EXISTS customer",
             "DROP TABLE IF EXISTS oorder",
@@ -67,17 +86,17 @@ public class CHBenchmark {
             "    o_d_id       int       NOT NULL,\n" +
             "    o_id         int       NOT NULL,\n" +
             "    o_c_id       int       NOT NULL,\n" +
-//                    "    o_carrier_id int                DEFAULT NULL,\n" +
-            "    o_carrier_id int                ,\n" +
-            "    o_ol_cnt     int       NOT NULL,\n" +
-            "    o_all_local  int       NOT NULL,\n" +
-//                    "    o_entry_d    timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,\n" +
-            "    o_entry_d    timestamp NOT NULL,\n" +
+////                    "    o_carrier_id int                DEFAULT NULL,\n" +
+//            "    o_carrier_id int                ,\n" +
+//            "    o_ol_cnt     int       NOT NULL,\n" +
+//            "    o_all_local  int       NOT NULL,\n" +
+////                    "    o_entry_d    timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,\n" +
+//            "    o_entry_d    timestamp NOT NULL,\n" +
             "    PRIMARY KEY (o_w_id, o_d_id, o_id) NOT ENFORCED\n" +
 //                    "    UNIQUE (o_w_id, o_d_id, o_c_id, o_id" +
             ")"  +
             "WITH (" +
-            String.format("'path'='%s'", "tmp/oorder") +
+            String.format("'format'='','path'='%s', '%s'='30s'", "tmp/oorder", JobOptions.LOOKUP_JOIN_CACHE_TTL.key()) +
             ")",
 //            "create table default_catalog.default_database.probe (x int,y string, p as proctime()) "
 //                    + "with ('connector'='COLLECTION','is-bounded' = 'false')",
@@ -91,31 +110,77 @@ public class CHBenchmark {
             + " join oorder for system_time as of p.p as b on p.c_w_id=b.o_w_id and p.c_d_id=b.o_d_id";
 
     static final String query_13 =
-            "SELECT\n" +
-            "   c_count, count(*) AS custdist\n" +
-            "FROM (\n" +
-                "SELECT c_id, count(o_id) AS c_count\n" +
+//            "SELECT\n" +
+//            "   c_count, count(*) AS custdist\n" +
+//            "FROM (\n" +
+                "SELECT c_id, count(o_id) AS c_count, proctime() \n" +
                 "FROM " +
                     "default_catalog.default_database.customer\n" +
                     "LEFT OUTER JOIN `oorder` for system_time as of proctime\n" +
                     "ON (c_w_id = o_w_id AND c_d_id = o_d_id AND c_id = o_c_id " +
 //                    "AND o_carrier_id > 8" +
                     ")\n" +
-                "GROUP BY c_id) AS c_orders\n" +
-            "GROUP BY c_count\n";
+                "GROUP BY c_id" +
+//                        ") AS c_orders\n" +
+//            "GROUP BY c_count\n" +
+            "";
 //                    +
 //            "ORDER BY custdist DESC, c_count DESC";
 
+    static class NewOrderThread extends Thread {
+
+        transient TableEnvironment batchEnv;
+        LakeSoulCatalog lakeSoulCatalog;
+
+
+        private String tableName = "oorder";
+
+        public NewOrderThread(LakeSoulCatalog lakeSoulCatalog) {
+            this.lakeSoulCatalog = lakeSoulCatalog;
+        }
+
+        @Override
+        public void run() {
+            batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+            batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+            batchEnv.useCatalog(lakeSoulCatalog.getName());
+            int orderNum = 0;
+            for (int i = 0; i < insertTimes; i++) {
+                System.out.println("new orders: " + i);
+                List<String> valueList =
+                        new ArrayList<>();
+                for (int j = 0; j < orderNumPerBatch; j++) {
+                    valueList.add(String.format("(1, 1, %s, %s)", orderNum++, Random.randInt(customerNum)));
+                }
+//                        Arrays.asList("(1, 11, 9, 111)");
+                String values = String.join(",",valueList);
+                String insertSql = String.format("insert into %s values %s", tableName, values);
+                batchEnv.executeSql(insertSql);
+
+
+                try {
+                    Thread.sleep(newOrderInterval);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+    }
 
     public static void initCollectionSourceData() {
-        List<Row> data = Arrays.asList(
-                Row.of(1, 11, 111),
-                Row.of(1, 11, 112),
-                Row.of(2, 22, 222),
-                Row.of(2, 23, 222),
-                Row.of(3, 33, 333),
-                Row.of(4, 44, 444));
-        TestCollectionTableFactory.initData(data);
+        List<Row> data =
+                new ArrayList<>();
+        for (int i = 0; i < customRecordNum; i++) {
+            data.add(Row.of(1, 1, Random.randInt(customerNum)));
+        }
+//                Arrays.asList(
+//                Row.of(1, 11, 111),
+//                Row.of(1, 11, 112),
+//                Row.of(2, 22, 222),
+//                Row.of(2, 23, 222),
+//                Row.of(3, 33, 333),
+//                Row.of(4, 44, 444));
+        TestCollectionTableFactory.initData(data, new ArrayList<>(), updateCustomerInterval);
     }
 
     public static void main(String[] args) {
@@ -156,6 +221,7 @@ public class CHBenchmark {
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         batchEnv.useCatalog(lakeSoulCatalog.getName());
+//        batchEnv.executeSql("insert into oorder values (1, 1, 0, 2),(1, 1, 1, 1)");
 //        try {
 //            batchEnv.executeSql(
 //                            "insert into bounded_table values (1,'a',10),(2,'a',21),(2,'b',22),(3,'c',33)")
@@ -168,11 +234,14 @@ public class CHBenchmark {
 //        Arrays.stream(tableEnv.listTables()).forEach(System.out::println);
 //        tableEnv.executeSql(query_0);
         initCollectionSourceData();
-        TableImpl flinkTable =
-                (TableImpl)
-                        tableEnv.sqlQuery(
-                                query_13);
-        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        System.out.println(results.toString());
+        NewOrderThread newOrderThread = new NewOrderThread(lakeSoulCatalog);
+        newOrderThread.start();
+//        TableImpl flinkTable =
+//                (TableImpl)
+//                        tableEnv.sqlQuery(
+//                                query_13);
+//        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+//        System.out.println(results.toString());
+        tableEnv.executeSql(query_13).print();
     }
 }

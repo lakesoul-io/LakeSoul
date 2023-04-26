@@ -172,6 +172,7 @@ public class LakeSoulCatalog implements Catalog {
             String tableId = tableInfo.getTableId();
             dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId, tablePath.getDatabaseName());
             dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
+            dbManager.deleteDataCommitInfo(tableId);
             dbManager.deletePartitionInfoByTableId(tableId);
         } else {
             throw new TableNotExistException(CATALOG_NAME, tablePath);

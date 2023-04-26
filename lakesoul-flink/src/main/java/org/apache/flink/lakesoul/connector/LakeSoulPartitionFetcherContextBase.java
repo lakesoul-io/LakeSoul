@@ -16,6 +16,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
 
     List<Map<String, String>> remainingPartitions;
+
     protected TableId tableId;
 
     public TableId getTableId() {
@@ -29,10 +30,10 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
     protected transient DBManager dbManager;
 
-    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys){
+    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys){
         this.tableId = tableId;
         this.partitionKeys = partitionKeys;
-        this.partitionOrderKeys = null;
+        this.partitionOrderKeys = partitionOrderKeys;
     }
 
     /**
@@ -66,7 +67,6 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
             partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }
         return partitionValueList;
-//        return new ArrayList<>();
     }
 
     private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(
@@ -84,19 +84,22 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                 // order by partition-order-key name in alphabetical order
                 // partition-order-key name format: pt_year=2020,pt_month=10,pt_day=14
                 StringBuilder comparator = new StringBuilder();
-                if (partitionOrderKeys == null) {
-                    comparator.append(partitionDesc);
-                } else {
-                    Set<String> partitionOrderKeySet = new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
-                    List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
-                    singleParDescList.forEach(singleParDesc -> {
-                        if (partitionOrderKeySet.contains(Splitter.on("=").splitToList(singleParDesc).get(0))) {
-                            comparator.append(singleParDesc);
-                            comparator.append(",");
-                        }
-                    });
-                    comparator.deleteCharAt(comparator.length() - 1);
-                }
+                // if partitionOrderKeys is null, default to use all partitionKeys to sort
+                Set<String> partitionOrderKeySet =
+                        partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
+                List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
+                Map<String, String> parDescMap = new HashMap<>();
+                singleParDescList.forEach(singleParDesc -> {
+                    List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
+                    parDescMap.put(kvs.get(0), kvs.get(1));
+                });
+                // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
+                partitionKeys.forEach(partitionKey -> {
+                    if (partitionOrderKeySet.contains(partitionKey)) {
+                        comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + ",");
+                    }
+                });
+                comparator.deleteCharAt(comparator.length() - 1);
 //                System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
                 return comparator.toString();
             }

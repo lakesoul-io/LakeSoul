@@ -327,7 +327,6 @@ public class FlinkUtil {
         Map<String, Map<String, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         for (DataFileInfo pif : dfinfos) {
             // todo : add procession of no hashPartition
-            System.out.println(pif);
             if (!BucketingUtils.getBucketId(new Path(pif.path()).getName()).isDefined()) {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent("-1", v -> new ArrayList<>())

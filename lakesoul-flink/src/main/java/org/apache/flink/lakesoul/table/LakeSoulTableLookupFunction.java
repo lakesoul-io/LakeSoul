@@ -89,7 +89,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
     public void eval(Object... values) {
         // TODO: 2023/4/19 hard-code for pass suite
         checkCacheReload();
-        System.out.println(cache);
         RowData lookupKey = GenericRowData.of(values);
         List<RowData> matchedRows = cache.get(lookupKey);
         if (matchedRows != null) {
@@ -101,9 +100,12 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
 
     private void checkCacheReload() {
         if (nextLoadTime > System.currentTimeMillis()) {
+            System.out.println(String.format("[debug][yuchanghui] nextLoadTime is %d, > current", nextLoadTime));
             return;
         }
         if (nextLoadTime > 0) {
+            System.out.println(String.format("[debug][yuchanghui] Lookup join cache has expired after {} minute(s), reloading",
+                    reloadInterval.toMinutes()));
             LOG.info(
                     "Lookup join cache has expired after {} minute(s), reloading",
                     reloadInterval.toMinutes());
@@ -124,7 +126,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                 while ((row = partitionReader.read(reuse)) != null) {
                     count++;
                     RowData rowData = serializer.copy(row);
-                    System.out.println(rowData);
                     RowData key = extractLookupKey(rowData);
                     List<RowData> rows = cache.computeIfAbsent(key, k -> new ArrayList<>());
                     rows.add(rowData);

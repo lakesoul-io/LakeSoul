@@ -23,7 +23,6 @@ import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
 import org.apache.flink.table.runtime.typeutils.InternalSerializers;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.AfterClass;
@@ -32,6 +31,7 @@ import org.junit.Test;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,21 +40,45 @@ public class LakeSoulLookupJoinCase {
     private static TableEnvironment tableEnv;
     private static LakeSoulCatalog lakeSoulCatalog;
 
+    private static boolean ProbeTableGenerateDataOnce;
+
     @BeforeClass
     public static void setup() {
         tableEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         lakeSoulCatalog = new LakeSoulCatalog();
         tableEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tableEnv.useCatalog(lakeSoulCatalog.getName());
+        ProbeTableGenerateDataOnce = true;
         // create probe table
-        TestCollectionTableFactory.initData(
-                Arrays.asList(
-                        Row.of(1, "a"),
-                        Row.of(1, "c"),
-                        Row.of(2, "b"),
-                        Row.of(2, "c"),
-                        Row.of(3, "c"),
-                        Row.of(4, "d")));
+        if (ProbeTableGenerateDataOnce) {
+            TestCollectionTableFactory.initData(
+                    Arrays.asList(
+                            Row.of(1, "a"),
+                            Row.of(1, "c"),
+                            Row.of(2, "b"),
+                            Row.of(2, "c"),
+                            Row.of(3, "c"),
+                            Row.of(4, "d")));
+        } else {
+            TestCollectionTableFactory.initData(
+                    Arrays.asList(
+                            Row.of(1, "a"),
+                            Row.of(1, "c"),
+                            Row.of(2, "b"),
+                            Row.of(2, "c"),
+                            Row.of(3, "c"),
+                            Row.of(4, "d"),
+
+                            Row.of(1, "a"),
+                            Row.of(1, "c"),
+                            Row.of(2, "b"),
+                            Row.of(2, "c"),
+                            Row.of(3, "c"),
+                            Row.of(4, "d")),
+                    new ArrayList<>(),
+                    5000);
+        }
+
         tableEnv.executeSql(
                 "create table default_catalog.default_database.probe (x int,y string, p as proctime()) "
                         + "with ('connector'='COLLECTION','is-bounded' = 'false')");
@@ -89,7 +113,7 @@ public class LakeSoulLookupJoinCase {
                                 + " with ('format'='','%s'='5min', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_hash_table"));
 
-        // create the hive partitioned table
+        // create the lakesoul partitioned table
         tableEnv.executeSql(
                 String.format(
                         "create table partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
@@ -136,8 +160,19 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        JobOptions.PARTITION_ORDER_KEYS.key(),
                         JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
                         "tmp/partition_table_2"));
+
+        tableEnv.executeSql(
+                String.format(
+                        "create table partition_table_3 (x int, y string, z string, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        "tmp/partition_table_3"));
 //
 //        // create the hive partitioned table3 which uses 'partition-time'.
 //        tableEnv.executeSql(
@@ -348,7 +383,7 @@ public class LakeSoulLookupJoinCase {
     }
 
     @Test
-    public void testLookupJoinPartitionedTable() throws Exception {
+    public void testLookupJoinPartitionedTableWithAllPartitionOrdered() throws Exception {
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -378,7 +413,7 @@ public class LakeSoulLookupJoinCase {
     }
 
     @Test
-    public void testLookupJoinPartitionedTableWithParticularPartitionOrdered() throws Exception {
+    public void testLookupJoinPartitionedTableWithPartialPartitionOrdered() throws Exception {
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -397,7 +432,6 @@ public class LakeSoulLookupJoinCase {
                                 + "(2,'a',2020,'121','08','01'),"
                                 + "(2,'b',2020,'122','08','01')")
                 .await();
-
         TableImpl flinkTable =
                 (TableImpl)
                         tableEnv.sqlQuery(
@@ -408,6 +442,53 @@ public class LakeSoulLookupJoinCase {
         assertThat(results.toString())
                 .isEqualTo(
                         "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], +I[2, b, 50, 2020, 09, 31], +I[3, c, 33, 2020, 10, 31], +I[4, d, 50, 2020, 09, 31]]");
+    }
+
+    // Note: Please set ProbeTableGenerateDataOnce to "false" before run this test
+    @Test
+    public void testLookupJoinPartitionedTableWithCacheReloaded() throws Exception {
+        // constructs test data using dynamic partition
+        TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        batchEnv.useCatalog(lakeSoulCatalog.getName());
+        batchEnv.executeSql(
+                        "insert overwrite partition_table_3 values "
+                                + "(1,'a','11',2019,'09','01'),"
+                                + "(1,'a','10',2020,'10','31'),"
+                                + "(2,'b','50',2020,'09','31'),"
+                                + "(2,'a','53',2020,'09','31'),"
+                                + "(3,'c','33',2020,'10','31'),"
+                                + "(4,'d','50',2020,'09','31'),"
+                                + "(2,'b','22',2020,'10','31'),"
+                                + "(3,'d','10',2020,'10','31'),"
+                                + "(1,'a','101',2020,'08','01'),"
+                                + "(2,'a','121',2020,'08','01'),"
+                                + "(2,'b','122',2020,'08','01')")
+                .await();
+        Thread insertDimTableThread = new InsertDataThread(10000,
+                "insert overwrite partition_table_3 values "
+                + "(1,'a','88',2021,'05','01'),"
+                + "(1,'a','10',2021,'05','01'),"
+                + "(2,'b','50',2021,'05','01'),"
+                + "(3,'c','99',2021,'05','01'),"
+                + "(2,'b','66',2020,'09','31')");
+        insertDimTableThread.start();
+        TableImpl flinkTable =
+                (TableImpl)
+                        tableEnv.sqlQuery(
+                                "select p.x, p.y, b.z, b.pt_year, b.pt_mon, b.pt_day from "
+                                        + " default_catalog.default_database.probe as p"
+                                        + " join partition_table_3 for system_time as of p.p as b on p.x=b.x and p.y=b.y");
+
+
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        insertDimTableThread.join();
+        assertThat(results.toString())
+                .isEqualTo(
+                        "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], " +
+                                "+I[3, c, 33, 2020, 10, 31], +I[1, a, 88, 2021, 05, 01], +I[1, a, 10, 2021, 05, 01], " +
+                                "+I[2, b, 50, 2021, 05, 01], +I[3, c, 99, 2021, 05, 01]]"
+                );
     }
 
     @Test
@@ -580,6 +661,36 @@ public class LakeSoulLookupJoinCase {
 
         if (lakeSoulCatalog != null) {
             lakeSoulCatalog.close();
+        }
+    }
+
+    private class InsertDataThread extends Thread { ;
+
+        private int sleepMilliSeconds;
+
+        private String insertSql;
+        public InsertDataThread(int sleepMilliSeconds, String insertSql) {
+            this.sleepMilliSeconds = sleepMilliSeconds;
+            this.insertSql = insertSql;
+        }
+
+        @Override
+        public void run() {
+            TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+            batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+            batchEnv.useCatalog(lakeSoulCatalog.getName());
+            try {
+                Thread.sleep(sleepMilliSeconds);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            try {
+                batchEnv.executeSql(insertSql).await();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 

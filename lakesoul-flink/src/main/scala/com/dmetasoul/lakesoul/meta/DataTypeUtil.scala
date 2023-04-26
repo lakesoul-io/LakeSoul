@@ -88,6 +88,7 @@ object DataTypeUtil {
       case "long" => "BIGINT"
       case "int" => "INT"
       case "integer" => "INT"
+      case "float" => "FLOAT"
       case "double" => "DOUBLE"
       case "date" => "DATE"
       case "boolean" => "BOOLEAN"
