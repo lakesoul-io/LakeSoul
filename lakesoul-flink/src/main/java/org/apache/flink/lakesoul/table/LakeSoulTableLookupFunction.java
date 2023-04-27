@@ -87,7 +87,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
     }
 
     public void eval(Object... values) {
-        // TODO: 2023/4/19 hard-code for pass suite
         checkCacheReload();
         RowData lookupKey = GenericRowData.of(values);
         List<RowData> matchedRows = cache.get(lookupKey);
@@ -114,7 +113,7 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             LOG.info("Populating lookup join cache");
         }
         int numRetry = 0;
-        // todo: read data from lakesoul
+        // load data from lakesoul to cache
         while (true) {
             cache.clear();
             try {

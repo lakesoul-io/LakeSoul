@@ -7,6 +7,7 @@ import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.SqlDialect;
@@ -87,41 +88,50 @@ public class LakeSoulLookupJoinCase {
         // create the lakesoul non-partitioned non-hashed table
         tableEnv.executeSql(
                 String.format(
-                        "create table bounded_table (x int, y string, z int) with ('format'='','%s'='5min', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_table"));
+                        "create table bounded_table (x int, y string, z int) with ('format'='','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_table"));
 
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         // create the lakesoul non-partitioned hashed table
         tableEnv.executeSql(
                 String.format(
-                        "create table bounded_hash_table (x int, y string, z int, primary key(x) not enforced) with ('format'='','%s'='5min', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_hash_table"));
+                        "create table bounded_hash_table (x int, y string, z int, primary key(x) not enforced) with ('format'='','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_hash_table"));
 
         // create the lakesoul partitioned non-hashed table
         tableEnv.executeSql(
                 String.format(
                         "create table bounded_partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
                                 + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='','%s'='5min', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_table"));
+                                + " with ('format'='','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_partition_table"));
 
         // create the lakesoul partitioned hashed table
         tableEnv.executeSql(
                 String.format(
                         "create table bounded_partition_hash_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string, primary key(x) not enforced) partitioned by ("
                                 + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='','%s'='5min', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/bounded_partition_hash_table"));
+                                + " with ('format'='','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_partition_hash_table"));
 
         // create the lakesoul partitioned table
         tableEnv.executeSql(
                 String.format(
                         "create table partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
                                 + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='','%s'='5min', '%s'='true', '%s'='latest', 'path'='%s')",
+                                + " with ('format'='','%s'='5min', '%s'='true', '%s'='latest', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_tables"));
 ////        tableEnv.executeSql(
 ////                String.format(
@@ -145,10 +155,11 @@ public class LakeSoulLookupJoinCase {
                 String.format(
                         "create table partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
                                 + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='', '%s'='5min', '%s' = 'true', '%s' = 'latest', 'path'='%s')",
+                                + " with ('format'='', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_table_1"));
 
         // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
@@ -156,22 +167,24 @@ public class LakeSoulLookupJoinCase {
                 String.format(
                         "create table partition_table_2 (x int, y string, pt_year int, z string, pt_mon string, pt_day string) partitioned by ("
                                 + " pt_year, z, pt_mon, pt_day)"
-                                + " with ('format'='', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='pt_year,pt_mon,pt_day', '%s'='4', 'path'='%s')",
+                                + " with ('format'='', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='pt_year,pt_mon,pt_day', '%s'='4', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         JobOptions.PARTITION_ORDER_KEYS.key(),
                         JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_table_2"));
 
         tableEnv.executeSql(
                 String.format(
                         "create table partition_table_3 (x int, y string, z string, pt_year int, pt_mon string, pt_day string) partitioned by ("
                                 + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', 'path'='%s')",
+                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_table_3"));
 //
 //        // create the hive partitioned table3 which uses 'partition-time'.

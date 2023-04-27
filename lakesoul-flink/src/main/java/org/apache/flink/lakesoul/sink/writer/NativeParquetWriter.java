@@ -27,6 +27,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -80,8 +81,9 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        // TODO: need to determine when to set auxSortCols(useCDC ? set : no_set)
-//        nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+        if (conf.getBoolean(LakeSoulSinkOptions.USE_CDC) == true) {
+            nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+        }
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);

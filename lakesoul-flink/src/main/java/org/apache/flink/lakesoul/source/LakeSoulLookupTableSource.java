@@ -4,6 +4,7 @@ import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.commons.lang.StringUtils;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.connector.LakeSoulPartition;
 import org.apache.flink.lakesoul.connector.LakeSoulPartitionFetcherContextBase;
@@ -94,9 +95,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
     private TableFunction<RowData> getLookupFunction(int[] keys) {
         PartitionFetcher.Context<LakeSoulPartition> fetcherContext = new LakeSoulTablePartitionFetcherContext(tableId, catalogTable.getPartitionKeys(), configuration.get(PARTITION_ORDER_KEYS));
-        int latestPartitionNumber = getLatestPartitionNumber();
+        int latestPartitionNumber = getLatestPartitionNumber(); // the number of latest partitions to fetch
         final PartitionFetcher<LakeSoulPartition> partitionFetcher;
-        // TODO: support reading latest partition for streaming-read
+
         if (catalogTable.getPartitionKeys().isEmpty()) {
             // non-partitioned table, the fetcher fetches the partition which represents the given table
             partitionFetcher = context -> {
@@ -104,12 +105,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
                 partValueList.add(
                         context.getPartition(new ArrayList<>())
-                                .orElseThrow(
-                                        () ->
-                                                new IllegalArgumentException(
-                                                        String.format(
-                                                                "Fetch partition fail for lakesoul table %s.", ""
-                                                        ))));
+                                .orElse(new LakeSoulPartition(null, null, null)));
                 return partValueList;
             };
         } else if(isStreamingSource()) {
@@ -123,7 +119,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                     comparablePartitionValues.sort(
                             (o1, o2) -> o2.getComparator().compareTo(o1.getComparator()));
                     List<PartitionFetcher.Context.ComparablePartitionValue> latestPartitions = new ArrayList<>();
-                    // TODO: update code here
+
                     for (int i = 0; i < latestPartitionNumber && i < comparablePartitionValues.size(); i++) {
                         latestPartitions.add(comparablePartitionValues.get(i));
                     }
@@ -139,12 +135,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                 context.getPartition(
                                                 (List<String>)
                                                         comparablePartitionValue.getPartitionValue())
-                                        .orElseThrow(
-                                                () ->
-                                                        new IllegalArgumentException(
-                                                                String.format(
-                                                                        "Fetch partition fail for lakesoul table %s.", ""
-                                                                ))));
+                                        .orElse(new LakeSoulPartition(null, null, null)));
                     }
                 } else {
                     throw new IllegalArgumentException(
@@ -172,12 +163,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                             context.getPartition(
                                             (List<String>)
                                                     comparablePartitionValue.getPartitionValue())
-                                    .orElseThrow(
-                                            () ->
-                                                    new IllegalArgumentException(
-                                                            String.format(
-                                                                    "Fetch partition fail for lakesoul table %s.", ""
-                                                            ))));
+                                    .orElse(new LakeSoulPartition(null, null, null)));
                 }
                 System.out.println("[debug][yuchanghui] context fetch result is: ");
                 for (LakeSoulPartition partition: partValueList) {
@@ -258,15 +244,14 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                             partitionKeys.size(), partValues.size()));
             TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
             if (partValues.isEmpty()) {
-
 //        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
                 List<PartitionInfo> partitionInfos = DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
                 System.out.println("[debug][yuchanghui] partitionInfos is " + partitionInfos);
                 if (partitionInfos.isEmpty()) return Optional.empty();
                 partitionInfos.forEach(partitionInfo -> System.out.println(partitionInfo.getPartitionDesc()));
-//
+
                 DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
-                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tableId.table(), dataFileInfos);
+                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo.getTableId(), dataFileInfos);
                 System.out.println(splitByRangeAndHashPartition);
                 List<Path> paths = new ArrayList<>();
                 splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
@@ -277,16 +262,15 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
                 return Optional.of(new LakeSoulPartition(paths, partitionKeys, partValues));
             } else {
-                Map<String, String> kvs = new LinkedHashMap<>(100);
+                List<String> kvPairs = new ArrayList<>();
                 for (int i = 0; i < partitionKeys.size(); i++) {
-                    kvs.put(partitionKeys.get(i), partValues.get(i));
+                    kvPairs.add(String.join("=", partitionKeys.get(i), partValues.get(i)));
                 }
-                // TODO: update syntax here
-                int len = kvs.toString().length();
-                String partitionDesc = kvs.toString().substring(1, len - 1).replaceAll(" ", "");
+                String partitionDesc = StringUtils.join(kvPairs.toArray(), ",");
                 DataFileInfo[] dataFileInfos = FlinkUtil.getSinglePartitionDataFileInfo(tableInfo, partitionDesc);
                 List<Path> paths = new ArrayList<>();
                 for (DataFileInfo dif: dataFileInfos) paths.add(new Path(dif.path()));
+
                 return Optional.of(new LakeSoulPartition(paths, partitionKeys, partValues));
             }
         }
