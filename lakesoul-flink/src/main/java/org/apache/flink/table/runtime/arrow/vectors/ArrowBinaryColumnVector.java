@@ -19,28 +19,30 @@
 package org.apache.flink.table.runtime.arrow.vectors;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.columnar.vector.IntColumnVector;
+import org.apache.flink.table.data.columnar.vector.BytesColumnVector;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.FixedSizeBinaryVector;
 
-/** Arrow column vector for Int. */
+/** Arrow column vector for Binary. */
 @Internal
-public final class ArrowIntColumnVector implements IntColumnVector {
+public final class ArrowBinaryColumnVector implements BytesColumnVector {
 
-    private final IntVector intVector;
+    /** Container which is used to store the sequence of varbinary values of a column to read. */
+    private final FixedSizeBinaryVector fixedSizeBinaryVector;
 
-    public ArrowIntColumnVector(IntVector intVector) {
-        this.intVector = Preconditions.checkNotNull(intVector);
+    public ArrowBinaryColumnVector(FixedSizeBinaryVector fixedSizeBinaryVector) {
+        this.fixedSizeBinaryVector = Preconditions.checkNotNull(fixedSizeBinaryVector);
     }
 
     @Override
-    public int getInt(int i) {
-        return intVector.get(i);
+    public Bytes getBytes(int i) {
+        byte[] bytes = fixedSizeBinaryVector.get(i);
+        return new Bytes(bytes, 0, bytes.length);
     }
 
     @Override
     public boolean isNullAt(int i) {
-        return intVector.isNull(i);
+        return fixedSizeBinaryVector.isNull(i);
     }
 }

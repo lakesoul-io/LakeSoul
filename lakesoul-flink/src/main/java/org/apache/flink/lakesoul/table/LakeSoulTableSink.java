@@ -35,6 +35,7 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.ProviderContext;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -94,11 +95,14 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
   @Override
   public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-    return (DataStreamSinkProvider) (dataStream) -> {
-      try {
-        return createStreamingSink(dataStream, context);
-      } catch (IOException e) {
-        throw new RuntimeException(e);
+    return new DataStreamSinkProvider() {
+      @Override
+      public DataStreamSink<?> consumeDataStream(ProviderContext providerContext, DataStream<RowData> dataStream) {
+        try {
+          return createStreamingSink(dataStream, context);
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
       }
     };
   }
