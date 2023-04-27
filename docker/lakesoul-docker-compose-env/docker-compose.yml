@@ -55,7 +55,7 @@ services:
     hostname: minio
 
   jobmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    image: flink:1.17.1-scala_2.12-java8
     ports:
       - "8081:8081"
     command: jobmanager
@@ -73,11 +73,16 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+      - FLINK_HOME=/opt/flink
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+      - "$HADOOP_HOME:/opt/hadoop"
+      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
 
   taskmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    image: flink:1.17.1-scala_2.12-java8
     depends_on:
       - jobmanager
     command: taskmanager
@@ -98,8 +103,13 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+      - FLINK_HOME=/opt/flink
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+      - "$HADOOP_HOME:/opt/hadoop"
+      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
 
 networks:
   default:

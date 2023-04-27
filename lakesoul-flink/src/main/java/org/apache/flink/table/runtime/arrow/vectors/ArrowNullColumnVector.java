@@ -19,28 +19,18 @@
 package org.apache.flink.table.runtime.arrow.vectors;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.columnar.vector.IntColumnVector;
-import org.apache.flink.util.Preconditions;
+import org.apache.flink.table.data.columnar.vector.ColumnVector;
 
-import org.apache.arrow.vector.IntVector;
-
-/** Arrow column vector for Int. */
+/** Arrow column vector for Null. */
 @Internal
-public final class ArrowIntColumnVector implements IntColumnVector {
+public final class ArrowNullColumnVector implements ColumnVector {
 
-    private final IntVector intVector;
+    public static final ArrowNullColumnVector INSTANCE = new ArrowNullColumnVector();
 
-    public ArrowIntColumnVector(IntVector intVector) {
-        this.intVector = Preconditions.checkNotNull(intVector);
-    }
-
-    @Override
-    public int getInt(int i) {
-        return intVector.get(i);
-    }
+    private ArrowNullColumnVector() {}
 
     @Override
     public boolean isNullAt(int i) {
-        return intVector.isNull(i);
+        return true;
     }
 }

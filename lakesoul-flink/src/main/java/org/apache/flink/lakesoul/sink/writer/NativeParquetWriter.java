@@ -19,6 +19,7 @@ import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collections;
@@ -115,6 +116,17 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         public String toString() {
             return "PendingFile(" +
                     path + ", " + creationTime + ")";
+        }
+
+        @Nullable
+        @Override
+        public Path getPath() {
+            return new Path(path);
+        }
+
+        @Override
+        public long getSize() {
+            return 0;
         }
 
         @Override

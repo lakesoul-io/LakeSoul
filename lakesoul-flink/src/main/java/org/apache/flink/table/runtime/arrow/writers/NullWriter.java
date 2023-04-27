@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,31 +16,20 @@
  * limitations under the License.
  */
 
-package org.apache.flink.table.runtime.arrow.vectors;
+package org.apache.flink.table.runtime.arrow.writers;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.columnar.vector.IntColumnVector;
-import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.NullVector;
 
-/** Arrow column vector for Int. */
+/** {@link ArrowFieldWriter} for Null. */
 @Internal
-public final class ArrowIntColumnVector implements IntColumnVector {
+public class NullWriter<T> extends ArrowFieldWriter<T> {
 
-    private final IntVector intVector;
-
-    public ArrowIntColumnVector(IntVector intVector) {
-        this.intVector = Preconditions.checkNotNull(intVector);
+    public NullWriter(NullVector nullVector) {
+        super(nullVector);
     }
 
     @Override
-    public int getInt(int i) {
-        return intVector.get(i);
-    }
-
-    @Override
-    public boolean isNullAt(int i) {
-        return intVector.isNull(i);
-    }
+    public void doWrite(T in, int ordinal) {}
 }

@@ -44,6 +44,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
+          wget https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O $HOME/hadoop-3.3.5.tar.gz && tar xf $HOME/hadoop-3.3.5.tar.gz -C $HOME
+          echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> $GITHUB_ENV
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.1/flink-s3-fs-hadoop-1.17.1.jar -O $HOME/flink-s3-fs-hadoop-1.17.1.jar
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:

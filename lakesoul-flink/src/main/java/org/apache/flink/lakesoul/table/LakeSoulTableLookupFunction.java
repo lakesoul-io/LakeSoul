@@ -6,10 +6,10 @@ package org.apache.flink.lakesoul.table;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.connector.file.table.PartitionFetcher;
+import org.apache.flink.connector.file.table.PartitionReader;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.PartitionFetcher;
-import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.runtime.typeutils.InternalSerializers;

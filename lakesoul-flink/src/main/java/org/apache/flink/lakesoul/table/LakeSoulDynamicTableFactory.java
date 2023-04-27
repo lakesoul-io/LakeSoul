@@ -11,6 +11,7 @@ import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -32,7 +33,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
-        FlinkUtil.setLocalTimeZone(options, FlinkUtil.getLocalTimeZone((Configuration) context.getConfiguration()));
+        FlinkUtil.setLocalTimeZone(options,
+                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
 
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
@@ -70,7 +72,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
-        FlinkUtil.setLocalTimeZone(options, FlinkUtil.getLocalTimeZone((Configuration) context.getConfiguration()));
+        FlinkUtil.setLocalTimeZone(options,
+                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
