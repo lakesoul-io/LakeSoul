@@ -72,10 +72,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
         this.serializer = InternalSerializers.create(rowType);
     }
 
-    @Override
-    public TypeInformation<RowData> getResultType() {
-        return InternalTypeInfo.of(rowType);
-    }
 
     @Override
     public void open(FunctionContext context) throws Exception {
@@ -99,12 +95,11 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
 
     private void checkCacheReload() {
         if (nextLoadTime > System.currentTimeMillis()) {
-            System.out.println(String.format("[debug][yuchanghui] nextLoadTime is %d, > current", nextLoadTime));
             return;
         }
         if (nextLoadTime > 0) {
-            System.out.println(String.format("[debug][yuchanghui] Lookup join cache has expired after {} minute(s), reloading",
-                    reloadInterval.toMinutes()));
+//            System.out.println(String.format("[debug][yuchanghui] Lookup join cache has expired after {} minute(s), reloading",
+//                    reloadInterval.toMinutes()));
             LOG.info(
                     "Lookup join cache has expired after {} minute(s), reloading",
                     reloadInterval.toMinutes());

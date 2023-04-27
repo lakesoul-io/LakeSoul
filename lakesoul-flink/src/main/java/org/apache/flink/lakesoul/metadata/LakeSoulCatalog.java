@@ -201,6 +201,7 @@ public class LakeSoulCatalog implements Catalog {
             if (!ignoreIfExists) {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
             }
+            else return;
         }
         String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
         Map<String, String> tableOptions = table.getOptions();

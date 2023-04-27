@@ -100,7 +100,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                     }
                 });
                 comparator.deleteCharAt(comparator.length() - 1);
-//                System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
+//                //System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
                 return comparator.toString();
             }
         };

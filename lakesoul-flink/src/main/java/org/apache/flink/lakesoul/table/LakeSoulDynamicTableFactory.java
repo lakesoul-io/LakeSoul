@@ -93,7 +93,7 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     private boolean formatFactoryExists(Context context, Class<?> factoryClass) {
         Configuration options = Configuration.fromMap(context.getCatalogTable().getOptions());
         String identifier = options.get(FactoryUtil.FORMAT);
-        if (identifier == null) {
+        if (!"lakesoul".equals(identifier)) {
             throw new ValidationException(
                     String.format(
                             "Table options do not contain an option key '%s' for discovering a format.",

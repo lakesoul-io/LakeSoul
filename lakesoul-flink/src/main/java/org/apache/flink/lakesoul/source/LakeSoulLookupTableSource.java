@@ -32,7 +32,7 @@ import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 
-public class LakeSoulLookupTableSource extends LakeSoulTableSource implements LookupTableSource, SupportsProjectionPushDown {
+public class LakeSoulLookupTableSource extends LakeSoulTableSource implements LookupTableSource {
 
     protected DataType producedDataType;
 
@@ -146,10 +146,10 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                     comparablePartitionValues.size(), ""));
                 }
 
-                System.out.println("[debug][yuchanghui] context fetch result is: ");
+                //System.out.println("[debug][yuchanghui] context fetch result is: ");
                 for (LakeSoulPartition partition: partValueList) {
                     for (Path path: partition.getPaths()) System.out.println(path);
-                    System.out.println("[debug][yuchanghui]-------------");
+                    //System.out.println("[debug][yuchanghui]-------------");
                 }
                 return partValueList;
             };
@@ -165,10 +165,10 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                                     comparablePartitionValue.getPartitionValue())
                                     .orElse(new LakeSoulPartition(null, null, null)));
                 }
-                System.out.println("[debug][yuchanghui] context fetch result is: ");
+                //System.out.println("[debug][yuchanghui] context fetch result is: ");
                 for (LakeSoulPartition partition: partValueList) {
                     for (Path path: partition.getPaths()) System.out.println(path);
-                    System.out.println("[debug][yuchanghui]-------------");
+                    //System.out.println("[debug][yuchanghui]-------------");
                 }
                 return partValueList;
             };
@@ -246,13 +246,10 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
             if (partValues.isEmpty()) {
 //        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
                 List<PartitionInfo> partitionInfos = DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
-                System.out.println("[debug][yuchanghui] partitionInfos is " + partitionInfos);
                 if (partitionInfos.isEmpty()) return Optional.empty();
-                partitionInfos.forEach(partitionInfo -> System.out.println(partitionInfo.getPartitionDesc()));
 
                 DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
                 Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo.getTableId(), dataFileInfos);
-                System.out.println(splitByRangeAndHashPartition);
                 List<Path> paths = new ArrayList<>();
                 splitByRangeAndHashPartition.forEach((rangeKey, rangeValue) -> {
                     rangeValue.forEach((hashKey, hashValue) -> {
