@@ -24,15 +24,13 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.postgresql.PGConnection
 
-import java.util.Collections
 import java.util.concurrent.{ConcurrentHashMap, Executors}
 
 object CompactionTask {
 
   val COMPACTION_THREADPOOL_SIZE = 10
   val NOTIFY_CHANNEL_NAME = "lakesoul_compaction_notify"
-
-  val threadSet: java.util.Set[String] = Collections.newSetFromMap(new ConcurrentHashMap)
+  val threadMap: java.util.Map[String, Integer] = new ConcurrentHashMap
 
   def main(args: Array[String]): Unit = {
 
@@ -67,6 +65,7 @@ object CompactionTask {
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.dmetasoul.lakesoul.native.io.enable", "true")
+      .config("spark.hadoop.fs.s3a.connection.maximum", 10000)
 
     val spark = builder.getOrCreate()
 
@@ -87,14 +86,18 @@ object CompactionTask {
 
       val jsonParser = new JsonParser()
       while (true) {
+        println("++++++ before while ++++++")
+        threadMap.entrySet().forEach(entry => {println(entry.getKey, entry.getValue)})
+        println("++++++ end while ++++++")
         val notifications = pgconn.getNotifications
         if (notifications.length > 0) {
           notifications.foreach(notification => {
             val notificationParameter = notification.getParameter
-            if (!threadSet.contains(notificationParameter)) {
-              threadSet.add(notificationParameter)
+            println("==========  before map key: " + notificationParameter + ", value: " + threadMap.get(notificationParameter) + " ========== ")
+            if (threadMap.get(notificationParameter) != 1) {
+              threadMap.put(notificationParameter, 1)
               val jsonObj = jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
-              println(jsonObj)
+              println("========== " + jsonObj)
               val tablePath = jsonObj.get("table_path").getAsString
               val partitionDesc = jsonObj.get("table_partition_desc").getAsString
               val rsPartitionDesc = if (partitionDesc.equals("-5")) "" else partitionDesc.replace("=", "='") + "'"
@@ -109,9 +112,15 @@ object CompactionTask {
 
   class CompactionTableInfo(path: String, partitionDesc: String, setValue: String) extends Thread {
     override def run(): Unit = {
-      val table = LakeSoulTable.forPath(path)
-      table.compaction(partitionDesc)
-      threadSet.remove(setValue)
+      try {
+        val table = LakeSoulTable.forPath(path)
+        table.compaction(partitionDesc)
+      } catch {
+        case e: Exception => throw e
+      } finally {
+        threadMap.put(setValue, 0)
+        println("==========  after map key: " + setValue + ", value: " + threadMap.get(setValue) + " ========== ")
+      }
     }
   }
 }
