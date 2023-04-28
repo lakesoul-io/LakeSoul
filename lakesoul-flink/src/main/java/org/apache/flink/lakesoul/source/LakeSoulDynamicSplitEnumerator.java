@@ -3,6 +3,7 @@ package org.apache.flink.lakesoul.source;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.fs.Path;
@@ -62,6 +63,10 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         } else {
             taskIdsAwaitingSplit.add(subtaskId);
         }
+    }
+
+    @Override
+    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
     }
 
     @Override

@@ -32,7 +32,6 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 
 import java.text.SimpleDateFormat
-import java.util.TimeZone
 
 class ReadSuite extends QueryTest
   with SharedSparkSession

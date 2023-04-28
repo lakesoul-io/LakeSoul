@@ -23,7 +23,9 @@ public class LakeSoulSourceReader
 
     @Override
     public void start(){
-        context.sendSplitRequest();
+        if(getNumberOfCurrentlyAssignedSplits() == 0) {
+            context.sendSplitRequest();
+        }
     }
 
     @Override

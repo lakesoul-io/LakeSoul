@@ -80,7 +80,7 @@ public class DBManager {
     }
 
     public TableNameId shortTableName(String tableName, String tableNamespace) {
-        tableNamespace = tableNamespace==null? "default":tableNamespace;
+        tableNamespace = tableNamespace == null ? "default" : tableNamespace;
         return tableNameIdDao.findByTableName(tableName, tableNamespace);
     }
 
@@ -629,6 +629,7 @@ public class DBManager {
     public List<PartitionInfo> getIncrementalPartitions(String tableId, String partitionDesc, int startVersion, int endVersion) {
         return partitionInfoDao.getPartitionsFromVersion(tableId, partitionDesc, startVersion, endVersion);
     }
+
     public List<PartitionInfo> getOnePartition(String tableId, String partitionDesc) {
         return partitionInfoDao.getOnePartition(tableId, partitionDesc);
     }

@@ -64,11 +64,12 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     String cdcColumn;
     RowData.FieldGetter cdcFieldGetter;
 
+    long skipRowCount = 0;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, RowType schemaWithPk, List<String> pkColumns, boolean partitionsNon, boolean isStreaming, String cdcColumn) throws IOException {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
-        this.conf = conf;
+        this.conf = new Configuration(conf);
         this.schema = schema;
         this.schemaWithPk = schemaWithPk;
         this.pkColumns = pkColumns;
@@ -77,6 +78,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
         initializeReader();
+        recoverFromSkipRecord();
     }
 
     private void initializeReader() throws IOException {
@@ -117,10 +119,31 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             Schema arrowSchema = ArrowUtils.toArrowSchema(fileSchema);
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);
-            //FlinkUtil.setFSConfigs(conf, reader);
+            FlinkUtil.setFSConfigs(conf, reader);
             reader.initializeReader();
             this.reader = new LakeSoulArrowReader(reader, 10000);
         }
+    }
+
+    private void recoverFromSkipRecord() {
+        if (skipRecords > 0) {
+            while (skipRowCount <= skipRecords && this.reader.hasNext()) {
+                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+                skipRowCount += this.currentVCR.getRowCount();
+            }
+            skipRowCount -= currentVCR.getRowCount();
+            curRecordId = (int) (skipRecords - skipRowCount);
+        } else {
+            if (this.reader.hasNext()) {
+                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+                curRecordId = 0;
+            } else {
+                this.reader.close();
+            }
+
+        }
+        this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.fileSchema);
+
     }
 
     @Nullable
@@ -148,47 +171,36 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 return null;
             }
         } else {
-            if (this.currentVCR == null) {
+            if (curRecordId >= currentVCR.getRowCount()) {
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     this.curArrowReader = ArrowUtils.createArrowReader(currentVCR, this.fileSchema);
-                    if (this.currentVCR == null) {
-                        return null;
-                    }
                     curRecordId = 0;
                 } else {
                     this.reader.close();
                     return null;
                 }
-            }
-            if (curRecordId < currentVCR.getRowCount()) {
-                int tmp = curRecordId;
-                curRecordId++;
-                totalRecords++;
-                if (skipRecords < totalRecords) {
-                    RowData rd = this.curArrowReader.read(tmp);
-                    GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
-                    for (int i = 0; i < nonPartitionIndexes.length; i++) {
-                        reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
-                    }
-                    if (!"".equals(this.cdcColumn)) {
-                        if(this.isStreaming){
-                            reuseRow.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
-                        }else{
-                            if(FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))){
-                                return null;
-                            }
-                        }
-                    }
-                    setReuseRowWithPartition(reuseRow);
-                    return reuseRow;
-                } else {
-                    return null;
-                }
 
-            } else {
-                return null;
             }
+            int tmp = curRecordId;
+            curRecordId++;
+            totalRecords++;
+            RowData rd = this.curArrowReader.read(tmp);
+            GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
+            for (int i = 0; i < nonPartitionIndexes.length; i++) {
+                reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+            }
+            if (!"".equals(this.cdcColumn)) {
+                if (this.isStreaming) {
+                    reuseRow.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
+                } else {
+                    if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
+                        return null;
+                    }
+                }
+            }
+            setReuseRowWithPartition(reuseRow);
+            return reuseRow;
         }
     }
 
