@@ -136,6 +136,10 @@ public class NativeIOBase implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
+        if (tokioRuntime != null) {
+            libLakeSoulIO.free_tokio_runtime(tokioRuntime);
+            tokioRuntime = null;
+        }
         if (provider != null) {
             provider.close();
             provider = null;

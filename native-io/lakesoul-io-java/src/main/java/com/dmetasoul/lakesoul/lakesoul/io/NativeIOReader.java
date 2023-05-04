@@ -108,10 +108,6 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             libLakeSoulIO.free_lakesoul_reader(reader);
             reader = null;
         }
-        if (tokioRuntime != null) {
-            libLakeSoulIO.free_tokio_runtime(tokioRuntime);
-            tokioRuntime = null;
-        }
         super.close();
     }
 
