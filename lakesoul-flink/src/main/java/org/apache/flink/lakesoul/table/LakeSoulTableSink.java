@@ -137,6 +137,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //rowData sink fileSystem Task
     LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(
                path,
+                    // TODO: 2023/5/4  TableId.schema is null here
                new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(tableName)),
                                        rowType,
                                        path.toString(),
