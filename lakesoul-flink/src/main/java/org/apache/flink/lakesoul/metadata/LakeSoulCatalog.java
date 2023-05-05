@@ -39,7 +39,6 @@ import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.factories.Factory;
-import org.apache.spark.sql.util.PartitioningUtils;
 
 import java.io.IOException;
 import java.util.*;
@@ -439,5 +438,9 @@ public class LakeSoulCatalog implements Catalog {
 
     public String getName() {
         return CATALOG_NAME;
+    }
+
+    public void cleanForTest() {
+        dbManager.cleanMeta();
     }
 }

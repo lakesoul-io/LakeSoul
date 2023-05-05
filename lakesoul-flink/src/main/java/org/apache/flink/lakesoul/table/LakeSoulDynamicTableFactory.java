@@ -54,7 +54,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         List<String> pkColumns = schema.getPrimaryKey().map(UniqueConstraint::getColumns).orElse(new ArrayList<>());
 
         return new LakeSoulTableSink(
-                objectIdentifier.getObjectName(), catalogTable.getResolvedSchema().toPhysicalRowDataType(),
+                objectIdentifier.asSummaryString(),
+                objectIdentifier.getObjectName(),
+                catalogTable.getResolvedSchema().toPhysicalRowDataType(),
                 pkColumns, catalogTable.getPartitionKeys(),
                 options,
                 discoverEncodingFormat(context, BulkWriterFormatFactory.class),
