@@ -79,7 +79,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
         cache = new HashMap<>();
         nextLoadTime = -1L;
         fetcherContext.open();
-
     }
 
     public void eval(Object... values) {
@@ -98,13 +97,10 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
             return;
         }
         if (nextLoadTime > 0) {
-//            System.out.println(String.format("[debug][yuchanghui] Lookup join cache has expired after {} minute(s), reloading",
-//                    reloadInterval.toMinutes()));
             LOG.info(
                     "Lookup join cache has expired after {} minute(s), reloading",
                     reloadInterval.toMinutes());
         } else {
-            System.out.println("Populating lookup join cache");
             LOG.info("Populating lookup join cache");
         }
         int numRetry = 0;

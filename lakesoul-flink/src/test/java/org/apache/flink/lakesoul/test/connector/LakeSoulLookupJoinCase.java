@@ -133,23 +133,6 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_tables"));
-////        tableEnv.executeSql(
-////                String.format(
-////                        "create table partition_table (x int, y string, z int) partitioned by ("
-////                                + " pt_year int, pt_mon string, pt_day string)"
-////                                + " tblproperties ('%s' = 'true', '%s' = 'latest', '%s' = 'partition-name', '%s'='2h')",
-////                        STREAMING_SOURCE_ENABLE.key(),
-////                        STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-////                        STREAMING_SOURCE_PARTITION_ORDER.key(),
-////                        STREAMING_SOURCE_MONITOR_INTERVAL.key()));
-//
-        // create the hive partitioned table3 which uses default 'partition-name'.
-//        tableEnv.executeSql(
-//                String.format(
-//                    "create table partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-//                            + " pt_year, pt_mon, pt_day)"
-//                            + " with ('format'='','%s'='5min', 'path'='%s')",
-//                    JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/partition_table_1"));
 
         tableEnv.executeSql(
                 String.format(
@@ -186,57 +169,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/partition_table_3"));
-//
-//        // create the hive partitioned table3 which uses 'partition-time'.
-//        tableEnv.executeSql(
-//                String.format(
-//                        "create table partition_table_2 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-//                                + " pt_year, pt_mon, pt_day)"
-//                                + " with ('format'='','%s'='5min', 'path'='%s')",
-//                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/partition_table_2"));
-////        tableEnv.executeSql(
-////                String.format(
-////                        "create table partition_table_2 (x int, y string, z int) partitioned by ("
-////                                + " pt_year int, pt_mon string, pt_day string)"
-////                                + " tblproperties ("
-////                                + "'%s' = 'true',"
-////                                + " '%s' = 'latest',"
-////                                + " '%s' = '12h',"
-////                                + " '%s' = 'partition-time', "
-////                                + " '%s' = 'default',"
-////                                + " '%s' = '$pt_year-$pt_mon-$pt_day 00:00:00')",
-////                        STREAMING_SOURCE_ENABLE.key(),
-////                        STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-////                        STREAMING_SOURCE_MONITOR_INTERVAL.key(),
-////                        STREAMING_SOURCE_PARTITION_ORDER.key(),
-////                        PARTITION_TIME_EXTRACTOR_KIND.key(),
-////                        PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN.key()));
-//
-//        // create the hive partitioned table3 which uses 'create-time'.
-//        tableEnv.executeSql(
-//                String.format(
-//                        "create table partition_table_3 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-//                                + " pt_year, pt_mon, pt_day)"
-//                                + " with ('format'='','%s'='5min', 'path'='%s')",
-//                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), "tmp/partition_table_3"));
-//        tableEnv.executeSql(
-//                String.format(
-//                        "create table partition_table_3 (x int, y string, z int) partitioned by ("
-//                                + " pt_year int, pt_mon string, pt_day string)"
-//                                + " tblproperties ("
-//                                + " '%s' = 'true',"
-//                                + " '%s' = 'latest',"
-//                                + " '%s' = 'create-time')",
-//                        STREAMING_SOURCE_ENABLE.key(),
-//                        STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-//                        STREAMING_SOURCE_PARTITION_ORDER.key()));
 
-        // create the hive table with columnar storage.
-//        tableEnv.executeSql(
-//                String.format(
-//                        "create table columnar_table (x string) STORED AS PARQUET "
-//                                + "tblproperties ('%s'='5min')",
-//                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key()));
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
     }
 

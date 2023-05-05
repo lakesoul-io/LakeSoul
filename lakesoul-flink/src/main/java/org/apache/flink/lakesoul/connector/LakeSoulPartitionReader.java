@@ -88,7 +88,7 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
     private ArrowReader nextBatch() throws IOException {
         while (lakesoulArrowReader == null || !lakesoulArrowReader.hasNext()) {
             curPartitionId++;
-            if (curPartitionId >= partitions.size() || partitions.get(curPartitionId).getPaths() == null) return null;
+            if (curPartitionId >= partitions.size()) return null;
             recreateInnerReaderForSinglePartition(curPartitionId);
         }
         if (lakesoulArrowReader == null) return null;
