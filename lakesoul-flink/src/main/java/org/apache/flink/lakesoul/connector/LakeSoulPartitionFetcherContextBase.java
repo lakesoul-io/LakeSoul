@@ -27,7 +27,6 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
     protected final String partitionOrderKeys;
 
-
     protected transient DBManager dbManager;
 
     public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys){
@@ -73,6 +72,8 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
             String partitionDesc) {
         return new ComparablePartitionValue<List<String>, String>() {
             private static final long serialVersionUID = 1L;
+            // TODO: delete the option
+            private static final long simpleLatestPartition = 1L;
 
             @Override
             public List<String> getPartitionValue() {
@@ -83,26 +84,32 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
             public String getComparator() {
                 // order by partition-order-key name in alphabetical order
                 // partition-order-key name format: pt_year=2020,pt_month=10,pt_day=14
-                StringBuilder comparator = new StringBuilder();
-                // if partitionOrderKeys is null, default to use all partitionKeys to sort
-                Set<String> partitionOrderKeySet =
-                        partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
-                List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
-                Map<String, String> parDescMap = new HashMap<>();
-                singleParDescList.forEach(singleParDesc -> {
-                    List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
-                    parDescMap.put(kvs.get(0), kvs.get(1));
-                });
-                // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
-                partitionKeys.forEach(partitionKey -> {
-                    if (partitionOrderKeySet.contains(partitionKey)) {
-                        comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + ",");
-                    }
-                });
-                comparator.deleteCharAt(comparator.length() - 1);
-//                //System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
-                return comparator.toString();
+                // TODO: update logic here
+                if (simpleLatestPartition == 1) {
+                    StringBuilder comparator = new StringBuilder();
+                    // if partitionOrderKeys is null, default to use all partitionKeys to sort
+                    Set<String> partitionOrderKeySet =
+                            partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
+                    List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
+                    Map<String, String> parDescMap = new HashMap<>();
+                    singleParDescList.forEach(singleParDesc -> {
+                        List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
+                        parDescMap.put(kvs.get(0), kvs.get(1));
+                    });
+                    // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
+                    partitionKeys.forEach(partitionKey -> {
+                        if (partitionOrderKeySet.contains(partitionKey)) {
+                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + ",");
+                        }
+                    });
+                    comparator.deleteCharAt(comparator.length() - 1);
+                    //                //System.out.println("[debug][yuchanghui] For partitionDesc: " + partitionDesc + ", its comparator is " + comparator.toString());
+                    return comparator.toString();
+                } else {
+                    return String.join(",", getPartitionValue());
+                }
             }
+
         };
     }
 

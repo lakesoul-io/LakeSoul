@@ -390,6 +390,7 @@ public class LakeSoulLookupJoinCase {
                         "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], +I[2, b, 50, 2020, 09, 31], +I[3, c, 33, 2020, 10, 31], +I[4, d, 50, 2020, 09, 31]]");
     }
 
+
     // Note: Please set ProbeTableGenerateDataOnce to "false" before run this test
 //    @Test
     public void testLookupJoinPartitionedTableWithCacheReloaded() throws Exception {
