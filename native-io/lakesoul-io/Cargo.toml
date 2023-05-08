@@ -26,6 +26,8 @@ smallvec = "1.10"
 dary_heap = "0.3"
 hdrs = { version = "0.2", features = ["async_file"], optional = true }
 bytes = "1.4.0"
+tcmalloc = { git = "https://github.com/meta-soul/tcmalloc-rs.git", tag = "2.10.0-minimal" }
+link-cplusplus = "1.0"
 
 [features]
 hdfs = ["dep:hdrs"]

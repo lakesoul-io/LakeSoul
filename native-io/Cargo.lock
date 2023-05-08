@@ -1396,11 +1396,13 @@ dependencies = [
  "derivative",
  "futures",
  "hdrs",
+ "link-cplusplus",
  "object_store",
  "parquet",
  "rand",
  "serde",
  "smallvec",
+ "tcmalloc",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2334,6 +2336,19 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "tcmalloc"
+version = "2.10.0"
+source = "git+https://github.com/meta-soul/tcmalloc-rs.git?tag=2.10.0-minimal#2fc7e806f22701c93b9188d2bbe9af5ace7902f2"
+dependencies = [
+ "tcmalloc-sys",
+]
+
+[[package]]
+name = "tcmalloc-sys"
+version = "2.10.0"
+source = "git+https://github.com/meta-soul/tcmalloc-rs.git?tag=2.10.0-minimal#2fc7e806f22701c93b9188d2bbe9af5ace7902f2"
 
 [[package]]
 name = "tempfile"
