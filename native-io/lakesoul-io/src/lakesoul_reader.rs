@@ -15,7 +15,6 @@
  */
 
 use atomic_refcell::AtomicRefCell;
-use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -57,7 +56,7 @@ use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
-    stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
+    stream: Option<Pin<Box<dyn RecordBatchStream + Send>>>,
     pub(crate) schema: Option<SchemaRef>,
 }
 
@@ -67,7 +66,7 @@ impl LakeSoulReader {
         Ok(LakeSoulReader {
             sess_ctx,
             config,
-            stream: Box::new_uninit(),
+            stream: None,
             schema: None,
         })
     }
@@ -90,7 +89,6 @@ impl LakeSoulReader {
                         Some((_, file_field)) => Some(logical_col(file_field.name())),
                         _ => None,
                     })
-                    // .map(|field| logical_col(field.name().as_str()))
                     .collect::<Vec<_>>();
 
                 let stream = if cols.is_empty() {
@@ -131,7 +129,7 @@ impl LakeSoulReader {
                 };
                 let stream = DefaultColumnStream::new_from_stream(stream, schema.clone(), true);
                 self.schema = Some(stream.schema().clone().into());
-                self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
+                self.stream = Some(Box::pin(stream));
 
                 Ok(())
             } else {
@@ -213,14 +211,18 @@ impl LakeSoulReader {
                 )
                 .unwrap();
                 self.schema = Some(merge_stream.schema().clone().into());
-                self.stream = Box::new(MaybeUninit::new(Box::pin(merge_stream)));
+                self.stream = Some(Box::pin(merge_stream));
                 Ok(())
             }
         }
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
-        unsafe { self.stream.assume_init_mut().next().await }
+        if let Some(stream) = &mut self.stream {
+            stream.next().await
+        } else {
+            None
+        }
     }
 }
 
