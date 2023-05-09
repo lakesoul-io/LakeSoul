@@ -111,6 +111,8 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   private WritableColumnVector[] partitionColumnVectors=null;
 
+  private StructType partitionColumns=null;
+
   private ColumnVector[] nativeColumnVector=null;
 
   /**
@@ -279,28 +281,38 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
           StructType partitionColumns,
           InternalRow partitionValues) throws IOException {
 
-    if (partitionColumns != null) {
+    if (partitionColumns != null && !partitionColumns.isEmpty()) {
+      this.partitionColumns = partitionColumns;
       StructType batchSchema = new StructType();
       for (StructField f: requestSchema.fields()) {
         boolean is_partition = false;
         for (StructField partitionField : partitionColumns.fields()) {
           if (partitionField.name().equals(f.name())) is_partition = true;
-      }
+        }
         if (!is_partition) batchSchema = batchSchema.add(f);
       }
       requestSchema = batchSchema;
       recreateNativeReader();
-      if (memMode == MemoryMode.OFF_HEAP) {
-        partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
-      } else {
-        partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
-      }
-      for (int i = 0; i < partitionColumns.fields().length; i++) {
-        ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
-        partitionColumnVectors[i].setIsConstant();
-      }
     } else {
-      partitionColumnVectors = null;
+      this.partitionColumns = null;
+      partitionColumns = new StructType(new StructField[]{new StructField("empty row", LongType, false, Metadata.empty())});
+
+      partitionValues =  new GenericInternalRow(new Long[]{0L});
+    }
+
+    if (partitionColumnVectors != null) {
+      for (WritableColumnVector c:partitionColumnVectors) {
+        c.close();
+      }
+    }
+    if (memMode == MemoryMode.OFF_HEAP) {
+      partitionColumnVectors = OffHeapColumnVector.allocateColumns(capacity, partitionColumns);
+    } else {
+      partitionColumnVectors = OnHeapColumnVector.allocateColumns(capacity, partitionColumns);
+    }
+    for (int i = 0; i < partitionColumns.fields().length; i++) {
+      ColumnVectorUtils.populate(partitionColumnVectors[i], partitionValues, i);
+      partitionColumnVectors[i].setIsConstant();
     }
   }
 
@@ -330,15 +342,21 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         throw new IOException("nextVectorSchemaRoot not ready");
       } else {
         int rowCount = nextVectorSchemaRoot.getRowCount();
-        totalRowCount += rowCount;
-        nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
-        if (partitionColumnVectors == null) {
-          columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
+        if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
+          if (partitionColumnVectors==null) {
+            throw new IOException("NativeVectorizedReader has not been initialized");
+          }
+          columnarBatch = new ColumnarBatch(partitionColumnVectors, rowCount);
         } else {
-          ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
-          System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
+          nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+          if (partitionColumns == null) {
+            columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
+          } else {
+            ColumnVector[] resultColumnVector = Arrays.copyOf(nativeColumnVector, nativeColumnVector.length + partitionColumnVectors.length);
+            System.arraycopy(partitionColumnVectors, 0, resultColumnVector, nativeColumnVector.length, partitionColumnVectors.length);
 
-          columnarBatch = new ColumnarBatch(resultColumnVector, rowCount);
+            columnarBatch = new ColumnarBatch(resultColumnVector, rowCount);
+          }
         }
       }
       return true;
@@ -372,5 +390,3 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
   private final FilterPredicate filter;
 }
-
-
