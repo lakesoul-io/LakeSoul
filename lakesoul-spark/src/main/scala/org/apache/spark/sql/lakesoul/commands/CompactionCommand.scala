@@ -54,7 +54,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
   }
 
   def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfo]): Unit = {
-    if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit"))) {
+    if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
       logInfo("=========== All Partitions Have Compacted, This Operation Will Cancel!!! ===========")
       return
     }
