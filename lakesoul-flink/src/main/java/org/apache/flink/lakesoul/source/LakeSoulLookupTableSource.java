@@ -1,10 +1,26 @@
+/*
+ * Copyright [2022] [DMetaSoul Team]
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
 package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.google.common.base.Splitter;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.connector.LakeSoulPartition;
 import org.apache.flink.lakesoul.connector.LakeSoulPartitionFetcherContextBase;
@@ -43,8 +59,8 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     protected ResolvedCatalogTable catalogTable;
 
 
-    public LakeSoulLookupTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, ResolvedCatalogTable catalogTable) {
-        super(tableId, rowType, isStreaming, pkColumns, new HashMap<>());
+    public LakeSoulLookupTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, ResolvedCatalogTable catalogTable, Map<String, String> optionParams) {
+        super(tableId, rowType, isStreaming, pkColumns, optionParams);
         this.catalogTable = catalogTable;
         this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
         this.configuration = new Configuration();
@@ -211,7 +227,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
      */
     @Override
     public DynamicTableSource copy() {
-        LakeSoulLookupTableSource lsts = new LakeSoulLookupTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns, this.catalogTable);
+        LakeSoulLookupTableSource lsts = new LakeSoulLookupTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns, this.catalogTable, this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
         return lsts;

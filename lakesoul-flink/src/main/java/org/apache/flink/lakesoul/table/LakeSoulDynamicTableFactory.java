@@ -24,7 +24,6 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
-import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.ValidationException;
@@ -144,17 +143,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
             }
         }
 
-        if (true) {
-            return new LakeSoulLookupTableSource(
-                    new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                    (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, catalogTable
-            );
-        }
-
-        // List<String> pkColumns = schema.getPrimaryKey().get().getColumns();
-        return new LakeSoulTableSource(
+        return new LakeSoulLookupTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, options.toMap()
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, catalogTable, options.toMap()
         );
     }
 }
