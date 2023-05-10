@@ -23,7 +23,6 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
-import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
@@ -31,6 +30,7 @@ import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 public class LakeSoulDDLSink extends RichSinkFunction<BinarySourceRecord> {
     private static final String ddlField = "ddl";
@@ -47,20 +47,20 @@ public class LakeSoulDDLSink extends RichSinkFunction<BinarySourceRecord> {
         String ddlval = jso.getString(ddlField).toLowerCase();
         Struct sourceItem = (Struct) val.get(source);
         String tablename = sourceItem.getString(table);
-        ParameterTool pt = (ParameterTool) getRuntimeContext().getExecutionConfig().getGlobalJobParameters();
-        List<String> excludeTablesList = Arrays.asList(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(),
+        Map<String, String> globalParams = getRuntimeContext().getExecutionConfig().getGlobalJobParameters().toMap();
+        List<String> excludeTablesList = Arrays.asList(globalParams.getOrDefault(LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.key(),
                 LakeSoulDDLSinkOptions.SOURCE_DB_EXCLUDE_TABLES.defaultValue()).split(","));
         HashSet<String> excludeTables = new HashSet<>(excludeTablesList);
-        MysqlDBManager mysqlDbManager = new MysqlDBManager(pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
-                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
-                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
-                                            pt.get(LakeSoulDDLSinkOptions.SOURCE_DB_HOST.key()),
-                                            Integer.toString(pt.getInt(LakeSoulDDLSinkOptions.SOURCE_DB_PORT.key(),
-                                                    MysqlDBManager.DEFAULT_MYSQL_PORT)),
-                                            excludeTables,
-                                            pt.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
-                                            pt.getInt(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key()),
-                                            pt.getBoolean(LakeSoulDDLSinkOptions.USE_CDC.key()));
+        MysqlDBManager mysqlDbManager = new MysqlDBManager(globalParams.get(LakeSoulDDLSinkOptions.SOURCE_DB_DB_NAME.key()),
+                globalParams.get(LakeSoulDDLSinkOptions.SOURCE_DB_USER.key()),
+                globalParams.get(LakeSoulDDLSinkOptions.SOURCE_DB_PASSWORD.key()),
+                globalParams.get(LakeSoulDDLSinkOptions.SOURCE_DB_HOST.key()),
+                globalParams.getOrDefault(LakeSoulDDLSinkOptions.SOURCE_DB_PORT.key(),
+                        Integer.toString(MysqlDBManager.DEFAULT_MYSQL_PORT)),
+                excludeTables,
+                globalParams.get(LakeSoulDDLSinkOptions.WAREHOUSE_PATH.key()),
+                Integer.parseInt(globalParams.get(LakeSoulDDLSinkOptions.BUCKET_PARALLELISM.key())),
+                Boolean.parseBoolean(globalParams.get(LakeSoulDDLSinkOptions.USE_CDC.key())));
         if (ddlval.contains("alter table") || ddlval.contains("create table")) {
             mysqlDbManager.importOrSyncLakeSoulTable(tablename);
         }
