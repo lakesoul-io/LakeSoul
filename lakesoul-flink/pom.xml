@@ -156,6 +156,11 @@
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
+            <artifactId>flink-csv</artifactId>
+            <version>${flink.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils_2.12</artifactId>
             <version>${flink.version}</version>
             <exclusions>
@@ -359,6 +364,7 @@
                             <include>org.json4s:json4s-core_2.12</include>
                             <include>org.json4s:json4s-ast_2.12</include>
                             <include>org.json4s:json4s-scalap_2.12</include>
+                            <include>org.apache.flink:flink-csv</include>
                             <include>com.fasterxml.jackson.core:jackson-core</include>
                             <include>com.fasterxml.jackson.core:jackson-databind</include>
                             <include>com.fasterxml.jackson.core:jackson-annotations</include>
