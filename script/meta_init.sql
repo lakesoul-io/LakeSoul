@@ -65,18 +65,18 @@ CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS $$
     DECLARE
         rs_version integer;
         rs_table_path text;
-        rs_table_namespace test;
+        rs_table_namespace text;
     BEGIN
         if NEW.commit_op <> 'CompactionCommit' then
             select version INTO rs_version from partition_info where table_id = NEW.table_id and partition_desc = NEW.partition_desc and version != NEW.version and commit_op = 'CompactionCommit' order by version desc limit 1;
             if rs_version >= 0 then
                 if NEW.version - rs_version >= 10 then
-                    select table_path into rs_table_path, table_namespace into rs_table_namespace from table_info where table_id = NEW.table_id;
+                    select table_path, table_namespace into rs_table_path, rs_table_namespace from table_info where table_id = NEW.table_id;
                     perform pg_notify('lakesoul_compaction_notify', concat('{"table_path":"', rs_table_path, '","table_partition_desc":"', NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
                 end if;
             else
                 if NEW.version >= 10 then
-                    select table_path into rs_table_path, table_namespace into rs_table_namespace from table_info where table_id = NEW.table_id;
+                    select table_path, table_namespace into rs_table_path, rs_table_namespace from table_info where table_id = NEW.table_id;
                     perform pg_notify('lakesoul_compaction_notify', concat('{"table_path":"', rs_table_path, '","table_partition_desc":"', NEW.partition_desc, '","table_namespace":"', rs_table_namespace, '"}'));
                 end if;
             end if;
