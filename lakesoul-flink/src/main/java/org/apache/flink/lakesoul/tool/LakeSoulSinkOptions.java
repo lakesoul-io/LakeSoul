@@ -92,9 +92,13 @@ public class LakeSoulSinkOptions {
   public static final ConfigOption<Boolean> USE_CDC = ConfigOptions
       .key("use_cdc")
       .booleanType()
-      .defaultValue(true)
+      .defaultValue(false)
       .withDescription("use cdc column ");
-
+  public static final ConfigOption<Boolean> isMultiTableSource = ConfigOptions
+          .key("Multi_Table_Source")
+          .booleanType()
+          .defaultValue(false)
+          .withDescription("use cdc table source");
   public static final ConfigOption<String> SERVER_TIME_ZONE = ConfigOptions
           .key("server_time_zone")
           .stringType()

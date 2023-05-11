@@ -81,7 +81,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        if (conf.getBoolean(LakeSoulSinkOptions.USE_CDC) == true) {
+        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource) == true) {
             nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
         }
         nativeWriter.setRowGroupRowNumber(this.batchSize);

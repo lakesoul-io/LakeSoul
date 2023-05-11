@@ -91,6 +91,7 @@ public class MysqlCdc {
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
+        conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);

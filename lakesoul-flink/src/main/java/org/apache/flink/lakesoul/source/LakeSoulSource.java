@@ -111,7 +111,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
-        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
         if (!FlinkUtil.isExistHashPartition(tif) || readType.equals("incremental")) {
             for (DataFileInfo dfinfo : dfinfos) {
                 ArrayList<Path> tmp = new ArrayList<>();
@@ -119,6 +118,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
                 splits.add(new LakeSoulSplit(i + "", tmp, 0));
             }
         } else {
+            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
             for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
