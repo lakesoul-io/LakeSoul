@@ -86,6 +86,7 @@ public class DBManager {
     }
 
     public TableNameId shortTableName(String tableName, String tableNamespace) {
+        tableNamespace = tableNamespace == null ? "default" : tableNamespace;
         return tableNameIdDao.findByTableName(tableName, tableNamespace);
     }
 
@@ -99,6 +100,10 @@ public class DBManager {
 
     public TableInfo getTableInfoByName(String tableName) {
         return getTableInfoByNameAndNamespace(tableName, "default");
+    }
+
+    public TableInfo getTableInfoByTableId(String tableId) {
+        return tableInfoDao.selectByTableId(tableId);
     }
 
     public TableInfo getTableInfoByNameAndNamespace(String tableName, String namespace) {
@@ -715,7 +720,7 @@ public class DBManager {
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
-        String partitionDesc = dataCommitInfo.getPartitionDesc();
+        String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", ",");
         UUID commitId = dataCommitInfo.getCommitId();
         String commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);

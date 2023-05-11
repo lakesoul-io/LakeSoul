@@ -74,6 +74,8 @@ public interface LibLakeSoulIO {
 
     Pointer check_writer_created(Pointer writer);
 
+    Pointer lakesoul_config_builder_set_default_column_value(Pointer ioConfigBuilder, String column, String value);
+
     interface BooleanCallback { // type representing callback
         @Delegate
         void invoke(Boolean status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate

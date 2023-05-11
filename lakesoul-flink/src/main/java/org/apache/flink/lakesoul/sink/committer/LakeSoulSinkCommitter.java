@@ -111,7 +111,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
                 dataCommitInfo.setTableId(tableNameId.getTableId());
-                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition);
+                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition.replaceAll("/", ","));
                 dataCommitInfo.setFileOps(dataFileOpList);
                 dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());

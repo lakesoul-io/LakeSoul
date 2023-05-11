@@ -40,6 +40,7 @@ object DataTypeUtil {
       case "boolean" => BooleanType
       case "timestamp" => TimestampType
       case "timestamp_without_time_zone" => TimestampType
+      case "timestamp_with_local_time_zone" => TimestampType
       case "decimal" => DecimalType.USER_DEFAULT
       case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
       case CHAR_TYPE(length) => CharType(length.toInt)
@@ -88,6 +89,7 @@ object DataTypeUtil {
       case "long" => "BIGINT"
       case "int" => "INT"
       case "integer" => "INT"
+      case "float" => "FLOAT"
       case "double" => "DOUBLE"
       case "date" => "DATE"
       case "boolean" => "BOOLEAN"

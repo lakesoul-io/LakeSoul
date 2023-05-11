@@ -131,4 +131,17 @@ public class DataCommitInfo {
   public void setCommitted(boolean committed) {
     this.committed = committed;
   }
+
+  @Override
+  public String toString() {
+    return "DataCommitInfo{" +
+            "tableId='" + tableId + '\'' +
+            ", partitionDesc='" + partitionDesc + '\'' +
+            ", commitId=" + commitId +
+            ", fileOps=" + fileOps +
+            ", commitOp='" + commitOp + '\'' +
+            ", timestamp=" + timestamp +
+            ", committed=" + committed +
+            '}';
+  }
 }

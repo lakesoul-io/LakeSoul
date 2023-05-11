@@ -114,4 +114,17 @@ public class TableInfo {
     public void setPartitions(String partitions) {
         this.partitions = partitions;
     }
+
+    @Override
+    public String toString() {
+        return "TableInfo{" +
+                "tableId='" + tableId + '\'' +
+                ", tableNamespace='" + tableNamespace + '\'' +
+                ", tableName='" + tableName + '\'' +
+                ", tablePath='" + tablePath + '\'' +
+                ", tableSchema='" + tableSchema + '\'' +
+                ", properties=" + properties +
+                ", partitions='" + partitions + '\'' +
+                '}';
+    }
 }

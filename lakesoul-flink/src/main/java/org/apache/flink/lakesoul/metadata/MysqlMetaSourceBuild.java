@@ -17,7 +17,7 @@
  *
  */
 
-package org.apache.flink.lakesoul.source;
+package org.apache.flink.lakesoul.metadata;
 
 import java.util.HashSet;
 import java.util.List;

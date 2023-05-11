@@ -52,6 +52,8 @@ import java.util.Map;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
+
+  private final String summaryName;
   private final String tableName;
   private final EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private boolean overwrite;
@@ -66,12 +68,15 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   public LakeSoulTableSink(
-          String tableName, DataType dataType,
+          String summaryName,
+          String tableName,
+          DataType dataType,
           List<String> primaryKeyList, List<String> partitionKeyList,
           ReadableConfig flinkConf,
           EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
           ResolvedSchema schema
   ) {
+    this.summaryName = summaryName;
     this.tableName = tableName;
     this.primaryKeyList = primaryKeyList;
     this.bulkWriterFormat = bulkWriterFormat;
@@ -82,6 +87,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   }
 
   private LakeSoulTableSink(LakeSoulTableSink tableSink) {
+    this.summaryName = tableSink.summaryName;
     this.tableName = tableSink.tableName;
     this.bulkWriterFormat = tableSink.bulkWriterFormat;
     this.overwrite = tableSink.overwrite;
@@ -137,7 +143,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     //rowData sink fileSystem Task
     LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(
                path,
-               new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(tableName)),
+               new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)),
                                        rowType,
                                        path.toString(),
                                        primaryKeyList,

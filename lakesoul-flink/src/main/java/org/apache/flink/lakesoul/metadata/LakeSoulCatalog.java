@@ -23,22 +23,25 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
 import org.apache.flink.table.catalog.exceptions.*;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
+import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
+import org.apache.flink.table.factories.Factory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -64,6 +67,11 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public void close() throws CatalogException {
 
+    }
+
+    @Override
+    public Optional<Factory> getFactory() {
+        return Optional.of(new LakeSoulDynamicTableFactory());
     }
 
     @Override
@@ -106,8 +114,8 @@ public class LakeSoulCatalog implements Catalog {
         }
         try {
             dbManager.createNewNamespace(databaseName,
-                                         DBUtil.stringMapToJson(catalogDatabase.getProperties()),
-                                         catalogDatabase.getComment());
+                    DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+                    catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
         }
@@ -166,6 +174,7 @@ public class LakeSoulCatalog implements Catalog {
             String tableId = tableInfo.getTableId();
             dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId, tablePath.getDatabaseName());
             dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
+            dbManager.deleteDataCommitInfo(tableId);
             dbManager.deletePartitionInfoByTableId(tableId);
         } else {
             throw new TableNotExistException(CATALOG_NAME, tablePath);
@@ -183,8 +192,7 @@ public class LakeSoulCatalog implements Catalog {
         checkNotNull(tablePath);
         checkNotNull(table);
         TableSchema schema = table.getSchema();
-        List<String> columns = schema.getPrimaryKey().get().getColumns();
-        String primaryKeys = FlinkUtil.stringListToString(columns);
+        Optional<UniqueConstraint> primaryKeyColumns = schema.getPrimaryKey();
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
         }
@@ -192,34 +200,36 @@ public class LakeSoulCatalog implements Catalog {
             if (!ignoreIfExists) {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
             }
-        } else {
-            Map<String, String> tableOptions = table.getOptions();
-            tableOptions.put(RECORD_KEY_NAME, primaryKeys);
-            boolean cdcMark;
-            if ("true".equals(tableOptions.get(USE_CDC.key()))) {
-                cdcMark = true;
-                tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
-            } else {
-                cdcMark = false;
-            }
-            String json = JSON.toJSONString(tableOptions);
-            JSONObject properties = JSON.parseObject(json);
-            List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
-            String tableName = tablePath.getObjectName();
-            String path = tableOptions.get(TABLE_PATH);
-            String qualifiedPath = "";
-            try {
-                FileSystem fileSystem = new Path(path).getFileSystem();
-                qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-
-            dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                                     FlinkUtil.toSparkSchema(schema, cdcMark).json(),
-                                     properties, FlinkUtil.stringListToString(partitionKeys) + ";" + primaryKeys);
+            else return;
         }
+        String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
+        Map<String, String> tableOptions = table.getOptions();
+        tableOptions.put(RECORD_KEY_NAME, primaryKeys);
+        boolean cdcMark;
+        if ("true".equals(tableOptions.get(USE_CDC.key()))) {
+            cdcMark = true;
+            tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
+        } else {
+            cdcMark = false;
+        }
+        String json = JSON.toJSONString(tableOptions);
+        JSONObject properties = JSON.parseObject(json);
+        List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
+        String tableName = tablePath.getObjectName();
+        String path = tableOptions.get(TABLE_PATH);
+        String qualifiedPath = "";
+        try {
+            FileSystem fileSystem = new Path(path).getFileSystem();
+            qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
+
+        dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
+                FlinkUtil.toSparkSchema(schema, cdcMark).json(),
+                properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
+
     }
 
     @Override
@@ -230,22 +240,85 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public List<CatalogPartitionSpec> listPartitions(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
-        if (tableExists(tablePath)) {
+        if (!tableExists(tablePath)) {
             throw new CatalogException("table path not exist");
         }
 
-        return new ArrayList<>();
+        return listPartitions(tablePath, null);
     }
 
     @Override
     public List<CatalogPartitionSpec> listPartitions(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec)
             throws CatalogException {
-        throw new CatalogException("not supported now");
+        if (!tableExists(tablePath)) {
+            throw new CatalogException("table path not exist");
+        }
+        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
+                tablePath.getObjectName(),
+                tablePath.getDatabaseName());
+        List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
+        HashSet<String> partitions = new HashSet<>(100);
+        for (PartitionInfo pif : allPartitionInfo) {
+            partitions.add(pif.getPartitionDesc());
+        }
+        ArrayList<CatalogPartitionSpec> al = new ArrayList<>(100);
+        for (String item : partitions) {
+            if (null == item || "".equals(item)) {
+                throw new CatalogException("partition not exist");
+            } else {
+                LinkedHashMap<String, String> lhmap = new LinkedHashMap<>();
+                if ("-5".equals(item)) {
+                    lhmap.put("", "-5");
+                } else {
+                    List<String> partitionData = Splitter.on(",").splitToList(item);
+                    for (String kv : partitionData) {
+                        List<String> kvs = Splitter.on("=").splitToList(kv);
+                        lhmap.put(kvs.get(0), kvs.get(1));
+                    }
+                }
+                al.add(new CatalogPartitionSpec(lhmap));
+            }
+        }
+        return al;
     }
 
     @Override
     public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list) throws CatalogException {
-        throw new CatalogException("not supported now");
+        List<CatalogPartitionSpec> partitions = listPartitions(tablePath);
+        List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
+        for (Expression exp : list) {
+            if(exp instanceof CallExpression){
+                if(!"equals".equals(((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get().toLowerCase())){
+                    throw new CatalogException("just support equal;such as range=val and range=val2");
+                }
+            }
+        }
+        for (CatalogPartitionSpec cps : partitions) {
+            boolean allAnd = true;
+            for (Expression exp : list) {
+                String key = exp.getChildren().get(0).toString();
+                String value = convertFieldType(exp.getChildren().get(1).toString());
+                if (cps.getPartitionSpec().containsKey(key) && cps.getPartitionSpec().get(key).equals(value)) {
+                    continue;
+                } else {
+                    allAnd = false;
+                    break;
+                }
+            }
+            if (allAnd) {
+                catalogPartitionSpecs.add(cps);
+            }
+        }
+        return catalogPartitionSpecs;
+
+    }
+
+    private String convertFieldType(String field) {
+        if (field.startsWith("'")) {
+            return field.substring(1, field.length() - 1);
+        } else {
+            return field;
+        }
     }
 
     @Override
@@ -287,8 +360,8 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public CatalogFunction getFunction(ObjectPath tablePath) throws CatalogException {
-        throw new CatalogException("not supported now");
+    public CatalogFunction getFunction(ObjectPath tablePath) throws CatalogException, FunctionNotExistException {
+        throw new FunctionNotExistException("lakesoul", tablePath);
     }
 
     @Override
@@ -298,8 +371,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
-        throw new CatalogException("not supported now");
-
+        return;
     }
 
     @Override
@@ -315,25 +387,25 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) throws CatalogException {
-        throw new CatalogException("not supported now");
+    public CatalogTableStatistics getTableStatistics(ObjectPath tablePath) {
+        return null;
     }
 
     @Override
     public CatalogColumnStatistics getTableColumnStatistics(ObjectPath tablePath) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
     public CatalogTableStatistics getPartitionStatistics(ObjectPath tablePath,
                                                          CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
     public CatalogColumnStatistics getPartitionColumnStatistics(ObjectPath tablePath,
                                                                 CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-        throw new CatalogException("not supported now");
+        return null;
     }
 
     @Override
@@ -362,5 +434,13 @@ public class LakeSoulCatalog implements Catalog {
                                                CatalogColumnStatistics catalogColumnStatistics, boolean b)
             throws CatalogException {
         throw new CatalogException("not supported now");
+    }
+
+    public String getName() {
+        return CATALOG_NAME;
+    }
+
+    public void cleanForTest() {
+        dbManager.cleanMeta();
     }
 }

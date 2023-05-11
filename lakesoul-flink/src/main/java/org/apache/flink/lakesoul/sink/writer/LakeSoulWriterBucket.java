@@ -253,7 +253,7 @@ public class LakeSoulWriterBucket {
                 + '-'
                 + uniqueId
                 + '_'
-                + this.subTaskId
+                + subTask
                 + ".c"
                 + count
                 + outputFileConfig.getPartSuffix());

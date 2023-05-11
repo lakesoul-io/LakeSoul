@@ -26,6 +26,8 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -43,7 +45,6 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_FILE_IND
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_POSITION;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
-    private static final Logger LOG = LoggerFactory.getLogger(NativeParquetWriter.class);
 
     private final ArrowWriter<RowData> arrowWriter;
 
@@ -80,14 +81,16 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource) == true) {
+            nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+        }
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();
         nativeWriter.addFile(this.path);
 
-        setFSConfigs(conf);
+        FlinkUtil.setFSConfigs(conf, this.nativeWriter);
         this.nativeWriter.initializeWriter();
     }
 
@@ -180,26 +183,5 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     @Override
     public long getLastUpdateTime() {
         return this.lastUpdateTime;
-    }
-
-    private void setFSConfigs(Configuration conf) {
-        conf.addAll(GlobalConfiguration.loadConfiguration());
-        // try hadoop's s3 configs
-        setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key");
-        setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key");
-        setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint");
-        setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region");
-        // try flink's s3 credential configs
-        setFSConf(conf, "s3.access-key", "fs.s3a.access.key");
-        setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key");
-        setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint");
-    }
-
-    private void setFSConf(Configuration conf, String confKey, String fsConfKey) {
-        String value = conf.getString(confKey, "");
-        if (!value.isEmpty()) {
-            LOG.info("Set native object store option {}={}", fsConfKey, value);
-            this.nativeWriter.setObjectStoreOption(fsConfKey, value);
-        }
     }
 }

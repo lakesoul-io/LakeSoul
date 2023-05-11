@@ -98,7 +98,6 @@ class CDCSuite
               .option("hashPartitions", "hash")
               .option("hashBucketNum", "2")
               .option("lakesoul_cdc_change_column", "op")
-              .partitionBy("range", "op")
               .save(tablePath)
             val lake = LakeSoulTable.forPath(tablePath);
             val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range3", "hash3", "update"))
@@ -127,7 +126,6 @@ class CDCSuite
               .option("hashPartitions", "hash")
               .option("hashBucketNum", "2")
               .option("lakesoul_cdc_change_column", "op")
-              .partitionBy("range", "op")
               .save(tablePath)
             val lake = LakeSoulTable.forPath(tablePath);
             val tableForUpsert = Seq(("range1", "hash1", "delete"), ("range1", "hash3", "update"), ("range1", "hash5", "insert"))
@@ -157,7 +155,6 @@ class CDCSuite
               .option("hashPartitions", "hash")
               .option("hashBucketNum", "2")
               .option("lakesoul_cdc_change_column", "op")
-              .partitionBy("range", "op")
               .save(tablePath)
             val lake = LakeSoulTable.forPath(tablePath);
             val tableForUpsert = Seq(("range1", "hash1", "update"), ("range1", "hash3", "update"), ("range2", "hash1", "insert"), ("range2", "hash3", "update"))
@@ -191,7 +188,6 @@ class CDCSuite
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
             .option("lakesoul_cdc_change_column", "op")
-            .partitionBy("range", "op")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-1", "delete"), ("range1", "hash1-5", "insert"),
@@ -243,7 +239,6 @@ class CDCSuite
             .option(LakeSoulOptions.HASH_PARTITIONS, "hash")
             .option(LakeSoulOptions.HASH_BUCKET_NUM, "2")
             .option("lakesoul_cdc_change_column", "op")
-            .partitionBy("range", "op")
             .save(tablePath)
           val lake = LakeSoulTable.forPath(tablePath)
           val tableForUpsert = Seq(("range1", "hash1-2", "update"), ("range1", "hash1-5", "insert"), ("range2", "hash2-2", "insert"), ("range2", "hash2-5", "insert"))

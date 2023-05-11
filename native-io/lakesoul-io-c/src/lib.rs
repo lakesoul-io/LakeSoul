@@ -287,6 +287,19 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_default_column_value(
+    builder: NonNull<IOConfigBuilder>,
+    field: *const c_char,
+    value: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let field = CStr::from_ptr(field).to_str().unwrap().to_string();
+        let value = CStr::from_ptr(value).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_default_column_value(field, value))
+    }
+}
+
 // C interface for reader
 
 #[no_mangle]
