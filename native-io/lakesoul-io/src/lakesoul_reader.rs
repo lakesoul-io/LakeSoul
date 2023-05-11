@@ -92,33 +92,7 @@ impl LakeSoulReader {
                     .collect::<Vec<_>>();
 
                 let stream = if cols.is_empty() {
-                    let file_name = self.config.files[0].as_str();
-
-                    // local style path should have already been handled in create_session_context,
-                    // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
-                    let (object_store, path) = match Url::parse(file_name) {
-                        Ok(url) => Ok((
-                            self.sess_ctx
-                                .runtime_env()
-                                .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
-                            Path::from(url.path()),
-                        )),
-                        Err(e) => Err(DataFusionError::External(Box::new(e))),
-                    }?;
-
-                    if let GetResult::File(file, _) = object_store.get(&path).await.unwrap() {
-                        let num_rows = ParquetRecordBatchStreamBuilder::new(File::from_std(file))
-                            .await
-                            .unwrap()
-                            .metadata()
-                            .file_metadata()
-                            .num_rows() as usize;
-                        Box::pin(EmptySchemaStream::new(self.config.batch_size, num_rows))
-                    } else {
-                        return Err(DataFusionError::Internal(
-                            "LakeSoulReader fails to get_file".to_string(),
-                        ));
-                    }
+                    Box::pin(EmptySchemaStream::new(self.config.batch_size, df.count().await?))
                 } else {
                     df = df.select(cols)?;
 

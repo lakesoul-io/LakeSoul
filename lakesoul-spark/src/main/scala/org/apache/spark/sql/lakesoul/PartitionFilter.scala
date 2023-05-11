@@ -49,7 +49,7 @@ object PartitionFilter {
     if (filters.length < 1) {
       DataOperation.getTableDataInfo(partitionArray)
     } else {
-      val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value)
+      val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value).toSet
       val partitionInfo =partitionArray.filter(p => partitionRangeValues.contains(p.range_value))
       DataOperation.getTableDataInfo(partitionInfo)
     }

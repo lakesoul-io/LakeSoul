@@ -30,7 +30,8 @@ case class MetaInfo(table_info: TableInfo,
                     commit_type: CommitType,
                     commit_id: String = "",
                     query_id: String = "",
-                    batch_id: Long = -1L)
+                    batch_id: Long = -1L,
+                    readPartitionInfo: Array[PartitionInfo] = null)
 //range_value -> partition_desc
 case class PartitionInfo(table_id: String,
                          range_value: String,

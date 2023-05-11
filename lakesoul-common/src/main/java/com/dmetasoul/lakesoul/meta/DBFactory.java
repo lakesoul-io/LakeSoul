@@ -17,7 +17,12 @@
 
 package com.dmetasoul.lakesoul.meta;
 
-import com.dmetasoul.lakesoul.meta.dao.*;
+import com.dmetasoul.lakesoul.meta.dao.DataCommitInfoDao;
+import com.dmetasoul.lakesoul.meta.dao.NamespaceDao;
+import com.dmetasoul.lakesoul.meta.dao.PartitionInfoDao;
+import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
+import com.dmetasoul.lakesoul.meta.dao.TablePathIdDao;
+import com.dmetasoul.lakesoul.meta.dao.TableNameIdDao;
 
 public class DBFactory {
 
@@ -52,7 +57,7 @@ public class DBFactory {
         return tableInfoDao;
     }
 
-    public static com.dmetasoul.lakesoul.meta.dao.TableNameIdDao getTableNameIdDao() {
+    public static TableNameIdDao getTableNameIdDao() {
         if (TableNameIdDao == null) {
             synchronized (TableNameIdDao.class) {
                 if (TableNameIdDao == null) {

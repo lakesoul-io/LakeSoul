@@ -25,6 +25,7 @@ import java.util.List;
 public class MetaInfo {
     List<PartitionInfo> listPartition;
     TableInfo tableInfo;
+    List<PartitionInfo> readPartitionInfo;
 
     public List<PartitionInfo> getListPartition() {
         return listPartition;
@@ -40,5 +41,13 @@ public class MetaInfo {
 
     public void setTableInfo(TableInfo tableInfo) {
         this.tableInfo = tableInfo;
+    }
+
+    public List<PartitionInfo> getReadPartitionInfo() {
+        return readPartitionInfo;
+    }
+
+    public void setReadPartitionInfo(List<PartitionInfo> readPartitionInfo) {
+        this.readPartitionInfo = readPartitionInfo;
     }
 }
