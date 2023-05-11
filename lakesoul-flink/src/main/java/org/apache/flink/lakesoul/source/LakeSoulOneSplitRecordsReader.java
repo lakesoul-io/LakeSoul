@@ -199,24 +199,31 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 }
 
             }
-            int tmp = curRecordId;
-            curRecordId++;
-            totalRecords++;
-            RowData rd = this.curArrowReader.read(tmp);
-            GenericRowData reuseRow = new GenericRowData(this.schema.getFieldCount());
-            for (int i = 0; i < nonPartitionIndexes.length; i++) {
-                reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
-            }
-            if (!"".equals(this.cdcColumn)) {
-                if (this.isStreaming) {
-                    reuseRow.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
-                } else {
-                    if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
-                        return null;
+            GenericRowData reuseRow = null;
+            while (curRecordId < currentVCR.getRowCount()) {
+                int tmp = curRecordId;
+                curRecordId++;
+                totalRecords++;
+                RowData rd = this.curArrowReader.read(tmp);
+                reuseRow = new GenericRowData(this.schema.getFieldCount());
+                for (int i = 0; i < nonPartitionIndexes.length; i++) {
+                    reuseRow.setField(nonPartitionIndexes[i], nonPartitionFieldGetters[i].getFieldOrNull(rd));
+                }
+                if (!"".equals(this.cdcColumn)) {
+                    if (this.isStreaming) {
+                        reuseRow.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
+                    } else {
+                        if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
+                            reuseRow = null;
+                            continue;
+                        }else{
+                            setReuseRowWithPartition(reuseRow);
+                            return reuseRow;
+                        }
                     }
                 }
+                setReuseRowWithPartition(reuseRow);
             }
-            setReuseRowWithPartition(reuseRow);
             return reuseRow;
         }
     }

@@ -112,6 +112,14 @@ public class LakeSoulLookupJoinCase {
                         LakeSoulSinkOptions.USE_CDC.key(),
                         "tmp/bounded_table"));
 
+        // create the lakesoul non-partitioned non-hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table bounded_table1 (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_table1"));
+
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         // create the lakesoul non-partitioned hashed table
         tableEnv.executeSql(
@@ -531,7 +539,7 @@ public class LakeSoulLookupJoinCase {
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         batchEnv.useCatalog(lakeSoulCatalog.getName());
         batchEnv.executeSql(
-                        "insert overwrite bounded_table values (1,'a',10),(2,'b',22),(3,'c',33)")
+                        "insert overwrite bounded_table1 values (1,'a',10),(2,'b',22),(3,'c',33)")
                 .await();
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         TableImpl flinkTable =
@@ -539,7 +547,7 @@ public class LakeSoulLookupJoinCase {
                         tableEnv.sqlQuery(
                                 "select b.x, b.z from "
                                         + " default_catalog.default_database.probe as p "
-                                        + " join bounded_table for system_time as of p.p as b on p.x=b.x");
+                                        + " join bounded_table1 for system_time as of p.p as b on p.x=b.x");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString())
                 .isEqualTo("[+I[1, 10], +I[1, 10], +I[2, 22], +I[2, 22], +I[3, 33]]");
