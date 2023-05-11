@@ -35,6 +35,7 @@ object MetaCommit extends Logging {
     val partitionInfoArray = meta_info.partitionInfoArray
     val commit_type = meta_info.commit_type
     val table_schema = meta_info.table_info.table_schema
+    val readPartitionInfo = meta_info.readPartitionInfo
 
     val info = new com.dmetasoul.lakesoul.meta.entity.MetaInfo()
     val tableInfo = new com.dmetasoul.lakesoul.meta.entity.TableInfo()
@@ -63,6 +64,21 @@ object MetaCommit extends Logging {
       javaPartitionInfoList.add(partitionInfo)
     }
     info.setListPartition(javaPartitionInfoList)
+
+    if (readPartitionInfo != null) {
+      val readPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
+      for (partition <- readPartitionInfo) {
+        val partitionInfo = new entity.PartitionInfo()
+        partitionInfo.setTableId(table_info.table_id)
+        partitionInfo.setPartitionDesc(partition.range_value)
+        partitionInfo.setVersion(partition.version)
+        partitionInfo.setSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.toBuffer))
+        partitionInfo.setCommitOp(commit_type.name)
+        readPartitionInfoList.add(partitionInfo)
+      }
+      info.setReadPartitionInfo(readPartitionInfoList)
+    }
+
     var result = addDataInfo(meta_info)
     if (result) {
       result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)

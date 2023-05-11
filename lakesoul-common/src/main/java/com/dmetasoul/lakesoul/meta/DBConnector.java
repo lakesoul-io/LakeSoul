@@ -20,11 +20,14 @@ package com.dmetasoul.lakesoul.meta;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 public class DBConnector {
-    private static HikariConfig config = new HikariConfig();
-    private static HikariDataSource ds;
+    private static final HikariConfig config = new HikariConfig();
+    private static final HikariDataSource ds;
 
     static {
         DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();

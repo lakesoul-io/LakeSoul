@@ -60,7 +60,7 @@ object CHBenchmark {
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
 
-  val url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+  var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
@@ -106,6 +106,7 @@ object CHBenchmark {
       mysqlPassword = args(4)
       mysqlPort = args(5).toInt
       serverTimeZone = args(6)
+      url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
     }
 
     spark.sql("use " + dbName)

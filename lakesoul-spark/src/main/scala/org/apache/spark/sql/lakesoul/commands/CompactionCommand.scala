@@ -53,8 +53,9 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     partitionInfo.read_files.length >= 1
   }
 
-  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo]): Unit = {
-    if (snapshotManagement.snapshot.getPartitionInfoArray.forall(p => p.commit_op.equals("CompactionCommit"))) {
+  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfo]): Unit = {
+    if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
+      logInfo("=========== All Partitions Have Compacted, This Operation Will Cancel!!! ===========")
       return
     }
     val fileIndex = BatchDataSoulFileIndexV2(spark, snapshotManagement, files)
@@ -95,17 +96,17 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.setReadFiles(newReadFiles)
     tc.setCommitType("compaction")
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
-    tc.commit(newFiles, newReadFiles)
+    tc.commit(newFiles, newReadFiles, readPartitionInfo)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
       val spark = SparkSession.active
       val currentCatalog = spark.sessionState.catalogManager.currentCatalog.name()
       Utils.tryWithSafeFinally({
         spark.sessionState.catalogManager.setCurrentCatalog(SESSION_CATALOG_NAME)
-        if(hivePartitionName.nonEmpty){
+        if (hivePartitionName.nonEmpty) {
           spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($hivePartitionName)")
           spark.sql(s"ALTER TABLE $hiveTableName ADD partition($hivePartitionName) location '${path.toString}/$partitionStr'")
-        }else{
+        } else {
           spark.sql(s"ALTER TABLE $hiveTableName DROP IF EXISTS partition($conditionString)")
           spark.sql(s"ALTER TABLE $hiveTableName ADD partition($conditionString) location '${path.toString}/$partitionStr'")
         }
@@ -161,7 +162,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         if (hasNoDeltaFile) {
           logInfo("== Compaction: This partition has been compacted or has no delta file.")
         } else {
-          executeCompaction(sparkSession, tc, files)
+          executeCompaction(sparkSession, tc, files, snapshotManagement.snapshot.getPartitionInfoArray)
         }
 
       })
@@ -183,15 +184,11 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           if (hasNoDeltaFile) {
             logInfo(s"== Partition ${part.range_value} has no delta file.")
           } else {
-            executeCompaction(sparkSession, tc, files)
+            executeCompaction(sparkSession, tc, files, partitionsNeedCompact)
           }
         })
       })
-
-
     }
-
-
     Seq.empty
   }
 
