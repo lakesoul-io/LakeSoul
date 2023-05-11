@@ -83,6 +83,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
             e.printStackTrace()
             false
         } finally {
+          provider.close()
           consumerArray.close()
           consumerSchema.close()
         }

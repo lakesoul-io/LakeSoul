@@ -86,6 +86,10 @@ fn convert_to_nonnull<T>(obj: T) -> NonNull<T> {
     unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) }
 }
 
+fn from_nonnull<T>(obj: NonNull<T>) -> T {
+    unsafe { *Box::from_raw(obj.as_ptr()) }
+}
+
 // C interface for lakesoul native io
 
 // opaque types to pass as raw pointers
@@ -259,7 +263,9 @@ pub extern "C" fn lakesoul_config_builder_add_merge_op(
     unsafe {
         let field = CStr::from_ptr(field).to_str().unwrap().to_string();
         let merge_op = CStr::from_ptr(merge_op).to_str().unwrap().to_string();
-        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_merge_op(field, merge_op))
+        convert_to_opaque(
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_merge_op(field, merge_op),
+        )
     }
 }
 
@@ -395,7 +401,7 @@ pub extern "C" fn next_record_batch(
                     );
                     match result {
                         Ok(()) => {
-                            call_i32_result_callback(callback, rows, std::ptr::null());        
+                            call_i32_result_callback(callback, rows, std::ptr::null());
                         }
                         Err(e) => {
                             call_i32_result_callback(
@@ -425,10 +431,8 @@ pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>, sc
 }
 
 #[no_mangle]
-pub extern "C" fn free_lakesoul_reader(mut reader: NonNull<Result<Reader>>) {
-    unsafe {
-        reader.as_mut().free::<SyncSendableMutableLakeSoulReader>();
-    }
+pub extern "C" fn free_lakesoul_reader(reader: NonNull<Result<Reader>>) {
+    from_nonnull(reader).free::<SyncSendableMutableLakeSoulReader>();
 }
 
 // C interface for writer
@@ -571,10 +575,8 @@ pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntim
 // runtime is usually moved to create reader/writer
 // so you don't need to free it unless it's used independently
 #[no_mangle]
-pub extern "C" fn free_tokio_runtime(mut runtime: NonNull<Result<TokioRuntime>>) {
-    unsafe {
-        runtime.as_mut().free::<Runtime>();
-    }
+pub extern "C" fn free_tokio_runtime(runtime: NonNull<Result<TokioRuntime>>) {
+    from_nonnull(runtime).free::<Runtime>();
 }
 
 #[cfg(test)]
@@ -593,6 +595,7 @@ mod tests {
     use std::os::raw::c_char;
     use std::ptr::NonNull;
     use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
         unsafe {
@@ -639,7 +642,7 @@ mod tests {
     pub extern "C" fn reader_i32_callback(status: i32, err: *const c_char) {
         unsafe {
             let mut reader_called = CALL_BACK_I32_CV.0.lock().unwrap();
-            if status > 0{
+            if status > 0 {
                 match err.as_ref() {
                     Some(e) => READER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()),
                     None => {}
@@ -650,7 +653,6 @@ mod tests {
             CALL_BACK_I32_CV.1.notify_one();
         }
     }
-
 
     fn wait_callback() {
         unsafe {

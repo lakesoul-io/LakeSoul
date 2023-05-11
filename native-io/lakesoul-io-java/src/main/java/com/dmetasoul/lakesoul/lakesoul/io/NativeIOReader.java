@@ -68,6 +68,7 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
 
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
+        ioConfigBuilder = null;
         // tokioRuntime will be moved to reader
         reader = libLakeSoulIO.create_lakesoul_reader_from_config(config, tokioRuntime);
         tokioRuntime = null;

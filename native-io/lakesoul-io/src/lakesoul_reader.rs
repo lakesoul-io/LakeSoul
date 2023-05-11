@@ -15,7 +15,6 @@
  */
 
 use atomic_refcell::AtomicRefCell;
-use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -59,7 +58,7 @@ use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
-    stream: Box<MaybeUninit<Pin<Box<dyn RecordBatchStream + Send>>>>,
+    stream: Option<Pin<Box<dyn RecordBatchStream + Send>>>,
     pub(crate) schema: Option<SchemaRef>,
 }
 
@@ -69,7 +68,7 @@ impl LakeSoulReader {
         Ok(LakeSoulReader {
             sess_ctx,
             config,
-            stream: Box::new_uninit(),
+            stream: None,
             schema: None,
         })
     }
@@ -137,7 +136,7 @@ impl LakeSoulReader {
                 }
                 let stream = DefaultColumnStream::new_from_streams_with_default(stream_vec, schema.clone(), Arc::new(self.config.default_column_value.clone()));
                 self.schema = Some(stream.schema().clone().into());
-                self.stream = Box::new(MaybeUninit::new(Box::pin(stream)));
+                self.stream = Some(Box::pin(stream));
 
                 Ok(())
             } else {
@@ -221,14 +220,18 @@ impl LakeSoulReader {
                 .unwrap();
                 let finalized_stream = DefaultColumnStream::new_from_streams_with_default(vec![Box::pin(merge_stream)], finalize_schema.clone(), Arc::new(self.config.default_column_value.clone()));
                 self.schema = Some(finalized_stream.schema().clone().into());
-                self.stream = Box::new(MaybeUninit::new(Box::pin(finalized_stream)));
+                self.stream = Some(Box::pin(finalized_stream));
                 Ok(())
             }
         }
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
-        unsafe { self.stream.assume_init_mut().next().await }
+        if let Some(stream) = &mut self.stream {
+            stream.next().await
+        } else {
+            None
+        }
     }
 }
 
