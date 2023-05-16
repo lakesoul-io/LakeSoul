@@ -223,6 +223,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     }
                 }
                 setReuseRowWithPartition(reuseRow);
+                break;
             }
             return reuseRow;
         }
