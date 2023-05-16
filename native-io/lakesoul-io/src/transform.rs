@@ -77,7 +77,7 @@ pub fn transform_record_batch(target_schema: SchemaRef, batch: RecordBatch, use_
                     Some((idx, _)) => {
                         let data_type = target_field.data_type();
                         let transformed_array =
-                            transform_array(data_type.clone(), batch.column(idx).clone(), num_rows, use_default, default_column_value.clone());
+                            transform_array(target_field.name().to_string(), data_type.clone(), batch.column(idx).clone(), num_rows, use_default, default_column_value.clone());
                         transform_arrays.push(transformed_array);
                         Some(target_field.clone())
                     }
@@ -104,7 +104,7 @@ pub fn transform_record_batch(target_schema: SchemaRef, batch: RecordBatch, use_
     .unwrap()
 }
 
-pub fn transform_array(target_datatype: DataType, array: ArrayRef, num_rows: usize, use_default: bool, default_column_value: Arc<HashMap<String, String>>) -> ArrayRef {
+pub fn transform_array(name: String, target_datatype: DataType, array: ArrayRef, num_rows: usize, use_default: bool, default_column_value: Arc<HashMap<String, String>>) -> ArrayRef {
     match target_datatype {
         DataType::Timestamp(target_unit, Some(target_tz)) => make_array(match &target_unit {
             TimeUnit::Second => as_primitive_array::<TimestampSecondType>(&array)
@@ -127,7 +127,7 @@ pub fn transform_array(target_datatype: DataType, array: ArrayRef, num_rows: usi
                 .filter_map(|field| match orig_array.column_by_name(field.name()) {
                     Some(array) => Some((
                         field.clone(),
-                        transform_array(field.data_type().clone(), array.clone(), num_rows, use_default, default_column_value.clone()),
+                        transform_array(String::from(name.as_str().to_owned() + "." + field.name()), field.data_type().clone(), array.clone(), num_rows, use_default, default_column_value.clone()),
                     )),
                     None if use_default => {
                         let default_value_array = match default_column_value.get(field.name()) {
@@ -146,7 +146,13 @@ pub fn transform_array(target_datatype: DataType, array: ArrayRef, num_rows: usi
                 None => Arc::new(StructArray::from(child_array)),
             }
         }
-        _ => array.clone(),
+        target_datatype => {
+            if target_datatype != *array.data_type() {
+                panic!("Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}", name, target_datatype, array.data_type())
+            }
+            array.clone()
+        }
+        
     }
 }
 

@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.DBManager
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
@@ -435,6 +437,41 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
 
         verifyDescribeTable("lakesoul_test")
         verifyDescribeTable(s"lakesoul.`$path`")
+      }
+    }
+  }
+
+  test("ALTER TABLE with data CHANGE COLUMN from bigint to string - not supported") {
+    withTempDir { dir =>
+      withTable("lakesoul_test") {
+
+        sql(
+          s"""
+             |CREATE TABLE lakesoul_test(a Long, b String)
+             |USING lakesoul
+             |OPTIONS('path'='${dir.getCanonicalPath}')""".stripMargin)
+
+        val expectedSchema = new StructType()
+          .add("a", LongType, nullable = true)
+          .add("b", StringType, nullable = true)
+
+        assert(spark.table("lakesoul_test").schema === expectedSchema)
+
+        sql("INSERT INTO lakesoul_test SELECT 1, 'a'")
+        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        LakeSoulTable.uncached(dir.getCanonicalPath)
+
+        val db = new DBManager();
+        val tableInfo = db.getTableInfoByName("lakesoul_test")
+        db.updateTableSchema(tableInfo.getTableId, new StructType()
+          .add("a", StringType, nullable = true)
+          .add("b", StringType, nullable = true).json)
+
+        val updatedExpectedSchema = new StructType()
+          .add("a", StringType, nullable = true)
+          .add("b", StringType, nullable = true)
+        assert(spark.table("lakesoul_test").schema === updatedExpectedSchema)
+        assert(sql("SELECT * FROM lakesoul_test").collect().length == 0)
       }
     }
   }
