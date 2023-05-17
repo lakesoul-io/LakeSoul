@@ -461,15 +461,24 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
+        val e = intercept[AnalysisException] {
+          sql(
+            s"""
+               |ALTER TABLE lakesoul_test
+               |CHANGE COLUMN a a String""".stripMargin)
+        }
+        assert(e.getMessage.contains("ALTER TABLE CHANGE COLUMN is not supported"))
+        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        LakeSoulTable.uncached(dir.getCanonicalPath)
+
+
         val db = new DBManager();
         val tableInfo = db.getTableInfoByName("lakesoul_test")
-        db.updateTableSchema(tableInfo.getTableId, new StructType()
-          .add("a", StringType, nullable = true)
-          .add("b", StringType, nullable = true).json)
-
         val updatedExpectedSchema = new StructType()
           .add("a", StringType, nullable = true)
           .add("b", StringType, nullable = true)
+        db.updateTableSchema(tableInfo.getTableId, updatedExpectedSchema.json)
+
         assert(spark.table("lakesoul_test").schema === updatedExpectedSchema)
         assert(sql("SELECT * FROM lakesoul_test").collect().length == 0)
       }
