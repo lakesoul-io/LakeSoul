@@ -40,6 +40,8 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,9 +56,52 @@ public class LakeSoulSourceTest {
         TableEnvironment createTableEnv = createTableEnvironment();
         createLakeSoulSourceStreamTestTable(createTableEnv);
         String testSql = String.format("select name,score from test_stream /*+ OPTIONS('readstarttime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
-                getCurrentDateTime());
+                getCurrentDateTimeForIncremental());
         StreamTableEnvironment tEnvs = createTableEnv(STREAMING_TYPE);
-        tEnvs.executeSql(testSql).print();
+
+        try {
+            TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+            flinkTable.execute().await(5l, TimeUnit.SECONDS);
+            List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+            checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]", "+I[2, Alice, 80]", "+I[1, Bob, 90]"});
+        } catch (TimeoutException e) {
+            System.out.println("Stream test is done.");
+        }
+    }
+
+    @Test
+    public void testLakesoulSourceSnapshotRead() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = createTableEnvironment();
+        createLakeSoulSourceStreamTestTable(createTableEnv);
+        String testSql = String.format("select * from test_stream /*+ OPTIONS('readendtime'='%s','readtype'='snapshot','timezone'='Africa/Accra')*/",
+                getCurrentDateTimeForSnapshot());
+        StreamTableEnvironment tEnvs = createTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]", "+I[2, Alice, 80]", "+I[1, Bob, 90]"});
+    }
+
+    @Test
+    public void testLakesoulSourceIncrementalRead() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = createTableEnvironment();
+        createLakeSoulSourceStreamTestTable(createTableEnv);
+        String testSql = String.format("select * from test_stream /*+ OPTIONS('readstarttime'='%s','readendtime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
+                getCurrentDateTimeForIncremental(), getCurrentDateTimeForSnapshot());
+        StreamTableEnvironment tEnvs = createTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]"});
+    }
+
+    @Test
+    public void testLakesoulSourceWithDateType() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = createTableEnvironment();
+        createLakeSoulSourceTableWithDateType(createTableEnv);
+        String testSql = String.format("select * from birth_info where id=2");
+        StreamTableEnvironment tEnvs = createTableEnv(BATCH_TYPE);
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 2023-05-10, 2021-02-01T18:40]"});
     }
 
     @Test
@@ -132,7 +177,6 @@ public class LakeSoulSourceTest {
                 "    score INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/cdc_sink' )";
         String cdcSql = "insert into user_sink select * from user_cdc";
         String selectSql = "select * from user_sink";
@@ -152,7 +196,6 @@ public class LakeSoulSourceTest {
                 "    score INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/test_stream' )";
         tEnvs.executeSql("DROP TABLE if exists test_stream");
         tEnvs.executeSql(createUserSql);
@@ -170,11 +213,26 @@ public class LakeSoulSourceTest {
                 "    score INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/user' )";
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
         tEnvs.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),(5, 'Tom', 75), (4, 'Mike', 70)").await();
+    }
+
+    private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create table birth_info (" +
+                "    id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    birthDay DATE," +
+                "    birthTime TIMESTAMP WITHOUT TIME ZONE" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'path'='/tmp/lakeSource/birth' )";
+        tEnvs.executeSql("DROP TABLE if exists birth_info");
+        tEnvs.executeSql(createUserSql);
+        tEnvs.executeSql("INSERT INTO birth_info VALUES (1, 'Bob', TO_DATE('1995-10-01'),TO_TIMESTAMP('1995-10-01')), " +
+                "(2, 'Alice', TO_DATE('2023-05-10'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
+                "(3, 'Jack', TO_DATE('2010-12-10'),TO_TIMESTAMP('2000-10-01'))").await();
     }
 
     private void createLakeSoulSourceTableOrder(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
@@ -183,7 +241,6 @@ public class LakeSoulSourceTest {
                 "    price INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/order' )";
         tEnvs.executeSql("DROP TABLE if exists order_info");
         tEnvs.executeSql(createOrderSql);
@@ -197,7 +254,7 @@ public class LakeSoulSourceTest {
                 "    score INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
+                "    'use_cdc'='true'," +
                 "    'path'='/tmp/lakeSource/cdc' )";
         tEnvs.executeSql("DROP TABLE if exists user_cdc");
         tEnvs.executeSql(createSql);
@@ -216,7 +273,6 @@ public class LakeSoulSourceTest {
                 "PARTITIONED BY (`region`,`date`)" +
                 "WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/multi_range_hash' )";
         tEnvs.executeSql("DROP TABLE if exists user_multi");
         tEnvs.executeSql(createSql);
@@ -231,7 +287,6 @@ public class LakeSoulSourceTest {
                 "    price INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'use_cdc'='false'," +
                 "    'path'='/tmp/lakeSource/noPK' )";
         tEnvs.executeSql("DROP TABLE if exists order_noPK");
         tEnvs.executeSql(createOrderSql);
@@ -266,8 +321,16 @@ public class LakeSoulSourceTest {
         return tEnvs;
     }
 
-    private String getCurrentDateTime() {
-        Instant instant = Instant.ofEpochMilli(System.currentTimeMillis() - 3000l);
+    private String getCurrentDateTimeForSnapshot() {
+        Instant instant = Instant.ofEpochMilli(System.currentTimeMillis() - 2000);
+        ZoneId zoneId = ZoneId.of("Africa/Accra");
+        ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, zoneId);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        return zonedDateTime.format(formatter);
+    }
+
+    private String getCurrentDateTimeForIncremental() {
+        Instant instant = Instant.ofEpochMilli(System.currentTimeMillis() - 5000);
         ZoneId zoneId = ZoneId.of("Africa/Accra");
         ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, zoneId);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
