@@ -78,11 +78,9 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
             println("[ERROR][org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader] native reader fetching timeout," +
               "please try a larger number with LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT")
             throw e
-            false
           case e: Throwable =>
             ex = Some(e)
             throw e
-            false
         } finally {
           provider.close()
           consumerArray.close()
