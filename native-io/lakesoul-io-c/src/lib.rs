@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![feature(c_size_t)]
 extern crate core;
 
@@ -124,7 +125,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_file(
     file: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let file = CStr::from_ptr(unsafe{ file }).to_str().unwrap().to_string();
+        let file = CStr::from_ptr(file).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_file(file))
     }
 }
@@ -135,7 +136,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_column(
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let column = CStr::from_ptr(unsafe{ column }).to_str().unwrap().to_string();
+        let column = CStr::from_ptr(column).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_column(column))
     }
 }
@@ -146,7 +147,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_aux_sort_column(
     column: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let column = CStr::from_ptr(unsafe{ column }).to_str().unwrap().to_string();
+        let column = CStr::from_ptr(column).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_aux_sort_column(column))
     }
 }
@@ -157,7 +158,7 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
     filter: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let filter = CStr::from_ptr(unsafe{ filter }).to_str().unwrap().to_string();
+        let filter = CStr::from_ptr(filter).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_filter_str(filter))
     }
 }
@@ -217,8 +218,8 @@ pub extern "C" fn lakesoul_config_builder_set_object_store_option(
     value: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let key = CStr::from_ptr(unsafe{ key }).to_str().unwrap().to_string();
-        let value = CStr::from_ptr(unsafe{ value }).to_str().unwrap().to_string();
+        let key = CStr::from_ptr(key).to_str().unwrap().to_string();
+        let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_object_store_option(key, value),
         )
@@ -232,7 +233,7 @@ pub extern "C" fn lakesoul_config_builder_add_files(
     file_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let files = slice::from_raw_parts(unsafe{ files }, file_num as usize);
+        let files = slice::from_raw_parts(files, file_num as usize);
         let files: Vec<_> = files
             .iter()
             .map(|p| CStr::from_ptr(*p))
@@ -249,7 +250,7 @@ pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
     pk: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let pk = CStr::from_ptr(unsafe{ pk }).to_str().unwrap().to_string();
+        let pk = CStr::from_ptr(pk).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_primary_key(pk))
     }
 }
@@ -261,8 +262,8 @@ pub extern "C" fn lakesoul_config_builder_add_merge_op(
     merge_op: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let field = CStr::from_ptr(unsafe{ field }).to_str().unwrap().to_string();
-        let merge_op = CStr::from_ptr(unsafe{ merge_op }).to_str().unwrap().to_string();
+        let field = CStr::from_ptr(field).to_str().unwrap().to_string();
+        let merge_op = CStr::from_ptr(merge_op).to_str().unwrap().to_string();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_merge_op(field, merge_op),
         )
@@ -276,7 +277,7 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     pk_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let pks = slice::from_raw_parts(unsafe{ pks }, pk_num as usize);
+        let pks = slice::from_raw_parts(pks, pk_num as usize);
         let pks: Vec<_> = pks
             .iter()
             .map(|p| CStr::from_ptr(*p))
@@ -294,8 +295,8 @@ pub extern "C" fn lakesoul_config_builder_set_default_column_value(
     value: *const c_char,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let field = CStr::from_ptr(unsafe{ field }).to_str().unwrap().to_string();
-        let value = CStr::from_ptr(unsafe{ value }).to_str().unwrap().to_string();
+        let field = CStr::from_ptr(field).to_str().unwrap().to_string();
+        let value = CStr::from_ptr(value).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_default_column_value(field, value))
     }
 }
