@@ -233,7 +233,7 @@ pub extern "C" fn lakesoul_config_builder_add_files(
     file_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let files = slice::from_raw_parts(files, file_num as usize);
+        let files = slice::from_raw_parts(files, file_num);
         let files: Vec<_> = files
             .iter()
             .map(|p| CStr::from_ptr(*p))
@@ -277,7 +277,7 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     pk_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let pks = slice::from_raw_parts(pks, pk_num as usize);
+        let pks = slice::from_raw_parts(pks, pk_num);
         let pks: Vec<_> = pks
             .iter()
             .map(|p| CStr::from_ptr(*p))
