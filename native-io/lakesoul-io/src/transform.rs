@@ -47,17 +47,14 @@ pub fn uniform_record_batch(batch: RecordBatch) -> RecordBatch {
 
 pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default: bool) -> SchemaRef {
     if use_default {
-        target_schema.clone()
+        target_schema
     } else {
         Arc::new(Schema::new(
             target_schema
                 .fields()
                 .iter()
                 .enumerate()
-                .filter_map(|(_, target_field)| match schema.column_with_name(target_field.name()) {
-                    Some(_) => Some(target_field.clone()),
-                    None => None,
-                })
+                .filter_map(|(_, target_field)| schema.column_with_name(target_field.name()).map(|_| target_field.clone()))
                 .collect::<Vec<_>>(),
         ))
     }
@@ -108,16 +105,16 @@ pub fn transform_array(target_datatype: DataType, array: ArrayRef, num_rows: usi
     match target_datatype {
         DataType::Timestamp(target_unit, Some(target_tz)) => make_array(match &target_unit {
             TimeUnit::Second => as_primitive_array::<TimestampSecondType>(&array)
-                .with_timezone_opt(Some(target_tz.to_string()))
+                .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Microsecond => as_primitive_array::<TimestampMicrosecondType>(&array)
-                .with_timezone_opt(Some(target_tz.to_string()))
+                .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Millisecond => as_primitive_array::<TimestampMillisecondType>(&array)
-                .with_timezone_opt(Some(target_tz.to_string()))
+                .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Nanosecond => as_primitive_array::<TimestampNanosecondType>(&array)
-                .with_timezone_opt(Some(target_tz.to_string()))
+                .with_timezone_opt(Some(target_tz))
                 .into_data(),
         }),
         DataType::Struct(target_child_fileds) => {

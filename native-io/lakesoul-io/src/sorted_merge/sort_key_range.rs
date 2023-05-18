@@ -105,7 +105,7 @@ impl SortKeyBatchRange {
             while self.end_row < self.batch.num_rows() {
                 // check if next row in this batch has same sort key
                 if self.rows.row(self.end_row) == self.rows.row(self.begin_row) {
-                    self.end_row = self.end_row + 1;
+                    self.end_row += 1;
                 } else {
                     break;
                 }
@@ -217,7 +217,7 @@ impl SortKeyBatchRanges {
     pub fn new(schema: SchemaRef, fields_map: Arc<Vec<Vec<usize>>>) -> SortKeyBatchRanges {
         SortKeyBatchRanges {
             sort_key_array_ranges: vec![smallvec![]; schema.fields().len()],
-            fields_map: fields_map.clone(),
+            fields_map,
             schema: schema.clone(),
             batch_range: None,
         }
@@ -250,10 +250,7 @@ impl SortKeyBatchRanges {
     }
 
     pub fn set_batch_range(&mut self, batch_range: Option<SortKeyBatchRange>) {
-        self.batch_range = match batch_range {
-            None => None,
-            Some(batch_range) => Some(batch_range.clone()),
-        }
+        self.batch_range = batch_range
     }
 
     pub fn match_row(&self, range: &SortKeyBatchRange) -> bool {

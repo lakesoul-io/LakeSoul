@@ -87,7 +87,7 @@ pub struct LakeSoulIOConfig {
 }
 
 #[derive(Derivative)]
-#[derivative(Clone)]
+#[derivative(Clone, Default)]
 pub struct LakeSoulIOConfigBuilder {
     config: LakeSoulIOConfig,
 }
@@ -220,15 +220,12 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
 
     let retry_config = RetryConfig::default();
     let mut s3_store_builder = AmazonS3Builder::new()
-        .with_region(region.unwrap_or("us-east-1".to_string()))
+        .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.clone().unwrap())
         .with_retry(retry_config)
         .with_allow_http(true);
-    match (key, secret) {
-        (Some(k), Some(s)) => {
+    if let (Some(k), Some(s)) = (key, secret) {
             s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
-        }
-        _ => {}
     }
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
@@ -257,8 +254,8 @@ fn register_hdfs_object_store(_host: &str, _config: &LakeSoulIOConfig, _runtime:
 
 // try to register object store of this path string, and return normalized path string if
 // this path is local path style but fs.defaultFS config exists
-fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<String> {
-    let url = Url::parse(path.as_str());
+fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<String> {
+    let url = Url::parse(path);
     match url {
         Ok(url) => match url.scheme() {
             "s3" | "s3a" => {
@@ -266,15 +263,15 @@ fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: 
                     .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
                     .is_ok()
                 {
-                    return Ok(path.clone());
+                    return Ok(path.to_owned());
                 }
                 if !config.object_store_options.contains_key("fs.s3a.bucket") {
                     config
                         .object_store_options
                         .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
                 }
-                register_s3_object_store(config, &runtime)?;
-                Ok(path.clone())
+                register_s3_object_store(config, runtime)?;
+                Ok(path.to_owned())
             }
             "hdfs" => {
                 if url.has_host() {
@@ -282,30 +279,30 @@ fn register_object_store(path: &String, config: &mut LakeSoulIOConfig, runtime: 
                         .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)
                         .is_ok()
                     {
-                        return Ok(path.clone());
+                        return Ok(path.to_owned());
                     }
                     register_hdfs_object_store(
                         &url[url::Position::BeforeHost..url::Position::BeforePath],
                         config,
-                        &runtime,
+                        runtime,
                     )?;
-                    Ok(path.clone())
+                    Ok(path.to_owned())
                 } else {
                     // defaultFS should have been registered with hdfs,
                     // and we convert hdfs://user/hadoop/file to
                     // hdfs://defaultFS/user/hadoop/file
-                    let path = url.path().trim_start_matches("/");
+                    let path = url.path().trim_start_matches('/');
                     let joined_path = [config.default_fs.as_str(), path].join("/");
                     Ok(joined_path)
                 }
             }
-            "file" => Ok(path.clone()),
+            "file" => Ok(path.to_owned()),
             _ => Err(ObjectStore(object_store::Error::NotSupported {
                 source: "FileSystem not supported".into(),
             })),
         },
         Err(ParseError::RelativeUrlWithoutBase) => {
-            let path = path.trim_start_matches("/");
+            let path = path.trim_start_matches('/');
             if config.default_fs.is_empty() {
                 // local filesystem
                 Ok(["file://", path].join("/"))
@@ -335,14 +332,11 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     let default_fs = config
         .object_store_options
         .get("fs.defaultFS")
-        .or(config.object_store_options.get("fs.default.name"))
+        .or_else(|| config.object_store_options.get("fs.default.name"))
         .cloned();
-    match default_fs {
-        Some(fs) => {
+    if let Some(fs) = default_fs {
             config.default_fs = fs.clone();
             register_object_store(&fs, config, &runtime)?;
-        }
-        _ => {}
     };
 
     // register object store(s) for input/output files' path

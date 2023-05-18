@@ -53,7 +53,7 @@ impl RangeCombiner {
         RangeCombiner::MinHeapSortKeyBatchRangeCombiner(MinHeapSortKeyBatchRangeCombiner::new(
             schema,
             streams_num,
-            fields_map.clone(),
+            fields_map,
             target_batch_size,
             merge_operator,
         ))
@@ -106,12 +106,12 @@ impl MinHeapSortKeyBatchRangeCombiner {
     ) -> Self {
         let new_range = Arc::new(SortKeyBatchRanges::new(schema.clone(), fields_map.clone()));
         let merge_op = match merge_operator.len() {
-            0 => vec![MergeOperator::UseLast; schema.clone().fields().len()],
+            0 => vec![MergeOperator::UseLast; schema.fields().len()],
             _ => merge_operator,
         };
         MinHeapSortKeyBatchRangeCombiner {
-            schema: schema.clone(),
-            fields_map: fields_map.clone(),
+            schema,
+            fields_map,
             heap: QuaternaryHeap::with_capacity(streams_num),
             in_progress: Vec::with_capacity(target_batch_size),
             target_batch_size,

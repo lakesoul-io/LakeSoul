@@ -208,7 +208,7 @@ impl MultiPartAsyncWriter {
 
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
-            uniform_schema(schema.clone()).clone(),
+            uniform_schema(schema.clone()),
             Some(
                 WriterProperties::builder()
                     .set_max_row_group_size(config.max_row_group_size)
@@ -219,9 +219,9 @@ impl MultiPartAsyncWriter {
         )?;
 
         Ok(MultiPartAsyncWriter {
-            in_mem_buf: in_mem_buf.clone(),
+            in_mem_buf,
             sess_ctx,
-            schema: uniform_schema(schema.clone()).clone(),
+            schema: uniform_schema(schema),
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
@@ -243,7 +243,7 @@ impl MultiPartAsyncWriter {
             .try_borrow_mut()
             .map_err(|e| Internal(format!("{:?}", e)))?;
         if v.len() > 0 {
-            MultiPartAsyncWriter::write_part(writer, &mut *v).await
+            MultiPartAsyncWriter::write_part(writer, &mut v).await
         } else {
             Ok(())
         }
@@ -276,7 +276,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
             .try_borrow_mut()
             .map_err(|e| Internal(format!("{:?}", e)))?;
         if v.len() > 0 {
-            MultiPartAsyncWriter::write_part(&mut this.writer, &mut *v).await?;
+            MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
         }
         // shutdown multi part async writer to complete the upload
         this.writer.flush().await?;
@@ -289,7 +289,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         this.object_store
             .abort_multipart(&this.path, &this.multi_part_id)
             .await
-            .map_err(|e| DataFusionError::ObjectStore(e))
+            .map_err(DataFusionError::ObjectStore)
     }
 }
 
@@ -309,7 +309,7 @@ impl SortAsyncWriter {
             // add aux sort cols to sort expr
             .chain(config.aux_sort_cols.iter())
             .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &*config.schema.0)?;
+                let col = Column::new_with_schema(pk.as_str(), &config.schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -332,7 +332,7 @@ impl SortAsyncWriter {
                         // exclude aux sort cols
                         None
                     } else {
-                        Some(col(f.name().as_str(), &*config.schema.0).map(|e| (e, f.name().clone())))
+                        Some(col(f.name().as_str(), &config.schema.0).map(|e| (e, f.name().clone())))
                     }
                 })
                 .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>>>()?;
@@ -416,7 +416,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     .map(|f| {
                         schema
                             .index_of(f.name().as_str())
-                            .map_err(|e| DataFusionError::ArrowError(e))
+                            .map_err(DataFusionError::ArrowError)
                     })
                     .collect::<Result<Vec<usize>>>()?;
                 Arc::new(schema.project(proj_indices.borrow())?)
@@ -425,7 +425,7 @@ impl SyncSendableMutableLakeSoulWriter {
             };
 
             let mut writer_config = config.clone();
-            writer_config.schema = IOSchema(uniform_schema(writer_schema).clone());
+            writer_config.schema = IOSchema(uniform_schema(writer_schema));
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
 
             let schema = writer.schema.clone();

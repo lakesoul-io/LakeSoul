@@ -163,7 +163,7 @@ impl SortedStreamMerger {
         let combiner = RangeCombiner::new(
             target_schema.clone(),
             streams_num,
-            fields_map.clone(),
+            fields_map,
             batch_size,
             merge_operator,
         );
@@ -216,14 +216,14 @@ impl SortedStreamMerger {
                             }
                         };
 
-                        self.batch_idx_counter = self.batch_idx_counter + 1;
+                        self.batch_idx_counter += 1;
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
                         let range = SortKeyBatchRange::new_and_init(
                             0,
                             idx,
                             self.batch_idx_counter,
-                            batch.clone(),
-                            rows.clone(),
+                            batch,
+                            rows,
                         );
 
                         self.range_finished[idx] = false;

@@ -1,0 +1,19 @@
+on: push
+name: Clippy check
+
+# Make sure CI fails on all warnings, including Clippy lints
+env:
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  clippy_check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: actions-rs/cargo@v1
+      - run: rustup component add clippy --toolchain nightly-x86_64-unknown-linux-gnu
+      - name: Run Clippy
+        run: cd native-io &&  cargo +nightly clippy --all-features --package lakesoul-io-c
