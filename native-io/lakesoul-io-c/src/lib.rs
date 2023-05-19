@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![feature(c_size_t)]
 extern crate core;
 
@@ -232,7 +233,7 @@ pub extern "C" fn lakesoul_config_builder_add_files(
     file_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let files = slice::from_raw_parts(files, file_num as usize);
+        let files = slice::from_raw_parts(files, file_num);
         let files: Vec<_> = files
             .iter()
             .map(|p| CStr::from_ptr(*p))
@@ -276,7 +277,7 @@ pub extern "C" fn lakesoul_config_builder_add_primary_keys(
     pk_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
-        let pks = slice::from_raw_parts(pks, pk_num as usize);
+        let pks = slice::from_raw_parts(pks, pk_num);
         let pks: Vec<_> = pks
             .iter()
             .map(|p| CStr::from_ptr(*p))
@@ -422,7 +423,7 @@ pub extern "C" fn next_record_batch(
 pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>, schema_addr: c_ptrdiff_t) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
-        let schema = reader.as_ref().get_schema().unwrap_or(Arc::new(Schema::empty()));
+        let schema = reader.as_ref().get_schema().unwrap_or_else(|| Arc::new(Schema::empty()));
         let schema_addr = schema_addr as *mut FFI_ArrowSchema;
         let _ = FFI_ArrowSchema::try_from(schema.as_ref()).map(|s| {
             std::ptr::write_unaligned(schema_addr, s);
@@ -476,7 +477,7 @@ pub extern "C" fn write_record_batch(
             let struct_array = array
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .ok_or(DataFusionError::ArrowError(CastError(
+                .ok_or_else(|| DataFusionError::ArrowError(CastError(
                     "Cannot cast to StructArray from array and schema addresses".to_string(),
                 )))?;
             let rb = RecordBatch::from(struct_array);

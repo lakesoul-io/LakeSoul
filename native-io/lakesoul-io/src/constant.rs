@@ -23,7 +23,7 @@ use arrow_schema::DataType;
 pub const LAKESOUL_TIMEZONE : &str = "UTC";
 
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ConstNullArray{
     inner: HashMap<DataType, ArrayRef>
 }
@@ -45,7 +45,7 @@ impl ConstNullArray{
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ConstEmptyArray{
     inner: HashMap<DataType, ArrayRef>
 }
@@ -66,3 +66,4 @@ impl ConstEmptyArray{
         }
     }
 }
+

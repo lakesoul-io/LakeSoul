@@ -25,11 +25,11 @@ impl Parser {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
         if op.eq("or") {
             let left_expr = Parser::parse(left, schema.clone());
-            let right_expr = Parser::parse(right, schema.clone());
+            let right_expr = Parser::parse(right, schema);
             left_expr.or(right_expr)
         } else if op.eq("and") {
             let left_expr = Parser::parse(left, schema.clone());
-            let right_expr = Parser::parse(right, schema.clone());
+            let right_expr = Parser::parse(right, schema);
             left_expr.and(right_expr)
         } else if op.eq("not") {
             let inner = Parser::parse(right, schema);
@@ -74,7 +74,7 @@ impl Parser {
                                 col(column).lt_eq(value)
                             }
 
-                            _ => return Expr::Literal(ScalarValue::Boolean(Some(true))),
+                            _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     }
                 }
@@ -85,7 +85,7 @@ impl Parser {
     fn parse_filter_str(filter: String) -> (String, String, String) {
         let op_offset = filter.find('(').unwrap();
         let (op, filter) = filter.split_at(op_offset);
-        if !filter.ends_with(")") {
+        if !filter.ends_with(')') {
             panic!("Invalid filter string");
         }
         let filter = &filter[1..filter.len() - 1];
@@ -169,8 +169,8 @@ impl Parser {
             Some(
                 value[left_bracket_pos + 1..right_bracket_pos]
                     .to_string()
-                    .replace(" ", "")
-                    .split(",")
+                    .replace(' ', "")
+                    .split(',')
                     .collect::<Vec<&str>>()
                     .iter()
                     .map(|s| s.parse::<i16>().unwrap())

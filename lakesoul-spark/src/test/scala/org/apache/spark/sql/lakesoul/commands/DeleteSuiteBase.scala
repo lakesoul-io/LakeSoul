@@ -58,6 +58,7 @@ abstract class DeleteSuiteBase extends QueryTest
                             colNames: Seq[String],
                             tableName: Option[String] = None): Unit = {
     executeDelete(target = tableName.getOrElse(s"lakesoul.default.`$tempPath`"), where = condition.orNull)
+    LakeSoulTable.uncached(tempPath)
     checkAnswer(readLakeSoulTable(tempPath).select(colNames.map(col): _*), expectedResults)
   }
 

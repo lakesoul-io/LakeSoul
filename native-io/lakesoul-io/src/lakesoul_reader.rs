@@ -20,13 +20,10 @@ use std::sync::Arc;
 use arrow::datatypes::Schema;
 use arrow_schema::SchemaRef;
 
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
-
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
 use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
@@ -38,17 +35,12 @@ use datafusion::physical_plan::RecordBatchStream;
 use futures::future::try_join_all;
 use futures::StreamExt;
 
-use object_store::path::Path;
-use object_store::GetResult;
-use url::Url;
 
-use tokio::fs::File;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::default_column_stream;
-use crate::default_column_stream::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::Parser as FilterParser;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
@@ -76,7 +68,7 @@ impl LakeSoulReader {
     pub async fn start(&mut self) -> Result<()> {
         let schema: SchemaRef = self.config.schema.0.clone();
         if self.config.primary_keys.is_empty() {
-            if self.config.files.len() > 0 {
+            if !self.config.files.is_empty() {
                 let mut stream_vec = Vec::<SendableRecordBatchStream>::with_capacity(self.config.files.len());
                 for i in 0..self.config.files.len() {
                     let mut df = self
@@ -109,7 +101,7 @@ impl LakeSoulReader {
                     stream_vec.push(stream);
                 }
                 let stream = DefaultColumnStream::new_from_streams_with_default(stream_vec, schema.clone(), Arc::new(self.config.default_column_value.clone()));
-                self.schema = Some(stream.schema().clone().into());
+                self.schema = Some(stream.schema());
                 self.stream = Some(Box::pin(stream));
 
                 Ok(())
@@ -118,8 +110,7 @@ impl LakeSoulReader {
                     "LakeSoulReader has wrong number of file".to_string(),
                 ))
             }
-        } else {
-            if self.config.files.len() == 0 {
+        } else if self.config.files.is_empty() {
                 Err(DataFusionError::Internal(
                     "LakeSoulReader has wrong number of file".to_string(),
                 ))
@@ -193,11 +184,10 @@ impl LakeSoulReader {
                 )
                 .unwrap();
                 let finalized_stream = DefaultColumnStream::new_from_streams_with_default(vec![Box::pin(merge_stream)], finalize_schema.clone(), Arc::new(self.config.default_column_value.clone()));
-                self.schema = Some(finalized_stream.schema().clone().into());
+                self.schema = Some(finalized_stream.schema());
                 self.stream = Some(Box::pin(finalized_stream));
                 Ok(())
             }
-        }
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {

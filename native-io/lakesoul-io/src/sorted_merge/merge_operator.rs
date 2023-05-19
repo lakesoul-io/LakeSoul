@@ -24,18 +24,13 @@ use smallvec::SmallVec;
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
 use crate::sum_with_primitive_type_and_append_value;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum MergeOperator {
+    #[default]
     UseLast,
     UseLastNotNull,
     Sum,
     Concat,
-}
-
-impl Default for MergeOperator {
-    fn default() -> Self {
-        MergeOperator::UseLast
-    }
 }
 
 pub enum MergeResult {
@@ -208,8 +203,7 @@ macro_rules! sum_with_primitive_type_and_append_value {
             if is_none {
                 match null_buffer {
                     Some(buffer) => {
-                        is_none = is_none
-                            & (buffer.count_set_bits_offset(offset + range.begin_row, range.end_row - range.begin_row)
+                        is_none &= (buffer.count_set_bits_offset(offset + range.begin_row, range.end_row - range.begin_row)
                                 == range.end_row - range.begin_row);
                     }
                     None => is_none = false,

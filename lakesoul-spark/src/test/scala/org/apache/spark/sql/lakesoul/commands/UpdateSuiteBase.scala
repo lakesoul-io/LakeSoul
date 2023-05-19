@@ -75,6 +75,7 @@ abstract class UpdateSuiteBase
                             colNames: Seq[String],
                             tableName: Option[String] = None): Unit = {
     executeUpdate(tableName.getOrElse(s"lakesoul.default.`$tempPath`"), setClauses, where = condition.orNull)
+    LakeSoulTable.uncached(tempPath)
     checkAnswer(readLakeSoulTable(tempPath).select(colNames.map(col): _*), expectedResults)
   }
 
