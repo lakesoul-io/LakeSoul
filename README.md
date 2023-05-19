@@ -1,22 +1,26 @@
+![LakeSoul](https://github.com/lakesoul-io/artwork/blob/main/horizontal/color/LakeSoul_Horizontal_Color.png) ![LFAI](https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.png)
+
+![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/7192/badge)
+
+![Maven Test](https://github.com/meta-soul/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
+![Flink CDC Test](https://github.com/meta-soul/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
+
 [中文介绍](README-CN.md)
 
-# LakeSoul
-LakeSoul is a cloud-native Lakehouse framework developed by [DMetaSoul](https://www.dmetasoul.com) team, and supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
+LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
 ![LakeSoul Arch](doc/LakeSoul.png)
+
+LakeSoul was originally created by DMetaSoul company and was donated to Linux Foundation AI & Data as a sandbox project since May 2023.
 
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales metadata management and achieves ACID control by using PostgreSQL. LakeSoul provides tools to ingest CDC and log streams automatically in a zero-ETL style.
 
 More detailed features please refer to our doc page: [Documentations](https://www.dmetasoul.com/en/docs/lakesoul/intro/)
-
-![Maven Test](https://github.com/meta-soul/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
-![Flink CDC Test](https://github.com/meta-soul/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
 
 # Quick Start
 Follow the [Quick Start](https://www.dmetasoul.com/en/docs/lakesoul/Getting%20Started/setup-local-env/) to quickly set up a test env.
 
 # Tutorials
 Please find tutorials in doc site:
-[Tutorials](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/consume-cdc-via-spark-streaming/)
 
 * Checkout [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/flink-cdc-sink/) on how to sync an entire MySQL database into LakeSoul in realtime, with auto table creation, auto DDL sync and exactly once guarantee.
 * Checkout [Multi Stream Merge and Build Wide Table Tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/mutil-stream-merge/) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
@@ -52,10 +56,12 @@ Please find usage documentations in doc site:
     - [x] Snapshot Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
     - [x] Incremental Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
     - [x] Incremental Streaming Source ([#130](https://github.com/meta-soul/LakeSoul/issues/130))
-    - [ ] Flink Stream/Batch Source
+    - [x] Flink Stream/Batch Source
   - [ ] Materialized View
     - [ ] Incremental MV Build
     - [ ] Auto query rewrite
+* Data Science
+  -[ ] Pure Python Reader
 * Spark Integration
   - [x] Table/Dataframe API
   - [x] SQL support with catalog except upsert
@@ -71,14 +77,14 @@ Please find usage documentations in doc site:
 * Flink Integration and CDC Ingestion ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
   - [x] Table API
     - [x] Stream Sink
-    - [ ] Batch Sink
-    - [ ] Batch/Stream source
-    - [ ] Stream Source as ChangeLog Stream
-  - [x] Flink CDC
+    - [x] Batch Sink
+    - [x] Batch/Stream source
+    - [x] Stream Source as ChangeLog Stream
     - [x] Exactly Once Sink
+  - [x] Flink CDC
     - [x] Auto Schema Change (DDL) Sync
     - [x] Auto Table Creation (depends on #78)
-    - [x] Support multiple source tables with different schemas ([#84](https://github.com/meta-soul/LakeSoul/issues/84))
+    - [x] Support sink multiple source tables with different schemas ([#84](https://github.com/meta-soul/LakeSoul/issues/84))
 * Hive Integration
   - [x] Export to Hive partition after compaction
   - [x] Apache Kyuubi (Hive JDBC) Integration
