@@ -3,9 +3,7 @@
 
 name: CI with Maven Test
 
-on:
-  push:
-    branches: [ "main", "release/spark_3.3"]
+on: push
 
 jobs:
   build:
