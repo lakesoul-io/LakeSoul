@@ -14,7 +14,7 @@
     <packaging>pom</packaging>
     <name>LakeSoul POM</name>
     <description>A Table Structure Storage to Unify Batch and Streaming Data Processing</description>
-    <url>https://github.com/meta-soul/LakeSoul</url>
+    <url>https://github.com/lakesoul-io/LakeSoul</url>
     <licenses>
         <license>
             <name>Apache 2.0 License</name>
@@ -23,8 +23,8 @@
         </license>
     </licenses>
     <scm>
-        <connection>scm:git:git@github.com:meta-soul/LakeSoul.git</connection>
-        <url>scm:git:git@github.com:meta-soul/LakeSoul.git</url>
+        <connection>scm:git:git@github.com:lakesoul-io/LakeSoul.git</connection>
+        <url>scm:git:git@github.com:lakesoul-io/LakeSoul.git</url>
         <tag>HEAD</tag>
     </scm>
     <organization>
@@ -33,12 +33,12 @@
     </organization>
     <developers>
         <developer>
-            <id>dmetasoul</id>
-            <name>dmetasoul</name>
-            <email>opensource@dmetasoul.com</email>
-            <url>https://github.com/meta-soul</url>
-            <organization>DMetaSoul</organization>
-            <organizationUrl>https://www.dmetasoul.com</organizationUrl>
+            <id>lakesoul-io</id>
+            <name>lakesoul-io</name>
+            <email>lakesoul-technical-discuss@lists.lfaidata.foundation</email>
+            <url>https://github.com/lakesoul-io</url>
+            <organization>LakeSoul, LF AI &amp; Data</organization>
+            <organizationUrl>https://github.com/lakesoul-io</organizationUrl>
             <timezone>+8</timezone>
         </developer>
     </developers>

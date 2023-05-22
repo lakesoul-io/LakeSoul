@@ -1,5 +1,5 @@
 # Native IO Layer for LakeSoul
-See [LakeSoul#66](https://github.com/meta-soul/LakeSoul/issues/66) for details.
+See [LakeSoul#66](https://github.com/lakesoul-io/LakeSoul/issues/66) for details.
 
 ## Directory Structure
 The root crate is a workspace which contains three crates:

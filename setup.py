@@ -27,9 +27,9 @@ setup(
     description="Python APIs for using LakeSoul with Apache Spark",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/meta-soul/LakeSoul",
-    author="DMetaSoul Team",
-    author_email="opensource@dmetasoul.com",
+    url="https://github.com/lakesoul-io/LakeSoul",
+    author="LakeSoul Team",
+    author_email="lakesoul-technical-discuss@lists.lfaidata.foundation",
     license="Apache-2.0",
     classifiers=[
         "Development Status :: 5 - Production/Stable",
