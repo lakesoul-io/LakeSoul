@@ -134,8 +134,12 @@ public class LakeSoulTableSource
 
     @Override
     public ChangelogMode getChangelogMode() {
-        //.addContainedKind(RowKind.UPDATE_BEFORE).addContainedKind(RowKind.UPDATE_AFTER).addContainedKind(RowKind.DELETE)
-        return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).build();
+        boolean isCdc = !optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "").equals("");
+        if(this.isStreaming && isCdc){
+            return ChangelogMode.upsert();
+        }else{
+            return ChangelogMode.insertOnly();
+        }
     }
 
     @Override
