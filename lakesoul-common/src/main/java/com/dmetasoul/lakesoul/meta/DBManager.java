@@ -144,6 +144,10 @@ public class DBManager {
         return tablePathIdDao.listAllPath();
     }
 
+    public List<String> listTableNamesByNamespace(String table_namespace) {
+        return tableNameIdDao.listAllNameByNamespace(table_namespace);
+    }
+
     public List<String> listTablePathsByNamespace(String table_namespace) {
         return tablePathIdDao.listAllPathByNamespace(table_namespace);
     }

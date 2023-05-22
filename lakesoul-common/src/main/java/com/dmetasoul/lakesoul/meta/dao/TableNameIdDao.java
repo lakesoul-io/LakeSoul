@@ -25,6 +25,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class TableNameIdDao {
 
@@ -50,6 +52,28 @@ public class TableNameIdDao {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return tableNameId;
+    }
+
+    public List<String> listAllNameByNamespace(String table_namespace) {
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select table_name from table_name_id where table_namespace = '%s'", table_namespace);
+        List<String> list = new ArrayList<>();
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                String tableName = rs.getString("table_name");
+                list.add(tableName);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return list;
     }
 
     public boolean insert(TableNameId tableNameId) {

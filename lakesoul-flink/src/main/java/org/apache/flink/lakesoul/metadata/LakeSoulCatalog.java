@@ -134,7 +134,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public List<String> listTables(String databaseName) throws CatalogException {
-        return dbManager.listTablePathsByNamespace(databaseName);
+        return dbManager.listTableNamesByNamespace(databaseName);
     }
 
     @Override
