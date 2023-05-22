@@ -26,18 +26,17 @@ import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ResolvedCatalogTable;
-import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
-import org.apache.flink.table.factories.*;
+import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
+import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
@@ -58,7 +57,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
                 catalogTable.getResolvedSchema().toPhysicalRowDataType(),
                 pkColumns, catalogTable.getPartitionKeys(),
                 options,
-                discoverEncodingFormat(context, BulkWriterFormatFactory.class),
                 context.getCatalogTable().getResolvedSchema()
         );
     }
@@ -79,44 +77,6 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public Set<ConfigOption<?>> optionalOptions() {
         return Collections.emptySet();
-    }
-
-    private <I, F extends EncodingFormatFactory<I>> EncodingFormat<I> discoverEncodingFormat(
-            Context context, Class<F> formatFactoryClass) {
-        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        if (formatFactoryExists(context, formatFactoryClass)) {
-            return helper.discoverEncodingFormat(formatFactoryClass, FactoryUtil.FORMAT);
-        } else {
-            return null;
-        }
-    }
-
-    private boolean formatFactoryExists(Context context, Class<?> factoryClass) {
-        Configuration options = Configuration.fromMap(context.getCatalogTable().getOptions());
-        String identifier = options.get(FactoryUtil.FORMAT);
-        if (!"lakesoul".equals(identifier)) {
-            throw new ValidationException(
-                    String.format(
-                            "Table options do not contain an option key '%s' for discovering a format.",
-                            FactoryUtil.FORMAT.key()));
-        }
-
-        final List<Factory> factories = new LinkedList<>();
-        ServiceLoader.load(Factory.class, context.getClassLoader())
-                .iterator()
-                .forEachRemaining(factories::add);
-
-        final List<Factory> foundFactories =
-                factories.stream()
-                        .filter(f -> factoryClass.isAssignableFrom(f.getClass()))
-                        .collect(Collectors.toList());
-
-        final List<Factory> matchingFactories =
-                foundFactories.stream()
-                        .filter(f -> f.factoryIdentifier().equals(identifier))
-                        .collect(Collectors.toList());
-
-        return !matchingFactories.isEmpty();
     }
 
     @Override

@@ -204,14 +204,27 @@ public class LakeSoulCatalog implements Catalog {
         }
         String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
         Map<String, String> tableOptions = table.getOptions();
+
+        // adding cdc options
         tableOptions.put(RECORD_KEY_NAME, primaryKeys);
         boolean cdcMark;
         if ("true".equals(tableOptions.get(USE_CDC.key()))) {
+            if (primaryKeys.isEmpty()) {
+                throw new CatalogException("CDC table must have primary key(s)");
+            }
             cdcMark = true;
             tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
         } else {
             cdcMark = false;
         }
+
+        // adding hash bucket options
+        if (!primaryKeys.isEmpty()) {
+            if (Integer.parseInt(tableOptions.get(HASH_BUCKET_NUM.key())) <= 0) {
+                throw new CatalogException("Valid integer value for hashBucketNum property must be set for table with primary key");
+            }
+        }
+
         String json = JSON.toJSONString(tableOptions);
         JSONObject properties = JSON.parseObject(json);
         List<String> partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
@@ -229,7 +242,6 @@ public class LakeSoulCatalog implements Catalog {
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
                 FlinkUtil.toSparkSchema(schema, cdcMark).json(),
                 properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
-
     }
 
     @Override

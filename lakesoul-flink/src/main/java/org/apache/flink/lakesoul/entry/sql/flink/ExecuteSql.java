@@ -20,17 +20,16 @@
 
 package org.apache.flink.lakesoul.entry.sql.flink;
 
-import java.util.List;
-import java.util.ArrayList;
-
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.delegation.Parser;
+import org.apache.flink.table.operations.CatalogSinkModifyOperation;
 import org.apache.flink.table.operations.ModifyOperation;
 import org.apache.flink.table.operations.Operation;
-import org.apache.flink.table.operations.CatalogSinkModifyOperation;
 import org.apache.flink.table.operations.command.SetOperation;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class ExecuteSql {
     public static void exeSql(List<String> sqlList, TableEnvironment tEnv) {
@@ -91,27 +90,23 @@ public class ExecuteSql {
                 case "UseDatabaseOperation":
                 case "LoadModuleOperation":
                 case "UnloadModuleOperation":
-                case "NopOperation":
-                    ((TableEnvironmentInternal) tEnv).executeInternal(parser.parse(stmt).get(0));
+                case "NopOperation": {
+                    ((TableEnvironmentInternal) tEnv).executeInternal(operation).print();
                     break;
+                }
                 // insert
-//                case "SinkModifyOperation":
                 case "CatalogSinkModifyOperation":
                     modifyOperationList.add((CatalogSinkModifyOperation) operation);
                     break;
                 default:
-//                    log.error("不支持此Operation类型  {}", operation.getClass().getSimpleName());
                     throw new RuntimeException("not support sql=" + stmt);
             }
         }
-        TableResult tableResult = ((TableEnvironmentInternal) tEnv)
-                .executeInternal(modifyOperationList);
-        if (tableResult.getJobClient().orElse(null) != null) {
-            tableResult.getJobClient().get().getJobID();
+        int modifyOperationListLength = modifyOperationList.size();
+        if (modifyOperationListLength == 0) {
             return;
         }
-        throw new RuntimeException("The task operation failed and did not get a jobId");
-
+        ((TableEnvironmentInternal) tEnv).executeInternal(modifyOperationList).print();
     }
 
     private static String trimBlank(String str) {

@@ -19,7 +19,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-import org.apache.flink.api.common.serialization.BulkWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
@@ -35,7 +34,6 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
@@ -55,7 +53,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
   private final String summaryName;
   private final String tableName;
-  private final EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat;
   private boolean overwrite;
   private final DataType dataType;
   private final ResolvedSchema schema;
@@ -73,13 +70,11 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
           DataType dataType,
           List<String> primaryKeyList, List<String> partitionKeyList,
           ReadableConfig flinkConf,
-          EncodingFormat<BulkWriter.Factory<RowData>> bulkWriterFormat,
           ResolvedSchema schema
   ) {
     this.summaryName = summaryName;
     this.tableName = tableName;
     this.primaryKeyList = primaryKeyList;
-    this.bulkWriterFormat = bulkWriterFormat;
     this.schema = schema;
     this.partitionKeyList = partitionKeyList;
     this.flinkConf = (Configuration) flinkConf;
@@ -89,7 +84,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   private LakeSoulTableSink(LakeSoulTableSink tableSink) {
     this.summaryName = tableSink.summaryName;
     this.tableName = tableSink.tableName;
-    this.bulkWriterFormat = tableSink.bulkWriterFormat;
     this.overwrite = tableSink.overwrite;
     this.dataType = tableSink.dataType;
     this.schema = tableSink.schema;
@@ -111,11 +105,11 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
   @Override
   public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
-    ChangelogMode.Builder builder = ChangelogMode.newBuilder();
-    for (RowKind kind : changelogMode.getContainedKinds()) {
-      builder.addContainedKind(kind);
+    if (flinkConf.getBoolean(USE_CDC)) {
+      return ChangelogMode.upsert();
+    } else {
+      return ChangelogMode.insertOnly();
     }
-    return builder.build();
   }
 
   /**
@@ -124,7 +118,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream,
                                                 Context sinkContext) throws IOException {
     Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
-    int bucketParallelism = flinkConf.getInteger(BUCKET_PARALLELISM);
+    int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
     //rowData key tools
     RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
     LakeSoulKeyGen keyGen = new LakeSoulKeyGen(
@@ -173,11 +167,6 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
   @Override
   public void applyStaticPartition(Map<String, String> map) {
-  }
-
-  @Override
-  public boolean requiresPartitionGrouping(boolean supportsGrouping) {
-    return false;
   }
 
 }
