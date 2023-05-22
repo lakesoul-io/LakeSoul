@@ -19,8 +19,9 @@
 
 package com.dmetasoul.lakesoul.meta
 
+import org.apache.flink.table.types.logical.LogicalType
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{CharType, DataType, DecimalType,BinaryType}
+import org.apache.spark.sql.types.{BinaryType, CharType, DataType, DecimalType}
 
 object DataTypeUtil {
 
@@ -28,8 +29,8 @@ object DataTypeUtil {
   private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
 
-  def convertDatatype(datatype: String): DataType = {
-    val convert = datatype.toLowerCase match {
+  def convertDatatype(datatype: LogicalType): DataType = {
+    val convert = datatype.getTypeRoot.name().toLowerCase match {
       case "string" => StringType
       case "bigint" => LongType
       case "int" => IntegerType
@@ -41,7 +42,9 @@ object DataTypeUtil {
       case "timestamp" => TimestampType
       case "timestamp_without_time_zone" => TimestampType
       case "timestamp_with_local_time_zone" => TimestampType
-      case "decimal" => DecimalType.USER_DEFAULT
+      case "decimal" =>
+        val dt = datatype.asInstanceOf[org.apache.flink.table.types.logical.DecimalType]
+        DecimalType(dt.getPrecision, dt.getScale)
       case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
       case CHAR_TYPE(length) => CharType(length.toInt)
       case "varchar" => StringType

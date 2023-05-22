@@ -101,7 +101,7 @@ public class LakeSoulSourceTest {
         StreamTableEnvironment tEnvs = createTableEnv(BATCH_TYPE);
         TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 2023-05-10, 2021-02-01T18:40]"});
+        checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 2023-05-10, 100000000002.1, 2021-02-01T18:40]"});
     }
 
     @Test
@@ -223,16 +223,17 @@ public class LakeSoulSourceTest {
         String createUserSql = "create table birth_info (" +
                 "    id INT," +
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
-                "    birthDay DATE," +
-                "    birthTime TIMESTAMP WITHOUT TIME ZONE" +
+                "    birthDay DATE, " +
+                "    d DECIMAL(18, 1), " +
+                "    birthTime TIMESTAMP WITHOUT TIME ZONE " +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'path'='/tmp/lakeSource/birth' )";
         tEnvs.executeSql("DROP TABLE if exists birth_info");
         tEnvs.executeSql(createUserSql);
-        tEnvs.executeSql("INSERT INTO birth_info VALUES (1, 'Bob', TO_DATE('1995-10-01'),TO_TIMESTAMP('1995-10-01')), " +
-                "(2, 'Alice', TO_DATE('2023-05-10'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
-                "(3, 'Jack', TO_DATE('2010-12-10'),TO_TIMESTAMP('2000-10-01'))").await();
+        tEnvs.executeSql("INSERT INTO birth_info VALUES (1, 'Bob', TO_DATE('1995-10-01'), 100000000001,TO_TIMESTAMP('1995-10-01')), " +
+                "(2, 'Alice', TO_DATE('2023-05-10'), 100000000002.11,TO_TIMESTAMP_LTZ(1612176000,0)), " +
+                "(3, 'Jack', TO_DATE('2010-12-10'), 100000000003,TO_TIMESTAMP('2000-10-01'))").await();
     }
 
     private void createLakeSoulSourceTableOrder(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
