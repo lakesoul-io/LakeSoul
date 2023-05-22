@@ -128,21 +128,8 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     val readDataSchemaAsJson = readDataSchema.json
 
     val requestedFields = readDataSchema.fieldNames
-    val requestFilesSchema =
-      fileInfo
-        .groupBy(_.range_version)
-        .map(m => {
-          val fileExistCols = m._2.head.file_exist_cols.split(",")
-          m._1 + "->" + StructType(
-            requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
-              .map(c => tableInfo.schema(c))
-          ).json
-        }).mkString("|")
 
     hadoopConf.set(ParquetInputFormat.READ_SUPPORT_CLASS, classOf[ParquetReadSupport].getName)
-    hadoopConf.set(
-      ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA,
-      requestFilesSchema)
     hadoopConf.set(
       ParquetWriteSupport.SPARK_ROW_SCHEMA,
       readDataSchemaAsJson)
@@ -247,15 +234,52 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
       // produce requested schema
       val requestedFields = readDataSchema.fieldNames
-      val requestFilesSchemaMap = fileInfo
-        .groupBy(_.range_version)
-        .map(m => {
-          val fileExistCols = m._2.head.file_exist_cols.split(",")
-          (m._1, StructType(
-            requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
-              .map(c => tableInfo.schema(c))
-          ))
-        })
+
+      val requestFilesSchemaMap = if (isStreaming) {
+        val requestFilesSchema = newFileIndex.getFileInfoForPartitionVersion()
+          .groupBy(_.range_version)
+          .map(m => {
+            val fileExistCols = m._2.head.file_exist_cols.split(",")
+            m._1 + "->" + StructType(
+              requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
+                .map(c => tableInfo.schema(c))
+            ).json
+          }).mkString("|")
+        hadoopConf.set(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA, requestFilesSchema)
+
+        newFileIndex.getFileInfoForPartitionVersion()
+          .groupBy(_.range_version)
+          .map(m => {
+            val fileExistCols = m._2.head.file_exist_cols.split(",")
+            (m._1, StructType(
+              requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
+                .map(c => tableInfo.schema(c))
+            ))
+          })
+      } else {
+
+        val requestFilesSchema =
+          fileInfo
+            .groupBy(_.range_version)
+            .map(m => {
+              val fileExistCols = m._2.head.file_exist_cols.split(",")
+              m._1 + "->" + StructType(
+                requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
+                  .map(c => tableInfo.schema(c))
+              ).json
+            }).mkString("|")
+
+        hadoopConf.set(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA, requestFilesSchema)
+        fileInfo
+          .groupBy(_.range_version)
+          .map(m => {
+            val fileExistCols = m._2.head.file_exist_cols.split(",")
+            (m._1, StructType(
+              requestedFields.filter(f => fileExistCols.contains(f) || tableInfo.hash_partition_columns.contains(f))
+                .map(c => tableInfo.schema(c))
+            ))
+          })
+      }
 
       partition.files.flatMap { file =>
         val filePath = file.getPath
@@ -270,13 +294,12 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
           requestFilesSchemaMap,
           readDataSchema,
           readPartitionSchema.fieldNames)
-      }.toSeq
-      //.sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+      }
     }
 
     if (splitFiles.length == 1) {
-      val path = new Path(splitFiles(0).filePath)
-      if (!isSplittable(path) && splitFiles(0).length >
+      val path = new Path(splitFiles.head.filePath)
+      if (!isSplittable(path) && splitFiles.head.length >
         sparkSession.sparkContext.getConf.get(IO_WARNING_LARGEFILETHRESHOLD)) {
         logWarning(s"Loading one large unsplittable file ${path.toString} with only one " +
           s"partition, the reason is: ${getFileUnSplittableReason(path)}")
@@ -399,10 +422,10 @@ case class OnePartitionMergeBucketScan(sparkSession: SparkSession,
 
     Seq.tabulate(bucketNum) { bucketId =>
       var files = fileWithBucketId.getOrElse(bucketId, Array.empty)
-      val isSingleFile = files.size == 1
+      val isSingleFile = files.length == 1
 
       if (!isSingleFile) {
-        val versionFiles = for (version <- 0 to files.size - 1) yield files(version).copy(writeVersion = version + 1)
+        val versionFiles = for (version <- files.indices) yield files(version).copy(writeVersion = version + 1)
         files = versionFiles.toArray
       }
       MergeFilePartition(bucketId, Array(files), isSingleFile)
@@ -456,10 +479,11 @@ case class MultiPartitionMergeBucketScan(sparkSession: SparkSession,
 
       var allPartitionIsSingleFile = true
       var isSingleFile = false
-      for (index <- 0 to files.size - 1) {
-        isSingleFile = files(index).size == 1
+
+      for (index <- files.indices) {
+        isSingleFile = files(index).length == 1
         if (!isSingleFile) {
-          val versionFiles = for (elem <- 0 to files(index).size - 1) yield files(index)(elem).copy(writeVersion = elem)
+          val versionFiles = for (elem <- files(index).indices) yield files(index)(elem).copy(writeVersion = elem)
           files(index) = versionFiles.toArray
           allPartitionIsSingleFile = false
         }
@@ -514,9 +538,9 @@ case class MultiPartitionMergeScan(sparkSession: SparkSession,
     groupByPartition.foreach(p => {
       p._2.groupBy(_.fileBucketId).foreach(g => {
         var files = g._2.toArray
-        val isSingleFile = files.size == 1
+        val isSingleFile = files.length == 1
         if (!isSingleFile) {
-          val versionFiles = for (version <- 0 to files.size - 1) yield files(version).copy(writeVersion = version)
+          val versionFiles = for (version <- files.indices) yield files(version).copy(writeVersion = version)
           files = versionFiles.toArray
         }
         partitions += MergeFilePartition(i, Array(files), isSingleFile)
