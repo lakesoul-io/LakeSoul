@@ -82,7 +82,7 @@ public class FlinkUtil {
             String name = tsc.getFieldName(i).get();
             DataType dt = tsc.getFieldDataType(i).get();
             String dtName = dt.getLogicalType().getTypeRoot().name();
-            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
+            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dt.getLogicalType()), dt.getLogicalType().isNullable());
         }
         if (isCdc) {
             stNew = stNew.add("rowKinds", StringType, true);
