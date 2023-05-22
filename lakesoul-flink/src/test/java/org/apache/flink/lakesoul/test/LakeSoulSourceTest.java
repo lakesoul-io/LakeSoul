@@ -61,7 +61,7 @@ public class LakeSoulSourceTest {
 
         try {
             TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
-            flinkTable.execute().await(5l, TimeUnit.SECONDS);
+            flinkTable.execute().await(5L, TimeUnit.SECONDS);
             List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
             checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]", "+I[2, Alice, 80]", "+I[1, Bob, 90]"});
         } catch (TimeoutException e) {

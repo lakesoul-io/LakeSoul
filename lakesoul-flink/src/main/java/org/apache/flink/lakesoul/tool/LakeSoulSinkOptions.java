@@ -27,9 +27,9 @@ import java.time.Duration;
 
 public class LakeSoulSinkOptions {
 
-  public static final String FACTORY_IDENTIFIER = "lakeSoul";
+  public static final String FACTORY_IDENTIFIER = "lakesoul";
 
-  public static final String RECORD_KEY_NAME = "recordKey";
+  public static final String RECORD_KEY_NAME = "hashPartitions";
 
   public static final String MERGE_COMMIT_TYPE = "MergeCommit";
 
@@ -70,6 +70,12 @@ public class LakeSoulSinkOptions {
       .intType()
       .defaultValue(4)
       .withDescription("bucket number parallelism");
+
+  public static final ConfigOption<Integer> HASH_BUCKET_NUM = ConfigOptions
+          .key("hashBucketNum")
+          .intType()
+          .defaultValue(4)
+          .withDescription("bucket number for table");
 
   public static final ConfigOption<Long> FILE_ROLLING_SIZE = ConfigOptions
       .key("file_rolling_size")
