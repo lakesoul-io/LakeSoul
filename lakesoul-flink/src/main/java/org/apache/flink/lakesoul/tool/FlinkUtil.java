@@ -305,6 +305,7 @@ public class FlinkUtil {
             case SMALLINT:
                 return Short.parseShort(valStr);
             case INTEGER:
+            case DATE:
                 return Integer.parseInt(valStr);
             case BIGINT:
                 return Long.parseLong(valStr);
@@ -312,8 +313,6 @@ public class FlinkUtil {
                 return Float.parseFloat(valStr);
             case DOUBLE:
                 return Double.parseDouble(valStr);
-            case DATE:
-                return (int) LocalDate.parse(valStr).toEpochDay();
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 return TimestampData.fromLocalDateTime(LocalDateTime.parse(valStr));
             default:
