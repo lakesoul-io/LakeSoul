@@ -124,7 +124,7 @@ pub fn transform_array(name: String, target_datatype: DataType, array: ArrayRef,
                 .filter_map(|field| match orig_array.column_by_name(field.name()) {
                     Some(array) => Some((
                         field.clone(),
-                        transform_array(String::from(name.as_str().to_owned() + "." + field.name()), field.data_type().clone(), array.clone(), num_rows, use_default, default_column_value.clone()),
+                        transform_array(name.as_str().to_owned() + "." + field.name(), field.data_type().clone(), array.clone(), num_rows, use_default, default_column_value.clone()),
                     )),
                     None if use_default => {
                         let default_value_array = match default_column_value.get(field.name()) {
