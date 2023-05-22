@@ -20,7 +20,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{CharType, DataType, DecimalType,BinaryType}
+import org.apache.spark.sql.types.{CharType, DataType, DecimalType, BinaryType}
 
 object DataTypeUtil {
 
@@ -28,7 +28,7 @@ object DataTypeUtil {
   private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
 
-  def convertDatatype(datatype: String): DataType = {
+  def convertDatatype(datatype: String, p: Int, q: Int): DataType = {
     val convert = datatype.toLowerCase match {
       case "string" => StringType
       case "bigint" => LongType
@@ -41,7 +41,7 @@ object DataTypeUtil {
       case "timestamp" => TimestampType
       case "timestamp_without_time_zone" => TimestampType
       case "timestamp_with_local_time_zone" => TimestampType
-      case "decimal" => DecimalType.USER_DEFAULT
+      case "decimal" => DecimalType(p, q)
       case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
       case CHAR_TYPE(length) => CharType(length.toInt)
       case "varchar" => StringType
@@ -50,7 +50,7 @@ object DataTypeUtil {
   }
 
   // since spark 3.2 support YearMonthIntervalType and DayTimeIntervalType
-  def convertMysqlToSparkDatatype(datatype: String,precisionNum:Int=9,scaleNum:Int=3): Option[DataType] = {
+  def convertMysqlToSparkDatatype(datatype: String, precisionNum: Int = 9, scaleNum: Int = 3): Option[DataType] = {
     val convert = datatype.toLowerCase match {
       case "bigint" => Some(LongType)
       case "int" => Some(IntegerType)
@@ -59,8 +59,8 @@ object DataTypeUtil {
       case "mediumint" => Some(IntegerType)
       case "double" => Some(DoubleType)
       case "float" => Some(FloatType)
-      case "numeric" => Some(DecimalType(precisionNum,scaleNum))
-      case "decimal" => Some(DecimalType(precisionNum,scaleNum))
+      case "numeric" => Some(DecimalType(precisionNum, scaleNum))
+      case "decimal" => Some(DecimalType(precisionNum, scaleNum))
       case "date" => Some(DateType)
       case "boolean" => Some(BooleanType)
       case "timestamp" => Some(TimestampType)

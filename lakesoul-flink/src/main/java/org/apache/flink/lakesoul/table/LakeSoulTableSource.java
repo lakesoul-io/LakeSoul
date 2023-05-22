@@ -134,8 +134,11 @@ public class LakeSoulTableSource
 
     @Override
     public ChangelogMode getChangelogMode() {
-        //.addContainedKind(RowKind.UPDATE_BEFORE).addContainedKind(RowKind.UPDATE_AFTER).addContainedKind(RowKind.DELETE)
-        return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).build();
+        if(this.isStreaming){
+            return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).addContainedKind(RowKind.UPDATE_BEFORE).addContainedKind(RowKind.UPDATE_AFTER).addContainedKind(RowKind.DELETE).build();
+        }else{
+            return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).build();
+        }
     }
 
     @Override

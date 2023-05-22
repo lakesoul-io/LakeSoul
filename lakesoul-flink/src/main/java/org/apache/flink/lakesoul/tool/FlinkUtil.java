@@ -35,6 +35,7 @@ import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
@@ -77,12 +78,18 @@ public class FlinkUtil {
 
     public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
         StructType stNew = new StructType();
-
+        int p = 6;
+        int q = 3;
         for (int i = 0; i < tsc.getFieldCount(); i++) {
             String name = tsc.getFieldName(i).get();
             DataType dt = tsc.getFieldDataType(i).get();
             String dtName = dt.getLogicalType().getTypeRoot().name();
-            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName), dt.getLogicalType().isNullable());
+            if ("decimal".equals(dtName.toLowerCase())) {
+                DecimalType deci = (DecimalType) dt.getLogicalType();
+                p = deci.getPrecision();
+                q = deci.getScale();
+            }
+            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dtName, p, q), dt.getLogicalType().isNullable());
         }
         if (isCdc) {
             stNew = stNew.add("rowKinds", StringType, true);
@@ -134,10 +141,11 @@ public class FlinkUtil {
         }
         return null;
     }
-    public static boolean isCDCDelete(StringData operation){
+
+    public static boolean isCDCDelete(StringData operation) {
         if (StringData.fromString("delete").equals(operation)) {
             return true;
-        }else{
+        } else {
             return false;
         }
     }
