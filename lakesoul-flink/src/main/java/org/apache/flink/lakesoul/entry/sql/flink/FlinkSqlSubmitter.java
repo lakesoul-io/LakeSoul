@@ -57,6 +57,13 @@ public class FlinkSqlSubmitter extends Submitter {
             StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
             tEnv = StreamTableEnvironment.create(env, settings);
             this.setCheckpoint(env);
+        } else if (submitOption.getJobType().equals(JobType.BATCH.getType())) {
+            settings = EnvironmentSettings.newInstance()
+                    .useBlinkPlanner()
+                    .inBatchMode()
+                    .build();
+            tEnv = TableEnvironment.create(settings);
+
         } else {
             throw new RuntimeException("jobType is not supported");
         }
