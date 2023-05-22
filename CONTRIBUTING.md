@@ -8,7 +8,7 @@ willing to follow the simple processes outlined below, as well as adhere to the
 
 The community collaborates primarily through  `GitHub` and the instance messaging tool, `Slack`.
 There is also a mailing list.
-See how to join [here](https://github.com/meta-soul/LakeSoul/blob/main/community-guideline.md)
+See how to join [here](https://github.com/lakesoul-io/LakeSoul/blob/main/community-guideline.md)
 
 ## Reporting an Issue
 
@@ -79,8 +79,8 @@ Look for tickets labeled ['good first issue'][goodfirstissues] and ['help wanted
 [issues]: https://github.com/metas-soul/LakeSoul/issues
 [contributiontutorial]: https://github.com/firstcontributions/first-contributions#first-contributions
 [contributionvideos]: https://egghead.io/courses/how-to-contribute-to-an-open-source-project-on-github
-[goodfirstissues]: https://github.com/meta-soul/LakeSoul/labels/good%20first%20issue
-[helpwantedissues]: https://github.com/meta-soul/LakeSoul/labels/help%20wanted
+[goodfirstissues]: https://github.com/lakesoul-io/LakeSoul/labels/good%20first%20issue
+[helpwantedissues]: https://github.com/lakesoul-io/LakeSoul/labels/help%20wanted
 
 ## Triggering CI runs from forks (committers)
 

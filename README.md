@@ -4,8 +4,8 @@
 
 ![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/7192/badge)
 
-![Maven Test](https://github.com/meta-soul/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
-![Flink CDC Test](https://github.com/meta-soul/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
+![Maven Test](https://github.com/lakesoul-io/LakeSoul/actions/workflows/maven-test.yml/badge.svg)
+![Flink CDC Test](https://github.com/lakesoul-io/LakeSoul/actions/workflows/flink-cdc-test.yml/badge.svg)
 
 [中文介绍](README-CN.md)
 
@@ -41,7 +41,7 @@ Please find usage documentations in doc site:
 [使用文档](https://www.dmetasoul.com/docs/lakesoul/Usage%20Doc/setup-meta-env/)
 
 # Feature Roadmap
-* Meta Management ([#23](https://github.com/meta-soul/LakeSoul/issues/23))
+* Meta Management ([#23](https://github.com/lakesoul-io/LakeSoul/issues/23))
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
   - [x] Concurrent write with auto conflict resolution
   - [x] MVCC with read isolation
@@ -55,9 +55,9 @@ Please find usage documentations in doc site:
 * Data Warehousing
   - [x] CDC stream ingestion with auto ddl sync
   - [x] Incremental and Snapshot Query
-    - [x] Snapshot Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
-    - [x] Incremental Query ([#103](https://github.com/meta-soul/LakeSoul/issues/103))
-    - [x] Incremental Streaming Source ([#130](https://github.com/meta-soul/LakeSoul/issues/130))
+    - [x] Snapshot Query ([#103](https://github.com/lakesoul-io/LakeSoul/issues/103))
+    - [x] Incremental Query ([#103](https://github.com/lakesoul-io/LakeSoul/issues/103))
+    - [x] Incremental Streaming Source ([#130](https://github.com/lakesoul-io/LakeSoul/issues/130))
     - [x] Flink Stream/Batch Source
   - [ ] Materialized View
     - [ ] Incremental MV Build
@@ -73,10 +73,10 @@ Please find usage documentations in doc site:
   - [ ] Merge Into SQL support
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
     - [ ] Merge Into SQL with match on non-pk
-    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
+    - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Multiple Spark Versions Support
     - [x] Support Spark 3.3, 3.2 and 3.1
-* Flink Integration and CDC Ingestion ([#57](https://github.com/meta-soul/LakeSoul/issues/57))
+* Flink Integration and CDC Ingestion ([#57](https://github.com/lakesoul-io/LakeSoul/issues/57))
   - [x] Table API
     - [x] Stream Sink
     - [x] Batch Sink
@@ -86,7 +86,7 @@ Please find usage documentations in doc site:
   - [x] Flink CDC
     - [x] Auto Schema Change (DDL) Sync
     - [x] Auto Table Creation (depends on #78)
-    - [x] Support sink multiple source tables with different schemas ([#84](https://github.com/meta-soul/LakeSoul/issues/84))
+    - [x] Support sink multiple source tables with different schemas ([#84](https://github.com/lakesoul-io/LakeSoul/issues/84))
 * Hive Integration
   - [x] Export to Hive partition after compaction
   - [x] Apache Kyuubi (Hive JDBC) Integration
@@ -94,10 +94,10 @@ Please find usage documentations in doc site:
   - [x] CDC ingestion
   - [x] Time Travel (Snapshot read)
   - [x] Snapshot rollback
-  - [ ] MPP Engine Integration (depends on [#66](https://github.com/meta-soul/LakeSoul/issues/66))
+  - [ ] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
     - [ ] Presto
     - [ ] Apache Doris
-* Cloud and Native IO ([#66](https://github.com/meta-soul/LakeSoul/issues/66))
+* Cloud and Native IO ([#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Object storage IO optimization
   - [x] Native merge on read
   - [ ] Multi-layer storage classes support with data tiering
@@ -108,10 +108,10 @@ Please find usage documentations in doc site:
 # Feedback and Contribution
 Please feel free to open an issue or dicussion if you have any questions.
 
-Join our [slack user group](https://join.slack.com/t/dmetasoul-user/shared_invite/zt-1681xagg3-4YouyW0Y4wfhPnvji~OwFg)
+Join our [Discord](https://discord.gg/WJrHKq4BPf) server for discussions.
 
 # Contact Us
-Email us at [opensource@dmetasoul.com](mailto:opensource@dmetasoul.com).
+Email us at [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation).
 
 # Opensource License
 LakeSoul is opensourced under Apache License v2.0.

@@ -25,7 +25,7 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 [使用文档](https://www.dmetasoul.com/docs/lakesoul/Usage%20Doc/setup-meta-env/)
 
 # 特性路线
-[Feature Roadmap](https://github.com/meta-soul/LakeSoul#feature-roadmap)
+[Feature Roadmap](https://github.com/lakesoul-io/LakeSoul#feature-roadmap)
 
 # 社区准则
 [社区准则](community-guideline-cn.md)
@@ -43,7 +43,7 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 欢迎加入 LakeSoul 开发者社区微信群，随时交流 LakeSoul 开发相关的各类问题：请关注公众号后点击下方 "了解我们-用户交流" 获取最新微信群二维码。
 
 # 联系我们
-发送邮件至 [opensource@dmetasoul.com](mailto:opensource@dmetasoul.com).
+发送邮件至 [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation).
 
 # 开源协议
 LakeSoul 采用 Apache License v2.0 开源协议。
