@@ -10,7 +10,7 @@
 [中文介绍](README-CN.md)
 
 LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
-![LakeSoul Arch](doc/LakeSoul.png)
+![LakeSoul Arch](website/static/img/lakeSoulModel.png)
 
 LakeSoul was originally created by DMetaSoul company and was donated to Linux Foundation AI & Data as a sandbox project since May 2023.
 
