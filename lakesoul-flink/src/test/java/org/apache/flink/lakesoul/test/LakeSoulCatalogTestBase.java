@@ -27,6 +27,7 @@ import org.junit.Before;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -47,8 +48,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
 
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
-        return Lists.newArrayList(
-                new Object[]{"lakesoul", Namespace.defaultNamespace()},
+        return Collections.singletonList(
                 new Object[]{"lakesoul", Namespace.defaultNamespace()});
     }
 

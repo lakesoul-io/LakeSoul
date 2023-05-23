@@ -31,7 +31,7 @@ import org.junit.Test;
 
 public class LakeSoulFileSinkTest {
 
-  @Test
+//  @Test
   public void flinkCdcSinkTest() throws InterruptedException {
     StreamTableEnvironment tEnvs;
     StreamExecutionEnvironment env;

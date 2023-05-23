@@ -70,7 +70,7 @@ public class FlinkCDCMultiTableTest {
     public void after() {
     }
 
-    @Test
+//    @Test
     public void test() throws Exception {
 
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()

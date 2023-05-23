@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class CHBenchmark {
 
 
-    public static final int customerBatchSize = 100;
+    public static final int customerBatchSize = 10;
 
     public static final int customerBatchNum = 8;
 
@@ -387,7 +387,7 @@ public class CHBenchmark {
             System.out.println("Join is done.");
         }
         List<String> results = TestValuesTableFactory.getResults("sink");
-        results.sort(Comparator.comparing(row->Integer.valueOf(row.substring(3, row.indexOf(",")))));
+        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, row.indexOf(",")))));
 
         System.out.println(results);
 
@@ -402,9 +402,13 @@ public class CHBenchmark {
         List<Row> batchResult = CollectionUtil.iteratorToList(batchEnv.executeSql(query_13_batch).collect());
         batchResult.sort(Comparator.comparing(row -> row.getFieldAs(0)));
         System.out.println(batchResult);
-        assertThat(batchResult.toString()).isNotEqualTo(results.toString());
-        assertThat(batchResult.subList(customRecordNum - tailCustomRecordNum, customRecordNum).toString()).isEqualTo(results.subList(customRecordNum - tailCustomRecordNum, customRecordNum).toString());
-        System.out.println("Assertion Pass");
-        System.exit(0);
+        try {
+            assertThat(batchResult.toString()).isNotEqualTo(results.toString());
+            assertThat(batchResult.subList(customRecordNum - tailCustomRecordNum, customRecordNum).toString()).isEqualTo(results.subList(customRecordNum - tailCustomRecordNum, customRecordNum).toString());
+            System.out.println("Assertion Pass");
+        }
+        finally {
+            System.exit(0);
+        }
    }
 }

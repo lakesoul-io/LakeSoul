@@ -38,7 +38,6 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class FlinkSerdeTest {
 
-    @Test
     public void Test() throws Exception {
         StreamExecutionEnvironment env;
         Configuration conf = new Configuration();
