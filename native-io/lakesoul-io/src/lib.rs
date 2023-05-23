@@ -19,15 +19,6 @@
 #![feature(io_error_more)]
 #![feature(sync_unsafe_cell)]
 
-extern crate link_cplusplus;
-
-extern crate tcmalloc;
-
-use tcmalloc::TCMalloc;
-
-#[global_allocator]
-static GLOBAL: TCMalloc = TCMalloc;
-
 pub mod lakesoul_reader;
 pub mod filter;
 pub mod lakesoul_writer;
