@@ -20,7 +20,10 @@
 package org.apache.flink.lakesoul.entry.sql.common;
 
 public enum JobType {
-    STREAM("stream");
+    STREAM("stream"),
+
+    BATCH("batch");
+
     private final String type;
 
     JobType(String type) {
