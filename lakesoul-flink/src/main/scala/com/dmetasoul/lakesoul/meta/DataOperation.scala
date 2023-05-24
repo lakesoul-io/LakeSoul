@@ -220,7 +220,12 @@ object DataOperation {
           preVersionUUIDs ++= dataItem.getSnapshot.asScala
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            compactionUUIDs ++= dataItem.getSnapshot.asScala
+//            compactionUUIDs ++= dataItem.getSnapshot.asScala
+            val compactShotList = dataItem.getSnapshot.asScala.toArray
+            compactionUUIDs += compactShotList(0)
+            if (compactShotList.size > 1) {
+              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.size)
+            }
           } else {
             incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
           }

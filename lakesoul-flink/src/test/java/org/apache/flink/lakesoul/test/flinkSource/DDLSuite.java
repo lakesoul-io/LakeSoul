@@ -1,0 +1,82 @@
+package org.apache.flink.lakesoul.test.flinkSource;
+
+import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.junit.Test;
+
+import java.util.concurrent.ExecutionException;
+
+public class DDLSuite {
+
+    @Test
+    public void dropTable() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv();
+        createLakeSoulSourceTableUser(tEnv);
+        tEnv.executeSql("SHOW TABLES").print();
+        tEnv.executeSql("DROP TABLE if exists user_info");
+        tEnv.executeSql("SHOW TABLES").print();
+    }
+
+    @Test
+    public void alterTableNotSupported() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv();
+        createLakeSoulSourceTableUser(tEnv);
+        try {
+            tEnv.executeSql("ALTER TABLE user_info RENAME TO NewUsers");
+        }catch (TableException e) {
+            System.out.println("Rename lakesoul table not supported now");
+        }
+    }
+
+    @Test
+    public void describeTable() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv();
+        createLakeSoulSourceTableUser(tEnv);
+        tEnv.executeSql("DESC user_info").print();
+        tEnv.executeSql("DESCRIBE user_info").print();
+    }
+
+    @Test
+    public void explainTable() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv();
+        createLakeSoulSourceTableUser(tEnv);
+        String explaination = tEnv.explainSql("SELECT * FROM user_info WHERE order_id > 3");
+        System.out.println(explaination);
+    }
+
+    @Test
+    public void loadLakeSoulModuleNotSupported(){
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv("streaming");
+        try {
+            streamTableEnv.executeSql("LOAD MODULE lakesoul WITH ('format'='lakesoul')");
+        }catch (ValidationException e) {
+            System.out.println("LOAD lakesoul module not supported now");
+        }
+    }
+
+    @Test
+    public void unloadModuleTest(){
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv("streaming");
+        try {
+            streamTableEnv.executeSql("UNLOAD MODULE core");
+            streamTableEnv.executeSql("SHOW MODULES").print();
+        }catch (ValidationException e) {
+            System.out.println("UNLOAD lakesoul module not supported now");
+        }
+    }
+
+    private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create table user_info (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score FLOAT" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'path'='/tmp/lakeSource/user' )";
+        tEnvs.executeSql("DROP TABLE if exists user_info");
+        tEnvs.executeSql(createUserSql);
+    }
+}
