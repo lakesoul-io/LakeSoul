@@ -25,10 +25,6 @@
   margin-top:17vh;
   margin-bottom:10px;
 }
-.ifaiLogo{
-  width:280px;
-  display: block;
-}
 .btnBox {
   margin-top: 25px;
   margin-bottom:30px;
@@ -95,6 +91,17 @@
   text-align: start;
   color:white;
 }
+.ifaiDescription{
+  font-size:40px;
+  line-height: 60px;
+  color:white;
+}
+.hr{
+  border:1px solid white;
+  width:400px;
+  margin:20px 0 40px;
+}
+
 .longDescription{
   max-width:1200px;
   margin:0 auto;
@@ -172,10 +179,6 @@
     margin:10px 0 0 0;
     width:150px;
   }
-  .ifaiLogo{
-    width:100px;
-  }
-
   .btn{
       padding:5px 10px;
       line-height: 15px;
@@ -204,6 +207,17 @@
     line-height: 15px;
     width:70%;
     margin:0;
+  }
+  .ifaiDescription{
+    margin:0;
+    font-size:17px;
+    line-height: 20px;
+    color:white;
+  }
+  .hr{
+    border:1px solid white;
+    width:150px;
+    margin:10px 0 20px;
   }
   .longDescription{
     max-width:80%;

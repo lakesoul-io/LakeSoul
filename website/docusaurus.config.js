@@ -6,8 +6,8 @@ const darkCodeTheme = require('prism-react-renderer/themes/dracula');
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'LakeSoul - A Cloud Native Realtime Lakehouse Framework',
-  tagline: 'A Project under Linux Foundation AI & Data',
+  title: 'LakeSoul - An Opensource Cloud Native Realtime Lakehouse Framework',
+  tagline: 'A Project under incubation at Linux Foundation AI & Data',
   favicon: 'img/favicon.ico',
 
   // Set the production url of your site here
@@ -125,6 +125,18 @@ const config = {
                 label: 'Twitter',
                 href: 'https://twitter.com/lakesoul',
               },
+              {
+                label: 'LakeSoul Announce',
+                href: 'https://lists.lfaidata.foundation/g/lakesoul-announce',
+              },
+              {
+                label: 'LakeSoul Technical-Discuss',
+                href: 'https://lists.lfaidata.foundation/g/lakesoul-technical-discuss',
+              },
+              {
+                label: 'LakeSoul TSC',
+                href: 'https://lists.lfaidata.foundation/g/lakesoul-tsc',
+              },
             ],
           },
           {
@@ -141,7 +153,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} LakeSoul Project, Linux Foundation AI & Data.`,
+        copyright: `<div class='customCopyright'>Copyright ©  ${new Date().getFullYear()}  LakeSoul The Linux Foundation®. All rights reserved. The Linux Foundation has registered trademarks and uses trademarks. <br> For a list of trademarks of The Linux Foundation, please see our <a href='https://www.linuxfoundation.org/legal/trademark-usage' target='_blank'>Trademark Usage</a> page. Linux is a registered trademark of Linus Torvalds. <a href="https://www.linuxfoundation.org/legal/privacy-policy" target='_blank'>Privacy Policy</a> and <a href="https://www.linuxfoundation.org/legal/terms" target='_blank'>Terms of Use</a></div>`,
       },
       prism: {
         theme: lightCodeTheme,

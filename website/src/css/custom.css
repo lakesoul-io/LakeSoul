@@ -74,8 +74,26 @@
 }
 .footer{
   background-color: #1E90FF;
+  padding:0;
+}
+.footer .container{
+  max-width:100%;
+  padding:0;
+}
+.footer .container .footer__links{
+  /* padding:50px 100px; */
+  margin:0 auto;
+  max-width:80%;
+  padding:20px;
 }
 .footer__link-item:hover{
   color:#F79934;
+}
+.customCopyright{
+  width:100%;
+  background-color: rgba(0,0,0,0.9);
+  padding:10px;
+  font-size: 13px;
+  line-height: 25px;
 }
 

@@ -37,14 +37,15 @@ function HomepageHeader(){
     },
     {
         link: '/docs/intro',
-        value: <Translate id="homepage.documentBtn">Documentations</Translate>
+        value: <Translate id="homepage.documentBtn">Documentation</Translate>
     },
   ]
   return (
     <div>
       <div className={styles.header}>
-        <LakeSoulLogo className={styles.lakeLogo}/>        
-        <img src={require('@site/static/img/lfaidata-project-badge-sandbox-white1.png').default} className={styles.ifaiLogo}></img>
+        <LakeSoulLogo className={styles.lakeLogo}/>    
+        <p className={styles.ifaiDescription}><Translate id="homepage.ifaiDescription">Linux Foundation AI & Data</Translate></p>   
+        <div className={styles.hr}></div> 
         <p className={styles.description} ><Translate id="homepage.description2">Building end-to-end realtime lakehouse with transactional concurrent upsert, incremental pipeline and SQL for your BI & AI applications</Translate></p>
         <div className={styles.btnBox}>
             {buttonList.map((btnItem, btnIndex) => {
