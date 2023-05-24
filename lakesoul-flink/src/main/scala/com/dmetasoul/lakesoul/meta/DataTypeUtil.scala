@@ -21,7 +21,7 @@ package com.dmetasoul.lakesoul.meta
 
 import org.apache.flink.table.types.logical.LogicalType
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{BinaryType, CharType, DataType, DecimalType}
+import org.apache.spark.sql.types.{BinaryType, CharType, DataType, DecimalType,TimestampType}
 
 object DataTypeUtil {
 
@@ -34,6 +34,8 @@ object DataTypeUtil {
       case "string" => StringType
       case "bigint" => LongType
       case "int" => IntegerType
+      case "tinyint" => IntegerType
+      case "smallint" => IntegerType
       case "integer" => IntegerType
       case "double" => DoubleType
       case "float" => FloatType
