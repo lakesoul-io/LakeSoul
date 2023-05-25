@@ -109,23 +109,26 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                 "Namespace should not already exist",
                 validationCatalog.databaseExists(DATABASE));
 
-        sql("CREATE DATABASE %s", flinkDatabase);
+        sql("CREATE DATABASE %s", DATABASE);
 
-        sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt)" +
+
+//        sql("DROP TABLE IF EXISTS %s.%s", flinkDatabase, flinkTable);
+
+        sql("CREATE TABLE %s.%s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt)" +
             " " +
-            "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
+            "with ('connector' = 'lakeSoul', 'path'='%s', 'hashBucketNum'='2')", DATABASE, flinkTable, flinkTablePath);
 
         Assert.assertTrue(
                 "databases should exist", validationCatalog.databaseExists(DATABASE));
         Assert.assertTrue(
                 "Table should exist",
-                validationCatalog.tableExists(new ObjectPath(flinkDatabase, flinkTable)));
+                validationCatalog.tableExists(new ObjectPath(DATABASE, flinkTable)));
 
 
         sql("DROP TABLE %s.%s", flinkDatabase, flinkTable);
         Assert.assertFalse(
                 "Table should not exist",
-                validationCatalog.tableExists(new ObjectPath(flinkDatabase, flinkTable)));
+                validationCatalog.tableExists(new ObjectPath(DATABASE, flinkTable)));
     }
 
     @Test
@@ -148,11 +151,11 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
 
         sql("CREATE TABLE %s ( id bigint, name string, dt string, primary key (id) NOT ENFORCED ) PARTITIONED BY (dt)" +
             " " +
-            "with ('connector' = 'lakeSoul', 'path'='%s')", flinkTable, flinkTablePath);
+            "with ('connector' = 'lakeSoul', 'path'='%s', 'hashBucketNum'='2')", flinkTable, flinkTablePath);
 
         List<Row> tables = sql("SHOW TABLES");
         Assert.assertEquals("Only 1 table", 1, tables.size());
-        Assert.assertEquals("Table path should match", flinkTablePath, tables.get(0).getField(0));
+        Assert.assertEquals("Table name should match", flinkTable, tables.get(0).getField(0));
 
         sql("DROP DATABASE %s", DATABASE);
 

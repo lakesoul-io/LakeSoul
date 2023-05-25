@@ -220,7 +220,7 @@ public class LakeSoulCatalog implements Catalog {
 
         // adding hash bucket options
         if (!primaryKeys.isEmpty()) {
-            if (Integer.parseInt(tableOptions.get(HASH_BUCKET_NUM.key())) <= 0) {
+            if (Integer.parseInt(tableOptions.getOrDefault(HASH_BUCKET_NUM.key(), "-1")) <= 0) {
                 throw new CatalogException("Valid integer value for hashBucketNum property must be set for table with primary key");
             }
         }

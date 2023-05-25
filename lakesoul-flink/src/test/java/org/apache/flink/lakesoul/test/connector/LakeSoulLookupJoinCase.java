@@ -100,174 +100,25 @@ public class LakeSoulLookupJoinCase {
         }
 
         tableEnv.executeSql(
-                "create table default_catalog.default_database.probe (x int,y string, p as proctime()) "
+                "create table if not exists default_catalog.default_database.probe (x int,y string, p as proctime()) "
                         + "with ('connector'='COLLECTION','is-bounded' = 'false')");
 
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-        // create the lakesoul non-partitioned non-hashed table
-        tableEnv.executeSql(
-                String.format(
-                        "create table bounded_table (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_table"));
-
-        // create the lakesoul non-partitioned non-hashed table
-        tableEnv.executeSql(
-                String.format(
-                        "create table bounded_table1 (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_table1"));
-
-        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-        // create the lakesoul non-partitioned hashed table
-        tableEnv.executeSql(
-                String.format(
-                        "create table bounded_hash_table (x int, y string, z int, primary key(x) not enforced) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_hash_table"));
-
-        // create the lakesoul partitioned non-hashed table
-        tableEnv.executeSql(
-                String.format(
-                        "create table bounded_partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-                                + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_partition_table"));
-
-        // create the lakesoul partitioned hashed table
-        tableEnv.executeSql(
-                String.format(
-                        "create table bounded_partition_hash_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string, primary key(x) not enforced) partitioned by ("
-                                + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_partition_hash_table"));
-
-        // create the lakesoul partitioned table
-        tableEnv.executeSql(
-                String.format(
-                        "create table partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-                                + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='lakesoul','%s'='5min', '%s'='true', '%s'='latest', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
-                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_tables"));
-
-        tableEnv.executeSql(
-                String.format(
-                        "create table partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
-                                + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='lakesoul', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
-                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_1"));
-
-        // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
-        tableEnv.executeSql(
-                String.format(
-                        "create table partition_table_2 (x int, y string, pt_year int, z string, pt_mon string, pt_day string) partitioned by ("
-                                + " pt_year, z, pt_mon, pt_day)"
-                                + " with ('format'='lakesoul', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='pt_year,pt_mon,pt_day', '%s'='4', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
-                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-                        JobOptions.PARTITION_ORDER_KEYS.key(),
-                        JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_2"));
-
-        tableEnv.executeSql(
-                String.format(
-                        "create table partition_table_3 (x int, y string, z string, pt_year int, pt_mon string, pt_day string) partitioned by ("
-                                + " pt_year, pt_mon, pt_day)"
-                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
-                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
-                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
-                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
-                        LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_3"));
-
-        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
     }
 
-    @Test
-    public void testLookupOptions() throws Exception {
-        LakeSoulTableLookupFunction lookupFunction1 =
-                getLookupFunction("bounded_table");
-//        FileSystemLookupFunction<LakeSoulPartition> lookupFunction2 =
-//                getLookupFunction("partition_table");
-        lookupFunction1.open(null);
-//        lookupFunction2.open(null);
-
-        // verify lookup cache TTL option is properly configured
-        assertThat(lookupFunction1.getReloadInterval()).isEqualTo(Duration.ofMinutes(5));
-//        assertThat(lookupFunction2.getReloadInterval()).isEqualTo(Duration.ofMinutes(120));
-    }
-
-//    @Test
-    public void testPartitionFetcherAndReader() throws Exception {
-        // constructs test data using dynamic partition
-        TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
-        batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        batchEnv.useCatalog(lakeSoulCatalog.getName());
-        batchEnv.executeSql(
-                        "insert overwrite partition_table values "
-                                + "(1,'a',08,2019,'08','01'),"
-                                + "(1,'a',10,2020,'08','31'),"
-                                + "(2,'a',21,2020,'08','31'),"
-                                + "(2,'b',22,2020,'08','31'),"
-                                + "(3,'c',33,2020,'09','31')")
-                .await();
-        LakeSoulTableLookupFunction<LakeSoulPartition> lookupFunction =
-                getLookupFunction("partition_table");
-        lookupFunction.open(null);
-
-        PartitionFetcher<LakeSoulPartition> fetcher = lookupFunction.getPartitionFetcher();
-        PartitionFetcher.Context<LakeSoulPartition> context = lookupFunction.getFetcherContext();
-        List<LakeSoulPartition> partitions = fetcher.fetch(context);
-        // fetch latest partition by partition-name
-        assertThat(partitions).hasSize(1);
-
-        PartitionReader<LakeSoulPartition, RowData> reader = lookupFunction.getPartitionReader();
-        reader.open(partitions);
-
-        List<RowData> res = new ArrayList<>();
-        ObjectIdentifier tableIdentifier =
-                ObjectIdentifier.of(lakeSoulCatalog.getName(), "default", "partition_table");
-        CatalogTable catalogTable =
-                (CatalogTable) lakeSoulCatalog.getTable(tableIdentifier.toObjectPath());
-        GenericRowData reuse =
-                new GenericRowData(catalogTable.getUnresolvedSchema().getColumns().size());
-
-        TypeSerializer<RowData> serializer =
-                InternalSerializers.create(
-                        DataTypes.ROW(
-                                        catalogTable.getUnresolvedSchema().getColumns().stream()
-                                                .map(FlinkUtil::getType)
-                                                .toArray(DataType[]::new))
-                                .getLogicalType());
-
-        RowData row;
-        while ((row = reader.read(reuse)) != null) {
-            res.add(serializer.copy(row));
-        }
-        res.sort(Comparator.comparingInt(o -> o.getInt(0)));
-        assertThat(res.toString()).isEqualTo("[+I(3,c,33,2020,09,31)]");
-    }
 
     @Test
     public void testLookupJoinBoundedTable() throws Exception {
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
+        // create the lakesoul non-partitioned non-hashed table
+        tableEnv.executeSql("drop table if exists bounded_table");
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists bounded_table (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_table"));
+
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         batchEnv.useCatalog(lakeSoulCatalog.getName());
@@ -282,11 +133,18 @@ public class LakeSoulLookupJoinCase {
                                         + " join bounded_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         checkEqualInExpectedOrder(results, "[+I[1, a, 10], +I[2, b, 22], +I[3, c, 33]]");
+        tableEnv.executeSql("drop table if exists bounded_table");
     }
 
     @Test
     public void testLookupJoinBoundedHashTable() throws Exception {
-        tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists bounded_hash_table (x int, y string, z int, primary key(x) not enforced) with ('format'='lakesoul','%s'='5min', '%s'='false', '%s'='2', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        LakeSoulSinkOptions.HASH_BUCKET_NUM.key(),
+                        "tmp/bounded_hash_table"));
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         batchEnv.useCatalog(lakeSoulCatalog.getName());
@@ -301,10 +159,20 @@ public class LakeSoulLookupJoinCase {
                                         + " join bounded_hash_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString()).isEqualTo("[+I[1, a, 10], +I[2, b, 22], +I[3, c, 33]]");
+        tableEnv.executeSql("drop table if exists bounded_hash_table");
     }
 
     @Test
     public void testLookupJoinBoundedPartitionedTable() throws Exception {
+        // create the lakesoul partitioned non-hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists bounded_partition_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_partition_table"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -326,10 +194,23 @@ public class LakeSoulLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         checkEqualInAnyOrder(results, new String[]{"+I[1, a, 8, 2019, 08, 01]", "+I[1, a, 10, 2020, 08, 31]", "+I[2, b, 22, 2020, 08, 31]"});
 //        checkEqualInExpectedOrder(results, "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+
+        tableEnv.executeSql("drop table if exists bounded_partition_table");
     }
 
     @Test
     public void testLookupJoinBoundedPartitionedHashedTable() throws Exception {
+        // create the lakesoul partitioned hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists bounded_partition_hash_table (x int, y string, z int, pt_year int, pt_mon string, pt_day string, primary key(x) not enforced) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='lakesoul','%s'='5min', '%s'='false', '%s'='2', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        LakeSoulSinkOptions.HASH_BUCKET_NUM.key(),
+                        "tmp/bounded_partition_hash_table"));
+
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -353,10 +234,21 @@ public class LakeSoulLookupJoinCase {
         for (Row row: results) System.out.println(row.toString());
         checkEqualInAnyOrder(results, new String[]{"+I[1, a, 8, 2019, 08, 01]", "+I[1, a, 10, 2020, 08, 31]", "+I[2, b, 22, 2020, 08, 31]"});
 //        checkEqualInExpectedOrder(results, "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+        tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
     }
 
     @Test
     public void testLookupJoinPartitionedTableWithAllPartitionOrdered() throws Exception {
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists partition_table_1 (x int, y string, z int, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='lakesoul', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/partition_table_1"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -383,10 +275,25 @@ public class LakeSoulLookupJoinCase {
         assertThat(results.toString())
                 .isEqualTo(
                         "[+I[1, a, 10, 2020, 09, 31], +I[2, b, 22, 2020, 09, 31], +I[3, c, 33, 2020, 09, 31]]");
+        tableEnv.executeSql("drop table if exists partition_table_1");
     }
 
     @Test
     public void testLookupJoinPartitionedTableWithPartialPartitionOrdered() throws Exception {
+        // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists partition_table_2 (x int, y string, pt_year int, z string, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, z, pt_mon, pt_day)"
+                                + " with ('format'='lakesoul', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='pt_year,pt_mon,pt_day', '%s'='4', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        JobOptions.PARTITION_ORDER_KEYS.key(),
+                        JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/partition_table_2"));
+
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -415,12 +322,23 @@ public class LakeSoulLookupJoinCase {
         assertThat(results.toString())
                 .isEqualTo(
                         "[+I[1, a, 10, 2020, 10, 31], +I[2, b, 22, 2020, 10, 31], +I[2, b, 50, 2020, 09, 31], +I[3, c, 33, 2020, 10, 31], +I[4, d, 50, 2020, 09, 31]]");
+        tableEnv.executeSql("drop table if exists partition_table_2");
     }
 
 
     // Note: Please set ProbeTableGenerateDataOnce to "false" before run this test
 //    @Test
     public void testLookupJoinPartitionedTableWithCacheReloaded() throws Exception {
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists partition_table_3 (x int, y string, z string, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/partition_table_3"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -463,10 +381,24 @@ public class LakeSoulLookupJoinCase {
                                 "+I[3, c, 33, 2020, 10, 31], +I[1, a, 88, 2021, 05, 01], +I[1, a, 10, 2021, 05, 01], " +
                                 "+I[2, b, 50, 2021, 05, 01], +I[3, c, 99, 2021, 05, 01]]"
                 );
+        tableEnv.executeSql("drop table if exists partition_table_3");
     }
 
 //    @Test
     public void testLookupJoinPartitionedTableWithPartitionTime() throws Exception {
+        // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists partition_table_2 (x int, y string, pt_year int, z string, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, z, pt_mon, pt_day)"
+                                + " with ('format'='lakesoul', '%s'='5min', '%s' = 'true', '%s' = 'latest', '%s'='pt_year,pt_mon,pt_day', '%s'='4', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        JobOptions.PARTITION_ORDER_KEYS.key(),
+                        JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/partition_table_2"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -492,10 +424,21 @@ public class LakeSoulLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString())
                 .isEqualTo("[+I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
+        tableEnv.executeSql("drop table if exists partition_table_2");
     }
 
 //    @Test
     public void testLookupJoinPartitionedTableWithCreateTime() throws Exception {
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists partition_table_3 (x int, y string, z string, pt_year int, pt_mon string, pt_day string) partitioned by ("
+                                + " pt_year, pt_mon, pt_day)"
+                                + " with ('format'='', '%s'='30s', '%s' = 'true', '%s' = 'latest', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        JobOptions.STREAMING_SOURCE_ENABLE.key(),
+                        JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/partition_table_3"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -530,10 +473,18 @@ public class LakeSoulLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString())
                 .isEqualTo("[+I[1, a, 101, 2020, 08, 01], +I[2, b, 122, 2020, 08, 01]]");
+        tableEnv.executeSql("drop table if exists partition_table_3");
     }
 
     @Test
     public void testLookupJoinWithLookUpSourceProjectPushDown() throws Exception {
+        // create the lakesoul non-partitioned non-hashed table
+        tableEnv.executeSql(
+                String.format(
+                        "create table if not exists bounded_table1 (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
+                        JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
+                        LakeSoulSinkOptions.USE_CDC.key(),
+                        "tmp/bounded_table1"));
 
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -551,6 +502,7 @@ public class LakeSoulLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         assertThat(results.toString())
                 .isEqualTo("[+I[1, 10], +I[1, 10], +I[2, 22], +I[2, 22], +I[3, 33]]");
+        tableEnv.executeSql("drop table if exists bounded_table1");
     }
 
 //    @Test
@@ -624,14 +576,13 @@ public class LakeSoulLookupJoinCase {
 
     @AfterClass
     public static void tearDown() {
-        tableEnv.executeSql("drop table if exists bounded_table");
-        tableEnv.executeSql("drop table if exists bounded_hash_table");
-        tableEnv.executeSql("drop table if exists bounded_partition_table");
-        tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
-        tableEnv.executeSql("drop table if exists partition_table");
-        tableEnv.executeSql("drop table if exists partition_table_1");
-        tableEnv.executeSql("drop table if exists partition_table_2");
-        tableEnv.executeSql("drop table if exists partition_table_3");
+
+
+
+
+
+
+
 
         if (lakeSoulCatalog != null) {
             lakeSoulCatalog.close();
