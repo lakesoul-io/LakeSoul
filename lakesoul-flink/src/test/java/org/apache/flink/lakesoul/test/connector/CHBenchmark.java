@@ -111,7 +111,7 @@ public class CHBenchmark {
                 "    PRIMARY KEY (c_w_id, c_d_id, c_id) NOT ENFORCED\n" +
                 ")" +
                 "WITH (" +
-                String.format("'format'='lakesoul','path'='%s', '%s'='%s', '%s'='false' ", "tmp/customer", JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), lookupTtl,LakeSoulSinkOptions.USE_CDC.key()) +
+                String.format("'format'='lakesoul','path'='%s', '%s'='%s', 'hashBucketNum'='2', '%s'='false' ", "tmp/customer", JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), lookupTtl,LakeSoulSinkOptions.USE_CDC.key()) +
                 ")",
 
             // LakeSoul Lookup Table, test no partition
@@ -124,7 +124,7 @@ public class CHBenchmark {
             "    PRIMARY KEY (o_w_id, o_d_id, o_id) NOT ENFORCED\n" +
             ")"  +
             "WITH (" +
-            String.format("'format'='lakesoul','path'='%s', '%s'='%s', '%s'='false' ", "tmp/oorder", JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), lookupTtl,LakeSoulSinkOptions.USE_CDC.key()) +
+            String.format("'format'='lakesoul','path'='%s', '%s'='%s', 'hashBucketNum'='2', '%s'='false' ", "tmp/oorder", JobOptions.LOOKUP_JOIN_CACHE_TTL.key(), lookupTtl,LakeSoulSinkOptions.USE_CDC.key()) +
             ")",
 
             // LakeSoul Lookup Table, test partition

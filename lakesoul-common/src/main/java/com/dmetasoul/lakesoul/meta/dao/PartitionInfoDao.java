@@ -78,8 +78,10 @@ public class PartitionInfoDao {
                     conn.rollback();
                 }
             } catch (SQLException ex) {
+                // TODO: 2023/5/25 unexpected rollback error handling
                 ex.printStackTrace();
             }
+            // TODO: 2023/5/25 unexpected e.printStackTrace
             e.printStackTrace();
         } finally {
             DBConnector.closeConn(pstmt, conn);
