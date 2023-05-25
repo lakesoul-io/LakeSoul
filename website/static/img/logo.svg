@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Logos" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 84.0191286 82.6739773">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: url(#New_Gradient_Swatch_2);
+        fill-rule: evenodd;
+      }
+    </style>
+    <linearGradient id="New_Gradient_Swatch_2" data-name="New Gradient Swatch 2" x1="2.9014593" y1="41.3369887" x2="81.1176693" y2="41.3369887" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#cddef4"/>
+      <stop offset=".0497896" stop-color="#cedaea"/>
+      <stop offset=".1326603" stop-color="#d0d0d1"/>
+      <stop offset=".2383964" stop-color="#d5c0a7"/>
+      <stop offset=".3628294" stop-color="#dbaa6d"/>
+      <stop offset=".5014131" stop-color="#e38f25"/>
+      <stop offset=".567416" stop-color="#e78100"/>
+      <stop offset=".865168" stop-color="#d00"/>
+      <stop offset=".994382" stop-color="#cc0074"/>
+    </linearGradient>
+  </defs>
+  <path class="cls-1" d="M42.0095643,2.2288837l39.108105,19.5540525V60.8910411l-39.108105,19.5540525L2.9014593,60.8910411V21.7829362L42.0095643,2.2288837ZM17.5669987,26.6714493l24.4425656,12.208246v24.9444538l-24.4425656-12.208246V26.6714493Zm31.286484,28.4537561v-19.4979985l-19.5540525-9.1981166v-5.6238111l24.4425656,12.208248v24.9444538l-4.8885131-2.8327756Zm12.7101341-4.8885131V30.7386938l-19.5540525-9.1981166v-5.6238111l24.4425656,12.208248v24.9444538l-4.8885131-2.8327756ZM42.0095643,9.5160294L9.4194768,25.8110742v31.0511845l32.5900875,16.2950437,32.5900875-16.2950437V25.8110742L42.0095643,9.5160294Z"/>
+</svg>

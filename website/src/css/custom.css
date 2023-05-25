@@ -1,0 +1,99 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* You can override the default Infima variables here. */
+/* :root {
+  --ifm-color-primary: #2e8555;
+  --ifm-color-primary-dark: #29784c;
+  --ifm-color-primary-darker: #277148;
+  --ifm-color-primary-darkest: #205d3b;
+  --ifm-color-primary-light: #33925d;
+  --ifm-color-primary-lighter: #359962;
+  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+} */
+:root {
+  --ifm-color-primary: #1E90FF;
+  --ifm-color-primary-dark: #2587e9;
+  --ifm-color-primary-darker: #3b83cb;
+  --ifm-color-primary-darkest: #3f7ab6;
+  --ifm-color-primary-light: #3d70a2;
+  --ifm-color-primary-lighter: #406991;
+  --ifm-color-primary-lightest: #4d6e8e;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* [data-theme='dark'] {
+  --ifm-color-primary: #25c2a0;
+  --ifm-color-primary-dark: #21af90;
+  --ifm-color-primary-darker: #1fa588;
+  --ifm-color-primary-darkest: #1a8870;
+  --ifm-color-primary-light: #29d5b0;
+  --ifm-color-primary-lighter: #32d8b4;
+  --ifm-color-primary-lightest: #4fddbf;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+} */
+[data-theme='dark'] {
+  --ifm-color-primary: #418ad4;
+  --ifm-color-primary-dark: #3779bc;
+  --ifm-color-primary-darker: #2e6ba9;
+  --ifm-color-primary-darkest: #225b95;
+  --ifm-color-primary-light: #639cd5;
+  --ifm-color-primary-lighter: #428bd5;
+  --ifm-color-primary-lightest: #5f9fe0;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+.navbar--fixed-top{
+  height:80px;
+  padding:0 10px;
+  background-color:#1E90FF;
+}
+.navbar{
+  box-shadow: none;
+}
+.navbar__brand,.navbar__link{
+  color:white;
+}
+.navbar__link:hover{
+  color:#F79934;
+}
+.navbar__link--active{
+  color:#F79934;
+}
+.navbar__brand:hover{
+  color:#F79934;
+}
+.navbar__logo {
+  height: 3rem
+}
+.footer{
+  background-color: #1E90FF;
+  padding:0;
+}
+.footer .container{
+  max-width:100%;
+  padding:0;
+}
+.footer .container .footer__links{
+  /* padding:50px 100px; */
+  margin:0 auto;
+  max-width:80%;
+  padding:20px;
+}
+.footer__link-item:hover{
+  color:#F79934;
+}
+.customCopyright{
+  width:100%;
+  background-color: rgba(0,0,0,0.9);
+  padding:10px;
+  font-size: 13px;
+  line-height: 25px;
+}
+
