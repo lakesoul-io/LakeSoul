@@ -3,7 +3,7 @@
 <img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
 LakeSoul 是一款开源云原生湖仓一体框架，具备高可扩展的元数据管理、ACID 事务、高效灵活的 upsert 操作、Schema 演进和批流一体化处理等特性。
-![LakeSoul 架构](doc/LakeSoul.png)
+![LakeSoul 架构](website/static/img/lakeSoulModel.png)
 
 LakeSoul 由数元灵科技研发并于 2023 年 5 月正式捐赠给 Linux Foundation AI & Data 基金会，成为基金会旗下 Sandbox 项目。
 
@@ -37,7 +37,7 @@ LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量�
 ### 微信公众号
 欢迎关注 <u>**元灵数智**</u> 公众号，我们会定期推送关于 LakeSoul 的架构代码解读、端到端算法业务落地案例分享等干货文章：
 
-![元灵数智公众号](doc/%E5%85%83%E7%81%B5%E6%95%B0%E6%99%BA%E5%85%AC%E4%BC%97%E5%8F%B7.jpg)
+![元灵数智公众号](website/static/img/%E5%85%83%E7%81%B5%E6%95%B0%E6%99%BA%E5%85%AC%E4%BC%97%E5%8F%B7.jpg)
 
 ### LakeSoul 开发者社区微信群
 欢迎加入 LakeSoul 开发者社区微信群，随时交流 LakeSoul 开发相关的各类问题：请关注公众号后点击下方 "了解我们-用户交流" 获取最新微信群二维码。

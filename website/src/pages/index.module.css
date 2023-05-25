@@ -1,0 +1,284 @@
+/**
+ * CSS files with the .module.css suffix will be treated as CSS modules
+ * and scoped locally.
+ */
+.centerBox{
+  display:flex;
+  justify-content: center;
+  align-items: center;
+}
+.header{
+  width: 100%;
+  height: calc(100vh - 80px);
+  box-sizing: border-box;
+  background-image: url('@site/static/img/lakeSoulBcg.jpg');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  padding: 0 150px;
+  background-color: #DDEEFF;
+  overflow: hidden;
+  position: relative;
+}
+.lakeLogo{
+  width:400px;
+  margin-top:17vh;
+  margin-bottom:10px;
+}
+.btnBox {
+  margin-top: 25px;
+  margin-bottom:30px;
+}
+.btn {
+  margin-right: 26px;
+  padding: 10px 20px;
+  border: 1px solid #1E90FF;
+  border-radius: 5px;
+  font-weight: 400;
+  font-size: 18px;
+  color: white;
+  background-color: #F79934;
+  cursor: pointer !important;
+  line-height: 20px;
+}
+
+.btn:hover {
+  background-color: transparent;
+  border: 1px solid #c2d6eb;
+}
+.title {
+  font-weight: 700;
+  font-size: 40px;
+  line-height: 50px;
+  color: rgba(0, 0, 0, 0.8);
+  margin-bottom:50px;
+}
+.title:hover {
+  cursor: pointer;
+}
+.sectionTitle{
+  text-align: center;
+  font-weight: 700;
+  font-size: 31px;
+  line-height:50px;
+  margin:0 auto 50px;
+  max-width:80%;
+}
+.sectionTitle2{
+  text-align: center;
+  font-weight: 700;
+  font-size: 31px;
+  line-height:50px;
+  max-width:80%;
+  margin:100px auto 0;
+}
+.bcgBox{
+  padding:100px;
+}
+.sectionDescription {
+  font-weight: 400;
+  font-size: 18px;
+  line-height: 35px;
+  color: rgba(0, 0, 0, 0.7);
+  margin:0;
+}
+
+.description{
+  font-size:20px;
+  line-height: 36px;
+  width:45%;
+  margin:20px 0 40px 0;
+  text-align: start;
+  color:white;
+}
+.ifaiDescription{
+  font-size:40px;
+  line-height: 60px;
+  color:white;
+}
+.hr{
+  border:1px solid white;
+  width:400px;
+  margin:20px 0 40px;
+}
+
+.longDescription{
+  max-width:1200px;
+  margin:0 auto;
+}
+
+/* card */
+.cardBox{
+  margin: 0 auto;
+  max-width:1200px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content:flex-start;
+}
+.card {
+  max-width:360px;
+  height:300px;
+  margin:0 20px 30px 20px;
+  background: #F4FAFF;
+  border-radius: 12px;
+  padding: 15px;
+  text-overflow: ellipsis;
+  box-shadow: 4px 4px 24px rgba(0, 0, 0, 0.12);
+  position: relative;
+  bottom: 0;
+  transition: all linear 0.3s;
+}
+
+.card:hover {
+  background: linear-gradient(180deg, rgba(30, 144, 255, 0.85) 0%, rgba(62, 210, 226, 0.85) 100%);
+  box-shadow: 15px 15px 28px rgba(0, 0, 0, 0.12);
+  bottom: 28px;
+}
+
+.card:hover p {
+  color: white !important;
+}
+
+.cardTitle {
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 60px;
+}
+
+.modelImg {
+  max-width: 1000px;
+  height: 480px;
+  display: block;
+  margin: 0 auto;
+}
+
+.sectionImg{
+  margin:0 48px 0 48px;
+}
+
+.sectionChildBox {
+  max-width: 1200px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.sectionChildBox .textBox{
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+
+@media screen and (max-width: 768px) {
+  .header {
+      height: 200px !important;
+      padding:15px;
+      padding-top:0;
+  }
+  .lakeLogo{
+    margin:10px 0 0 0;
+    width:150px;
+  }
+  .btn{
+      padding:5px 10px;
+      line-height: 15px;
+  }
+  .btnBox{
+    margin:10px 0 !important;
+    display: inline-block;
+    vertical-align:bottom;
+  }
+  .title{
+      font-size:15px;
+      line-height:20px;
+      margin:0 0 5px 0;
+  }
+  .sectionDescription{
+      font-size:13px;    
+      line-height:20px; 
+      display: -webkit-box;
+      -webkit-box-orient: vertical;  
+      -webkit-line-clamp: 3;
+      text-overflow: ellipsis;
+      overflow: hidden;
+  }
+  .description{
+    font-size:12px;
+    line-height: 15px;
+    width:70%;
+    margin:0;
+  }
+  .ifaiDescription{
+    margin:0;
+    font-size:17px;
+    line-height: 20px;
+    color:white;
+  }
+  .hr{
+    border:1px solid white;
+    width:150px;
+    margin:10px 0 20px;
+  }
+  .longDescription{
+    max-width:80%;
+    margin:0 auto;
+  }
+  .btn {
+    margin-right: 10px;
+    border-radius: 10px;
+    font-size: 12px;
+  }
+  .bcgBox{
+    padding:30px 10px;
+  }
+  .cardBox{
+   width:100%;
+  }
+  .card {
+    width: 80% ;
+    height: 130px ;
+    padding: 15px;
+    margin: 0 auto;
+    margin-bottom: 20px !important;
+    overflow: hidden;
+  }
+
+  .cardTitle {
+    font-weight:400;
+    font-size: 15px;
+    line-height: 18px;
+    margin-bottom:10px;
+  }
+  .sectionTitle{
+    font-size: 13px;
+    line-height:18px;
+    color: #000000;
+    margin: 0 auto 20px;
+    max-width:80%;
+  }
+  .sectionTitle2{
+    font-size: 13px;
+    line-height:18px;
+    color: #000000;
+    margin: 20px auto 20px;
+    max-width:80%;
+  }
+  .modelImg {
+    max-width: 80%;
+    max-height: 130px;
+    display: block;
+    margin: 0 auto;
+  }
+  .sectionChildBox {
+    max-width: 80%;
+  }
+  .sectionChildBox img{
+    width: 150px !important;
+    height: 80px !important;
+    margin-right:20px;
+  }
+  .sectionImg{
+    margin:0 20px 0 20px;
+  }
+  
+}

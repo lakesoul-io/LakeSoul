@@ -1,0 +1,46 @@
+{
+  "link.title.Docs": {
+    "message": "文档",
+    "description": "The title of the footer links column with title=Docs in the footer"
+  },
+  "link.title.Community": {
+    "message": "社区",
+    "description": "The title of the footer links column with title=Community in the footer"
+  },
+  "link.title.More": {
+    "message": "更多",
+    "description": "The title of the footer links column with title=More in the footer"
+  },
+  "link.item.label.Discord": {
+    "message": "Discord",
+    "description": "The label of footer link with label=Discord linking to https://discord.gg/WJrHKq4BPf"
+  },
+  "link.item.label.Twitter": {
+    "message": "社交",
+    "description": "The label of footer link with label=Twitter linking to https://twitter.com/lakesoul"
+  },
+  "link.item.label.Blog": {
+    "message": "博客",
+    "description": "The label of footer link with label=Blog linking to /blog"
+  },
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/lakesoul-io/lakesoul"
+  },
+  "link.item.label.Getting Started": {
+    "message": "快速开始",
+    "description": "The label of footer link with label=Getting Started linking to /docs/Getting%20Started/setup-local-env"
+  },
+  "link.item.label.Docs": {
+    "message": "使用文档",
+    "description": "The label of footer link with label=Docs linking to /docs/Usage%20Docs/setup-meta-env"
+  },
+  "link.item.label.Tutorials": {
+    "message": "使用教程",
+    "description": "The label of footer link with label=Tutorials linking to /docs/Tutorials/consume-cdc-via-spark-streaming"
+  },
+  "copyright": {
+    "message": "<div class='customCopyright'>Copyright ©2023 LakeSoul Linux基金会®, 保留所有权利. Linux基金会已经注册并使用了商标. 有关 Linux基金会的商标列表, 请参阅 <a href='https://www.linuxfoundation.org/legal/trademark-usage' target='_blank'>商标使用</a> 页面. Linux 是 Linus Torvalds 的注册商标. 详情参见 <a href='https://www.linuxfoundation.org/legal/privacy-policy' target='_blank'>隐私政策</a> 及 <a href='https://www.linuxfoundation.org/legal/terms' target='_blank'>使用条款.</a></div>",
+    "description": "The footer copyright"
+  }
+}
