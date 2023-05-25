@@ -21,7 +21,7 @@ package com.dmetasoul.lakesoul.meta
 
 import org.apache.flink.table.types.logical.LogicalType
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{BinaryType, CharType, DataType, DecimalType,TimestampType}
+import org.apache.spark.sql.types.{ CharType, DataType, DecimalType,TimestampType}
 
 object DataTypeUtil {
 
@@ -32,6 +32,8 @@ object DataTypeUtil {
   def convertDatatype(datatype: LogicalType): DataType = {
     val convert = datatype.getTypeRoot.name().toLowerCase match {
       case "string" => StringType
+      case "bytes" => ByteType
+      case "binary" => BinaryType
       case "bigint" => LongType
       case "int" => IntegerType
       case "tinyint" => IntegerType
@@ -91,6 +93,8 @@ object DataTypeUtil {
 
     val convert = datatype.toLowerCase match {
       case "string" => "STRING"
+      case "byte" => "BYTES"
+      case "binary" => "BINARY"
       case "long" => "BIGINT"
       case "int" => "INT"
       case "integer" => "INT"
