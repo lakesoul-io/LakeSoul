@@ -25,8 +25,11 @@ import org.apache.flink.lakesoul.entry.sql.common.JobType;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.lakesoul.entry.sql.Submitter;
 
+import java.io.IOException;
+import java.net.URISyntaxException;
 import java.util.List;
 
+import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
@@ -36,16 +39,20 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.lakesoul.entry.sql.utils.SqlSplitter;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.configuration.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class FlinkSqlSubmitter extends Submitter {
+    private static final Logger LOG = LoggerFactory.getLogger(FlinkSqlSubmitter.class);
+
     public FlinkSqlSubmitter(SubmitOption submitOption) {
         super(submitOption);
 
     }
 
     @Override
-    public void submit() {
+    public void submit() throws IOException, URISyntaxException {
         EnvironmentSettings settings = null;
         TableEnvironment tEnv = null;
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
@@ -68,8 +75,10 @@ public class FlinkSqlSubmitter extends Submitter {
             throw new RuntimeException("jobType is not supported");
         }
 
+        String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
+        LOG.info("sql: \n" + sql);
         SqlSplitter sqlSplitter = new SqlSplitter();
-        List<String> sqlList = sqlSplitter.splitSql(submitOption.getContent());
+        List<String> sqlList = sqlSplitter.splitSql(sql);
         ExecuteSql.exeSql(sqlList, tEnv);
     }
 

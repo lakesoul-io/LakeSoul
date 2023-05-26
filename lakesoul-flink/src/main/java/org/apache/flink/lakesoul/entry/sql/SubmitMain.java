@@ -21,11 +21,18 @@ package org.apache.flink.lakesoul.entry.sql;
 
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.URISyntaxException;
 
 public class SubmitMain {
-    public static void main(String[] args) {
+    private static final Logger LOG = LoggerFactory.getLogger(SubmitMain.class);
+
+    public static void main(String[] args) throws IOException, URISyntaxException {
         for (String arg : args) {
-            System.out.println(arg);
+            LOG.info("arg: {}", arg);
         }
         SubmitOption submitOption = optionBuild(args);
         Submitter submitter = SubmitterFactory.createSubmitter(submitOption);

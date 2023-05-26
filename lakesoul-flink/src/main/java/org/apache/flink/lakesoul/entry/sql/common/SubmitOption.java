@@ -28,18 +28,22 @@ public class SubmitOption {
     private final String submitType;
     private final String jobType;
     private final String language;
-    private final String content;
+    private final String sqlFilePath;
     private FlinkOption flinkOption;
 
     public SubmitOption(ParameterTool params) {
         this.submitType = params.get("submit_type");
         this.jobType = params.get("job_type");
         this.language = params.get("language");
-        this.content = params.get("content");
+        this.sqlFilePath = params.get("sql_file_path");
         this.checkParam();
         if (SubmitType.getSubmitType(submitType) == SubmitType.FLINK) {
             setFlinkOption(params, this);
         }
+    }
+
+    public String getSqlFilePath() {
+        return sqlFilePath;
     }
 
     public String getSubmitType() {
@@ -54,9 +58,6 @@ public class SubmitOption {
         return language;
     }
 
-    public String getContent() {
-        return content;
-    }
 
     public FlinkOption getFlinkOption() {
         return flinkOption;
@@ -82,7 +83,7 @@ public class SubmitOption {
     private void setFlinkOption(ParameterTool params, SubmitOption submitOption) {
         String checkpointPath = params.get(FLINK_CHECKPOINT.key());
         String savepointPath = params.get(FLINK_SAVEPOINT.key());
-        int checkpointInterval = params.getInt(JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
+        long checkpointInterval = params.getLong(JOB_CHECKPOINT_INTERVAL.key(), JOB_CHECKPOINT_INTERVAL.defaultValue());
         String checkpointingMode = params.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue());
         FlinkOption flinkOption = new FlinkOption();
         flinkOption.setCheckpointPath(checkpointPath);
