@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::{ParseError, Url};
 
-#[cfg(all(feature = "hdfs", target_os = "linux"))]
+#[cfg(feature = "hdfs")]
 use crate::hdfs::HDFS;
 
 #[derive(Debug, Derivative)]
@@ -238,13 +238,13 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
 }
 
 fn register_hdfs_object_store(_host: &str, _config: &LakeSoulIOConfig, _runtime: &RuntimeEnv) -> Result<()> {
-    #[cfg(not(all(feature = "hdfs", target_os = "linux")))]
+    #[cfg(not(feature = "hdfs"))]
     {
         Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
             source: "hdfs support is not enabled".into(),
         }))
     }
-    #[cfg(all(feature = "hdfs", target_os = "linux"))]
+    #[cfg(feature = "hdfs")]
     {
         let hdfs = HDFS::try_new(_host, _config.clone())?;
         _runtime.register_object_store("hdfs", _host, Arc::new(hdfs));

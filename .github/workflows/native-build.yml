@@ -35,6 +35,12 @@ jobs:
       - uses: actions/checkout@v3
         with:
           lfs: true
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -42,7 +48,7 @@ jobs:
         with:
           toolchain: nightly
           command: build
-          args: '--manifest-path native-io/Cargo.toml --release'
+          args: '--manifest-path native-io/Cargo.toml --release --all-features'
       - uses: actions/upload-artifact@master
         with:
           name: lakesoul-nativeio-x86_64-pc-windows-msvc
@@ -56,6 +62,12 @@ jobs:
       - uses: actions/checkout@v3
         with:
           lfs: true
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -63,7 +75,7 @@ jobs:
         with:
           toolchain: nightly
           command: build
-          args: '--manifest-path native-io/Cargo.toml --release'
+          args: '--manifest-path native-io/Cargo.toml --release --all-features'
       - uses: actions/upload-artifact@master
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
@@ -79,15 +91,15 @@ jobs:
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
-          path: ./native-io/target/release/liblakesoul_io_c.so
+          path: ./native-io/target/release/
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativeio-x86_64-apple-darwin
-          path: ./native-io/target/release/liblakesoul_io_c.dylib
+          path: ./native-io/target/release/
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativeio-x86_64-pc-windows-msvc
-          path: ./native-io/target/release/lakesoul_io_c.dll
+          path: ./native-io/target/release/
       - name: Set up JDK 8
         uses: actions/setup-java@v3
         with:

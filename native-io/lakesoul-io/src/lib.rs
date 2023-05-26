@@ -26,7 +26,7 @@ pub mod lakesoul_io_config;
 pub use datafusion::arrow::error::Result;
 pub mod sorted_merge;
 
-#[cfg(all(feature = "hdfs", target_os = "linux"))]
+#[cfg(feature = "hdfs")]
 mod hdfs;
 
 pub mod default_column_stream;
