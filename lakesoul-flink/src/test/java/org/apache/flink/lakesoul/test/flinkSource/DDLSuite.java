@@ -9,19 +9,21 @@ import org.junit.Test;
 import java.util.concurrent.ExecutionException;
 
 public class DDLSuite {
+    private String BATCH_TYPE = "batch";
+    private String STREAMING_TYPE = "streaming";
 
     @Test
     public void dropTable() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
-        tEnv.executeSql("SHOW TABLES").print();
+        tEnv.executeSql("SHOW TABLES");
         tEnv.executeSql("DROP TABLE if exists user_info");
-        tEnv.executeSql("SHOW TABLES").print();
+        tEnv.executeSql("SHOW TABLES");
     }
 
     @Test
     public void alterTableNotSupported() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         try {
             tEnv.executeSql("ALTER TABLE user_info RENAME TO NewUsers");
@@ -32,15 +34,15 @@ public class DDLSuite {
 
     @Test
     public void describeTable() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
-        tEnv.executeSql("DESC user_info").print();
-        tEnv.executeSql("DESCRIBE user_info").print();
+        tEnv.executeSql("DESC user_info");
+        tEnv.executeSql("DESCRIBE user_info");
     }
 
     @Test
     public void explainTable() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         String explaination = tEnv.explainSql("SELECT * FROM user_info WHERE order_id > 3");
         System.out.println(explaination);
@@ -48,7 +50,7 @@ public class DDLSuite {
 
     @Test
     public void loadLakeSoulModuleNotSupported(){
-        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv("streaming");
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
         try {
             streamTableEnv.executeSql("LOAD MODULE lakesoul WITH ('format'='lakesoul')");
         }catch (ValidationException e) {
@@ -58,10 +60,10 @@ public class DDLSuite {
 
     @Test
     public void unloadModuleTest(){
-        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv("streaming");
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
         try {
             streamTableEnv.executeSql("UNLOAD MODULE core");
-            streamTableEnv.executeSql("SHOW MODULES").print();
+            streamTableEnv.executeSql("SHOW MODULES");
         }catch (ValidationException e) {
             System.out.println("UNLOAD lakesoul module not supported now");
         }

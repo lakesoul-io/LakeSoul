@@ -16,7 +16,7 @@ public class DMLSuite {
 
     @Test
     public void testInsertSQL() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -33,7 +33,7 @@ public class DMLSuite {
 
     @Test
     public void testUpdateSQLNotSupported() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)").await();
         try {
@@ -50,7 +50,7 @@ public class DMLSuite {
 
     @Test
     public void testDeleteSQLNotSupported() throws ExecutionException, InterruptedException {
-        TableEnvironment tEnv = TestUtils.createTableEnv();
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95)").await();
         try {

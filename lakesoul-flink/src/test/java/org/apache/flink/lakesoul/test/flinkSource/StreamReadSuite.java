@@ -23,23 +23,16 @@ import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
-import org.apache.flink.types.Row;
-import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
-import java.util.List;
+import java.time.Instant;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 
 public class StreamReadSuite {
 
-    private String STREAMING_TYPE = "streaming";
-
     @Test
-    public void testLakesoulSourceIncrementalStream()  {
+    public void testLakesoulSourceIncrementalStream() {
         TableEnvironment createTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
         LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
         LakeSoulTestUtils.registerLakeSoulCatalog(createTableEnv, lakeSoulCatalog);
@@ -56,30 +49,30 @@ public class StreamReadSuite {
         createTableEnv.executeSql(createUserSql);
 
         String testSql = String.format("select * from test_stream /*+ OPTIONS('readstarttime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
-                TestUtils.getCurrentDateTimeForIncremental());
+                TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis())));
 
         StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(LakeSoulTestUtils.createStreamExecutionEnvironment());
         LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
         LakeSoulTestUtils.checkStreamingQueryAnswer(
                 tEnvs,
                 testSql,
-    "    order_id INT," +
-                "    name STRING PRIMARY KEY NOT ENFORCED," +
-                "    score INT",
-                (s)->{
+                "    order_id INT," +
+                        "    name STRING PRIMARY KEY NOT ENFORCED," +
+                        "    score INT",
+                (s) -> {
                     try {
                         createTableEnv.executeSql("INSERT INTO test_stream VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
-                        createTableEnv.executeSql("INSERT INTO test_stream VALUES(3, 'Jack', 75)").await();
+                        createTableEnv.executeSql("INSERT INTO test_stream VALUES (3, 'Jack', 75)").await();
                         createTableEnv.executeSql("INSERT INTO test_stream VALUES (4, 'Jack', 95),(5, 'Tom', 75)").await();
+                        createTableEnv.executeSql("INSERT INTO test_stream VALUES (6, 'Tom', 100)").await();
                     } catch (InterruptedException | ExecutionException e) {
                         throw new RuntimeException(e);
                     }
 
                 },
-                "[+I[1, Bob, 90], +I[2, Alice, 80], +I[4, Jack, 95], +I[5, Tom, 75]]",
-                10L
+                "[+I[1, Bob, 90], +I[2, Alice, 80], +I[4, Jack, 95], +I[6, Tom, 100]]",
+                30L
         );
-
     }
 
     @Test
@@ -118,7 +111,7 @@ public class StreamReadSuite {
                         "    `date` DATE," +
                         "    region STRING," +
                         "PRIMARY KEY (`id`,`name`) NOT ENFORCED",
-                (s)->{
+                (s) -> {
                     try {
                         createTableEnv.executeSql("INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', 80, TO_DATE('1995-10-10'), 'China')").await();
                         createTableEnv.executeSql("INSERT INTO user_multi VALUES (3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China')").await();
@@ -161,8 +154,8 @@ public class StreamReadSuite {
                 testSelectWhere,
                 "    order_id INT," +
                         "    name STRING PRIMARY KEY NOT ENFORCED," +
-                        "    score DECIMAL" ,
-                (s)->{
+                        "    score DECIMAL",
+                (s) -> {
                     try {
                         createTableEnv.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
                         createTableEnv.executeSql("INSERT INTO user_info VALUES (3, 'Jack', 75), (3, 'Amy', 95)").await();
@@ -216,8 +209,8 @@ public class StreamReadSuite {
                 testSelectJoin,
                 "    order_id INT," +
                         "    total_price DOUBLE," +
-                        "    total BIGINT NOT NULL" ,
-                (s)->{
+                        "    total BIGINT NOT NULL",
+                (s) -> {
                     try {
                         createTableEnv.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
                         createTableEnv.executeSql("INSERT INTO order_info VALUES (1, 20.12), (2, 10.88)").await();
@@ -233,7 +226,7 @@ public class StreamReadSuite {
 
                 },
                 "[+I[3, 30.7, 2], +I[4, 25.24, 1], +I[5, 15.04, 1]]",
-                60L
+                30L
         );
 
     }
@@ -263,8 +256,8 @@ public class StreamReadSuite {
         LakeSoulTestUtils.checkStreamingQueryAnswer(
                 tEnvs,
                 testSelectDistinct,
-                        "dist INT",
-                (s)->{
+                "dist INT",
+                (s) -> {
                     try {
                         createTableEnv.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
                         createTableEnv.executeSql("INSERT INTO user_info VALUES (3, 'Jack', 75), (3, 'Amy', 95)").await();

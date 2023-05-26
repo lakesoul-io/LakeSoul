@@ -102,6 +102,7 @@ public class LakeSoulTestUtils {
                 ")WITH (" +
                 "'connector' = 'values', 'sink-insert-only' = 'false'" +
                 ")");
+        TestValuesTableFactory.clearAllData();
         final TableResult execute = tableEnv.executeSql("INSERT INTO default_catalog.default_database.sink " + querySql);
         Thread thread = new Thread(() -> {
             try {

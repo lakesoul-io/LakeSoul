@@ -7,18 +7,21 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 public class BatchReadSuite {
     private String BATCH_TYPE = "batch";
+    private String startTime;
+    private String endTime;
 
     @Test
     public void testLakesoulSourceSnapshotRead() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
-        createLakeSoulSourceStreamTestTable(createTableEnv);
-        String testSql = String.format("select * from test_stream /*+ OPTIONS('readendtime'='%s','readtype'='snapshot','timezone'='Africa/Accra')*/",
-                TestUtils.getCurrentDateTimeForSnapshot());
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTestTable(createTableEnv);
+        String testSql = String.format("select * from user_test /*+ OPTIONS('readendtime'='%s','readtype'='snapshot','timezone'='Africa/Accra')*/",
+                endTime);
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
@@ -27,10 +30,10 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceIncrementalRead() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
-        createLakeSoulSourceStreamTestTable(createTableEnv);
-        String testSql = String.format("select * from test_stream /*+ OPTIONS('readstarttime'='%s','readendtime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
-                TestUtils.getCurrentDateTimeForIncremental(), TestUtils.getCurrentDateTimeForSnapshot());
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTestTable(createTableEnv);
+        String testSql = String.format("select * from user_test /*+ OPTIONS('readstarttime'='%s','readendtime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
+                startTime, endTime);
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSql);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
@@ -39,7 +42,7 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceSelectNoPK() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableWithoutPK(createTableEnv);
         String testSelectNoPK = "select * from order_noPK";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -50,7 +53,7 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceSelectMultiRangeAndHash() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         TestUtils.createLakeSoulSourceMultiPartitionTable(createTableEnv);
         String testMultiRangeSelect = "select * from user_multi where `region`='UK' and score > 80";
         String testMultiHashSelect = "select name,`date`,region from user_multi where score > 80";
@@ -65,7 +68,7 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceSelectWhere() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         TestUtils.createLakeSoulSourceTableUser(createTableEnv);
         String testSelectWhere = "select * from user_info where order_id=3";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -76,7 +79,7 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceSelectJoin() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         TestUtils.createLakeSoulSourceTableUser(createTableEnv);
         TestUtils.createLakeSoulSourceTableOrder(createTableEnv);
         String testSelectJoin = "select ui.order_id,sum(oi.price) as total_price,count(*) as total " +
@@ -90,7 +93,7 @@ public class BatchReadSuite {
 
     @Test
     public void testLakesoulSourceSelectDistinct() throws ExecutionException, InterruptedException {
-        TableEnvironment createTableEnv = TestUtils.createTableEnv();
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         TestUtils.createLakeSoulSourceTableUser(createTableEnv);
         String testSelectDistinct = "select distinct order_id from user_info where order_id<5";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -99,22 +102,24 @@ public class BatchReadSuite {
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[1]", "+I[2]", "+I[3]", "+I[4]"});
     }
 
-    private void createLakeSoulSourceStreamTestTable(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
-        String createUserSql = "create table test_stream (" +
+    private void createLakeSoulSourceTestTable(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create table user_test (" +
                 "    order_id INT," +
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
                 "    score INT" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/test_stream' )";
-        tEnvs.executeSql("DROP TABLE if exists test_stream");
+                "    'path'='/tmp/lakeSource/user_test' )";
+        tEnvs.executeSql("DROP TABLE if exists user_test");
         tEnvs.executeSql(createUserSql);
-        tEnvs.executeSql("INSERT INTO test_stream VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
-        Thread.sleep(2000l);
-        tEnvs.executeSql("INSERT INTO test_stream VALUES(3, 'Jack', 75)").await();
-        Thread.sleep(2000l);
-        tEnvs.executeSql("INSERT INTO test_stream VALUES (4, 'Jack', 95),(5, 'Tom', 75)").await();
+        tEnvs.executeSql("INSERT INTO user_test VALUES (1, 'Bob', 90), (2, 'Alice', 80)").await();
+        Thread.sleep(1000l);
+        startTime = TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis()));
+        tEnvs.executeSql("INSERT INTO user_test VALUES(3, 'Jack', 75)").await();
+        Thread.sleep(1000l);
+        endTime = TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis()));
+        tEnvs.executeSql("INSERT INTO user_test VALUES (4, 'Jack', 95),(5, 'Tom', 75)").await();
     }
 
     private void createLakeSoulSourceTableWithoutPK(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {

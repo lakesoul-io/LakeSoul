@@ -137,19 +137,12 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
-//        for (DataFileInfo dfinfo : dfinfos) {
-//            ArrayList<Path> tmp = new ArrayList<>();
-//            tmp.add(new Path(dfinfo.path()));
-//            splits.add(new LakeSoulSplit(i + "", tmp, 0));
-//        }
-
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                 splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
             }
         }
-
         this.startTime = this.nextStartTime;
         return splits;
     }

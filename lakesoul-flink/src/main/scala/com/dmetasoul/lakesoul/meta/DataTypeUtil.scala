@@ -32,7 +32,7 @@ object DataTypeUtil {
   def convertDatatype(datatype: LogicalType): DataType = {
     val convert = datatype.getTypeRoot.name().toLowerCase match {
       case "string" => StringType
-      case "bytes" => ByteType
+      case "varbinary" => BinaryType
       case "binary" => BinaryType
       case "bigint" => LongType
       case "int" => IntegerType
@@ -52,6 +52,7 @@ object DataTypeUtil {
       case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
       case CHAR_TYPE(length) => CharType(length.toInt)
       case "varchar" => StringType
+      case "char" => StringType
     }
     convert
   }

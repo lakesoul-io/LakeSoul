@@ -5,6 +5,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
+import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -25,8 +26,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestUtils {
 
-    public static TableEnvironment createTableEnv() {
-        TableEnvironment createTableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+    private static String BATCH_TYPE = "batch";
+    private static String STREAMING_TYPE = "streaming";
+    public static TableEnvironment createTableEnv(String mode) {
+        TableEnvironment createTableEnv;
+        if(mode.equals(BATCH_TYPE)) {
+            createTableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        }else{
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+            env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+            env.enableCheckpointing(2000, CheckpointingMode.EXACTLY_ONCE);
+            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            createTableEnv = StreamTableEnvironment.create(env);
+        }
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         createTableEnv.registerCatalog("lakeSoul", lakesoulCatalog);
         createTableEnv.useCatalog("lakeSoul");
@@ -42,7 +54,7 @@ public class TestUtils {
         conf.setInteger("rest.port", randomNumber);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.setParallelism(1);
-        if (envType.equals("streaming")) {
+        if (envType.equals(STREAMING_TYPE)) {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(2000, CheckpointingMode.EXACTLY_ONCE);
             env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
@@ -57,16 +69,7 @@ public class TestUtils {
         return tEnvs;
     }
 
-    public static String getCurrentDateTimeForSnapshot() {
-        Instant instant = Instant.ofEpochMilli(System.currentTimeMillis() - 2200);
-        ZoneId zoneId = ZoneId.of("Africa/Accra");
-        ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, zoneId);
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        return zonedDateTime.format(formatter);
-    }
-
-    public static String getCurrentDateTimeForIncremental() {
-        Instant instant = Instant.ofEpochMilli(System.currentTimeMillis() - 5000);
+    public static String getDateTimeFromTimestamp(Instant instant){
         ZoneId zoneId = ZoneId.of("Africa/Accra");
         ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, zoneId);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
