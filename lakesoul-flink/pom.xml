@@ -313,6 +313,9 @@
                 <configuration>
                     <skip>false</skip>
                     <skipTests>false</skipTests>
+                    <includes>
+                        <include>**/*</include>
+                    </includes>
                 </configuration>
             </plugin>
             <plugin>

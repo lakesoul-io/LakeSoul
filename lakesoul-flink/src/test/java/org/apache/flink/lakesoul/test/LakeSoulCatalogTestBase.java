@@ -24,6 +24,7 @@ import com.google.common.collect.Lists;
 import org.apache.flink.table.catalog.Catalog;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
@@ -44,6 +45,10 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
     public void clean() {
         getTableEnv().useCatalog("default_catalog");
         sql("DROP CATALOG IF EXISTS %s", catalogName);
+    }
+
+    @Test
+    public void emptyTest() {
     }
 
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")

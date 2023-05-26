@@ -107,9 +107,7 @@ public class LakeSoulTestUtils {
         Thread thread = new Thread(() -> {
             try {
                 execute.await(timeout, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            } catch (ExecutionException e) {
+            } catch (InterruptedException | ExecutionException e) {
                 throw new RuntimeException(e);
             } catch (TimeoutException e) {
 

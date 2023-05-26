@@ -19,15 +19,12 @@
 
 package org.apache.flink.lakesoul.test.connector;
 
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.lakesoul.connector.LakeSoulPartition;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
-import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
@@ -35,21 +32,14 @@ import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
-import org.apache.flink.table.data.GenericRowData;
-import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.FactoryUtil;
-import org.apache.flink.table.filesystem.PartitionFetcher;
-import org.apache.flink.table.filesystem.PartitionReader;
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
-import org.apache.flink.table.runtime.typeutils.InternalSerializers;
-import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
@@ -117,7 +107,7 @@ public class LakeSoulLookupJoinCase {
                         "create table if not exists bounded_table (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_table"));
+                        "/tmp/bounded_table"));
 
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -144,7 +134,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
                         LakeSoulSinkOptions.HASH_BUCKET_NUM.key(),
-                        "tmp/bounded_hash_table"));
+                        "/tmp/bounded_hash_table"));
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         batchEnv.useCatalog(lakeSoulCatalog.getName());
@@ -172,7 +162,7 @@ public class LakeSoulLookupJoinCase {
                                 + " with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_partition_table"));
+                        "/tmp/bounded_partition_table"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -209,7 +199,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
                         LakeSoulSinkOptions.HASH_BUCKET_NUM.key(),
-                        "tmp/bounded_partition_hash_table"));
+                        "/tmp/bounded_partition_hash_table"));
 
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
@@ -248,7 +238,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_1"));
+                        "/tmp/partition_table_1"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -292,7 +282,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.PARTITION_ORDER_KEYS.key(),
                         JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_2"));
+                        "/tmp/partition_table_2"));
 
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
@@ -338,7 +328,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_3"));
+                        "/tmp/partition_table_3"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -398,7 +388,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.PARTITION_ORDER_KEYS.key(),
                         JobOptions.STREAMING_SOURCE_LATEST_PARTITION_NUMBER.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_2"));
+                        "/tmp/partition_table_2"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -438,7 +428,7 @@ public class LakeSoulLookupJoinCase {
                         JobOptions.STREAMING_SOURCE_ENABLE.key(),
                         JobOptions.STREAMING_SOURCE_PARTITION_INCLUDE.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/partition_table_3"));
+                        "/tmp/partition_table_3"));
         // constructs test data using dynamic partition
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -484,7 +474,7 @@ public class LakeSoulLookupJoinCase {
                         "create table if not exists bounded_table1 (x int, y string, z int) with ('format'='lakesoul','%s'='5min', '%s'='false', 'path'='%s')",
                         JobOptions.LOOKUP_JOIN_CACHE_TTL.key(),
                         LakeSoulSinkOptions.USE_CDC.key(),
-                        "tmp/bounded_table1"));
+                        "/tmp/bounded_table1"));
 
         TableEnvironment batchEnv = FlinkUtil.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         batchEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);

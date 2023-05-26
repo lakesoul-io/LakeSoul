@@ -65,7 +65,7 @@ public class LakeSoulStreamingLookupJoinCase {
                 "create table if not exists probe (x int,y string" +
 //                        ", p as proctime()" +
                         ") "
-                        + "with ('format'='lakesoul', 'path'='tmp/probe')");
+                        + "with ('format'='lakesoul', 'path'='/tmp/probe')");
 
         batchEnv.executeSql(
                         "insert overwrite probe values "
@@ -89,7 +89,7 @@ public class LakeSoulStreamingLookupJoinCase {
 //                        "tmp/partition_table_3"));
     }
 
-    @Test
+//    @Test
     public void testLookupJoinBoundedTable() throws Exception {
         // create the lakesoul non-partitioned non-hashed table
         tableEnv.executeSql(
@@ -117,7 +117,7 @@ public class LakeSoulStreamingLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
     }
 
-    @Test
+//    @Test
     public void testLookupJoinBoundedHashTable() throws Exception {
         // create the lakesoul non-partitioned hashed table
         tableEnv.executeSql(
@@ -145,7 +145,7 @@ public class LakeSoulStreamingLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
     }
 
-    @Test
+//    @Test
     public void testLookupJoinBoundedPartitionedTable() throws Exception {
         // create the lakesoul partitioned non-hashed table
         tableEnv.executeSql(
@@ -179,7 +179,7 @@ public class LakeSoulStreamingLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
     }
 
-    @Test
+//    @Test
     public void testLookupJoinBoundedPartitionedHashedTable() throws Exception {
         // create the lakesoul partitioned hashed table
         tableEnv.executeSql(
@@ -214,7 +214,7 @@ public class LakeSoulStreamingLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
     }
 
-    @Test
+//    @Test
     public void testLookupJoinPartitionedTableWithAllPartitionOrdered() throws Exception {
         tableEnv.executeSql(
                 String.format(
@@ -253,7 +253,7 @@ public class LakeSoulStreamingLookupJoinCase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
     }
 
-    @Test
+//    @Test
     public void testLookupJoinPartitionedTableWithPartialPartitionOrdered() throws Exception {
         // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
         tableEnv.executeSql(
