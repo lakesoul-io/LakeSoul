@@ -312,7 +312,6 @@
                 <version>3.0.0-M7</version>
                 <configuration>
                     <skip>false</skip>
-                    <skipTests>false</skipTests>
                     <includes>
                         <include>**/*</include>
                     </includes>
