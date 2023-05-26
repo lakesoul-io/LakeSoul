@@ -419,6 +419,12 @@
                                 <exclude>META-INF/maven/com.google.guava/**</exclude>
                             </excludes>
                         </filter>
+                        <filter>
+                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <excludes>
+                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                            </excludes>
+                        </filter>
                     </filters>
                     <relocations>
                         <relocation>

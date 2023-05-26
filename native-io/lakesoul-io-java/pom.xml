@@ -235,6 +235,32 @@
                 </plugins>
             </build>
         </profile>
+
+        <profile>
+            <id>cross-build</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../target/release/</directory>
+                        <includes>
+                            <include>*.dylib</include>
+                            <include>*.so</include>
+                            <include>*.dll</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+            </build>
+        </profile>
     </profiles>
 
     <build>
