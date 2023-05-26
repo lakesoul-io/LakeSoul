@@ -2,11 +2,13 @@ package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.lakesoul.entry.sql.SubmitMain;
 
+import java.io.IOException;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
 
 public class SubmitMainTest {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException, URISyntaxException {
 
         StringBuffer content = new StringBuffer();
         content.append("DROP table if exists SourceTable;\n");
@@ -22,9 +24,8 @@ public class SubmitMainTest {
         list.add("--job_type");
         list.add("stream");
         list.add("--language");
-        list.add("sql");
-        list.add("--content");
-        list.add(content.toString());
+        list.add("--sql_path");
+        list.add("~/Desktop/sublime-data/flink-sql-blackhole.sql");
         list.add("--flink.checkpoint");
         list.add("file:///tmp/flink/checkpoints");
         list.add("--flink.savepoint");
