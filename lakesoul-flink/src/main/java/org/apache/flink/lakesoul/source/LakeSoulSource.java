@@ -111,7 +111,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
-        if (!FlinkUtil.isExistHashPartition(tif) || readType.equals("incremental")) {
+        if (!FlinkUtil.isExistHashPartition(tif)) {
             for (DataFileInfo dfinfo : dfinfos) {
                 ArrayList<Path> tmp = new ArrayList<>();
                 tmp.add(new Path(dfinfo.path()));

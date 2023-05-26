@@ -24,9 +24,11 @@ import com.google.common.collect.Lists;
 import org.apache.flink.table.catalog.Catalog;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -45,10 +47,13 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
         sql("DROP CATALOG IF EXISTS %s", catalogName);
     }
 
+    @Test
+    public void emptyTest() {
+    }
+
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
-        return Lists.newArrayList(
-                new Object[]{"lakesoul", Namespace.defaultNamespace()},
+        return Collections.singletonList(
                 new Object[]{"lakesoul", Namespace.defaultNamespace()});
     }
 

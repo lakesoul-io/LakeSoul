@@ -25,12 +25,27 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.planner.factories.TestValuesTableFactory;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulTestUtils {
 
+    public static void registerLakeSoulCatalog(TableEnvironment env, LakeSoulCatalog catalog) {
+        env.registerCatalog(catalog.getName(), catalog);
+        env.useCatalog(catalog.getName());
+    }
     public static LakeSoulCatalog createLakeSoulCatalog() {
         return createLakeSoulCatalog(false);
     }
@@ -78,6 +93,39 @@ public class LakeSoulTestUtils {
         tableEnv.registerCatalog(catalog.getName(), catalog);
         tableEnv.useCatalog(catalog.getName());
         return tableEnv;
+    }
+
+    public static void checkStreamingQueryAnswer(StreamTableEnvironment tableEnv, String querySql, String schemaString, Consumer<String> f, String expectedAnswer, long timeout) {
+        tableEnv.executeSql("DROP TABLE IF EXISTS default_catalog.default_database.sink");
+        tableEnv.executeSql("CREATE TABLE default_catalog.default_database.sink(" +
+                schemaString +
+                ")WITH (" +
+                "'connector' = 'values', 'sink-insert-only' = 'false'" +
+                ")");
+        TestValuesTableFactory.clearAllData();
+        final TableResult execute = tableEnv.executeSql("INSERT INTO default_catalog.default_database.sink " + querySql);
+        Thread thread = new Thread(() -> {
+            try {
+                execute.await(timeout, TimeUnit.SECONDS);
+            } catch (InterruptedException | ExecutionException e) {
+                throw new RuntimeException(e);
+            } catch (TimeoutException e) {
+
+            } finally {
+                execute.getJobClient().get().cancel();
+            }
+        });
+        thread.start();
+        f.accept("");
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        List<String> results = TestValuesTableFactory.getResults("sink");
+        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, (row.contains(","))?row.indexOf(","):row.length()-1))));
+        assertThat(results.toString()).isEqualTo(expectedAnswer);
+
     }
 
 }

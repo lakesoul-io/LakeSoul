@@ -52,7 +52,7 @@ public class TableInfo {
     /**
      * Properties of table, used to tag table with information not tracked by SQL
      */
-    private JSONObject properties;
+    private JSONObject properties = new JSONObject();
 
     /**
      * Partition columns of table. Format of partitions is 'comma_separated_range_column;hash_column'
