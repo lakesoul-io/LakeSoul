@@ -50,6 +50,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
 import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.SINK_PARTITION_COMMIT_DELAY;
@@ -122,7 +123,7 @@ public class LakeSoulTableSinkCase {
                         "    \"type\" : \"Sink Unnamed Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink Unnamed Writer\",\n" +
-                        "    \"parallelism\" : 8,\n" +
+                        "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
                         "      \"ship_strategy\" : \"CUSTOM\",\n" +
@@ -188,7 +189,7 @@ public class LakeSoulTableSinkCase {
                         "    \"type\" : \"Sink Unnamed\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink Unnamed\",\n" +
-                        "    \"parallelism\" : 8,\n" +
+                        "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
                         "      \"ship_strategy\" : \"CUSTOM\",\n" +
@@ -212,7 +213,9 @@ public class LakeSoulTableSinkCase {
                                 + " id int,"
                                 + " real_col int"
                                 + ") WITH ("
-                                + " 'sink.parallelism' = '8'," // set sink parallelism = 8
+                                + "'"
+                                + HASH_BUCKET_NUM.key()
+                                + "'= '3',"
                                 + "'"
                                 + LAKESOUL_TABLE_PATH.key()
                                 + "'='tmp/test_table',"
@@ -239,7 +242,7 @@ public class LakeSoulTableSinkCase {
         TableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tEnv.useCatalog(lakeSoulCatalog.getName());
-        tEnv.executeSql("create database db1");
+        tEnv.executeSql("create database if not exists db1");
         tEnv.useDatabase("db1");
         try {
             String ddl = String.format("create table append_table (i int, j int) with ('%s'='tmp/append_table', '%s'='lakesoul')", LAKESOUL_TABLE_PATH.key(), FactoryUtil.FORMAT.key());
@@ -388,7 +391,7 @@ public class LakeSoulTableSinkCase {
 //        }
 
         try {
-            tEnv.executeSql("create database db1");
+            tEnv.executeSql("create database if not exists db1");
             tEnv.useDatabase("db1");
 
             // prepare source

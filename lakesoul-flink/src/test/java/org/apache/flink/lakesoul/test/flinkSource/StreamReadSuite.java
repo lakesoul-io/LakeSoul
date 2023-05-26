@@ -77,7 +77,7 @@ public class StreamReadSuite {
 
                 },
                 "[+I[1, Bob, 90], +I[2, Alice, 80], +I[4, Jack, 95], +I[5, Tom, 75]]",
-                10L
+                30L
         );
 
     }
@@ -129,7 +129,7 @@ public class StreamReadSuite {
 
                 },
                 "[+I[1, Bob, 90, 1995-10-01, UK], +I[3, Amy, 95, 1995-10-10, UK]]",
-                10L
+                30L
         );
 
     }

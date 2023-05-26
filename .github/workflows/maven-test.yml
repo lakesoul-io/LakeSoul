@@ -59,7 +59,7 @@ jobs:
         restore-keys: ${{ runner.os }}-cargo-
     - name: Build with Maven
       run: |
-        MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -pl lakesoul-spark -am
+        MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -am
     - name: Upload Test Report
       continue-on-error: true
       uses: actions/upload-artifact@v3
