@@ -21,7 +21,6 @@ import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.fs.s3a.S3AFileSystem
 import org.apache.hadoop.mapreduce.TaskAttemptContext
-import org.apache.spark.util.Utils
 
 import scala.collection.JavaConverters._
 
@@ -58,7 +57,9 @@ object NativeIOUtils{
   }
 
   def getNativeIOOptions(taskAttemptContext: TaskAttemptContext, file: Path): NativeIOOptions = {
-    val user = Utils.getCurrentUserName
+    var user: String = null
+    val userConf = taskAttemptContext.getConfiguration.get("fs.hdfs.user")
+    if (userConf != null) user = userConf
     var defaultFS = taskAttemptContext.getConfiguration.get("fs.defaultFS")
     if (defaultFS == null) defaultFS = taskAttemptContext.getConfiguration.get("fs.default.name")
     val fileSystem = file.getFileSystem(taskAttemptContext.getConfiguration)
