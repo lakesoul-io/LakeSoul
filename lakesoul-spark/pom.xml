@@ -358,6 +358,14 @@
                             <include>mysql:mysql-connector-java</include>
                         </includes>
                     </artifactSet>
+                    <filters>
+                        <filter>
+                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <excludes>
+                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
                     <relocations>
                         <relocation>
                             <pattern>com.zaxxer.hikari</pattern>

@@ -170,7 +170,8 @@ pub extern "C" fn lakesoul_config_builder_set_schema(
 ) -> NonNull<IOConfigBuilder> {
     unsafe {
         let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
-        let schema = Schema::try_from(&*(ffi_schema)).unwrap();
+        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
+        let schema = Schema::try_from(&schema_data).unwrap();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_schema(Arc::new(schema)),
         )

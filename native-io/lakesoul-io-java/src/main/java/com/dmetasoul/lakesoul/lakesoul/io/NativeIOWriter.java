@@ -55,7 +55,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         tokioRuntime = libLakeSoulIO.create_tokio_runtime_from_builder(tokioRuntimeBuilder);
         config = libLakeSoulIO.create_lakesoul_io_config_from_builder(ioConfigBuilder);
         writer = libLakeSoulIO.create_lakesoul_writer_from_config(config, tokioRuntime);
-        // tokioRuntime will be moved to reader, we don't need to free it
+        // tokioRuntime will be moved to writer, we don't need to free it
         tokioRuntime = null;
         Pointer p = libLakeSoulIO.check_writer_created(writer);
         if (p != null) {
