@@ -20,6 +20,7 @@ import jnr.ffi.Memory;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
 import jnr.ffi.annotations.Delegate;
+import jnr.ffi.annotations.LongLong;
 
 public interface LibLakeSoulIO {
 
@@ -50,7 +51,7 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_merge_op(Pointer builder, Pointer field, Pointer mergeOp);
 
-    Pointer lakesoul_config_builder_set_schema(Pointer builder, long schemaAddr);
+    Pointer lakesoul_config_builder_set_schema(Pointer builder, @LongLong long schemaAddr);
 
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, Pointer key, Pointer value);
 
@@ -68,7 +69,7 @@ public interface LibLakeSoulIO {
 
     Pointer check_reader_created(Pointer reader);
 
-    void lakesoul_reader_get_schema(Pointer reader, long schemaAddr);
+    void lakesoul_reader_get_schema(Pointer reader, @LongLong long schemaAddr);
 
     Pointer create_lakesoul_writer_from_config(Pointer config, Pointer runtime);
 
@@ -88,9 +89,9 @@ public interface LibLakeSoulIO {
 
     void start_reader(Pointer reader, BooleanCallback callback);
 
-    void next_record_batch(Pointer reader, long schemaAddr, long arrayAddr, IntegerCallback callback);
+    void next_record_batch(Pointer reader, @LongLong long schemaAddr, @LongLong long arrayAddr, IntegerCallback callback);
 
-    void write_record_batch(Pointer writer, long schemaAddr, long arrayAddr, BooleanCallback callback);
+    void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
     void free_lakesoul_reader(Pointer reader);
 
