@@ -45,7 +45,6 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     private long nextStartTime;
     private String parDesc;
 
-    private Set<Integer> taskIdsAwaitingSplit;
 
     public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulSimpleSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
         this.context = context;
@@ -54,7 +53,6 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         this.tid = tid;
         this.startTime = startTime;
         this.parDesc = parDesc;
-        this.taskIdsAwaitingSplit = new HashSet<>();
     }
 
     @Override
@@ -72,15 +70,27 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             // reader failed between sending the request and now. skip this request.
             return;
         }
-
-        final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
-        if (nextSplit.isPresent()) {
-            final LakeSoulSplit split = nextSplit.get();
-            context.assignSplit(split, subtaskId);
-            LOG.info("Assigned split to subtask {} : {}", subtaskId, split);
-        } else {
-            taskIdsAwaitingSplit.add(subtaskId);
+        while (splitAssigner.hasNext()) {
+            final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
+            if (nextSplit.isPresent()) {
+                final LakeSoulSplit split = nextSplit.get();
+                context.assignSplit(split, getSubtaskIdForSplit(split));
+                LOG.info("Assigned split to subtask {} : {}", subtaskId, split);
+            }
         }
+
+    }
+
+    private int getSubtaskIdForSplit(LakeSoulSplit lss) {
+        Set<Integer> allSubTaskIds = context.registeredReaders().keySet();
+        int bucketid = lss.getBucketId();
+        int taskIdsSize = allSubTaskIds.size();
+        if (bucketid <= taskIdsSize) {
+            return bucketid;
+        } else {
+            return bucketid % taskIdsSize;
+        }
+
     }
 
     @Override
@@ -95,7 +105,6 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public void addReader(int subtaskId) {
-
     }
 
     @Override
@@ -114,19 +123,10 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             LOG.error("Failed to enumerate files", error);
             return;
         }
-        Set<Integer> allSubTaskIds = context.registeredReaders().keySet();
-        for (Integer subTaskId : allSubTaskIds) {
-            // if the subTask that requested another split has failed in the meantime, remove
-            // it from the list of waiting taskIds
-            if (!taskIdsAwaitingSplit.contains(subTaskId)) {
-                taskIdsAwaitingSplit.add(subTaskId);
-            } else {
-                final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
-                if (nextSplit.isPresent()) {
-                    context.assignSplit(nextSplit.get(), subTaskId);
-                    taskIdsAwaitingSplit.remove(subTaskId);
-                }
-            }
+        final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
+        if (nextSplit.isPresent()) {
+            final LakeSoulSplit split = nextSplit.get();
+            context.assignSplit(split, getSubtaskIdForSplit(split));
         }
         splitAssigner.addSplits(splits);
     }
@@ -140,7 +140,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
+                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0, split.getKey()));
             }
         }
         this.startTime = this.nextStartTime;

@@ -19,6 +19,7 @@ package org.apache.flink.lakesoul.source;
 
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
 
 import java.util.List;
 
@@ -31,11 +32,19 @@ public class LakeSoulSplit implements SourceSplit {
     private long skipRecord = 0;
 
     private final List<Path> files;
+    private int bucketId = -1;
 
     public LakeSoulSplit(String id, List<Path> files, long skipRecord) {
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
+    }
+
+    public LakeSoulSplit(String id, List<Path> files, long skipRecord, int bucketId) {
+        this.id = id;
+        this.files = files;
+        this.skipRecord = skipRecord;
+        this.bucketId = bucketId;
     }
 
     @Override
@@ -60,5 +69,9 @@ public class LakeSoulSplit implements SourceSplit {
 
     public long getSkipRecord() {
         return skipRecord;
+    }
+
+    public int getBucketId() {
+        return this.bucketId;
     }
 }
