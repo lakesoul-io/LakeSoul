@@ -82,7 +82,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         if (this.isStreaming) {
             return new LakeSoulDynamicSplitEnumerator(
                     enumContext,
-                    new LakeSoulSimpleSplitAssigner(),
+                    new LakeSoulDynSplitAssigner(),
                     Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "5000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
@@ -149,7 +149,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> restoreEnumerator(
             SplitEnumeratorContext<LakeSoulSplit> enumContext, LakeSoulPendingSplits checkpoint) throws Exception {
-        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(checkpoint.getSplits()), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc());
+        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulDynSplitAssigner(checkpoint.getSplits()), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc());
     }
 
     @Override

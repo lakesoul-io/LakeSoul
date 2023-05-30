@@ -61,7 +61,7 @@ public class LakeSoulTestUtils {
 
     public static TableEnvironment createTableEnvInBatchMode(SqlDialect dialect) {
         TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
-        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 1);
+        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
         tableEnv.getConfig().setSqlDialect(dialect);
         return tableEnv;
     }
@@ -73,9 +73,9 @@ public class LakeSoulTestUtils {
     public static StreamExecutionEnvironment createStreamExecutionEnvironment() {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(config);
-        env.setParallelism(1);
-        env.enableCheckpointing(100);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
+        env.setParallelism(2);
+        env.enableCheckpointing(1000);
         return env;
     }
 
@@ -83,7 +83,7 @@ public class LakeSoulTestUtils {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
         tableEnv.getConfig()
                 .getConfiguration()
-                .setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
+                .setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 2);
         tableEnv.getConfig().setSqlDialect(dialect);
         return tableEnv;
     }

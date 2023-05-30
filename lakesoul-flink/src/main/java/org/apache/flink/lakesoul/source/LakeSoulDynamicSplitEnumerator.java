@@ -41,7 +41,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     private final SplitEnumeratorContext<LakeSoulSplit> context;
 
-    private final LakeSoulSimpleSplitAssigner splitAssigner;
+    private final LakeSoulDynSplitAssigner splitAssigner;
     private final long discoveryInterval;
     String tid;
     private long startTime;
@@ -49,9 +49,8 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     private String parDesc;
     private ConcurrentHashSet<Integer> taskIdsAwaitingSplit;
 
-    private ConcurrentHashMap<Integer, ArrayList<LakeSoulSplit>> splits;
 
-    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulSimpleSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
+    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulDynSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
@@ -59,7 +58,6 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         this.startTime = startTime;
         this.parDesc = parDesc;
         this.taskIdsAwaitingSplit = new ConcurrentHashSet<>();
-        this.splits = new ConcurrentHashMap<>(100);
     }
 
     @Override
@@ -77,27 +75,13 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             // reader failed between sending the request and now. skip this request.
             return;
         }
-        ArrayList<LakeSoulSplit> al = this.splits.get(subtaskId);
-        if (al != null && al.size() > 0) {
-            context.assignSplit(al.remove(0), subtaskId);
+        int tasksSize = context.registeredReaders().size();
+        Optional<LakeSoulSplit> al = this.splitAssigner.getNext(subtaskId, tasksSize);
+        if (al.isPresent()) {
+            context.assignSplit(al.get(), subtaskId);
             taskIdsAwaitingSplit.remove(subtaskId);
         } else {
             taskIdsAwaitingSplit.add(subtaskId);
-        }
-
-    }
-
-    private int getSubtaskIdForSplit(LakeSoulSplit lss) {
-        Set<Integer> allSubTaskIds = context.registeredReaders().keySet();
-        int bucketid = lss.getBucketId();
-        int taskIdsSize = allSubTaskIds.size();
-        if (taskIdsSize == 1) {
-            return allSubTaskIds.stream().findFirst().get();
-        }
-        if (bucketid < taskIdsSize) {
-            return bucketid;
-        } else {
-            return bucketid % taskIdsSize;
         }
 
     }
@@ -132,10 +116,12 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             LOG.error("Failed to enumerate files", error);
             return;
         }
+        int tasksSize = context.registeredReaders().size();
+        this.splitAssigner.addSplits(splits);
         for (int item : taskIdsAwaitingSplit) {
-            ArrayList<LakeSoulSplit> al = this.splits.get(item);
-            if (al != null && al.size() > 0) {
-                context.assignSplit(al.remove(0), item);
+            Optional<LakeSoulSplit> al = this.splitAssigner.getNext(item, tasksSize);
+            if (al.isPresent()) {
+                context.assignSplit(al.get(), item);
                 taskIdsAwaitingSplit.remove(item);
             }
         }
@@ -145,18 +131,15 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         this.nextStartTime = MetaVersion.getLastedTimestamp(tid, parDesc) + 1;
         DataFileInfo[] dfinfos = DataOperation.getIncrementalPartitionDataInfo(tid, parDesc, this.startTime, this.nextStartTime, "incremental");
         int capacity = 100;
+        ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                Integer bucketNum = split.getKey();
-                if (!this.splits.containsKey(bucketNum)) {
-                    this.splits.put(bucketNum, new ArrayList<>());
-                }
-                this.splits.get(bucketNum).add(new LakeSoulSplit(i + "", split.getValue(), 0, split.getKey()));
+                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0, split.getKey()));
             }
         }
         this.startTime = this.nextStartTime;
-        return null;
+        return splits;
     }
 }
