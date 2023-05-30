@@ -1,4 +1,15 @@
-on: push
+on:
+  push:
+    paths:
+      - "native-io/**"
+  pull_request:
+    paths:
+      - "native-io/**"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
 name: Clippy check
 
 # Make sure CI fails on all warnings, including Clippy lints

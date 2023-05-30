@@ -3,7 +3,21 @@
 
 name: CI with Maven Test
 
-on: push
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
 
 jobs:
   build:
