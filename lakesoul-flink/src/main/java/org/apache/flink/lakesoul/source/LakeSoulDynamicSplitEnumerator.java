@@ -48,15 +48,17 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     private long nextStartTime;
     private String parDesc;
     private ConcurrentHashSet<Integer> taskIdsAwaitingSplit;
+    private int hashBucketNum = -1;
 
 
-    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulDynSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
+    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulDynSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc,String hashBucketNum) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
         this.tid = tid;
         this.startTime = startTime;
         this.parDesc = parDesc;
+        this.hashBucketNum = Integer.valueOf(hashBucketNum);
         this.taskIdsAwaitingSplit = new ConcurrentHashSet<>();
     }
 
@@ -103,7 +105,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
         LOG.info("LakeSoulDynamicSplitEnumerator snapshotState");
-        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc, this.discoveryInterval);
+        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc, this.discoveryInterval, this.hashBucketNum );
     }
 
     @Override

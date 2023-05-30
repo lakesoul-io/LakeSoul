@@ -4,8 +4,10 @@ import java.util.*;
 
 public class LakeSoulDynSplitAssigner {
     private final HashMap<Integer, ArrayList<LakeSoulSplit>> splits;
+    private int hashBucketNum = -1;
 
-    public LakeSoulDynSplitAssigner(Collection<LakeSoulSplit> splits) {
+    public LakeSoulDynSplitAssigner(Collection<LakeSoulSplit> splits, String hashBucketNum) {
+        this.hashBucketNum = Integer.valueOf(hashBucketNum);
         this.splits = new HashMap<>(100);
         addSplitsFromCollection(splits);
     }
@@ -22,22 +24,17 @@ public class LakeSoulDynSplitAssigner {
         }
     }
 
-    public LakeSoulDynSplitAssigner() {
+    public LakeSoulDynSplitAssigner(String hashBucketNum) {
+        this.hashBucketNum = Integer.valueOf(hashBucketNum);
         this.splits = new HashMap<>(100);
     }
 
-    private boolean noBucketNums() {
-        if (this.splits.size() == 1 && this.splits.keySet().contains("-1")) {
-            return true;
-        } else {
-            return false;
-        }
-    }
+
 
     public Optional<LakeSoulSplit> getNext(int taskId, int tasksNum) {
         final int size = splits.size();
         if (size > 0) {
-            if (noBucketNums()) {
+            if (-1 == this.hashBucketNum) {
                 Collection<ArrayList<LakeSoulSplit>> all = this.splits.values();
                 for (ArrayList<LakeSoulSplit> al : all) {
                     if (al.size() > 0) {
@@ -46,11 +43,11 @@ public class LakeSoulDynSplitAssigner {
                 }
                 return Optional.empty();
             } else {
-                if (this.splits.size() <= tasksNum) {
+                if (this.hashBucketNum <= tasksNum) {
                     ArrayList<LakeSoulSplit> taskSplits = this.splits.get(taskId);
                     return (taskSplits == null || taskSplits.size() == 0) ? Optional.empty() : Optional.of(taskSplits.remove(0));
                 } else {
-                    for (int i = taskId ; i < this.splits.size(); i += tasksNum) {
+                    for (int i = taskId; i < this.hashBucketNum; i += tasksNum) {
                         ArrayList<LakeSoulSplit> splits = this.splits.get(i);
                         if (splits != null && splits.size() > 0) {
                             return Optional.of(splits.remove(0));
