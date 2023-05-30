@@ -83,7 +83,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             return new LakeSoulDynamicSplitEnumerator(
                     enumContext,
                     new LakeSoulSimpleSplitAssigner(),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "2000")),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "5000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
                     optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "")

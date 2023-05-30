@@ -20,7 +20,7 @@ package org.apache.flink.lakesoul.source;
 import java.util.*;
 
 public class LakeSoulSimpleSplitAssigner {
-    private final LinkedList<LakeSoulSplit> splits;
+    private final List<LakeSoulSplit> splits;
 
     public LakeSoulSimpleSplitAssigner(Collection<LakeSoulSplit> splits) {
         this.splits = new LinkedList<>(splits);
@@ -32,9 +32,6 @@ public class LakeSoulSimpleSplitAssigner {
     public Optional<LakeSoulSplit> getNext() {
         final int size = splits.size();
         return size == 0 ? Optional.empty() : Optional.of(splits.remove(0));
-    }
-    public boolean hasNext(){
-        return splits.size() != 0;
     }
     public void addSplits(Collection<LakeSoulSplit> newSplits) {
         splits.addAll(newSplits);

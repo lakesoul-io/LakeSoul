@@ -50,6 +50,7 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                 path.write(out);
             }
             out.writeLong(split.getSkipRecord());
+            out.writeInt(split.getBucketId());
         }
         out.writeUTF(splits.getTableid());
         out.writeUTF(splits.getParDesc());
@@ -75,7 +76,8 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                     paths[i].read(in);
                 }
                 final long skipRecord = in.readLong();
-                lsplits[j] = new LakeSoulSplit(id, Arrays.asList(paths),skipRecord);
+                final int bucketID = in.readInt();
+                lsplits[j] = new LakeSoulSplit(id, Arrays.asList(paths), skipRecord, bucketID);
             }
             final String tableid = in.readUTF();
             final String parDesc = in.readUTF();
