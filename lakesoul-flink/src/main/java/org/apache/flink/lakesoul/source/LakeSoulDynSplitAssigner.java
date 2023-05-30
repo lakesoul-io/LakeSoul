@@ -46,14 +46,14 @@ public class LakeSoulDynSplitAssigner {
                 }
                 return Optional.empty();
             } else {
-                ArrayList<LakeSoulSplit> taskSplits = this.splits.get(taskId);
                 if (this.splits.size() <= tasksNum) {
+                    ArrayList<LakeSoulSplit> taskSplits = this.splits.get(taskId);
                     return (taskSplits == null || taskSplits.size() == 0) ? Optional.empty() : Optional.of(taskSplits.remove(0));
                 } else {
-                    for (int i = taskId; i < this.splits.size(); i += tasksNum) {
-                        ArrayList<LakeSoulSplit> splits = this.splits.get(taskId);
-                        if (splits != null && taskSplits.size() > 0) {
-                            return Optional.of(taskSplits.remove(0));
+                    for (int i = taskId ; i < this.splits.size(); i += tasksNum) {
+                        ArrayList<LakeSoulSplit> splits = this.splits.get(i);
+                        if (splits != null && splits.size() > 0) {
+                            return Optional.of(splits.remove(0));
                         }
                     }
                     return Optional.empty();
