@@ -29,7 +29,11 @@ jobs:
           cache: maven
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          profile: minimal
+          toolchain: nightly-2023-05-20
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
@@ -53,7 +57,11 @@ jobs:
           cache: maven
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          profile: minimal
+          toolchain: nightly-2023-05-20
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
           toolchain: nightly
@@ -78,7 +86,11 @@ jobs:
           cache: maven
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          profile: minimal
+          toolchain: nightly-2023-05-20
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
           toolchain: nightly

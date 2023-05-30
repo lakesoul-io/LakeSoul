@@ -45,19 +45,11 @@ jobs:
           git lfs checkout
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
-      - name: Set up cargo cache
-        uses: actions/cache@v3
-        continue-on-error: false
+          profile: minimal
+          toolchain: nightly-2023-05-20
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            native-io/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          workspaces: "./native-io -> target"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1

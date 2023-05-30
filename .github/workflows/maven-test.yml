@@ -58,19 +58,11 @@ jobs:
       run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
     - uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly
-    - name: Set up cargo cache
-      uses: actions/cache@v3
-      continue-on-error: true
+        profile: minimal
+        toolchain: nightly-2023-05-20
+    - uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          native-io/target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-
+        workspaces: "./native-io -> target"
     - name: Build with Maven
       run: |
         MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -am
