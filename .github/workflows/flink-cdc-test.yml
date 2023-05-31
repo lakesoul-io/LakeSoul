@@ -47,6 +47,7 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly-2023-05-20
+          default: true
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"

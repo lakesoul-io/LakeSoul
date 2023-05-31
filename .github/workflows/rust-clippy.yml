@@ -26,8 +26,9 @@ jobs:
           profile: minimal
           toolchain: nightly-2023-05-20
           components: clippy
+          default: true
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
       - name: Run Clippy
-        run: cd native-io && cargo +nightly clippy --all-features --package lakesoul-io-c
+        run: cd native-io && cargo clippy --all-features --package lakesoul-io-c

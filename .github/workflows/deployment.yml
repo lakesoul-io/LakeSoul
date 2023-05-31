@@ -21,13 +21,13 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly-2023-05-20
+          default: true
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
-          toolchain: nightly
           command: build
           args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - uses: actions/upload-artifact@master
@@ -49,12 +49,12 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly-2023-05-20
+          default: true
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
-          toolchain: nightly
           command: build
           args: '--manifest-path native-io/Cargo.toml --release --all-features'
       - uses: actions/upload-artifact@master
@@ -78,12 +78,12 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly-2023-05-20
+          default: true
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
       - uses: actions-rs/cargo@v1
         with:
-          toolchain: nightly
           command: build
           args: '--manifest-path native-io/Cargo.toml --release --all-features'
       - uses: actions/upload-artifact@master
