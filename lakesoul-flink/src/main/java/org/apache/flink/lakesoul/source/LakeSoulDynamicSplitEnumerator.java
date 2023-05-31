@@ -27,13 +27,11 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.sparkproject.jetty.util.ConcurrentHashSet;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
 
 import javax.annotation.Nullable;
-import java.io.Console;
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 
 public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> {
@@ -47,7 +45,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     private long startTime;
     private long nextStartTime;
     private String parDesc;
-    private ConcurrentHashSet<Integer> taskIdsAwaitingSplit;
+    private Set<Integer> taskIdsAwaitingSplit;
     private int hashBucketNum = -1;
 
 
@@ -59,7 +57,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         this.startTime = startTime;
         this.parDesc = parDesc;
         this.hashBucketNum = Integer.valueOf(hashBucketNum);
-        this.taskIdsAwaitingSplit = new ConcurrentHashSet<>();
+        this.taskIdsAwaitingSplit = Sets.newConcurrentHashSet();
     }
 
     @Override
@@ -120,7 +118,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         }
         int tasksSize = context.registeredReaders().size();
         this.splitAssigner.addSplits(splits);
-        for (int item : taskIdsAwaitingSplit) {
+        for (Integer item : taskIdsAwaitingSplit) {
             Optional<LakeSoulSplit> al = this.splitAssigner.getNext(item, tasksSize);
             if (al.isPresent()) {
                 context.assignSplit(al.get(), item);
