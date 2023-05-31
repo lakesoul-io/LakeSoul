@@ -27,6 +27,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -38,23 +39,25 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     private final SplitEnumeratorContext<LakeSoulSplit> context;
 
-    private final LakeSoulSimpleSplitAssigner splitAssigner;
+    private final LakeSoulDynSplitAssigner splitAssigner;
     private final long discoveryInterval;
     String tid;
     private long startTime;
     private long nextStartTime;
     private String parDesc;
-
     private Set<Integer> taskIdsAwaitingSplit;
+    private int hashBucketNum = -1;
 
-    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulSimpleSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc) {
+
+    public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context, LakeSoulDynSplitAssigner splitAssigner, long discoveryInterval, long startTime, String tid, String parDesc,String hashBucketNum) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
         this.tid = tid;
         this.startTime = startTime;
         this.parDesc = parDesc;
-        this.taskIdsAwaitingSplit = new HashSet<>();
+        this.hashBucketNum = Integer.valueOf(hashBucketNum);
+        this.taskIdsAwaitingSplit = Sets.newConcurrentHashSet();
     }
 
     @Override
@@ -72,15 +75,15 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             // reader failed between sending the request and now. skip this request.
             return;
         }
-
-        final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
-        if (nextSplit.isPresent()) {
-            final LakeSoulSplit split = nextSplit.get();
-            context.assignSplit(split, subtaskId);
-            LOG.info("Assigned split to subtask {} : {}", subtaskId, split);
+        int tasksSize = context.registeredReaders().size();
+        Optional<LakeSoulSplit> al = this.splitAssigner.getNext(subtaskId, tasksSize);
+        if (al.isPresent()) {
+            context.assignSplit(al.get(), subtaskId);
+            taskIdsAwaitingSplit.remove(subtaskId);
         } else {
             taskIdsAwaitingSplit.add(subtaskId);
         }
+
     }
 
     @Override
@@ -95,13 +98,12 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public void addReader(int subtaskId) {
-
     }
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
         LOG.info("LakeSoulDynamicSplitEnumerator snapshotState");
-        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc, this.discoveryInterval);
+        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc, this.discoveryInterval, this.hashBucketNum );
     }
 
     @Override
@@ -114,21 +116,15 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             LOG.error("Failed to enumerate files", error);
             return;
         }
-        Set<Integer> allSubTaskIds = context.registeredReaders().keySet();
-        for (Integer subTaskId : allSubTaskIds) {
-            // if the subTask that requested another split has failed in the meantime, remove
-            // it from the list of waiting taskIds
-            if (!taskIdsAwaitingSplit.contains(subTaskId)) {
-                taskIdsAwaitingSplit.add(subTaskId);
-            } else {
-                final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
-                if (nextSplit.isPresent()) {
-                    context.assignSplit(nextSplit.get(), subTaskId);
-                    taskIdsAwaitingSplit.remove(subTaskId);
-                }
+        int tasksSize = context.registeredReaders().size();
+        this.splitAssigner.addSplits(splits);
+        for (Integer item : taskIdsAwaitingSplit) {
+            Optional<LakeSoulSplit> al = this.splitAssigner.getNext(item, tasksSize);
+            if (al.isPresent()) {
+                context.assignSplit(al.get(), item);
+                taskIdsAwaitingSplit.remove(item);
             }
         }
-        splitAssigner.addSplits(splits);
     }
 
     public Collection<LakeSoulSplit> enumerateSplits(String tid, String parDesc) {
@@ -140,7 +136,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
+                splits.add(new LakeSoulSplit(i + "", split.getValue(), 0, split.getKey()));
             }
         }
         this.startTime = this.nextStartTime;

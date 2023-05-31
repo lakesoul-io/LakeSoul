@@ -35,12 +35,14 @@ public class LakeSoulPendingSplits {
     private final String tableid;
     private final String parDesc;
     private final long discoverInterval;
-    public LakeSoulPendingSplits(List<LakeSoulSplit> splits, long lastReadTimestamp,String tableid,String parDesc,long discoverInterval) {
+    private final int hashBucketNum;
+    public LakeSoulPendingSplits(List<LakeSoulSplit> splits, long lastReadTimestamp, String tableid, String parDesc, long discoverInterval, int hashBucketNum) {
         this.splits = splits;
         this.lastReadTimestamp = lastReadTimestamp;
         this.tableid = tableid;
         this.parDesc = parDesc;
         this.discoverInterval = discoverInterval;
+        this.hashBucketNum = hashBucketNum;
     }
 
     public List<LakeSoulSplit> getSplits() {
@@ -61,5 +63,9 @@ public class LakeSoulPendingSplits {
 
     public long getDiscoverInterval() {
         return discoverInterval;
+    }
+
+    public int getHashBucketNum() {
+        return hashBucketNum;
     }
 }
