@@ -48,15 +48,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
-          key: "cross-build"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
-          docker pull -q dockcross/manylinux2014-x64:latest
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - name: Build with Maven
         run: |
-          cargo install --force cross --git https://github.com/cross-rs/cross
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -Prelease-linux-x86-64 -DskipTests
+          mkdir -p native-io/target/release
+          cp native-io/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so native-io/target/release
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
