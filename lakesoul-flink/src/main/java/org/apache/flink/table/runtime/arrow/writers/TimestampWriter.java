@@ -18,18 +18,13 @@
 
 package org.apache.flink.table.runtime.arrow.writers;
 
+import org.apache.arrow.vector.*;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.arrow.vector.TimeStampMicroTZVector;
-import org.apache.arrow.vector.TimeStampMilliTZVector;
-import org.apache.arrow.vector.TimeStampNanoTZVector;
-import org.apache.arrow.vector.TimeStampSecTZVector;
-import org.apache.arrow.vector.TimeStampVector;
-import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 
 /** {@link ArrowFieldWriter} for Timestamp. */
@@ -52,7 +47,7 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
         super(valueVector);
         Preconditions.checkState(
                 valueVector instanceof TimeStampVector
-                        && ((ArrowType.Timestamp) valueVector.getField().getType()).getTimezone().equals("UTC"));
+                        );
         this.precision = precision;
     }
 
@@ -71,8 +66,14 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
             if (valueVector instanceof TimeStampSecTZVector) {
                 ((TimeStampSecTZVector) valueVector)
                         .setSafe(getCount(), timestamp.getMillisecond() / 1000);
+            } else if (valueVector instanceof TimeStampSecVector) {
+                ((TimeStampSecVector) valueVector)
+                        .setSafe(getCount(), timestamp.getMillisecond() / 1000);
             } else if (valueVector instanceof TimeStampMilliTZVector) {
                 ((TimeStampMilliTZVector) valueVector)
+                        .setSafe(getCount(), timestamp.getMillisecond());
+            } else if (valueVector instanceof TimeStampMilliVector) {
+                ((TimeStampMilliVector) valueVector)
                         .setSafe(getCount(), timestamp.getMillisecond());
             } else if (valueVector instanceof TimeStampMicroTZVector) {
                 ((TimeStampMicroTZVector) valueVector)
@@ -80,8 +81,20 @@ public abstract class TimestampWriter<T> extends ArrowFieldWriter<T> {
                                 getCount(),
                                 timestamp.getMillisecond() * 1000
                                         + timestamp.getNanoOfMillisecond() / 1000);
-            } else {
+            } else if (valueVector instanceof TimeStampMicroVector) {
+                ((TimeStampMicroVector) valueVector)
+                        .setSafe(
+                                getCount(),
+                                timestamp.getMillisecond() * 1000
+                                        + timestamp.getNanoOfMillisecond() / 1000);
+            } else if (valueVector instanceof TimeStampNanoTZVector){
                 ((TimeStampNanoTZVector) valueVector)
+                        .setSafe(
+                                getCount(),
+                                timestamp.getMillisecond() * 1_000_000
+                                        + timestamp.getNanoOfMillisecond());
+            } else {
+                ((TimeStampNanoVector) valueVector)
                         .setSafe(
                                 getCount(),
                                 timestamp.getMillisecond() * 1_000_000
