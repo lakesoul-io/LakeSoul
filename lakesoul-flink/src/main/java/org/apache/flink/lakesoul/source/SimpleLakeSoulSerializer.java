@@ -45,10 +45,11 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
         out.writeUTF(split.splitId());
         List<Path> paths = split.getFiles();
         out.writeInt(paths.size());
-        for(Path path : paths){
+        for (Path path : paths) {
             path.write(out);
         }
         out.writeLong(split.getSkipRecord());
+        out.writeInt(split.getBucketId());
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -68,7 +69,8 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
                 paths[i].read(in);
             }
             final long skipRecord = in.readLong();
-            return new LakeSoulSplit(id, Arrays.asList(paths),skipRecord);
+            final int bucketid = in.readInt();
+            return new LakeSoulSplit(id, Arrays.asList(paths), skipRecord, bucketid);
         }
         throw new IOException("Unknown version: " + version);
     }

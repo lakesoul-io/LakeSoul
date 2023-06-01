@@ -61,7 +61,7 @@ public class LakeSoulTestUtils {
 
     public static TableEnvironment createTableEnvInBatchMode(SqlDialect dialect) {
         TableEnvironment tableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
-        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 1);
+        tableEnv.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
         tableEnv.getConfig().setSqlDialect(dialect);
         return tableEnv;
     }
@@ -70,20 +70,31 @@ public class LakeSoulTestUtils {
         return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT);
     }
 
-    public static StreamExecutionEnvironment createStreamExecutionEnvironment() {
-        org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(config);
-        env.setParallelism(1);
-        env.enableCheckpointing(100);
-        return env;
+    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, int parallelism) {
+        return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT, parallelism);
     }
 
+    public static StreamExecutionEnvironment createStreamExecutionEnvironment() {
+        return createStreamExecutionEnvironment(2);
+    }
+
+    public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism) {
+        org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
+        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
+        env.setParallelism(parallelism);
+        env.enableCheckpointing(1000);
+        return env;
+    }
     public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, SqlDialect dialect) {
+        return createTableEnvInStreamingMode(env, dialect, 2);
+    }
+
+    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, SqlDialect dialect, int parallelism) {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
         tableEnv.getConfig()
                 .getConfiguration()
-                .setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), 1);
+                .setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM.key(), parallelism);
         tableEnv.getConfig().setSqlDialect(dialect);
         return tableEnv;
     }

@@ -85,11 +85,12 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         if (this.isStreaming) {
             return new LakeSoulDynamicSplitEnumerator(
                     enumContext,
-                    new LakeSoulSimpleSplitAssigner(),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "2000")),
+                    new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "5000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
-                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "")
+                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), ""),
+                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")
             );
         } else {
             return staticSplitEnumerator(enumContext, tif, readStartTimestampWithTimeZone, readType);
@@ -152,7 +153,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> restoreEnumerator(
             SplitEnumeratorContext<LakeSoulSplit> enumContext, LakeSoulPendingSplits checkpoint) throws Exception {
-        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulSimpleSplitAssigner(checkpoint.getSplits()), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc());
+        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulDynSplitAssigner(checkpoint.getSplits(), checkpoint.getHashBucketNum() + ""), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc(), checkpoint.getHashBucketNum() + "");
     }
 
     @Override

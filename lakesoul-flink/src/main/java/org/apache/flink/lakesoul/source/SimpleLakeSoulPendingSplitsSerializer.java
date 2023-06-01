@@ -50,10 +50,12 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                 path.write(out);
             }
             out.writeLong(split.getSkipRecord());
+            out.writeInt(split.getBucketId());
         }
         out.writeUTF(splits.getTableid());
         out.writeUTF(splits.getParDesc());
         out.writeLong(splits.getDiscoverInterval());
+        out.writeInt(splits.getHashBucketNum());
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -75,12 +77,14 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                     paths[i].read(in);
                 }
                 final long skipRecord = in.readLong();
-                lsplits[j] = new LakeSoulSplit(id, Arrays.asList(paths),skipRecord);
+                final int bucketID = in.readInt();
+                lsplits[j] = new LakeSoulSplit(id, Arrays.asList(paths), skipRecord, bucketID);
             }
             final String tableid = in.readUTF();
             final String parDesc = in.readUTF();
             final long discoverInterval = in.readLong();
-            return new LakeSoulPendingSplits(Arrays.asList(lsplits), startReadTime, tableid, parDesc, discoverInterval);
+            final int hashBucketNum = in.readInt();
+            return new LakeSoulPendingSplits(Arrays.asList(lsplits), startReadTime, tableid, parDesc, discoverInterval, hashBucketNum);
         }
         throw new IOException("Unknown version: " + version);
     }
