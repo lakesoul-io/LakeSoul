@@ -129,7 +129,7 @@ public class DBUtil {
         } catch (SQLException e) {
             e.printStackTrace();
         } finally {
-            DBConnector.closeConn();
+            DBConnector.closeAllConnections();
         }
     }
 

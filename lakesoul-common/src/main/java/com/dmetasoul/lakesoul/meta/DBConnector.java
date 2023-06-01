@@ -34,7 +34,6 @@ public class DBConnector {
     private void createDataSource() {
         try {
             DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
-            System.out.println("Initalize LakeSoul Meta Connection with " + dataBaseProperty);
             config.setDriverClassName( dataBaseProperty.getDriver());
             config.setJdbcUrl( dataBaseProperty.getUrl());
             config.setUsername( dataBaseProperty.getUsername());
@@ -59,7 +58,7 @@ public class DBConnector {
         return instance.ds.getConnection();
     }
 
-    public static synchronized void closeConn()  {
+    public static synchronized void closeAllConnections()  {
         if (instance != null) {
             instance.ds.close();
         }

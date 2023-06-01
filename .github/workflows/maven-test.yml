@@ -58,6 +58,7 @@ jobs:
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
       run: |
+        PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE lakesoul_test_1"
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test_1
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE lakesoul_test_2"
