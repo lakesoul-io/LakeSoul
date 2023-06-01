@@ -19,6 +19,8 @@ package com.dmetasoul.lakesoul.meta
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{DataFrame, QueryTest}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 trait MetaCommitSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
@@ -54,6 +56,7 @@ trait MetaCommitSuiteBase extends QueryTest
 
 }
 
+@RunWith(classOf[JUnitRunner])
 class MetaCommitSuite extends MetaCommitSuiteBase {
 
 }

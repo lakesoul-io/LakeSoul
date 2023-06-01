@@ -21,9 +21,12 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.{Row, functions}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import java.util.Locale
 
+@RunWith(classOf[JUnitRunner])
 class UpdateScalaSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._

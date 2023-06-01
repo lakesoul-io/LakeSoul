@@ -4,10 +4,13 @@ import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession, TestSparkSession}
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
+import org.scalatestplus.junit.JUnitRunner
 
 
 
+@RunWith(classOf[JUnitRunner])
 class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase
   with SharedSparkSession
   with LakeSoulSQLCommandTest

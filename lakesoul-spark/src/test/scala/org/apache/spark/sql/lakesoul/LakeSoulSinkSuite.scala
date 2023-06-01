@@ -25,12 +25,15 @@ import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.streaming._
 import org.apache.spark.sql.types._
+import org.junit.runner.RunWith
 import org.scalatest.time.SpanSugar._
+import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
 import java.util.Locale
 
-class LakeSoulSinkSuiteSoul extends StreamTest with LakeSoulTestUtils {
+@RunWith(classOf[JUnitRunner])
+class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
   override val streamingTimeout = 60.seconds
 
   import testImplicits._

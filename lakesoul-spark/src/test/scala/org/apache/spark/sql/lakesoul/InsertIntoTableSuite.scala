@@ -27,10 +27,13 @@ import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUti
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
+import org.scalatestplus.junit.JUnitRunner
 
 import scala.collection.JavaConverters._
 
+@RunWith(classOf[JUnitRunner])
 class InsertIntoSQLSuite extends InsertIntoTests(false, true)
   with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
@@ -43,6 +46,7 @@ class InsertIntoSQLSuite extends InsertIntoTests(false, true)
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
   with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
@@ -81,6 +85,7 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
   with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
@@ -92,6 +97,7 @@ class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
   with LakeSoulSQLCommandTest {
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {

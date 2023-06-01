@@ -38,11 +38,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
-          sudo apt-get install -y git-lfs
-      - name: Git LFS checkout
-        run: |
-          git lfs fetch
-          git lfs checkout
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -74,7 +69,7 @@ jobs:
           cd ./docker/lakesoul-docker-compose-env
           docker compose pull -q
           docker compose up -d
-          sleep 1m
+          sleep 30s
       - name: Start flink task
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC
@@ -88,7 +83,7 @@ jobs:
           cd ./script/benchmark
           python 1_create_table.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -99,7 +94,7 @@ jobs:
           python3 3_add_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -108,7 +103,7 @@ jobs:
         run: |
           cd ./script/benchmark
           python3 4_update_data.py
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -119,7 +114,7 @@ jobs:
           python3 6_drop_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark

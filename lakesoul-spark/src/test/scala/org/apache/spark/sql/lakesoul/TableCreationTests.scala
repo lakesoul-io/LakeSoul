@@ -33,9 +33,11 @@ import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
+import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
 import java.util.Locale
@@ -1249,6 +1251,7 @@ trait TableCreationTests
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class TableCreationSuite
   extends TableCreationTests
     with LakeSoulSQLCommandTest {

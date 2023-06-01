@@ -33,7 +33,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test
+          POSTGRES_DB: lakesoul_test_1
         # Set health checks to wait until postgres has started
         options: >-
           --health-cmd pg_isready
@@ -55,7 +55,10 @@ jobs:
     - name: Install psql
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
-      run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
+      run: |
+        PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test_1
+        PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE lakesoul_test_2"
+        PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test_2
     - uses: actions-rs/toolchain@v1
       with:
         profile: minimal
@@ -64,14 +67,7 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: "./native-io -> target"
+        key: "ubuntu-latest"
     - name: Build with Maven
       run: |
-        MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -am
-    - name: Upload Test Report
-      continue-on-error: true
-      uses: actions/upload-artifact@v3
-      with:
-        name: maven-test-report-artifact
-        path: lakesoul-spark/target/html/scalatest/
-        retention-days: 5
-        if-no-files-found: error
+        mvn -q -B clean test --file pom.xml

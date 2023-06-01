@@ -29,9 +29,12 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import scala.collection.JavaConverters._
 
+@RunWith(classOf[JUnitRunner])
 class DDLSuite extends DDLTestBase with SharedSparkSession
   with LakeSoulSQLCommandTest {
 

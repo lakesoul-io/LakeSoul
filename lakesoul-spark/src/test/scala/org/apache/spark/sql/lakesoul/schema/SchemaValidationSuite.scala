@@ -24,6 +24,8 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import java.util.concurrent.CountDownLatch
 
@@ -33,6 +35,7 @@ import java.util.concurrent.CountDownLatch
   * command completes analysis but before the command starts the transaction. We want to make sure
   * that we do not corrupt tables.
   */
+@RunWith(classOf[JUnitRunner])
 class SchemaValidationSuite extends QueryTest with SharedSparkSession with LakeSoulSQLCommandTest {
 
   class BlockingRule(

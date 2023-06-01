@@ -25,7 +25,9 @@ import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.{LongType, StringType, StructType}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
+import org.scalatestplus.junit.JUnitRunner
 
 import scala.collection.JavaConverters._
 
@@ -398,6 +400,7 @@ trait DataFrameWriterV2Tests
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class DataFrameWriterV2Suite
   extends DataFrameWriterV2Tests
     with LakeSoulSQLCommandTest {

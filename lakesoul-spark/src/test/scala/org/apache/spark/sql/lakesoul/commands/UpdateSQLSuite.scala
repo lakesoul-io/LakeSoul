@@ -22,7 +22,10 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
 import org.apache.spark.sql.test.TestSparkSession
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class UpdateSQLSuite extends UpdateSuiteBase with LakeSoulSQLCommandTest {
 
   import testImplicits._

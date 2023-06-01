@@ -54,13 +54,17 @@ public class DBUtil {
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
-    private static String getEnv(String key, String defaultValue) {
-        String value = System.getenv(key);
-        if (value == null) {
-            return defaultValue;
-        } else {
+    // Retrieve config value in order: ENV, System Prop, Default Value
+    private static String getConfigValue(String envKey, String propKey, String defaultValue) {
+        String value = System.getenv(envKey);
+        if (value != null) {
             return value;
         }
+        value = System.getProperty(propKey);
+        if (value != null) {
+            return value;
+        }
+        return defaultValue;
     }
 
     /**
@@ -90,10 +94,10 @@ public class DBUtil {
                 e.printStackTrace();
             }
         } else {
-            properties.setProperty(driverNameKey, getEnv(driverNameEnv, driverNameDefault));
-            properties.setProperty(urlKey, getEnv(urlEnv, urlDefault));
-            properties.setProperty(usernameKey, getEnv(usernameEnv, usernameDefault));
-            properties.setProperty(passwordKey, getEnv(passwordEnv, passwordDefault));
+            properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
+            properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
+            properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
+            properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));

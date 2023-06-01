@@ -40,7 +40,9 @@ import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.apache.spark.util.AccumulatorContext
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfter
+import org.scalatestplus.junit.JUnitRunner
 
 import java.math.{BigDecimal => JBigDecimal}
 import java.nio.charset.StandardCharsets
@@ -49,6 +51,7 @@ import java.time.{LocalDate, LocalDateTime, ZoneId}
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
+@RunWith(classOf[JUnitRunner])
 class ParquetV2FilterSuite
   extends ParquetFilterSuite
 {
@@ -109,6 +112,7 @@ class ParquetV2FilterSuite
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class ParquetNativeFilterSuite
   extends ParquetFilterSuite
     with LakeSoulTestUtils

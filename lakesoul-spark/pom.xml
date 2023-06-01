@@ -24,14 +24,6 @@
         <local.scope>provided</local.scope>
     </properties>
 
-    <repositories>
-        <repository>
-            <id>confluent</id>
-            <name>Confluent</name>
-            <url>https://packages.confluent.io/maven/</url>
-        </repository>
-    </repositories>
-
     <dependencies>
         <!-- lakesoul deps -->
         <dependency>
@@ -119,13 +111,6 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-streaming_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-aws</artifactId>
-            <version>2.10.1</version>
             <scope>${local.scope}</scope>
         </dependency>
 
@@ -257,6 +242,13 @@
             <scope>provided</scope>
         </dependency>
 
+        <dependency>
+            <groupId>org.scalatestplus</groupId>
+            <artifactId>junit-4-13_2.12</artifactId>
+            <version>3.2.16.0</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -264,11 +256,21 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.0.0-M7</version>
+                <version>3.1.0</version>
                 <configuration>
-                    <skipTests>true</skipTests>
-                    <forkCount>0</forkCount>
+                    <parallel>suites</parallel>
+                    <threadCountSuites>2</threadCountSuites>
+                    <perCoreThreadCount>false</perCoreThreadCount>
+                    <forkCount>2</forkCount>
                     <reuseForks>false</reuseForks>
+                    <argLine>-Xmx3000m</argLine>
+                    <systemPropertyVariables>
+                        <lakesoul.pg.url>jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified</lakesoul.pg.url>
+                    </systemPropertyVariables>
+                    <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
+                    <includes>
+                        <include>**</include>
+                    </includes>
                 </configuration>
             </plugin>
             <plugin>
@@ -306,26 +308,6 @@
                         <phase>process-test-resources</phase>
                         <goals>
                             <goal>testCompile</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.scalatest</groupId>
-                <artifactId>scalatest-maven-plugin</artifactId>
-                <version>2.1.0</version>
-                <configuration>
-                    <testFailureIgnore>false</testFailureIgnore>
-                    <runpath>target/scala-2.12/classes,target/scala-2.12/test-classes</runpath>
-                    <htmlreporters>${project.build.directory}/html/scalatest</htmlreporters>
-                    <parallel>false</parallel>
-                    <forkMode>once</forkMode>
-                </configuration>
-                <executions>
-                    <execution>
-                        <id>test</id>
-                        <goals>
-                            <goal>test</goal>
                         </goals>
                     </execution>
                 </executions>

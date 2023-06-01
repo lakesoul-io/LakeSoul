@@ -24,10 +24,13 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestSparkSession, LakeSoulTestUtils}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import java.sql.Timestamp
 
 
+@RunWith(classOf[JUnitRunner])
 class UpsertSuiteBase extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils {
