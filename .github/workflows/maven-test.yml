@@ -9,6 +9,8 @@ on:
       - "javadoc/**"
       - "website/**"
       - "**.md"
+    branches:
+      - 'main'
   pull_request:
     paths-ignore:
       - "javadoc/**"
@@ -33,7 +35,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
-          POSTGRES_DB: lakesoul_test_1
+          POSTGRES_DB: lakesoul_test
         # Set health checks to wait until postgres has started
         options: >-
           --health-cmd pg_isready
@@ -56,6 +58,7 @@ jobs:
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
       run: |
+        PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE lakesoul_test_1"
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test_1
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "CREATE DATABASE lakesoul_test_2"
         PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test_2

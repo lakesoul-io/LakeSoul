@@ -6,6 +6,8 @@ on:
       - "javadoc/**"
       - "website/**"
       - "**.md"
+    branches:
+      - 'main'
   pull_request:
     paths-ignore:
       - "javadoc/**"

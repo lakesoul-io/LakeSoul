@@ -2,6 +2,8 @@ on:
   push:
     paths:
       - "native-io/**"
+    branches:
+      - 'main'
   pull_request:
     paths:
       - "native-io/**"
