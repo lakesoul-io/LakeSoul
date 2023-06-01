@@ -48,6 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
+          key: "cross-build"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
