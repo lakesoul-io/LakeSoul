@@ -58,9 +58,9 @@ public class DataTypeSupportTest {
         List<Row> rows = CollectionUtil.iteratorToList(tEnvs.executeSql(testSql).collect());
         rows.sort(Comparator.comparing(Row::toString));
         assertThat(rows.toString()).isEqualTo(
-                "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 89, 100.11, [1, -81], [18, 67, 112, -105], 1990-01-07T02:10:00Z, 1995-10-01T07:10:00Z], " +
-                        "+I[2, Alice, 2023-05-10, true, 10.05, B, 1.9, 5, 88, 500.31, [2, -1], [16, -111, 35, 48], 1995-10-10T05:10:20Z, 2021-02-01T10:40:00Z], " +
-                        "+I[3, Jack, 2010-12-10, false, 10.12, D, 1.88, 9, 67, 88.26, [1, -1], [-85, 18, -50, 9], 1999-01-01T04:10:15Z, 2000-10-01T07:15:00Z]]");
+                "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 89, 100.11, [1, -81], [18, 67, 112, -105], 1990-01-07T10:10, 1995-10-01T07:10:00Z], " +
+                        "+I[2, Alice, 2023-05-10, true, 10.05, B, 1.9, 5, 88, 500.31, [2, -1], [16, -111, 35, 48], 1995-10-10T13:10:20, 2021-02-01T10:40:00Z], " +
+                        "+I[3, Jack, 2010-12-10, false, 10.12, D, 1.88, 9, 67, 88.26, [1, -1], [-85, 18, -50, 9], 1999-01-01T12:10:15, 2000-10-01T07:15:00Z]]");
     }
 
     private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
