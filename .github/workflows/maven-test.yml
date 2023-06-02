@@ -3,13 +3,57 @@
 
 name: CI with Maven Test
 
-on: push
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
 
 jobs:
-  build:
-
+  build-linux-x86_64:
     runs-on: ubuntu-latest
-    
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly-2023-05-20
+          default: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./native-io -> target"
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+      - uses: actions/upload-artifact@master
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-io/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so
+
+  spark-test-1:
+    runs-on: ubuntu-latest
+    needs: [build-linux-x86_64]
+
     services:
       # Label used to access the service container
       postgres:
@@ -41,30 +85,102 @@ jobs:
     - name: Install psql
       run: sudo apt-get install -y postgresql-client-14
     - name: Init PG
-      run: PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
-    - uses: actions-rs/toolchain@v1
+      run: |
+        ./script/meta_init_for_local_test.sh -j 2
+    - uses: actions/download-artifact@v3
       with:
-        toolchain: nightly
-    - name: Set up cargo cache
-      uses: actions/cache@v3
-      continue-on-error: true
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          native-io/target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-
+        name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+        path: ./native-io/target/release/
     - name: Build with Maven
       run: |
-        MAVEN_OPTS="-Xmx4000m" mvn -q -B clean test --file pom.xml -am
-    - name: Upload Test Report
-      continue-on-error: true
-      uses: actions/upload-artifact@v3
-      with:
-        name: maven-test-report-artifact
-        path: lakesoul-spark/target/html/scalatest/
-        retention-days: 5
-        if-no-files-found: error
+        mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='UpdateScalaSuite,AlterTableByNameSuite,ReadSuite,UpdateSQLSuite,ParquetNativeFilterSuite,DeleteScalaSuite,DeleteSQLSuite,ParquetV2FilterSuite,ParquetScanSuite,UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
+
+  spark-test-2:
+    runs-on: ubuntu-latest
+    needs: [build-linux-x86_64]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-14
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 2
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-io/target/release/
+      - name: Build with Maven
+        run: |
+          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
+
+  flink-test-1:
+    runs-on: ubuntu-latest
+    needs: [build-linux-x86_64]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-14
+      - name: Init PG
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-io/target/release/
+      - name: Build with Maven
+        run: |
+          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dsurefire.failIfNoSpecifiedTests=false

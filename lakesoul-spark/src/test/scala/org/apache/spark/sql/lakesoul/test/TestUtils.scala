@@ -42,6 +42,7 @@ object TestUtils {
     sparkConf.set("spark.sql.shuffle.partitions", "10")
     sparkConf.set("spark.sql.streaming.schemaInference", "true")
     sparkConf.set("spark.default.parallelism", "8")
+    sparkConf.set("spark.ui.enabled", "false")
 
     SparkSession
       .builder

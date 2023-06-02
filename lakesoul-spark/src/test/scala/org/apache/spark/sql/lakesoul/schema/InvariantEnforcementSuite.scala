@@ -26,9 +26,12 @@ import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import scala.collection.JavaConverters._
 
+@RunWith(classOf[JUnitRunner])
 class InvariantEnforcementSuite extends QueryTest
   with SharedSparkSession with SQLTestUtils with LakeSoulTestUtils {
 

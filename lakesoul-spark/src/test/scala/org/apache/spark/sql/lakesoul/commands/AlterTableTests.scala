@@ -31,8 +31,10 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
 import org.apache.spark.util.Utils
+import org.junit.runner.RunWith
 import org.scalatest.matchers.must.Matchers.contain
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
+import org.scalatestplus.junit.JUnitRunner
 
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 
@@ -1275,6 +1277,7 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class AlterTableByNameSuite
   extends AlterTableByNameTests
     with LakeSoulSQLCommandTest {
@@ -1282,4 +1285,5 @@ class AlterTableByNameSuite
 
 }
 
+@RunWith(classOf[JUnitRunner])
 class AlterTableByPathSuite extends AlterTableByPathTests with LakeSoulSQLCommandTest

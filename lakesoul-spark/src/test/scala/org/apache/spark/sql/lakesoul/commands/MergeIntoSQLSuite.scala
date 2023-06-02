@@ -9,7 +9,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class MergeIntoSQLSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestBeforeAndAfterEach
   with LakeSoulTestUtils with LakeSoulSQLCommandTest {

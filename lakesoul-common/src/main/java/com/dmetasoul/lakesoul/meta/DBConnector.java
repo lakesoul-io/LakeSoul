@@ -26,29 +26,44 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 public class DBConnector {
-    private static final HikariConfig config = new HikariConfig();
-    private static final HikariDataSource ds;
+    private final HikariConfig config = new HikariConfig();
+    private HikariDataSource ds;
 
-    static {
-        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
-        config.setDriverClassName( dataBaseProperty.getDriver());
-        config.setJdbcUrl( dataBaseProperty.getUrl());
-        config.setUsername( dataBaseProperty.getUsername());
-        config.setPassword( dataBaseProperty.getPassword());
-        config.addDataSourceProperty( "cachePrepStmts" , "true" );
-        config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
-        config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
-        ds = new HikariDataSource( config );
-    }
-    private DBConnector() {}
-    public static Connection getConn() throws SQLException {
-        return ds.getConnection();
-    }
-    public static void closeConn()  {
-        if(ds != null) {
-            ds.close();
+    private static DBConnector instance = null;
+
+    private void createDataSource() {
+        try {
+            DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
+            config.setDriverClassName( dataBaseProperty.getDriver());
+            config.setJdbcUrl( dataBaseProperty.getUrl());
+            config.setUsername( dataBaseProperty.getUsername());
+            config.setPassword( dataBaseProperty.getPassword());
+            config.addDataSourceProperty( "cachePrepStmts" , "true" );
+            config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
+            config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
+            ds = new HikariDataSource( config );
+        } catch (Throwable t) {
+            t.printStackTrace();
+            throw t;
         }
     }
+
+    private DBConnector() {}
+
+    public static synchronized Connection getConn() throws SQLException {
+        if (instance == null) {
+            instance = new DBConnector();
+            instance.createDataSource();
+        }
+        return instance.ds.getConnection();
+    }
+
+    public static synchronized void closeAllConnections()  {
+        if (instance != null) {
+            instance.ds.close();
+        }
+    }
+
     public static void closeConn(Connection conn) {
         if (conn != null) {
            try {

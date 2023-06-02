@@ -29,7 +29,10 @@ import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, Dataset, QueryTest, Row}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class CaseSensitivitySuite extends QueryTest
   with SharedSparkSession with SQLTestUtils with LakeSoulSQLCommandTest {
 

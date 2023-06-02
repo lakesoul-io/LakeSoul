@@ -17,13 +17,15 @@
 package org.apache.spark.sql.lakesoul.schema
 
 import java.util.Locale
-
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.junit.runner.RunWith
 import org.scalatest.GivenWhenThen
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class LakeSoulSchemaUtilsSuite extends QueryTest
   with SharedSparkSession
   with GivenWhenThen

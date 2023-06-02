@@ -30,6 +30,8 @@ import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.streaming.StreamingQueryException
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 sealed trait SaveOperation {
   def apply(dfw: DataFrameWriter[_]): Unit
@@ -880,10 +882,12 @@ trait CompleteOutputModeTests extends SchemaEnforcementSuiteBase with SharedSpar
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class SchemaEnforcementWithPathSuite extends AppendSaveModeTests with OverwriteSaveModeTests {
   override val saveOperation: SaveWithPath = SaveWithPath()
 }
 
+@RunWith(classOf[JUnitRunner])
 class SchemaEnforcementStreamingSuite
   extends AppendOutputModeTests
     with CompleteOutputModeTests {

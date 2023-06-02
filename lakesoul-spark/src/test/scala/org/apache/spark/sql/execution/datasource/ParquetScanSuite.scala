@@ -25,7 +25,10 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.SharedSparkSession
 import org.scalatest.BeforeAndAfterEach
 import org.apache.hadoop.fs.Path
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class ParquetScanSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulSQLCommandTest {

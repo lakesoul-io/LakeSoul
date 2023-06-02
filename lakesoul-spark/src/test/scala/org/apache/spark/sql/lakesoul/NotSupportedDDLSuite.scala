@@ -23,11 +23,14 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestUtils}
 import org.apache.spark.sql.test.SharedSparkSession
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import java.util.Locale
 import scala.util.control.NonFatal
 
 
+@RunWith(classOf[JUnitRunner])
 class NotSupportedDDLSuite
   extends NotSupportedDDLBase
     with LakeSoulSQLCommandTest

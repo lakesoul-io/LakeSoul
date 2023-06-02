@@ -25,7 +25,10 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestSparkSession}
 import org.apache.spark.sql.test.TestSparkSession
 import org.apache.spark.sql.{Row, SparkSession, functions}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class DeleteScalaSuite extends DeleteSuiteBase with LakeSoulSQLCommandTest {
 
   override protected def createSparkSession: TestSparkSession = {
