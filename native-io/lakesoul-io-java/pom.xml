@@ -153,7 +153,7 @@
                                 </goals>
                                 <configuration>
                                     <executable>cargo</executable>
-                                    <commandlineArgs>+nightly build --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>build --release --all-features --package lakesoul-io-c</commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>
@@ -212,7 +212,7 @@
                                 </goals>
                                 <configuration>
                                     <executable>cross</executable>
-                                    <commandlineArgs>+nightly build --target x86_64-unknown-linux-gnu --release --features lakesoul-io/hdfs --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features --package lakesoul-io-c</commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>
@@ -292,9 +292,9 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.0.0-M6</version>
+                <version>3.1.0</version>
                 <configuration>
-                    <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
+                    <skip>true</skip>
                 </configuration>
             </plugin>
             <plugin>

@@ -30,9 +30,12 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.StructType
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
 import java.text.SimpleDateFormat
 
+@RunWith(classOf[JUnitRunner])
 class ReadSuite extends QueryTest
   with SharedSparkSession
   with LakeSoulTestUtils {

@@ -16,7 +16,7 @@
 
 package com.dmetasoul.lakesoul.tables
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils}
+import com.dmetasoul.lakesoul.meta.MetaUtils
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 

@@ -23,7 +23,9 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
+import org.junit.runner.RunWith
 import org.scalatest.{BeforeAndAfter, Tag}
+import org.scalatestplus.junit.JUnitRunner
 
 trait DDLUsingPathTests extends QueryTest
   with SharedSparkSession
@@ -173,6 +175,7 @@ trait DDLUsingPathTests extends QueryTest
   }
 }
 
+@RunWith(classOf[JUnitRunner])
 class DDLUsingPathSuite extends DDLUsingPathTests with LakeSoulSQLCommandTest {
 }
 

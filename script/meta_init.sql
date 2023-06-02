@@ -5,7 +5,7 @@ create table if not exists namespace (
     primary key(namespace)
 );
 
-insert into namespace(namespace, properties) values ('default', '{}');
+insert into namespace(namespace, properties) values ('default', '{}') ON CONFLICT DO NOTHING;
 
 create table if not exists table_info (
     table_id text,
@@ -32,12 +32,18 @@ create table if not exists table_path_id (
     primary key(table_path)
 );
 
-create type data_file_op as (
-    path text,
-    file_op text,
-    size bigint,
-    file_exist_cols text
-);
+DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'data_file_op') THEN
+            create type data_file_op as (
+                                            path text,
+                                            file_op text,
+                                            size bigint,
+                                            file_exist_cols text
+                                        );
+        END IF;
+    END
+$$;
 
 create table if not exists data_commit_info (
     table_id text,
@@ -86,4 +92,4 @@ CREATE OR REPLACE FUNCTION partition_insert() RETURNS TRIGGER AS $$
     END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER partition_table_change AFTER INSERT ON partition_info FOR EACH ROW EXECUTE PROCEDURE partition_insert();
+CREATE OR REPLACE TRIGGER partition_table_change AFTER INSERT ON partition_info FOR EACH ROW EXECUTE PROCEDURE partition_insert();

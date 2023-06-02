@@ -1,4 +1,17 @@
-on: push
+on:
+  push:
+    paths:
+      - "native-io/**"
+    branches:
+      - 'main'
+  pull_request:
+    paths:
+      - "native-io/**"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
 name: Clippy check
 
 # Make sure CI fails on all warnings, including Clippy lints
@@ -12,8 +25,13 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
-      - uses: actions-rs/cargo@v1
-      - run: rustup component add clippy --toolchain nightly-x86_64-unknown-linux-gnu
+          profile: minimal
+          toolchain: nightly-2023-05-20
+          components: clippy
+          default: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./native-io -> target"
+          key: "ubuntu-latest-clippy"
       - name: Run Clippy
-        run: cd native-io &&  cargo +nightly clippy --all-features --package lakesoul-io-c
+        run: cd native-io && cargo clippy --all-features --package lakesoul-io-c

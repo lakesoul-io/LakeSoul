@@ -26,8 +26,11 @@ import org.apache.spark.sql.lakesoul.test.{LakeSoulSQLCommandTest, LakeSoulTestS
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SparkSession}
+import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulSQLCommandTest {

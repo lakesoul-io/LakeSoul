@@ -65,4 +65,17 @@ public class DataBaseProperty implements Serializable {
     public void setMaxCommitAttempt(int maxCommitAttempt) {
         this.maxCommitAttempt = maxCommitAttempt;
     }
+
+    @Override
+    public String toString() {
+        return "lakesoul.pg.driver=" +
+                driver +
+                "\nlakesoul.pg.url=" +
+                url +
+                "\nlakesoul.pg.username" +
+                username +
+                "\nlakesoul.pg.password" +
+                password +
+                "\n";
+    }
 }

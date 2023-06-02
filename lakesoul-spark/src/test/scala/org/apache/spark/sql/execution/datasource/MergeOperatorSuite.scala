@@ -25,7 +25,10 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestSparkSession, LakeSoulTestUtils, MergeOpInt, MergeOpString, MergeOpString02, TestUtils}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class MergeOperatorSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
 

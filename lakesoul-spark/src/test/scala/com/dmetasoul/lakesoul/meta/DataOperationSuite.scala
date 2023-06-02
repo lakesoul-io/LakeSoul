@@ -20,7 +20,10 @@ import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.lakesoul.exception.MetaException
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
 import org.apache.spark.sql.test.SharedSparkSession
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class DataOperationSuite extends QueryTest
   with SharedSparkSession with LakeSoulTestUtils {
 

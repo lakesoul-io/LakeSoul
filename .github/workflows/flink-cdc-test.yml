@@ -1,6 +1,23 @@
 name: CI with flink cdc Test
 
-on: push
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
 
 jobs:
   build:
@@ -23,34 +40,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
-          sudo apt-get install -y git-lfs
-      - name: Git LFS checkout
-        run: |
-          git lfs fetch
-          git lfs checkout
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
-      - name: Set up cargo cache
-        uses: actions/cache@v3
-        continue-on-error: false
+          profile: minimal
+          toolchain: nightly-2023-05-20
+          default: true
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            native-io/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('native-io/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          workspaces: "./native-io -> target"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
-          docker pull -q dockcross/manylinux2014-x64:latest
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - name: Build with Maven
         run: |
-          cargo install --force cross --git https://github.com/cross-rs/cross
-          MAVEN_OPTS="-Xmx4000m" mvn -q -B clean package -f pom.xml -Prelease-linux-x86-64 -DskipTests
+          mkdir -p native-io/target/release
+          cp native-io/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so native-io/target/release
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
           echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
@@ -66,7 +76,7 @@ jobs:
           cd ./docker/lakesoul-docker-compose-env
           docker compose pull -q
           docker compose up -d
-          sleep 1m
+          sleep 30s
       - name: Start flink task
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 10000 --server_time_zone UTC
@@ -80,7 +90,7 @@ jobs:
           cd ./script/benchmark
           python 1_create_table.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -91,7 +101,7 @@ jobs:
           python3 3_add_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -100,7 +110,7 @@ jobs:
         run: |
           cd ./script/benchmark
           python3 4_update_data.py
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
@@ -111,7 +121,7 @@ jobs:
           python3 6_drop_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 1m
+          sleep 30s
       - name: Accuracy verification task
         run: |
           cd ./script/benchmark
