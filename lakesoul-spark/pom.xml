@@ -251,28 +251,66 @@
 
     </dependencies>
 
+    <profiles>
+        <profile>
+            <id>dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <configuration>
+                            <perCoreThreadCount>false</perCoreThreadCount>
+                            <forkCount>1</forkCount>
+                            <reuseForks>true</reuseForks>
+                            <argLine>-Xmx4000m</argLine>
+                            <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
+                            <includes>
+                                <include>**</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>parallel-test</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <configuration>
+                            <parallel>suites</parallel>
+                            <threadCountSuites>2</threadCountSuites>
+                            <perCoreThreadCount>false</perCoreThreadCount>
+                            <forkCount>2</forkCount>
+                            <reuseForks>true</reuseForks>
+                            <argLine>-Xmx3000m</argLine>
+                            <systemPropertyVariables>
+                                <lakesoul.pg.url>jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified</lakesoul.pg.url>
+                            </systemPropertyVariables>
+                            <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
+                            <includes>
+                                <include>**</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
     <build>
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.1.0</version>
-                <configuration>
-                    <parallel>suites</parallel>
-                    <threadCountSuites>2</threadCountSuites>
-                    <perCoreThreadCount>false</perCoreThreadCount>
-                    <forkCount>2</forkCount>
-                    <reuseForks>false</reuseForks>
-                    <argLine>-Xmx3000m</argLine>
-                    <systemPropertyVariables>
-                        <lakesoul.pg.url>jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified</lakesoul.pg.url>
-                    </systemPropertyVariables>
-                    <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
-                    <includes>
-                        <include>**</include>
-                    </includes>
-                </configuration>
-            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
