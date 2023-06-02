@@ -26,6 +26,9 @@ import org.apache.flink.util.Preconditions;
 
 import org.apache.arrow.vector.types.pojo.ArrowType;
 
+import java.time.*;
+import java.time.zone.ZoneRules;
+
 /**
  * Arrow column vector for Timestamp.
  */
@@ -40,8 +43,7 @@ public final class ArrowTimestampColumnVector implements TimestampColumnVector {
     public ArrowTimestampColumnVector(ValueVector valueVector) {
         this.valueVector = Preconditions.checkNotNull(valueVector);
         Preconditions.checkState(
-                valueVector instanceof TimeStampVector
-                        && ((ArrowType.Timestamp) valueVector.getField().getType()).getTimezone().equals("UTC"));
+                valueVector instanceof TimeStampVector);
     }
 
     @Override
