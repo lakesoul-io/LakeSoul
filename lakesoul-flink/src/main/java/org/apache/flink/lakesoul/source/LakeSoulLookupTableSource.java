@@ -125,7 +125,6 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                 List<LakeSoulPartition> partValueList = new ArrayList<>();
                 List<PartitionFetcher.Context.ComparablePartitionValue> comparablePartitionValues = context.getComparablePartitionValueList();
                 String partitionLowerLimit = LocalDateTime.now().plusMinutes(-latestPartitionNumber+1).format(DateTimeFormatter.ofPattern("yyyy,MM,dd,HH,mm"));
-                System.out.println(partitionLowerLimit);
                 // fetch latest partitions for partitioned table
                 if (comparablePartitionValues.size() > 0) {
                     // sort in desc order
@@ -178,7 +177,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
         }
 
-        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(readFields(""), this.pkColumns);
+        PartitionReader<LakeSoulPartition, RowData> partitionReader = new LakeSoulPartitionReader(this.configuration, readFields(""), this.pkColumns);
 
         return new LakeSoulTableLookupFunction<>(
                 partitionFetcher,
