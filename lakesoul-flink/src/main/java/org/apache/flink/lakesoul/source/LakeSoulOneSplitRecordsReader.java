@@ -133,6 +133,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.nonPartitionTypes = Arrays.stream(nonPartitionIndexes).mapToObj(columnTypeList::get).toArray(LogicalType[]::new);
         this.nonPartitionFieldGetters = IntStream.range(0, nonPartitionTypes.length).mapToObj(i -> RowData.createFieldGetter(nonPartitionTypes[i], i)).toArray(RowData.FieldGetter[]::new);
         if (nonPartitionIndexes.length != 0) {
+            ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
             Schema arrowSchema = ArrowUtils.toArrowSchema(fileSchema);
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);

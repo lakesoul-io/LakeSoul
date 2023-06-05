@@ -29,6 +29,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
+import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
@@ -45,10 +46,12 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static java.time.ZoneId.SHORT_IDS;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
@@ -150,7 +153,7 @@ public class FlinkUtil {
             if (contains && sf.name().equals(lakesoulCdcColumnName)) {
                 continue;
             }
-            String tyname = DataTypeUtil.convertToFlinkDatatype(sf.dataType().typeName());
+            String tyname = DataTypeUtil.convertToFlinkDatatype(sf);
             if (!sf.nullable()) {
                 tyname += NOT_NULL;
             }
@@ -378,5 +381,31 @@ public class FlinkUtil {
         } else {
             return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
         }
+    }
+
+    public static ZoneId getLocalTimeZone(Configuration configuration) {
+        String zone = configuration.getString(TableConfigOptions.LOCAL_TIME_ZONE);
+        validateTimeZone(zone);
+        return TableConfigOptions.LOCAL_TIME_ZONE.defaultValue().equals(zone)
+                ? ZoneId.systemDefault()
+                : ZoneId.of(zone);
+    }
+
+    /** Validates user configured time zone. */
+    private static void validateTimeZone(String zone) {
+        final String zoneId = zone.toUpperCase();
+        if (zoneId.startsWith("UTC+")
+                || zoneId.startsWith("UTC-")
+                || SHORT_IDS.containsKey(zoneId)) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The supported Zone ID is either a full name such as 'America/Los_Angeles',"
+                                    + " or a custom timezone id such as 'GMT-08:00', but configured Zone ID is '%s'.",
+                            zone));
+        }
+    }
+
+    public static void setLocalTimeZone(Configuration options, ZoneId localTimeZone) {
+        options.setString(TableConfigOptions.LOCAL_TIME_ZONE, localTimeZone.toString());
     }
 }

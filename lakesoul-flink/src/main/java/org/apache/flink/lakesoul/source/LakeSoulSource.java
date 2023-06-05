@@ -22,6 +22,7 @@ import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.source.*;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
@@ -67,8 +68,10 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
 
     @Override
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
+        Configuration conf = Configuration.fromMap(optionParams);
+        conf.addAll(readerContext.getConfiguration());
         return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(readerContext.getConfiguration(), this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0, this.isStreaming, this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
+            return new LakeSoulSplitReader(conf, this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0, this.isStreaming, this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
         }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 

@@ -120,6 +120,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -134,6 +135,8 @@ public final class ArrowUtils {
     private static final Logger LOG = LoggerFactory.getLogger(ArrowUtils.class);
 
     private static RootAllocator rootAllocator;
+
+    private static ZoneId LocalTimeZone = ZoneId.systemDefault();
 
     public static synchronized RootAllocator getRootAllocator() {
         if (rootAllocator == null) {
@@ -154,6 +157,10 @@ public final class ArrowUtils {
                             + "DirectByteBuffer.<init>(long, int) which is not available. Please set the "
                             + "system property 'io.netty.tryReflectionSetAccessible' to 'true'.");
         }
+    }
+
+    public static void setLocalTimeZone(ZoneId localTimeZone) {
+        LocalTimeZone = localTimeZone;
     }
 
     /** Returns the Arrow schema of the specified type. */
@@ -232,8 +239,7 @@ public final class ArrowUtils {
                 || vector instanceof TimeMicroVector
                 || vector instanceof TimeNanoVector) {
             return TimeWriter.forRow(vector);
-        } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
+        } else if (vector instanceof TimeStampVector) {
             int precision;
             if (fieldType instanceof LocalZonedTimestampType) {
                 precision = ((LocalZonedTimestampType) fieldType).getPrecision();
@@ -364,8 +370,7 @@ public final class ArrowUtils {
                 || vector instanceof TimeMicroVector
                 || vector instanceof TimeNanoVector) {
             return new ArrowTimeColumnVector(vector);
-        } else if (vector instanceof TimeStampVector
-                && ((ArrowType.Timestamp) vector.getField().getType()).getTimezone().equals("UTC")) {
+        } else if (vector instanceof TimeStampVector) {
             return new ArrowTimestampColumnVector(vector);
         } else if (vector instanceof ListVector) {
             ListVector listVector = (ListVector) vector;
@@ -679,26 +684,26 @@ public final class ArrowUtils {
         @Override
         public ArrowType visit(LocalZonedTimestampType localZonedTimestampType) {
             if (localZonedTimestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.SECOND, LocalTimeZone.toString());
             } else if (localZonedTimestampType.getPrecision() >= 1
                     && localZonedTimestampType.getPrecision() <= 3) {
-                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, LocalTimeZone.toString());
             } else if (localZonedTimestampType.getPrecision() >= 4
                     && localZonedTimestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, LocalTimeZone.toString());
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, LocalTimeZone.toString());
             }
         }
 
         @Override
         public ArrowType visit(TimestampType timestampType) {
             if (timestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.SECOND, null);
             } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC");
+                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, null);
             }
         }
 

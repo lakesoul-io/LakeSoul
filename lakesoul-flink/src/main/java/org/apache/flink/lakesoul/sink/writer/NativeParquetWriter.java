@@ -78,10 +78,12 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.rowsInBatch = 0;
         this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("NativeParquetWriter", 0, Long.MAX_VALUE);
 
+
+        ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
-        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource) == true) {
+        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
         }
         nativeWriter.setRowGroupRowNumber(this.batchSize);

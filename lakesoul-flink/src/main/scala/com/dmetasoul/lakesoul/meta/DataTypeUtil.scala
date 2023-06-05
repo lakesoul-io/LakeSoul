@@ -21,13 +21,14 @@ package com.dmetasoul.lakesoul.meta
 
 import org.apache.flink.table.types.logical.LogicalType
 import org.apache.spark.sql.types.DataTypes._
-import org.apache.spark.sql.types.{ CharType, DataType, DecimalType,TimestampType}
+import org.apache.spark.sql.types.{CharType, DataType, DecimalType, StructField, StructType, TimestampType}
 
 object DataTypeUtil {
 
   private val FIXED_DECIMAL = """decimal\(\s*(\d+)\s*,\s*(\-?\d+)\s*\)""".r
   private val CHAR_TYPE = """char\(\s*(\d+)\s*\)""".r
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
+  private val TimestampNTZType = DataType.fromJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"a\",\"type\":\"timestamp_ntz\",\"nullable\":true,\"metadata\":{}}]}").asInstanceOf[StructType].fields(0).dataType
 
   def convertDatatype(datatype: LogicalType): DataType = {
     val convert = datatype.getTypeRoot.name().toLowerCase match {
@@ -44,7 +45,7 @@ object DataTypeUtil {
       case "date" => DateType
       case "boolean" => BooleanType
       case "timestamp" => TimestampType
-      case "timestamp_without_time_zone" => TimestampType
+      case "timestamp_without_time_zone" => TimestampNTZType
       case "timestamp_with_local_time_zone" => TimestampType
       case "decimal" =>
         val dt = datatype.asInstanceOf[org.apache.flink.table.types.logical.DecimalType]
@@ -90,9 +91,9 @@ object DataTypeUtil {
   }
 
 
-  def convertToFlinkDatatype(datatype: String): String = {
+  def convertToFlinkDatatype(structField: StructField): String = {
 
-    val convert = datatype.toLowerCase match {
+    val convert = structField.dataType.typeName.toLowerCase match {
       case "string" => "STRING"
       case "byte" => "BYTES"
       case "binary" => "BINARY"
@@ -103,7 +104,8 @@ object DataTypeUtil {
       case "double" => "DOUBLE"
       case "date" => "DATE"
       case "boolean" => "BOOLEAN"
-      case "timestamp" => "TIMESTAMP"
+      case "timestamp_ntz" => "TIMESTAMP"
+      case "timestamp" => "TIMESTAMP_LTZ"
       case "decimal" => "DECIMAL"
       case FIXED_DECIMAL(precision, scale) => "DECIMAL(" + precision.toInt + "," + scale.toInt + ")"
       case CHAR_TYPE(length) => "CHAR(" + length.toInt + ")"
