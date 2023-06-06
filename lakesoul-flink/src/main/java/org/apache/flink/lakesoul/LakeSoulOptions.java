@@ -29,4 +29,11 @@ public class LakeSoulOptions {
                     .withDescription(
                             "Table path of LakeSoul Table.");
 
+    public static final ConfigOption<Integer> LAKESOUL_NATIVE_IO_BATCH_SIZE =
+            key("native.io.batch.size")
+                    .intType()
+                    .defaultValue(8192)
+                    .withDescription(
+                            "BatchSize of LakeSoul Native Reader/Writer");
+
 }

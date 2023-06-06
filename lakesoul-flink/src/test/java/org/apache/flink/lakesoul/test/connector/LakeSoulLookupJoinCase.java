@@ -221,7 +221,6 @@ public class LakeSoulLookupJoinCase {
                                         + " default_catalog.default_database.probe as p"
                                         + " join bounded_partition_hash_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        for (Row row: results) System.out.println(row.toString());
         checkEqualInAnyOrder(results, new String[]{"+I[1, a, 8, 2019, 08, 01]", "+I[1, a, 10, 2020, 08, 31]", "+I[2, b, 22, 2020, 08, 31]"});
 //        checkEqualInExpectedOrder(results, "[+I[1, a, 8, 2019, 08, 01], +I[1, a, 10, 2020, 08, 31], +I[2, b, 22, 2020, 08, 31]]");
         tableEnv.executeSql("drop table if exists bounded_partition_hash_table");
