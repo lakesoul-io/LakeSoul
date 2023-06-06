@@ -156,7 +156,6 @@ public class JdbcDataTypeConverter {
             // Numeric decimal numbers
             case Types.REAL:
                 // values are single precision floating point number which supports 7 digits of mantissa.
-                return FloatType;
             case Types.FLOAT:
             case Types.DOUBLE:
                 // values are double precision floating point number which supports 15 digits of mantissa.

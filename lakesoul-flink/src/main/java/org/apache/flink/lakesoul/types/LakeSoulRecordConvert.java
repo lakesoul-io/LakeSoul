@@ -115,8 +115,6 @@ public class LakeSoulRecordConvert implements Serializable {
             // finally, use Object.equals
             if (!beforeField.equals(afterField)) {
                 return true;
-            } else {
-                continue;
             }
         }
         return false;
@@ -250,11 +248,10 @@ public class LakeSoulRecordConvert implements Serializable {
             case NanoTime.SCHEMA_NAME:
                 return new BigIntType();
             case Timestamp.SCHEMA_NAME:
-                return new TimestampType(3);
             case MicroTimestamp.SCHEMA_NAME:
-                return new TimestampType(6);
+                return new LocalZonedTimestampType(6);
             case NanoTimestamp.SCHEMA_NAME:
-                return new TimestampType(9);
+                return new LocalZonedTimestampType(9);
             case Decimal.LOGICAL_NAME:
                 Map<String, String> paras = fieldSchema.parameters();
                 return new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
@@ -526,8 +523,8 @@ public class LakeSoulRecordConvert implements Serializable {
     private int getPrecision(Schema schema) {
         switch (schema.name()) {
             case Time.SCHEMA_NAME:
-            case Timestamp.SCHEMA_NAME:
                 return 3;
+            case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case MicroTime.SCHEMA_NAME:
                 return 6;
