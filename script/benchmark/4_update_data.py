@@ -32,6 +32,9 @@ connect = pymysql.connect(host=host,
 
 cur = connect.cursor()
 
+default_sql = """update default_init set col_8 = round(RAND() * 10000, 6), col_10 = FLOOR(RAND() * 10000), col_23 = MD5(RAND() * 10000), col_24 = MD5(RAND() * 10000)"""
+cur.execute(default_sql)
+
 sql = """update random_table_%s set extra_1 = FLOOR(RAND() * 10000), extra_2 = round(RAND() * 10000, 6), extra_3 = MD5(RAND() * 10000)"""
 
 for i in range(table_num):

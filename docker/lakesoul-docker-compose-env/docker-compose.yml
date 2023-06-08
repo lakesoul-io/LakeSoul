@@ -10,6 +10,8 @@ services:
       POSTGRES_PASSWORD: lakesoul_test
       POSTGRES_USER: lakesoul_test
       POSTGRES_DB: lakesoul_test
+    command:
+      --max_connections=4096
     volumes:
       - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
       - ./meta_cleanup.sql:/meta_cleanup.sql
@@ -74,14 +76,14 @@ services:
       - jobmanager
     command: taskmanager
     deploy:
-      replicas: 2
+      replicas: 4
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
         taskmanager.memory.process.size: 3000m
         taskmanager.memory.flink.size: 2048m
-        taskmanager.numberOfTaskSlots: 4
+        taskmanager.numberOfTaskSlots: 6
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
