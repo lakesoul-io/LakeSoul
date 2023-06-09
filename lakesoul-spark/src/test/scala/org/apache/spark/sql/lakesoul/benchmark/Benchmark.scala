@@ -19,7 +19,9 @@
 
 package org.apache.spark.sql.lakesoul.benchmark
 
-import org.apache.spark.sql.SparkSession
+import com.dmetasoul.lakesoul.spark.ParametersTool
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 
@@ -32,12 +34,49 @@ object Benchmark {
   var mysqlPort = 3306
   var serverTimeZone = "UTC"
 
+  var singleLakeSoulContrast = false
+  var verifyCDC = true
+  var lakeSoulDBName = "flink_sink"
+  var lakeSoulTableName = "default_init"
+
+
   var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
+  val DEFAULT_INIT_TABLE = "default_init"
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
 
+  /**
+   * param example:
+   * --mysql.hostname localhost
+   * --mysql.database.name default_init
+   * --mysql.username root
+   * --mysql.password root
+   * --mysql.port 3306
+   * --server.time.zone UTC
+   * --cdc.contract true
+   * --single.table.contract false
+   * --lakesoul.database.name lakesoul_test
+   * --lakesoul.table.name lakesoul_table
+   */
   def main(args: Array[String]): Unit = {
+    val parameter = ParametersTool.fromArgs(args)
+    hostname = parameter.get("mysql.hostname", hostname)
+    dbName = parameter.get("mysql.database.name", dbName)
+    mysqlUserName = parameter.get("mysql.username", mysqlUserName)
+    mysqlPassword = parameter.get("mysql.password", mysqlPassword)
+    mysqlPort = parameter.getInt("mysql.port", mysqlPort)
+    serverTimeZone = parameter.get("server.time.zone", serverTimeZone)
+    verifyCDC = parameter.getBoolean("cdc.contract", true)
+
+    url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+
+    singleLakeSoulContrast = parameter.getBoolean("single.table.contract", false)
+    if (singleLakeSoulContrast) {
+      lakeSoulDBName = parameter.get("lakesoul.database.name", lakeSoulDBName)
+      lakeSoulTableName = parameter.get("lakesoul.table.name", lakeSoulTableName)
+    }
+
     val builder = SparkSession.builder()
       .appName("BENCHMARK TEST")
       .master("local[4]")
@@ -64,43 +103,47 @@ object Benchmark {
       .config("spark.sql.parquet.filterPushdown", value = true)
       .config("spark.hadoop.mapred.output.committer.class", "org.apache.hadoop.mapred.FileOutputCommitter")
       .config("spark.sql.warehouse.dir", "s3://lakesoul-test-bucket/")
-      .config("spark.sql.session.timeZone", "Asia/Shanghai")
+      .config("spark.sql.session.timeZone", serverTimeZone)
       .config("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
       .config("spark.dmetasoul.lakesoul.native.io.enable", "true")
+      .config("spark.sql.parquet.binaryAsString", "true")
 
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    if (args.length >= 6) {
-      hostname = args(0)
-      dbName = args(1)
-      mysqlUserName = args(2)
-      mysqlPassword = args(3)
-      mysqlPort = args(4).toInt
-      serverTimeZone = args(5)
-      url = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
+    if (singleLakeSoulContrast) {
+      spark.sql("use " + lakeSoulDBName)
+      println(splitLine)
+      verifyQuery(spark, lakeSoulTableName)
+      println(splitLine)
     }
 
-    spark.sql("use " + dbName)
+    if (verifyCDC) {
+      spark.sql("use " + dbName)
 
-    val tableInfo = spark.sql("show tables")
-    val tables = tableInfo.collect().map(_(1).toString)
-    tables.foreach(tableName => verifyQuery(spark, tableName))
-
+      val tableInfo = spark.sql("show tables")
+      val tables = tableInfo.collect().map(_ (1).toString)
+      tables.foreach(tableName => verifyQuery(spark, tableName))
+    }
   }
 
   def verifyQuery(spark: SparkSession, table: String): Unit = {
-    val jdbcDF = spark.read.format("jdbc")
+    var jdbcDF = spark.read.format("jdbc")
       .option("driver", "com.mysql.jdbc.Driver")
       .option("url", url)
       .option("dbtable", table)
       .option("user", mysqlUserName)
       .option("numPartitions", "16")
       .option("password", mysqlPassword).load()
-    val lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
+    var lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
+
+    if (table.equals(DEFAULT_INIT_TABLE)) {
+      jdbcDF = changeDF(jdbcDF)
+      lakesoulDF = changeDF(lakesoulDF)
+    }
 
     val diff = jdbcDF.rdd.subtract(lakesoulDF.rdd)
 
@@ -112,5 +155,14 @@ object Benchmark {
       System.exit(1)
     }
     println(printLine + table + " result: " + result + printLine)
+  }
+
+  def changeDF(df: DataFrame): DataFrame = {
+    df.withColumn("col_2", col("col_2").cast("string"))
+      .withColumn("col_3", col("col_3").cast("string"))
+      .withColumn("col_11", col("col_11").cast("string"))
+      .withColumn("col_13", col("col_13").cast("string"))
+      .withColumn("col_20", col("col_20").cast("string"))
+      .withColumn("col_23", col("col_23").cast("string"))
   }
 }

@@ -34,6 +34,9 @@ connect = pymysql.connect(host=host,
 
 cur = connect.cursor()
 
+sql_default = """delete from default_init limit %s""" % delete_num
+cur.execute(sql_default)
+
 sql_1 = """delete from random_table_%s limit %s"""
 
 for i in range(table_num):
