@@ -23,10 +23,10 @@ import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
+import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
-import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
@@ -57,12 +57,13 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
 
     @BeforeClass
     public static void setup() {
-        tableEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(LakeSoulTestUtils.createStreamExecutionEnvironment());
         lakeSoulCatalog = new LakeSoulCatalog();
         tableEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tableEnv.useCatalog(lakeSoulCatalog.getName());
         ProbeTableGenerateDataOnce = true;
         // create probe table
+        TestCollectionTableFactory.reset();
         if (ProbeTableGenerateDataOnce) {
             TestCollectionTableFactory.initData(
                     Arrays.asList(
@@ -89,7 +90,7 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
                             Row.of(3, "c"),
                             Row.of(4, "d")),
                     new ArrayList<>(),
-                    5000);
+                    500);
         }
 
         tableEnv.executeSql(
@@ -589,10 +590,11 @@ public class LakeSoulLookupJoinCase extends AbstractTestBase {
     }
 
     public static class InsertDataThread extends Thread {
+        ;
 
-        private final int sleepMilliSeconds;
+        private int sleepMilliSeconds;
 
-        private final String insertSql;
+        private String insertSql;
 
         public InsertDataThread(int sleepMilliSeconds, String insertSql) {
             this.sleepMilliSeconds = sleepMilliSeconds;

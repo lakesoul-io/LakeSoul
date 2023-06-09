@@ -303,10 +303,12 @@ public class FlinkUtil {
             return null;
         }
         LogicalTypeRoot typeRoot = type.getTypeRoot();
+        if (typeRoot == LogicalTypeRoot.VARCHAR)
+            return StringData.fromString(valStr);
+        if ("null".equals(valStr)) return null;
+
         switch (typeRoot) {
             case CHAR:
-            case VARCHAR:
-                return StringData.fromString(valStr);
             case BOOLEAN:
                 return Boolean.parseBoolean(valStr);
             case TINYINT:

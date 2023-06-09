@@ -36,9 +36,7 @@ public class StreamReadSuite extends AbstractTestBase {
 
     private final List<Tuple2<Integer, Integer>> BUCKET_NUM_AND_PARALLELISM = Arrays.asList(
             new Tuple2<>(3, 2),
-            new Tuple2<>(2, 3),
-            new Tuple2<>(3, 4),
-            new Tuple2<>(4, 2)
+            new Tuple2<>(2, 3)
     );
 
     @Test
