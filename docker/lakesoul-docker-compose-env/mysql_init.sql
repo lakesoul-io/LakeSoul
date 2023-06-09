@@ -1,8 +1,6 @@
-create
-database if not exists test_cdc;
+create database if not exists test_cdc;
 
-use
-test_cdc;
+use test_cdc;
 
 create table `default_init`
 (
@@ -34,8 +32,5 @@ create table `default_init`
     PRIMARY KEY (`id`)
 );
 
-insert into default_init
-values (1, 8132132390403693530, 'N', 'blob', 'd', '2023-03-10', '2023-03-10 07:00:00', 8.20, 8.212, 'spring', 10,
-        'longblob', 'longtext', 'mediumblob', 83886, 'mediumtext', 'second', '99', 'text', '2023-03-10 07:00:00',
-        'tinyblob', 9, 'tinytext', 'varbinary', 'varchar');
+insert into default_init values (1, 8132132390403693530, 'N', 'blob', 'd', '2023-03-10', '2023-03-10 07:00:00', 8.20, 8.212, 'spring', 10, 'longblob', 'longtext', 'mediumblob', 83886, 'mediumtext', 'second', '99', 'text', '2023-03-10 07:00:00', 'tinyblob', 9, 'tinytext', 'varbinary', 'varchar');
 
