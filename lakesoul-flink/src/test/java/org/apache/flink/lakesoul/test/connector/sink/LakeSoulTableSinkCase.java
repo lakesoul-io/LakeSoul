@@ -35,6 +35,7 @@ import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.AfterClass;
@@ -63,7 +64,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 
-public class LakeSoulTableSinkCase {
+public class LakeSoulTableSinkCase extends AbstractTestBase {
 
     private static LakeSoulCatalog lakeSoulCatalog;
 

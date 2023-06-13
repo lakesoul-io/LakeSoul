@@ -136,11 +136,7 @@ public class FlinkUtil {
         return null;
     }
     public static boolean isCDCDelete(StringData operation){
-        if (StringData.fromString("delete").equals(operation)) {
-            return true;
-        }else{
-            return false;
-        }
+        return StringData.fromString("delete").equals(operation);
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {

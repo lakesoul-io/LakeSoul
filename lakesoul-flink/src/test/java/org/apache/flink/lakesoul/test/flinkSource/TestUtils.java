@@ -2,6 +2,7 @@ package org.apache.flink.lakesoul.test.flinkSource;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
@@ -82,6 +83,7 @@ public class TestUtils {
     }
 
     public static void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/user").toUri().toString();
         String createUserSql = "create table user_info (" +
                 "    order_id INT," +
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
@@ -89,13 +91,14 @@ public class TestUtils {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2',"+
-                "    'path'='/tmp/lakeSource/user' )";
+                String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
         tEnvs.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),(5, 'Tom', 75), (4, 'Mike', 70)").await();
     }
 
     public static void createLakeSoulSourceMultiPartitionTable(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/multi_range_hash").toUri().toString();
         String createSql = "create table user_multi (" +
                 "    `id` INT," +
                 "    name STRING," +
@@ -108,7 +111,7 @@ public class TestUtils {
                 "WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/multi_range_hash' )";
+                String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists user_multi");
         tEnvs.executeSql(createSql);
         tEnvs.executeSql("INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', 80, TO_DATE('1995-10-10'), 'China'), " +
@@ -117,13 +120,14 @@ public class TestUtils {
     }
 
     public static void createLakeSoulSourceTableOrder(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/order").toUri().toString();
         String createOrderSql = "create table order_info (" +
                 "    `id` INT PRIMARY KEY NOT ENFORCED," +
                 "    price DOUBLE" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/order' )";
+                String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists order_info");
         tEnvs.executeSql(createOrderSql);
         tEnvs.executeSql("INSERT INTO order_info VALUES (1, 20.12), (2, 10.88), (3, 15.35), (4, 25.24), (5, 15.04)").await();

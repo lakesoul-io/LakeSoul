@@ -31,7 +31,6 @@ import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
-import org.apache.flink.types.RowKind;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -100,19 +99,21 @@ public class LakeSoulTableSource
         this.projectedFields = projectedFields;
     }
 
-    protected RowType readFields(String cdcColumn) {
-        int[] fieldIndexs = (projectedFields == null || projectedFields.length == 0)
+    private int[] getFieldIndexs() {
+        return (projectedFields == null || projectedFields.length == 0)
                 ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
                 : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
+    }
+
+    protected RowType readFields() {
+        int[] fieldIndexs = getFieldIndexs();
         List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
         List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
         return RowType.of(projectTypes.toArray(new LogicalType[0]), projectNames.toArray(new String[0]));
     }
 
     private RowType readFieldsAddPk(String cdcColumn) {
-        int[] fieldIndexs =  (projectedFields == null || projectedFields.length == 0)
-                ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
-                : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
+        int[] fieldIndexs = getFieldIndexs();
         List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
         List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
         List<String> pkNamesNotExistInReadFields = new ArrayList<>();
@@ -147,7 +148,7 @@ public class LakeSoulTableSource
         String cdcColumn = optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "");
         return SourceProvider.of(new LakeSoulSource(
                 this.tableId,
-                readFields(cdcColumn),
+                readFields(),
                 readFieldsAddPk(cdcColumn),
                 this.isStreaming,
                 this.pkColumns,
