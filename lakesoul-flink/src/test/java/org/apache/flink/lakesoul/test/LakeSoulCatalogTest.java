@@ -30,6 +30,7 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.spark.sql.types.StructType;
 import org.junit.Before;
 import org.junit.Test;
@@ -41,7 +42,7 @@ import static org.apache.spark.sql.types.DataTypes.LongType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
 import static org.junit.Assert.*;
 
-public class LakeSoulCatalogTest {
+public class LakeSoulCatalogTest extends AbstractTestBase {
     private Map<String, String> props;
     private StreamTableEnvironment tEnvs;
     private final String LAKESOUL = "lakesoul";

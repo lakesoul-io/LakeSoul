@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -11,7 +12,7 @@ import org.junit.Test;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
-public class DMLSuite {
+public class DMLSuite extends AbstractTestBase {
     private String BATCH_TYPE = "batch";
 
     @Test

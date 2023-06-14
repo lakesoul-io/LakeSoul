@@ -27,7 +27,6 @@ import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 
 import java.util.Comparator;
@@ -46,9 +45,11 @@ public class LakeSoulTestUtils {
         env.registerCatalog(catalog.getName(), catalog);
         env.useCatalog(catalog.getName());
     }
+
     public static LakeSoulCatalog createLakeSoulCatalog() {
         return createLakeSoulCatalog(false);
     }
+
     public static LakeSoulCatalog createLakeSoulCatalog(boolean cleanAll) {
         LakeSoulCatalog lakeSoulCatalog = new LakeSoulCatalog();
         if (cleanAll) lakeSoulCatalog.cleanForTest();
@@ -70,7 +71,8 @@ public class LakeSoulTestUtils {
         return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT);
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, int parallelism) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
+                                                                       int parallelism) {
         return createTableEnvInStreamingMode(env, SqlDialect.DEFAULT, parallelism);
     }
 
@@ -81,16 +83,22 @@ public class LakeSoulTestUtils {
     public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism) {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(parallelism);
-        env.enableCheckpointing(1000);
+        env.enableCheckpointing(3000);
+        env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink");
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
+        env.getCheckpointConfig().configure(config);
         return env;
     }
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, SqlDialect dialect) {
+
+    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
+                                                                       SqlDialect dialect) {
         return createTableEnvInStreamingMode(env, dialect, 2);
     }
 
-    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, SqlDialect dialect, int parallelism) {
+    public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env,
+                                                                       SqlDialect dialect, int parallelism) {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
         tableEnv.getConfig()
                 .getConfiguration()
@@ -106,15 +114,20 @@ public class LakeSoulTestUtils {
         return tableEnv;
     }
 
-    public static void checkStreamingQueryAnswer(StreamTableEnvironment tableEnv, String querySql, String schemaString, Consumer<String> f, String expectedAnswer, long timeout) {
-        tableEnv.executeSql("DROP TABLE IF EXISTS default_catalog.default_database.sink");
-        tableEnv.executeSql("CREATE TABLE default_catalog.default_database.sink(" +
+    public static void checkStreamingQueryAnswer(StreamTableEnvironment tableEnv, String sourceTable, String querySql,
+                                                 String schemaString,
+                                                 Consumer<String> f, String expectedAnswer, long timeout) {
+        tableEnv.executeSql(
+                String.format("DROP TABLE IF EXISTS default_catalog.default_database.%s_sink", sourceTable));
+        tableEnv.executeSql(String.format("CREATE TABLE default_catalog.default_database.%s_sink(", sourceTable) +
                 schemaString +
                 ")WITH (" +
                 "'connector' = 'values', 'sink-insert-only' = 'false'" +
                 ")");
         TestValuesTableFactory.clearAllData();
-        final TableResult execute = tableEnv.executeSql("INSERT INTO default_catalog.default_database.sink " + querySql);
+        final TableResult execute =
+                tableEnv.executeSql(
+                        String.format("INSERT INTO default_catalog.default_database.%s_sink ", sourceTable) + querySql);
         Thread thread = new Thread(() -> {
             try {
                 execute.await(timeout, TimeUnit.SECONDS);
@@ -133,8 +146,9 @@ public class LakeSoulTestUtils {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
-        List<String> results = TestValuesTableFactory.getResults("sink");
-        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, (row.contains(","))?row.indexOf(","):row.length()-1))));
+        List<String> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
+        results.sort(Comparator.comparing(
+                row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
         assertThat(results.toString()).isEqualTo(expectedAnswer);
 
     }

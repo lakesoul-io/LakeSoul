@@ -1,12 +1,10 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -19,7 +17,6 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
@@ -27,17 +24,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestUtils {
 
-    private static String BATCH_TYPE = "batch";
-    private static String STREAMING_TYPE = "streaming";
+    private static final String BATCH_TYPE = "batch";
+    private static final String STREAMING_TYPE = "streaming";
+
     public static TableEnvironment createTableEnv(String mode) {
         TableEnvironment createTableEnv;
-        if(mode.equals(BATCH_TYPE)) {
+        if (mode.equals(BATCH_TYPE)) {
             createTableEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
-        }else{
-            StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(new Configuration());
+        } else {
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(2000, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+                    CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
             createTableEnv = StreamTableEnvironment.create(env);
         }
         Catalog lakesoulCatalog = new LakeSoulCatalog();
@@ -49,16 +48,13 @@ public class TestUtils {
 
     public static StreamTableEnvironment createStreamTableEnv(String envType) {
         StreamTableEnvironment tEnvs;
-        Configuration conf = new Configuration();
-        Random random = new Random();
-        int randomNumber = random.nextInt(1001) + 9181;
-        conf.setInteger("rest.port", randomNumber);
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         if (envType.equals(STREAMING_TYPE)) {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
             env.enableCheckpointing(2000, CheckpointingMode.EXACTLY_ONCE);
-            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+            env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+                    CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         }
@@ -70,7 +66,7 @@ public class TestUtils {
         return tEnvs;
     }
 
-    public static String getDateTimeFromTimestamp(Instant instant){
+    public static String getDateTimeFromTimestamp(Instant instant) {
         ZoneId zoneId = ZoneId.of("Africa/Accra");
         ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, zoneId);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -82,7 +78,8 @@ public class TestUtils {
                 containsExactlyInAnyOrder(expectedResult);
     }
 
-    public static void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+    public static void createLakeSoulSourceTableUser(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
         String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/user").toUri().toString();
         String createUserSql = "create table user_info (" +
                 "    order_id INT," +
@@ -90,15 +87,19 @@ public class TestUtils {
                 "    score DECIMAL" +
                 ") WITH (" +
                 "    'format'='lakesoul'," +
-                "    'hashBucketNum'='2',"+
+                "    'hashBucketNum'='2'," +
                 String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
-        tEnvs.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),(5, 'Tom', 75), (4, 'Mike', 70)").await();
+        tEnvs.executeSql(
+                        "INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),(5, 'Tom', 75), (4, 'Mike', 70)")
+                .await();
     }
 
-    public static void createLakeSoulSourceMultiPartitionTable(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
-        String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/multi_range_hash").toUri().toString();
+    public static void createLakeSoulSourceMultiPartitionTable(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
+        String path =
+                new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/multi_range_hash").toUri().toString();
         String createSql = "create table user_multi (" +
                 "    `id` INT," +
                 "    name STRING," +
@@ -114,12 +115,15 @@ public class TestUtils {
                 String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists user_multi");
         tEnvs.executeSql(createSql);
-        tEnvs.executeSql("INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', 80, TO_DATE('1995-10-10'), 'China'), " +
-                "(3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China'), (3, 'Amy', 95,  TO_DATE('1995-10-10'),'UK'), " +
-                "(5, 'Tom', 75,  TO_DATE('1995-10-01'), 'UK'), (4, 'Mike', 70, TO_DATE('1995-10-15'), 'UK')").await();
+        tEnvs.executeSql(
+                        "INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', 80, TO_DATE('1995-10-10'), 'China'), " +
+                                "(3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China'), (3, 'Amy', 95,  TO_DATE('1995-10-10'),'UK'), " +
+                                "(5, 'Tom', 75,  TO_DATE('1995-10-01'), 'UK'), (4, 'Mike', 70, TO_DATE('1995-10-15'), 'UK')")
+                .await();
     }
 
-    public static void createLakeSoulSourceTableOrder(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+    public static void createLakeSoulSourceTableOrder(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
         String path = new Path(System.getProperty("java.io.tmpdir"), "/tmp/lakeSource/order").toUri().toString();
         String createOrderSql = "create table order_info (" +
                 "    `id` INT PRIMARY KEY NOT ENFORCED," +
@@ -130,6 +134,7 @@ public class TestUtils {
                 String.format("    'path'='%s' )", path);
         tEnvs.executeSql("DROP TABLE if exists order_info");
         tEnvs.executeSql(createOrderSql);
-        tEnvs.executeSql("INSERT INTO order_info VALUES (1, 20.12), (2, 10.88), (3, 15.35), (4, 25.24), (5, 15.04)").await();
+        tEnvs.executeSql("INSERT INTO order_info VALUES (1, 20.12), (2, 10.88), (3, 15.35), (4, 25.24), (5, 15.04)")
+                .await();
     }
 }

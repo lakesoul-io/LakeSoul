@@ -1,15 +1,13 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.Comparator;
 import java.util.List;
 import java.util.TimeZone;
@@ -17,12 +15,11 @@ import java.util.concurrent.ExecutionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class DataTypeSupportTest {
+public class DataTypeSupportTest extends AbstractTestBase {
     private String BATCH_TYPE = "batch";
 
-
     @Test
-    public void testTimeStampLTZ() {
+    public void testTimeStampLTZ() throws ExecutionException, InterruptedException {
         TableEnvironment insertEnv = TestUtils.createTableEnv(BATCH_TYPE);
         String createUserSql = "create table test_timestamp_ltz (" +
                 "    createTime TIMESTAMP, " +
@@ -35,7 +32,7 @@ public class DataTypeSupportTest {
         insertEnv.executeSql("DROP TABLE if exists test_timestamp_ltz");
         insertEnv.executeSql(createUserSql);
         insertEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
-        insertEnv.executeSql("INSERT INTO test_timestamp_ltz VALUES (TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('1999-01-01 12:10:15'))");
+        insertEnv.executeSql("INSERT INTO test_timestamp_ltz VALUES (TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('1999-01-01 12:10:15'))").await();
 
         TableEnvironment queryEnv = TestUtils.createTableEnv(BATCH_TYPE);
         queryEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("America/Los_Angeles").toZoneId());
@@ -45,7 +42,6 @@ public class DataTypeSupportTest {
                 "DATE_FORMAT(modifyTime, 'yyyy-MM-dd hh:mm:ss')" +
                 "FROM test_timestamp_ltz").collect());
         assertThat(rows.toString()).isEqualTo("[+I[1999-01-01 12:10:15, 1998-12-31 08:10:15]]");
-
     }
 
     @Test

@@ -22,6 +22,7 @@ package org.apache.flink.lakesoul.test.connector;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -46,7 +47,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LakeSoulLookupJoinCase {
+public class LakeSoulLookupJoinCase extends AbstractTestBase {
     private static TableEnvironment tableEnv;
     private static LakeSoulCatalog lakeSoulCatalog;
 

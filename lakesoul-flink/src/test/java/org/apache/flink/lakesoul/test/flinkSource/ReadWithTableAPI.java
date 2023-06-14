@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
@@ -11,7 +12,7 @@ import java.util.concurrent.ExecutionException;
 
 import static org.apache.flink.table.api.Expressions.$;
 
-public class ReadWithTableAPI {
+public class ReadWithTableAPI extends AbstractTestBase {
     private String BATCH_TYPE = "batch";
 
     @Test

@@ -190,7 +190,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 continue;
             }
 
-            // we have get one valid row, unnecessary fields and return the row
+            // we have get one valid row, return row with requested schema
             return this.curArrowReaderRequestedSchema.read(rowId);
         }
     }

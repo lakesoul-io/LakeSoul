@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
@@ -11,7 +12,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
-public class BatchReadSuite {
+public class BatchReadSuite extends AbstractTestBase {
     private String BATCH_TYPE = "batch";
     private String startTime;
     private String endTime;
