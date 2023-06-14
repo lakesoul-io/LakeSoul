@@ -24,10 +24,8 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
-import org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer;
-import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketStateSerializer;
+import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter;
+import org.apache.flink.lakesoul.sink.state.*;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucketFactory;
@@ -126,5 +124,15 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
             throws IOException {
         return new LakeSoulSinkCommittableSerializer(
                 NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+    }
+
+    @Override
+    public LakeSoulSinkGlobalCommitter createGlobalCommitter() throws IOException {
+        return new LakeSoulSinkGlobalCommitter();
+    }
+
+    @Override
+    public SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer() throws IOException {
+        return new LakeSoulSinkGlobalCommittableSerializer(NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     }
 }
