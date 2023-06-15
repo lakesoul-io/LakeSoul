@@ -78,7 +78,8 @@ public class DDLSuite extends AbstractTestBase {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/user' )";
+                "    'path'='" + getTempDirUri("/lakeSource/user") +
+                "' )";
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
     }

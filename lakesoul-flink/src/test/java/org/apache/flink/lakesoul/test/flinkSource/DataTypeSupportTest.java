@@ -2,7 +2,6 @@ package org.apache.flink.lakesoul.test.flinkSource;
 
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
@@ -16,7 +15,7 @@ import java.util.concurrent.ExecutionException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class DataTypeSupportTest extends AbstractTestBase {
-    private String BATCH_TYPE = "batch";
+    private final String BATCH_TYPE = "batch";
 
     @Test
     public void testTimeStampLTZ() throws ExecutionException, InterruptedException {
@@ -25,14 +24,17 @@ public class DataTypeSupportTest extends AbstractTestBase {
                 "    createTime TIMESTAMP, " +
                 "    modifyTime TIMESTAMP_LTZ " +
                 ") WITH (" +
-                "    'format'='lakesoul'," +
+                "    'connector'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/test_timestamp_ltz' )";
+                "    'path'='" + getTempDirUri("/lakeSource/test_timestamp_ltz") +
+                "' )";
 
         insertEnv.executeSql("DROP TABLE if exists test_timestamp_ltz");
         insertEnv.executeSql(createUserSql);
         insertEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
-        insertEnv.executeSql("INSERT INTO test_timestamp_ltz VALUES (TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('1999-01-01 12:10:15'))").await();
+        insertEnv.executeSql(
+                        "INSERT INTO test_timestamp_ltz VALUES (TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('1999-01-01 12:10:15'))")
+                .await();
 
         TableEnvironment queryEnv = TestUtils.createTableEnv(BATCH_TYPE);
         queryEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("America/Los_Angeles").toZoneId());
@@ -48,7 +50,7 @@ public class DataTypeSupportTest extends AbstractTestBase {
     public void testLakesoulSourceWithDateType() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableWithDateType(createTableEnv);
-        String testSql = String.format("select * from birth_info");
+        String testSql = "select * from birth_info";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         tEnvs.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
         List<Row> rows = CollectionUtil.iteratorToList(tEnvs.executeSql(testSql).collect());
@@ -59,7 +61,8 @@ public class DataTypeSupportTest extends AbstractTestBase {
                         "+I[3, Jack, 2010-12-10, false, 10.12, D, 1.88, 9, 67, 88.26, [1, -1], [-85, 18, -50, 9], 1999-01-01T12:10:15, 2000-10-01T07:15:00Z]]");
     }
 
-    private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+    private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
         String createUserSql = "create table birth_info (" +
                 "    id INT," +
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
@@ -76,15 +79,17 @@ public class DataTypeSupportTest extends AbstractTestBase {
                 "    createTime TIMESTAMP, " +
                 "    modifyTime TIMESTAMP_LTZ " +
                 ") WITH (" +
-                "    'format'='lakesoul'," +
+                "    'connector'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/birth' )";
+                "    'path'='" + getTempDirUri("/lakeSource/birth") +
+                "' )";
         tEnvs.executeSql("DROP TABLE if exists birth_info");
         tEnvs.executeSql(createUserSql);
         tEnvs.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
         tEnvs.executeSql("INSERT INTO birth_info VALUES " +
-                "(1, 'Bob', TO_DATE('1995-10-01'), true,'10.01','A',1.85,3,89,100.105,X'01AF',X'12437097',TO_TIMESTAMP('1990-01-07 10:10:00'),TO_TIMESTAMP('1995-10-01 15:10:00')), " +
-                "(2, 'Alice', TO_DATE('2023-05-10'), true,'10.05','B',1.90,5,88,500.314,X'02FF',X'10912330',TO_TIMESTAMP('1995-10-10 13:10:20'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
-                "(3, 'Jack', TO_DATE('2010-12-10'),false,'10.12','D',1.88,9,67,88.262,X'01FF',X'AB12CE09',TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('2000-10-01 15:15:00'))").await();
+                        "(1, 'Bob', TO_DATE('1995-10-01'), true,'10.01','A',1.85,3,89,100.105,X'01AF',X'12437097',TO_TIMESTAMP('1990-01-07 10:10:00'),TO_TIMESTAMP('1995-10-01 15:10:00')), " +
+                        "(2, 'Alice', TO_DATE('2023-05-10'), true,'10.05','B',1.90,5,88,500.314,X'02FF',X'10912330',TO_TIMESTAMP('1995-10-10 13:10:20'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
+                        "(3, 'Jack', TO_DATE('2010-12-10'),false,'10.12','D',1.88,9,67,88.262,X'01FF',X'AB12CE09',TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('2000-10-01 15:15:00'))")
+                .await();
     }
 }

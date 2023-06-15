@@ -86,7 +86,7 @@ public class LakeSoulTestUtils {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(parallelism);
         env.enableCheckpointing(3000);
-        env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink");
+        env.getCheckpointConfig().setCheckpointStorage(AbstractTestBase.getTempDirUri("/flinkchk"));
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
         env.getCheckpointConfig().configure(config);
         return env;

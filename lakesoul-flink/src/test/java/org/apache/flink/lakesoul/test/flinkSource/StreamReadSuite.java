@@ -26,15 +26,12 @@ import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.junit.Test;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
-@Execution(ExecutionMode.CONCURRENT)
 public class StreamReadSuite extends AbstractTestBase {
 
     private final List<Tuple2<Integer, Integer>> BUCKET_NUM_AND_PARALLELISM = Arrays.asList(
@@ -45,7 +42,6 @@ public class StreamReadSuite extends AbstractTestBase {
     );
 
     @Test
-    @Execution(ExecutionMode.CONCURRENT)
     public void testLakesoulSourceIncrementalStream() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
@@ -62,9 +58,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     "    name STRING PRIMARY KEY NOT ENFORCED," +
                     "    score INT" +
                     ") WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/test_stream' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/test_stream") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists test_stream");
             createTableEnv.executeSql(createUserSql);
 
@@ -102,7 +99,6 @@ public class StreamReadSuite extends AbstractTestBase {
     }
 
     @Test
-    @Execution(ExecutionMode.CONCURRENT)
     public void testLakesoulSourceSelectMultiRangeAndHash() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
@@ -124,9 +120,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     ") " +
                     "PARTITIONED BY (`region`,`date`)" +
                     "WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/multi_range_hash' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/multi_range_hash") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists user_multi");
             createTableEnv.executeSql(createSql);
 
@@ -169,7 +166,6 @@ public class StreamReadSuite extends AbstractTestBase {
     }
 
     @Test
-    @Execution(ExecutionMode.CONCURRENT)
     public void testLakesoulSourceSelectWhere() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
@@ -185,9 +181,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     "    name STRING PRIMARY KEY NOT ENFORCED," +
                     "    score DECIMAL" +
                     ") WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/user_info' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/user_info") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists user_info");
             createTableEnv.executeSql(createUserSql);
 
@@ -224,7 +221,6 @@ public class StreamReadSuite extends AbstractTestBase {
     }
 
     @Test
-    @Execution(ExecutionMode.CONCURRENT)
     public void testLakesoulSourceSelectJoin() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
@@ -240,9 +236,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     "    name STRING PRIMARY KEY NOT ENFORCED," +
                     "    score DECIMAL" +
                     ") WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/user_info2' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/user_info2") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists user_info2");
             createTableEnv.executeSql(createUserSql);
 
@@ -250,9 +247,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     "    `id` INT PRIMARY KEY NOT ENFORCED," +
                     "    price DOUBLE" +
                     ") WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/order' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/order") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists order_info");
             createTableEnv.executeSql(createOrderSql);
 
@@ -296,7 +294,6 @@ public class StreamReadSuite extends AbstractTestBase {
     }
 
     @Test
-    @Execution(ExecutionMode.CONCURRENT)
     public void testLakesoulSourceSelectDistinct() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
@@ -312,9 +309,10 @@ public class StreamReadSuite extends AbstractTestBase {
                     "    name STRING PRIMARY KEY NOT ENFORCED," +
                     "    score DECIMAL" +
                     ") WITH (" +
-                    "    'format'='lakesoul'," +
+                    "    'connector'='lakesoul'," +
                     String.format("    'hashBucketNum'='%d',", hashBucketNum) +
-                    "    'path'='/tmp/lakeSource/user_info3' )";
+                    "    'path'='" + getTempDirUri("/lakeSource/user_info3") +
+                    "' )";
             createTableEnv.executeSql("DROP TABLE if exists user_info3");
             createTableEnv.executeSql(createUserSql);
 

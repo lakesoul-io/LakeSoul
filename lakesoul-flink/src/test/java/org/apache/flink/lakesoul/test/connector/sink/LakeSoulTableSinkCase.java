@@ -49,7 +49,6 @@ import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.*;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStageId;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStreamNodeId;
 import static org.junit.Assert.assertEquals;
@@ -80,69 +79,6 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         }
         strings.sort(String::compareTo);
         return strings;
-    }
-
-    public static void main(String[] args) throws ExecutionException, InterruptedException {
-        // using batch table env to query.
-        String table = "db1.sink_table";
-        List<String> results = new ArrayList<>();
-        TableEnvironment batchTEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
-        LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
-
-        batchTEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        batchTEnv.useCatalog(lakeSoulCatalog.getName());
-        batchTEnv.executeSql("create database if not exists db1");
-        batchTEnv.useDatabase("db1");
-
-        boolean part = false;
-        String ddl =
-                "create table if not exists db1.sink_table (a int,b string,c string"
-                        + (part ? "" : ",d string,e string")
-                        + ") "
-                        + (part ? "partitioned by (d string,e string) " : "")
-
-                        + " WITH ("
-                        + "'"
-                        + PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN.key()
-                        + "'='$d $e:00:00',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_DELAY.key()
-                        + "'='1h',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_POLICY_KIND.key()
-                        + "'='metastore,success-file',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME.key()
-                        + "'='_MY_SUCCESS',"
-                        + "'"
-                        + LAKESOUL_TABLE_PATH.key()
-                        + "'='/tmp/sink_table',"
-                        + "'"
-                        + FactoryUtil.FORMAT.key()
-                        + "'='lakesoul'"
-                        + ")";
-        batchTEnv.executeSql(ddl);
-
-
-        StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();
-        StreamTableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
-        tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        tEnv.useCatalog(lakeSoulCatalog.getName());
-        tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-
-        tEnv.executeSql(ddl);
-
-        tEnv.executeSql("insert into db1.sink_table select 6,'a','b','2020-05-03','12'").await();
-//        batchTEnv.executeSql("insert into db1.sink_table select 6,'a','b','2020-05-03','12'").await();
-
-        batchTEnv
-                .executeSql("select * from " + table)
-                .collect()
-                .forEachRemaining(r -> results.add(r.toString()));
-        results.sort(String::compareTo);
-        System.out.println(results);
-//        expected.sort(String::compareTo);
-//        Assert.assertEquals(expected, results);
     }
 
     @Test
@@ -211,7 +147,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
 
     @Test
     public void testLakeSoulTableSinkWithParallelismInStreaming() {
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        Configuration config = new Configuration();
+        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         final TableEnvironment tEnv =
                 LakeSoulTestUtils.createTableEnvInStreamingMode(env, SqlDialect.DEFAULT);
         testLakeSoulTableSinkWithParallelismBase(
@@ -283,9 +221,11 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                 + "'= '3',"
                                 + "'"
                                 + LAKESOUL_TABLE_PATH.key()
-                                + "'='/tmp/test_table',"
+                                + "'='" +
+                                getTempDirUri("/test_table")
+                                + "',"
                                 + "'"
-                                + FactoryUtil.FORMAT.key()
+                                + "connector"
                                 + "'='lakesoul'"
                                 + ")"));
         tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
@@ -347,8 +287,8 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         tEnv.useDatabase("db1");
         try {
             String ddl = String.format(
-                    "create table append_table (i int, j int) with ('%s'='/tmp/append_table', '%s'='lakesoul')",
-                    LAKESOUL_TABLE_PATH.key(), FactoryUtil.FORMAT.key());
+                    "create table append_table (i int, j int) with ('%s'='%s', '%s'='lakesoul')",
+                    LAKESOUL_TABLE_PATH.key(), getTempDirUri("/append_table"), FactoryUtil.FORMAT.key());
             tEnv.executeSql(ddl);
             tEnv.executeSql("insert into append_table select 1, 1").await();
             tEnv.executeSql("insert into append_table select 2, 2").await();
@@ -374,7 +314,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                 (p) -> {
                     Configuration config = new Configuration();
                     config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
                     env.setParallelism(1);
 
                     env.enableCheckpointing(1000);
@@ -395,6 +335,11 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                 .await();
                     } catch (Exception e) {
                         Assert.fail("Failed to execute sql: " + e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
                     }
 
                     assertBatch(
@@ -448,7 +393,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                             + " WITH ("
                             + "'"
                             + LAKESOUL_TABLE_PATH.key()
-                            + "'='/tmp/sink_table',"
+                            + "'='"
+                            + getTempDirUri("/sink_table")
+                            + "',"
                             + "'connector'='lakesoul'"
                             + ")");
 
@@ -465,6 +412,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                     "(4,'x','y','2020-05-03','10')," +
                     "(5,'x','y','2020-05-03','11')," +
                     "(5,'x','y','2020-05-03','11')").await();
+            Thread.sleep(3000);
 
             assertBatch(
                     "db1.sink_table",

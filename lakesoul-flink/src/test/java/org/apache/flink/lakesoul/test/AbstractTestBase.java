@@ -14,11 +14,12 @@
 package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.core.fs.local.LocalFileSystem;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
-import org.apache.flink.util.FileUtils;
 import org.junit.After;
 import org.junit.ClassRule;
 import org.junit.rules.TemporaryFolder;
@@ -26,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.IOException;
 import java.time.Duration;
 
 public abstract class AbstractTestBase {
@@ -40,8 +40,8 @@ public abstract class AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         config.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 5);
         config.set(ExecutionCheckpointingOptions.CHECKPOINTING_INTERVAL, Duration.ofSeconds(3));
-        config.setString("state.backend", "filesystem");
-        config.setString("state.checkpoint.dir", "file://tmp/flink");
+        config.setString("state.backend", "hashmap");
+        config.setString("state.checkpoint.dir", getTempDirUri("/flinkchk"));
         return config;
     }
 
@@ -75,31 +75,15 @@ public abstract class AbstractTestBase {
         }
     }
 
-    // --------------------------------------------------------------------------------------------
-    //  Temporary File Utilities
-    // --------------------------------------------------------------------------------------------
-
-    public String getTempDirPath(String dirName) throws IOException {
-        File f = createAndRegisterTempFile(dirName);
-        return f.toURI().toString();
-    }
-
-    public String getTempFilePath(String fileName) throws IOException {
-        File f = createAndRegisterTempFile(fileName);
-        return f.toURI().toString();
-    }
-
-    public String createTempFile(String fileName, String contents) throws IOException {
-        File f = createAndRegisterTempFile(fileName);
-        if (!f.getParentFile().exists()) {
-            f.getParentFile().mkdirs();
-        }
-        f.createNewFile();
-        FileUtils.writeFileUtf8(f, contents);
-        return f.toURI().toString();
-    }
-
-    public File createAndRegisterTempFile(String fileName) throws IOException {
-        return new File(TEMPORARY_FOLDER.newFolder(), fileName);
+    /*
+     * @path: a subdir name under temp dir, e.g. /lakesoul_table
+     * @return: file://PLATFORM_TMP_DIR/path
+     */
+    public static String getTempDirUri(String path) {
+        String tmp = System.getProperty("java.io.tmpdir");
+        Path tmpPath = new Path(tmp, path);
+        File tmpDirFile = new File(tmpPath.toString());
+        tmpDirFile.deleteOnExit();
+        return tmpPath.makeQualified(LocalFileSystem.getSharedInstance()).toUri().toString();
     }
 }
