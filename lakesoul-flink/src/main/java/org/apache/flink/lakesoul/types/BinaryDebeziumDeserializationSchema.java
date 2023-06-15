@@ -28,14 +28,21 @@ import org.apache.flink.util.Collector;
 public class BinaryDebeziumDeserializationSchema implements DebeziumDeserializationSchema<BinarySourceRecord> {
 
     LakeSoulRecordConvert convert;
+    String basePath;
 
     public BinaryDebeziumDeserializationSchema(LakeSoulRecordConvert convert) {
         this.convert = convert;
     }
 
+    public BinaryDebeziumDeserializationSchema(LakeSoulRecordConvert convert, String basePath) {
+        this.convert = convert;
+        this.basePath = basePath;
+    }
+
     @Override
     public void deserialize(SourceRecord sourceRecord, Collector<BinarySourceRecord> collector) throws Exception {
-        collector.collect(BinarySourceRecord.fromKafkaSourceRecord(sourceRecord, this.convert));
+//        collector.collect(BinarySourceRecord.fromKafkaSourceRecord(sourceRecord, this.convert));
+        collector.collect(BinarySourceRecord.fromMysqlSourceRecord(sourceRecord, this.convert, this.basePath));
     }
 
     @Override

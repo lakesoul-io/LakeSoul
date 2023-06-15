@@ -43,6 +43,8 @@ public class LakeSoulSinkOptions {
 
   public static final String BINLOG_POSITION = "__binlog_position__";
 
+  public static final String SORT_FIELD = "__sort_filed__";
+
   public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 20000L;
 
   public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;

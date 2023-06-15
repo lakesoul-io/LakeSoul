@@ -167,6 +167,9 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     @Override
     public void write(IN element, Context context) throws IOException {
+        if (element == null) {
+            return;
+        }
         // setting the values in the bucketer context
         bucketerContext.update(
                 context.timestamp(),
