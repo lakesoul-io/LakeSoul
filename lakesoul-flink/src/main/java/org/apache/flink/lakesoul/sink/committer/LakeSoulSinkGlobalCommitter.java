@@ -20,15 +20,19 @@ package org.apache.flink.lakesoul.sink.committer;
 
 import org.apache.commons.lang.NotImplementedException;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -60,8 +64,8 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
      * @throws IOException if fail to filter the recovered committables.
      */
     @Override
-    public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException {
-        throw new NotImplementedException();
+    public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+        return globalCommittables;
     }
 
     /**
@@ -73,7 +77,7 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
      */
     @Override
     public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables) throws IOException {
-        throw new NotImplementedException();
+        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables);
     }
 
     /**
@@ -86,7 +90,12 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
      */
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
-        throw new NotImplementedException();
+        LakeSoulMultiTableSinkGlobalCommittable globalCommittable = LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
+        LakeSoulSinkCommitter committer = LakeSoulSinkCommitter.INSTANCE;
+        for (List<LakeSoulMultiTableSinkCommittable> committables : globalCommittable.getGroupedCommitables().values()) {
+            committer.commit(committables);
+        }
+        return Collections.emptyList();
     }
 
     /**
@@ -96,6 +105,6 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
      */
     @Override
     public void endOfInput() throws IOException, InterruptedException {
-        throw new NotImplementedException();
+        System.out.println("org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter.endOfInput");
     }
 }

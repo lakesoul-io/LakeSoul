@@ -18,102 +18,45 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
+import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
 import javax.annotation.Nullable;
 import java.io.Serializable;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Wrapper class for both type of global committables in {@link LakeSoulMultiTablesSink}. One committable might be either
  * one or more pending files to commit, or one in-progress file to clean up.
  */
-public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable, Comparable<LakeSoulMultiTableSinkGlobalCommittable> {
+public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
 
     static final long serialVersionUID = 42L;
 
-    private final long creationTime;
+    private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables;
 
-    private final String bucketId;
-
-    private final TableSchemaIdentity identity;
-
-    @Nullable
-    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles;
-
-    @Nullable
-    private final String commitId;
-
-    /**
-     * Constructor for {@link org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket} to prepare commit
-     * with pending files
-     */
-    public LakeSoulMultiTableSinkGlobalCommittable(
-            String bucketId,
-            List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
-            long creationTime,
-            TableSchemaIdentity identity) {
-        this(bucketId, identity, pendingFiles, creationTime, UUID.randomUUID().toString());
+    public LakeSoulMultiTableSinkGlobalCommittable(Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
+        this.groupedCommitables = groupedCommitables;
     }
 
-    /**
-     * Constructor for {@link LakeSoulSinkCommittableSerializer} to
-     * restore commitable states
-     */
-    LakeSoulMultiTableSinkGlobalCommittable(
-            String bucketId,
-            TableSchemaIdentity identity,
-            @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
-            long time,
-            @Nullable String commitId) {
-        this.bucketId = bucketId;
-        this.identity = identity;
-        this.pendingFiles = pendingFiles;
-        this.creationTime = time;
-        this.commitId = commitId;
+    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables = new HashMap<>();
+        globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommitables().forEach((key, value) -> groupedCommitables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
     }
 
-    public boolean hasPendingFile() {
-        return pendingFiles != null;
+    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkCommittable(List<LakeSoulMultiTableSinkCommittable> committables) {
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables = new HashMap<>();
+        committables.forEach(committable -> groupedCommitables.computeIfAbsent(Tuple2.of(committable.getIdentity(), committable.getBucketId()), tuple2 -> new ArrayList<>()).add(committable));
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
     }
 
-    @Nullable
-    public List<InProgressFileWriter.PendingFileRecoverable> getPendingFiles() {
-        return pendingFiles;
+
+    public Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> getGroupedCommitables() {
+        return groupedCommitables;
     }
 
-    @Override
-    public int compareTo(LakeSoulMultiTableSinkGlobalCommittable o) {
-        return Long.compare(creationTime, o.creationTime);
-    }
-
-    public long getCreationTime() {
-        return creationTime;
-    }
-
-    public TableSchemaIdentity getIdentity() {
-        return identity;
-    }
-
-    public String getBucketId() {
-        return bucketId;
-    }
-
-    @Override
-    public String toString() {
-        return "LakeSoulMultiTableSinkCommittable{" +
-                "creationTime=" + creationTime +
-                ", bucketId='" + bucketId + '\'' +
-                ", identity=" + identity +
-                ", commitId='" + commitId + '\'' +
-                '}';
-    }
-
-    @Nullable
-    public String getCommitId() {
-        return commitId;
-    }
 }

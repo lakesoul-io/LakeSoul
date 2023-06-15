@@ -75,7 +75,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
 
     @Override
     public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
-        return Optional.of(bucketsBuilder.createCommitter());
+        return Optional.ofNullable(bucketsBuilder.createCommitter());
     }
 
     @Override
@@ -92,7 +92,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
 
     @Override
     public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter() throws IOException {
-        return Optional.of(bucketsBuilder.createGlobalCommitter());
+        return Optional.ofNullable(bucketsBuilder.createGlobalCommitter());
     }
 
     @Override
