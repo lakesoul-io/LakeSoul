@@ -38,6 +38,7 @@ import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import org.apache.spark.sql.types.StructField;
@@ -74,6 +75,21 @@ public class FlinkUtil {
 
     public static String getRangeValue(CatalogPartitionSpec cps) {
         return "Null";
+    }
+
+    public static StructType toSparkSchema(RowType rowType, Boolean isCdc) {
+        StructType stNew = new StructType();
+
+        for (RowType.RowField field : rowType.getFields()) {
+            String name = field.getName();
+            LogicalType logicalType = field.getType();
+            stNew = stNew.add(name, DataTypeUtil.convertDatatype(logicalType), logicalType.isNullable());
+        }
+
+        if (isCdc) {
+            stNew.add("rowKinds", StringType, true);
+        }
+        return stNew;
     }
 
     public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
@@ -135,10 +151,11 @@ public class FlinkUtil {
         }
         return null;
     }
-    public static boolean isCDCDelete(StringData operation){
+
+    public static boolean isCDCDelete(StringData operation) {
         if (StringData.fromString("delete").equals(operation)) {
             return true;
-        }else{
+        } else {
             return false;
         }
     }
@@ -396,7 +413,9 @@ public class FlinkUtil {
                 : ZoneId.of(zone);
     }
 
-    /** Validates user configured time zone. */
+    /**
+     * Validates user configured time zone.
+     */
     private static void validateTimeZone(String zone) {
         final String zoneId = zone.toUpperCase();
         if (zoneId.startsWith("UTC+")

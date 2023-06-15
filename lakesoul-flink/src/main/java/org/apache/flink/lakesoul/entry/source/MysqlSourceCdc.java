@@ -64,17 +64,17 @@ public class MysqlSourceCdc {
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
 
-//        MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
-//                userName,
-//                passWord,
-//                host,
-//                Integer.toString(port),
-//                new HashSet<>(),
-//                databasePrefixPath,
-//                bucketParallelism,
-//                true);
+        MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
+                userName,
+                passWord,
+                host,
+                Integer.toString(port),
+                new HashSet<>(),
+                databasePrefixPath,
+                bucketParallelism,
+                true);
 
-//        mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
+        mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         //syncing mysql tables to lakesoul
 
 //        List<String> tableList = mysqlDBManager.listTables();

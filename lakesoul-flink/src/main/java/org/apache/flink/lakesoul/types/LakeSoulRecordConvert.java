@@ -208,21 +208,22 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private LogicalType primitiveLogicalType(Schema fieldSchema) {
+        boolean nullable = fieldSchema.isOptional();
         switch (fieldSchema.type()) {
             case BOOLEAN:
-                return new BooleanType();
+                return new BooleanType(nullable);
             case INT8:
             case INT16:
             case INT32:
-                return new IntType();
+                return new IntType(nullable);
             case INT64:
-                return new BigIntType();
+                return new BigIntType(nullable);
             case FLOAT32:
-                return new FloatType();
+                return new FloatType(nullable);
             case FLOAT64:
-                return new DoubleType();
+                return new DoubleType(nullable);
             case STRING:
-                return new VarCharType(Integer.MAX_VALUE);
+                return new VarCharType(nullable, Integer.MAX_VALUE);
             case BYTES:
                 Map<String, String> paras = fieldSchema.parameters();
                 int byteLen = Integer.MAX_VALUE;
@@ -230,37 +231,38 @@ public class LakeSoulRecordConvert implements Serializable {
                     int len = Integer.parseInt(paras.get("length"));
                     byteLen = len / 8 + (len % 8 == 0 ? 0 : 1);
                 }
-                return new VarBinaryType(byteLen);
+                return new VarBinaryType(nullable, byteLen);
             default:
                 return null;
         }
     }
 
     private LogicalType otherLogicalType(Schema fieldSchema) {
+        boolean nullable = fieldSchema.isOptional();
         switch (fieldSchema.name()) {
             case Enum.LOGICAL_NAME:
             case Json.LOGICAL_NAME:
             case EnumSet.LOGICAL_NAME:
-                return new VarCharType(Integer.MAX_VALUE);
+                return new VarCharType(nullable, Integer.MAX_VALUE);
             case Time.SCHEMA_NAME:
             case MicroTime.SCHEMA_NAME:
             case NanoTime.SCHEMA_NAME:
-                return new BigIntType();
+                return new BigIntType(nullable);
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
-                return new LocalZonedTimestampType(6);
+                return new LocalZonedTimestampType(nullable, 6);
             case NanoTimestamp.SCHEMA_NAME:
-                return new LocalZonedTimestampType(9);
+                return new LocalZonedTimestampType(nullable, 9);
             case Decimal.LOGICAL_NAME:
                 Map<String, String> paras = fieldSchema.parameters();
-                return new DecimalType(Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
+                return new DecimalType(nullable, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
             case Date.SCHEMA_NAME:
-                return new DateType();
+                return new DateType(nullable);
             case Year.SCHEMA_NAME:
-                return new IntType();
+                return new IntType(nullable);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
-                return new LocalZonedTimestampType();
+                return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
             case Geometry.LOGICAL_NAME:
             case Point.LOGICAL_NAME:
                 paras = fieldSchema.field("wkb").schema().parameters();
@@ -269,7 +271,7 @@ public class LakeSoulRecordConvert implements Serializable {
                     int len = Integer.parseInt(paras.get("length"));
                     byteLen = len / 8 + (len % 8 == 0 ? 0 : 1);
                 }
-                return new VarBinaryType(byteLen);
+                return new VarBinaryType(nullable, byteLen);
             default:
                 return null;
         }
@@ -436,7 +438,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTimestamp.SCHEMA_NAME:
                 writeUTCTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
-              // Geometry and Point can not support now
+            // Geometry and Point can not support now
 //            case Geometry.LOGICAL_NAME:
 //                Object object = convertToGeometry(fieldValue, fieldSchema);
 //                writeBinary(writer, index, object);
@@ -541,8 +543,8 @@ public class LakeSoulRecordConvert implements Serializable {
             Instant instant = null;
             switch (schema.name()) {
                 case Timestamp.SCHEMA_NAME:
-                      instant = TimestampData.fromEpochMillis((Long) dbzObj).toInstant();
-                      break;
+                    instant = TimestampData.fromEpochMillis((Long) dbzObj).toInstant();
+                    break;
                 case MicroTimestamp.SCHEMA_NAME:
                     long micro = (long) dbzObj;
                     instant = TimestampData.fromEpochMillis(

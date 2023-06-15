@@ -50,7 +50,7 @@ public class LakeSoulCatalog implements Catalog {
 
     public static final String CATALOG_NAME = "lakesoul";
     private static final String TABLE_PATH = "path";
-    private static final String TABLE_ID_PREFIX = "table_";
+    public static final String TABLE_ID_PREFIX = "table_";
     private final DBManager dbManager;
 
 

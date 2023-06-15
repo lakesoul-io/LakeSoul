@@ -18,13 +18,16 @@
 
 package org.apache.flink.lakesoul.sink.committer;
 
-import org.apache.commons.lang.NotImplementedException;
+import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +36,9 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+
+import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -46,7 +52,12 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkGlobalCommitter.class);
 
+    private final LakeSoulSinkCommitter committer;
+    private final DBManager dbManager;
+
     public LakeSoulSinkGlobalCommitter() {
+        committer = LakeSoulSinkCommitter.INSTANCE;
+        dbManager = new DBManager();
     }
 
 
@@ -91,20 +102,41 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable = LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
-        LakeSoulSinkCommitter committer = LakeSoulSinkCommitter.INSTANCE;
-        for (List<LakeSoulMultiTableSinkCommittable> committables : globalCommittable.getGroupedCommitables().values()) {
-            committer.commit(committables);
+
+        for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry : globalCommittable.getGroupedCommitables().entrySet()) {
+            TableSchemaIdentity identity = entry.getKey().f0;
+            // TODO: 2023/6/15 more information from identity is need
+            String tableName = identity.tableId.table();
+            String tableNamespace = identity.tableId.schema();
+            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, false).json();
+            TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
+            if (tableInfo == null) {
+                String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
+                String partition = String.join(";", String.join(",", identity.partitionKeyList), String.join(",", identity.primaryKeys));
+                dbManager.createNewTable(
+                        tableId,
+                        tableNamespace,
+                        tableName,
+                        identity.tableLocation,
+                        sparkSchema,
+                        new JSONObject(),
+                        partition
+                );
+            } else if (!tableInfo.getTableSchema().equals(sparkSchema)) {
+                // TODO: 2023/6/15 order of schema changes should be considered
+                dbManager.updateTableSchema(tableInfo.getTableId(), sparkSchema);
+            }
+
+            committer.commit(entry.getValue());
         }
         return Collections.emptyList();
     }
 
     /**
      * Signals that there is no committable any more.
-     *
-     * @throws IOException if fail to handle this notification.
      */
     @Override
-    public void endOfInput() throws IOException, InterruptedException {
-        System.out.println("org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter.endOfInput");
+    public void endOfInput() {
+        // do nothing
     }
 }
