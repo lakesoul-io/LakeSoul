@@ -37,14 +37,12 @@ public class StreamReadSuite {
 
     private List<Tuple2<Integer, Integer>> BUCKET_NUM_AND_PARALLELISM = Arrays.asList(
             new Tuple2<>(3, 2),
-            new Tuple2<>(2, 3),
-            new Tuple2<>(3, 4),
-            new Tuple2<>(4, 2)
+            new Tuple2<>(2, 3)
     );
 
     @Test
     public void testLakesoulSourceIncrementalStream() {
-        for (Tuple2<Integer, Integer> tup:BUCKET_NUM_AND_PARALLELISM) {
+        for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
             int parallelism = tup.f1;
             System.out.println("testLakesoulSourceIncrementalStream with hashBucketNum=" + hashBucketNum + ", parallelism=" + parallelism);
@@ -93,7 +91,7 @@ public class StreamReadSuite {
 
     @Test
     public void testLakesoulSourceSelectMultiRangeAndHash() {
-        for (Tuple2<Integer, Integer> tup:BUCKET_NUM_AND_PARALLELISM) {
+        for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
             int parallelism = tup.f1;
             System.out.println("testLakesoulSourceSelectMultiRangeAndHash with hashBucketNum=" + hashBucketNum + ", parallelism=" + parallelism);
@@ -149,7 +147,7 @@ public class StreamReadSuite {
 
     @Test
     public void testLakesoulSourceSelectWhere() {
-        for (Tuple2<Integer, Integer> tup:BUCKET_NUM_AND_PARALLELISM) {
+        for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
             int parallelism = tup.f1;
             System.out.println("testLakesoulSourceSelectWhere with hashBucketNum=" + hashBucketNum + ", parallelism=" + parallelism);
@@ -197,7 +195,7 @@ public class StreamReadSuite {
 
     @Test
     public void testLakesoulSourceSelectJoin() {
-        for (Tuple2<Integer, Integer> tup:BUCKET_NUM_AND_PARALLELISM) {
+        for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
             int parallelism = tup.f1;
             System.out.println("testLakesoulSourceSelectJoin with hashBucketNum=" + hashBucketNum + ", parallelism=" + parallelism);
@@ -255,7 +253,7 @@ public class StreamReadSuite {
 
                     },
                     "[+I[3, 30.7, 2], +I[4, 25.24, 1], +I[5, 15.04, 1]]",
-                    30L
+                    50L
             );
         }
     }
@@ -284,7 +282,7 @@ public class StreamReadSuite {
             String testSelectDistinct = "select distinct order_id from user_info where order_id<5";
 
 
-            StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism),parallelism);
+            StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,

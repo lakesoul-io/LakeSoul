@@ -19,7 +19,10 @@
 
 package org.apache.flink.lakesoul.test;
 
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
@@ -46,9 +49,11 @@ public class LakeSoulTestUtils {
         env.registerCatalog(catalog.getName(), catalog);
         env.useCatalog(catalog.getName());
     }
+
     public static LakeSoulCatalog createLakeSoulCatalog() {
         return createLakeSoulCatalog(false);
     }
+
     public static LakeSoulCatalog createLakeSoulCatalog(boolean cleanAll) {
         LakeSoulCatalog lakeSoulCatalog = new LakeSoulCatalog();
         if (cleanAll) lakeSoulCatalog.cleanForTest();
@@ -81,11 +86,16 @@ public class LakeSoulTestUtils {
     public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism) {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
+//        final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(config);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(parallelism);
-        env.enableCheckpointing(1000);
+        env.enableCheckpointing(5000);
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(10);
+        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
+        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, 3000L));
         return env;
     }
+
     public static StreamTableEnvironment createTableEnvInStreamingMode(StreamExecutionEnvironment env, SqlDialect dialect) {
         return createTableEnvInStreamingMode(env, dialect, 2);
     }
@@ -134,7 +144,7 @@ public class LakeSoulTestUtils {
             throw new RuntimeException(e);
         }
         List<String> results = TestValuesTableFactory.getResults("sink");
-        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, (row.contains(","))?row.indexOf(","):row.length()-1))));
+        results.sort(Comparator.comparing(row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
         assertThat(results.toString()).isEqualTo(expectedAnswer);
 
     }

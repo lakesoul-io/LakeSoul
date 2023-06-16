@@ -22,6 +22,7 @@ package org.apache.flink.lakesoul.test.connector;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.table.LakeSoulTableLookupFunction;
+import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.JobOptions;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -54,12 +55,13 @@ public class LakeSoulLookupJoinCase {
 
     @BeforeClass
     public static void setup() {
-        tableEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(LakeSoulTestUtils.createStreamExecutionEnvironment());
         lakeSoulCatalog = new LakeSoulCatalog();
         tableEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tableEnv.useCatalog(lakeSoulCatalog.getName());
         ProbeTableGenerateDataOnce = true;
         // create probe table
+        TestCollectionTableFactory.reset();
         if (ProbeTableGenerateDataOnce) {
             TestCollectionTableFactory.initData(
                     Arrays.asList(
@@ -86,7 +88,7 @@ public class LakeSoulLookupJoinCase {
                             Row.of(3, "c"),
                             Row.of(4, "d")),
                     new ArrayList<>(),
-                    5000);
+                    500);
         }
 
         tableEnv.executeSql(
@@ -348,11 +350,11 @@ public class LakeSoulLookupJoinCase {
                 .await();
         Thread insertDimTableThread = new InsertDataThread(10000,
                 "insert overwrite partition_table_3 values "
-                + "(1,'a','88',2021,'05','01'),"
-                + "(1,'a','10',2021,'05','01'),"
-                + "(2,'b','50',2021,'05','01'),"
-                + "(3,'c','99',2021,'05','01'),"
-                + "(2,'b','66',2020,'09','31')");
+                        + "(1,'a','88',2021,'05','01'),"
+                        + "(1,'a','10',2021,'05','01'),"
+                        + "(2,'b','50',2021,'05','01'),"
+                        + "(3,'c','99',2021,'05','01'),"
+                        + "(2,'b','66',2020,'09','31')");
         insertDimTableThread.start();
         TableImpl flinkTable =
                 (TableImpl)
@@ -373,7 +375,7 @@ public class LakeSoulLookupJoinCase {
         tableEnv.executeSql("drop table if exists partition_table_3");
     }
 
-//    @Test
+    //    @Test
     public void testLookupJoinPartitionedTableWithPartitionTime() throws Exception {
         // create the lakesoul partitioned table which uses default 'partition-name' order and partition order keys are particular partition keys.
         tableEnv.executeSql(
@@ -416,7 +418,7 @@ public class LakeSoulLookupJoinCase {
         tableEnv.executeSql("drop table if exists partition_table_2");
     }
 
-//    @Test
+    //    @Test
     public void testLookupJoinPartitionedTableWithCreateTime() throws Exception {
         tableEnv.executeSql(
                 String.format(
@@ -547,7 +549,7 @@ public class LakeSoulLookupJoinCase {
                                 false);
         LakeSoulTableLookupFunction lookupFunction =
                 (LakeSoulTableLookupFunction)
-                        lakeSoulLookupTableSource.getLookupFunction(new int[][] {{0}});
+                        lakeSoulLookupTableSource.getLookupFunction(new int[][]{{0}});
         return lookupFunction;
     }
 
@@ -567,22 +569,18 @@ public class LakeSoulLookupJoinCase {
     public static void tearDown() {
 
 
-
-
-
-
-
-
         if (lakeSoulCatalog != null) {
             lakeSoulCatalog.close();
         }
     }
 
-    public static class InsertDataThread extends Thread { ;
+    public static class InsertDataThread extends Thread {
+        ;
 
         private int sleepMilliSeconds;
 
         private String insertSql;
+
         public InsertDataThread(int sleepMilliSeconds, String insertSql) {
             this.sleepMilliSeconds = sleepMilliSeconds;
             this.insertSql = insertSql;
@@ -600,7 +598,7 @@ public class LakeSoulLookupJoinCase {
                 throw new RuntimeException(e);
             }
             try {
-                System.out.println("trying executeSql: "+ insertSql);
+                System.out.println("trying executeSql: " + insertSql);
                 batchEnv.executeSql(insertSql).await();
 
             } catch (InterruptedException e) {
@@ -608,7 +606,7 @@ public class LakeSoulLookupJoinCase {
             } catch (ExecutionException e) {
                 throw new RuntimeException(e);
             } finally {
-                System.out.println("executeSql done: "+ insertSql);
+                System.out.println("executeSql done: " + insertSql);
             }
         }
     }
