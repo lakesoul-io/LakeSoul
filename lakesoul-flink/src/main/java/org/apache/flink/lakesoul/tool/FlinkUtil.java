@@ -35,9 +35,11 @@ import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import org.apache.spark.sql.types.StructField;
@@ -82,8 +84,8 @@ public class FlinkUtil {
         for (int i = 0; i < tsc.getFieldCount(); i++) {
             String name = tsc.getFieldName(i).get();
             DataType dt = tsc.getFieldDataType(i).get();
-            String dtName = dt.getLogicalType().getTypeRoot().name();
-            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dt.getLogicalType()), dt.getLogicalType().isNullable());
+            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, dt.getLogicalType()));
+            stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
         }
         if (isCdc) {
             stNew = stNew.add("rowKinds", StringType, true);
@@ -135,30 +137,32 @@ public class FlinkUtil {
         }
         return null;
     }
-    public static boolean isCDCDelete(StringData operation){
+
+    public static boolean isCDCDelete(StringData operation) {
         if (StringData.fromString("delete").equals(operation)) {
             return true;
-        }else{
+        } else {
             return false;
         }
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
-        Builder bd = Schema.newBuilder();
         JSONObject properties = tableInfo.getProperties();
+
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        RowType rowType = ArrowUtils.fromArrowSchema(arrowSchema);
+        Builder bd = Schema.newBuilder();
+
         String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
         boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
-        for (StructField sf : struct.fields()) {
-            if (contains && sf.name().equals(lakesoulCdcColumnName)) {
+
+        for (RowType.RowField field : rowType.getFields()) {
+            if (contains && field.getName().equals(lakesoulCdcColumnName)) {
                 continue;
             }
-            String tyname = DataTypeUtil.convertToFlinkDatatype(sf);
-            if (!sf.nullable()) {
-                tyname += NOT_NULL;
-            }
-            bd = bd.column(sf.name(), tyname);
+            bd.column(field.getName(), field.getType().asSerializableString());
         }
         List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
         List<String> parKeys;
@@ -396,7 +400,9 @@ public class FlinkUtil {
                 : ZoneId.of(zone);
     }
 
-    /** Validates user configured time zone. */
+    /**
+     * Validates user configured time zone.
+     */
     private static void validateTimeZone(String zone) {
         final String zoneId = zone.toUpperCase();
         if (zoneId.startsWith("UTC+")

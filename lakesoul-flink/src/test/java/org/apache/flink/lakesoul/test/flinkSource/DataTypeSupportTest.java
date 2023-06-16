@@ -87,8 +87,8 @@ public class DataTypeSupportTest {
         tEnvs.executeSql(createUserSql);
         tEnvs.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
         tEnvs.executeSql("INSERT INTO birth_info VALUES " +
-                "(1, 'Bob', TO_DATE('1995-10-01'), true,'10.01','A',1.85,3,89,100.105,X'01AF',X'12437097',TO_TIMESTAMP('1990-01-07 10:10:00'),TO_TIMESTAMP('1995-10-01 15:10:00')), " +
-                "(2, 'Alice', TO_DATE('2023-05-10'), true,'10.05','B',1.90,5,88,500.314,X'02FF',X'10912330',TO_TIMESTAMP('1995-10-10 13:10:20'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
-                "(3, 'Jack', TO_DATE('2010-12-10'),false,'10.12','D',1.88,9,67,88.262,X'01FF',X'AB12CE09',TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('2000-10-01 15:15:00'))").await();
+                "(1, 'Bob', TO_DATE('1995-10-01'), true,'10.01','A',1.85,CAST(3 AS TINYINT),89,100.105,X'01AF',X'12437097',TO_TIMESTAMP('1990-01-07 10:10:00'),TO_TIMESTAMP('1995-10-01 15:10:00')), " +
+                "(2, 'Alice', TO_DATE('2023-05-10'), true,'10.05','B',1.90,CAST(5 AS TINYINT),88,500.314,X'02FF',X'10912330',TO_TIMESTAMP('1995-10-10 13:10:20'),TO_TIMESTAMP_LTZ(1612176000,0)), " +
+                "(3, 'Jack', TO_DATE('2010-12-10'),false,'10.12','D',1.88,CAST(9 AS TINYINT),67,88.262,X'01FF',X'AB12CE09',TO_TIMESTAMP('1999-01-01 12:10:15'),TO_TIMESTAMP('2000-10-01 15:15:00'))").await();
     }
 }
