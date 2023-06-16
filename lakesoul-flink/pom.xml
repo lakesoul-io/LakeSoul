@@ -172,6 +172,24 @@
             </exclusions>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>30.1.1-jre</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-s3-fs-hadoop</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+            <scope>${local.scope}</scope>
+        </dependency>
 
         <!--flink-sql-submitter-->
         <dependency>
@@ -259,6 +277,18 @@
                     <groupId>org.objenesis</groupId>
                     <artifactId>objenesis</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>com.google.guava</groupId>
+                    <artifactId>guava</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>hadoop-client-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>hadoop-client-runtime</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <dependency>
@@ -289,6 +319,12 @@
             <artifactId>spark-sql_2.12</artifactId>
             <version>3.3.1</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.parquet</groupId>
+                    <artifactId>parquet-hadoop</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
@@ -386,7 +422,6 @@
                             <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-tags_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-unsafe_${scala.binary.version}</include>
-                            <include>com.google.guava:guava</include>
                             <include>org.json4s:json4s-jackson_2.12</include>
                             <include>org.json4s:json4s-core_2.12</include>
                             <include>org.json4s:json4s-ast_2.12</include>
@@ -432,10 +467,6 @@
                         <relocation>
                             <pattern>com.alibaba.fastjson</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.google.common</pattern>
-                            <shadedPattern>com.lakesoul.shaded.com.google.common</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>

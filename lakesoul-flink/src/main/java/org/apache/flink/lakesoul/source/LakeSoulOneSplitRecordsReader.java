@@ -31,6 +31,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import javax.annotation.Nullable;
@@ -100,6 +101,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);
             FlinkUtil.setFSConfigs(conf, reader);
+        }
+
+        if (!cdcColumn.isEmpty()) {
+            int cdcField = schemaWithPk.getFieldIndex(cdcColumn);
+            cdcFieldGetter = RowData.createFieldGetter(new VarCharType(), cdcField);
         }
 
         for (Map.Entry<String, String> partition : this.partitions.entrySet()) {
@@ -173,7 +179,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 rowId = curRecordId;
                 curRecordId++;
                 rd = this.curArrowReader.read(rowId);
-                if (!"".equals(this.cdcColumn)) {
+                if (!cdcColumn.isEmpty()) {
                     if (this.isStreaming) {
                         rd.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
                     } else {
