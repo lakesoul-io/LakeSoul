@@ -172,6 +172,8 @@
             </exclusions>
             <scope>test</scope>
         </dependency>
+
+        <!--The following 3 are required to run tests with access to s3/hdfs-->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>

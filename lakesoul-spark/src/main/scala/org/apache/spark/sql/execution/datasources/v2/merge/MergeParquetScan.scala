@@ -125,14 +125,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
 
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    val readDataSchemaAsJson = readDataSchema.json
-
-    val requestedFields = readDataSchema.fieldNames
-
     hadoopConf.set(ParquetInputFormat.READ_SUPPORT_CLASS, classOf[ParquetReadSupport].getName)
-    hadoopConf.set(
-      ParquetWriteSupport.SPARK_ROW_SCHEMA,
-      readDataSchemaAsJson)
     hadoopConf.set(
       SQLConf.SESSION_LOCAL_TIMEZONE.key,
       sparkSession.sessionState.conf.sessionLocalTimeZone)
@@ -152,6 +145,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     hadoopConf.setBoolean(
       SQLConf.PARQUET_INT96_AS_TIMESTAMP.key,
       sparkSession.sessionState.conf.isParquetINT96AsTimestamp)
+    hadoopConf.set("spark.sql.legacy.parquet.nanosAsLong", "false")
 
     val broadcastedConf = sparkSession.sparkContext.broadcast(
       new SerializableConfiguration(hadoopConf))
