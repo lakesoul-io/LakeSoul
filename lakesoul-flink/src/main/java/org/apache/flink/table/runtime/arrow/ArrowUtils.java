@@ -857,12 +857,12 @@ public final class ArrowUtils {
 
         @Override
         public LogicalType visit(ArrowType.Utf8 type) {
-            return new VarCharType();
+            return new VarCharType(VarCharType.MAX_LENGTH);
         }
 
         @Override
         public LogicalType visit(ArrowType.LargeUtf8 type) {
-            return new VarCharType();
+            return new VarCharType(VarCharType.MAX_LENGTH);
         }
 
         @Override
@@ -872,12 +872,12 @@ public final class ArrowUtils {
 
         @Override
         public LogicalType visit(ArrowType.LargeBinary type) {
-            return new VarBinaryType();
+            return new VarBinaryType(VarBinaryType.MAX_LENGTH);
         }
 
         @Override
         public LogicalType visit(ArrowType.FixedSizeBinary type) {
-            return new VarBinaryType();
+            return new BinaryType(type.getByteWidth());
         }
 
         @Override
