@@ -26,6 +26,7 @@ import java.util.Objects;
 
 public final class TableSchemaIdentity implements Serializable {
     public final TableId tableId;
+    public final boolean isCdc;
 
     public RowType rowType;
 
@@ -40,15 +41,22 @@ public final class TableSchemaIdentity implements Serializable {
         this.tableLocation = null;
         this.primaryKeys = null;
         this.partitionKeyList = null;
+        this.isCdc = false;
     }
 
     public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
                                List<String> partitionKeyList) {
+        this(tableId, rowType, tableLocation, primaryKeys, partitionKeyList, false);
+    }
+
+    public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
+                               List<String> partitionKeyList, boolean isCdc) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.tableLocation = tableLocation;
         this.primaryKeys = primaryKeys;
         this.partitionKeyList = partitionKeyList;
+        this.isCdc = isCdc;
     }
 
     @Override
@@ -68,8 +76,8 @@ public final class TableSchemaIdentity implements Serializable {
     @Override
     public String toString() {
         return "TableSchemaIdentity{" +
-               "tableId=" + tableId +
-               ", rowType=" + rowType +
-               '}';
+                "tableId=" + tableId +
+                ", rowType=" + rowType +
+                '}';
     }
 }

@@ -108,7 +108,7 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
             // TODO: 2023/6/15 more information from identity is need
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, false).json();
+            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, identity.isCdc).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();

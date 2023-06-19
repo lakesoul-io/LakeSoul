@@ -84,7 +84,8 @@ public class FlinkUtil {
         for (RowType.RowField field : rowType.getFields()) {
             String name = field.getName();
             LogicalType logicalType = field.getType();
-            stNew = stNew.add(name, DataTypeUtil.convertDatatype(logicalType), logicalType.isNullable());
+            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
+            stNew = stNew.add(name, dataType, logicalType.isNullable());
         }
 
         if (isCdc) {
