@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -11,8 +12,8 @@ import org.junit.Test;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
-public class DMLSuite {
-    private String BATCH_TYPE = "batch";
+public class DMLSuite extends AbstractTestBase {
+    private final String BATCH_TYPE = "batch";
 
     @Test
     public void testInsertSQL() throws ExecutionException, InterruptedException {
@@ -27,7 +28,8 @@ public class DMLSuite {
         tEnv.executeSql("INSERT INTO user_info VALUES (4, 'Mike', 70)").await();
         TableImpl flinkTable1 = (TableImpl) streamEnv.sqlQuery(testSelect);
         List<Row> results1 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results1, new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
+        TestUtils.checkEqualInAnyOrder(results1,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
     }
 
 
@@ -35,7 +37,8 @@ public class DMLSuite {
     public void testUpdateSQLNotSupported() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
-        tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)").await();
+        tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)")
+                .await();
         try {
             tEnv.executeSql("UPDATE user_info set score = 100 where order_id = 3");
         } catch (TableException e) {
@@ -45,7 +48,8 @@ public class DMLSuite {
         String testSelect = "select * from user_info";
         TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 95]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
+        TestUtils.checkEqualInAnyOrder(results,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 95]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
     }
 
     @Test
@@ -73,7 +77,8 @@ public class DMLSuite {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/user' )";
+                "    'path'='" + getTempDirUri("/lakeSource/user") +
+                "' )";
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
     }
