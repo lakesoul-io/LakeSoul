@@ -20,7 +20,6 @@ package org.apache.flink.lakesoul.source;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
-import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.fs.Path;
@@ -33,7 +32,6 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 
-
 public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> {
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulDynamicSplitEnumerator.class);
 
@@ -41,11 +39,11 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     private final LakeSoulDynSplitAssigner splitAssigner;
     private final long discoveryInterval;
+    private final String parDesc;
+    private final Set<Integer> taskIdsAwaitingSplit;
     String tid;
     private long startTime;
     private long nextStartTime;
-    private final String parDesc;
-    private final Set<Integer> taskIdsAwaitingSplit;
     private int hashBucketNum = -1;
 
 
@@ -58,7 +56,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         this.tid = tid;
         this.startTime = startTime;
         this.parDesc = parDesc;
-        this.hashBucketNum = Integer.valueOf(hashBucketNum);
+        this.hashBucketNum = Integer.parseInt(hashBucketNum);
         this.taskIdsAwaitingSplit = Sets.newConcurrentHashSet();
     }
 
@@ -86,10 +84,6 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     }
 
     @Override
-    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
-    }
-
-    @Override
     public void addSplitsBack(List<LakeSoulSplit> splits, int subtaskId) {
         LOG.info("Add split back: {}", splits);
         splitAssigner.addSplits(splits);
@@ -101,9 +95,11 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
-        LOG.info("LakeSoulDynamicSplitEnumerator snapshotState");
-        return new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc,
-                this.discoveryInterval, this.hashBucketNum);
+        LakeSoulPendingSplits pendingSplits =
+                new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc,
+                        this.discoveryInterval, this.hashBucketNum);
+        LOG.info("LakeSoulDynamicSplitEnumerator snapshotState {}", pendingSplits);
+        return pendingSplits;
     }
 
     @Override
@@ -116,6 +112,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             LOG.error("Failed to enumerate files", error);
             return;
         }
+        LOG.info("Process discovered splits {}", splits);
         int tasksSize = context.registeredReaders().size();
         this.splitAssigner.addSplits(splits);
         for (Integer item : taskIdsAwaitingSplit) {
@@ -132,6 +129,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         DataFileInfo[] dfinfos =
                 DataOperation.getIncrementalPartitionDataInfo(tid, parDesc, this.startTime, this.nextStartTime,
                         "incremental");
+        LOG.info("Found new data info {}", (Object) dfinfos);
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
         int i = 0;

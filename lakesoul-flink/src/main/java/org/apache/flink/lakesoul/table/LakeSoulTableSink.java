@@ -107,8 +107,13 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
   public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
     if (flinkConf.getBoolean(USE_CDC)) {
       return ChangelogMode.upsert();
-    } else {
+    } else if (this.primaryKeyList.isEmpty()) {
       return ChangelogMode.insertOnly();
+    } else {
+      return ChangelogMode.newBuilder()
+              .addContainedKind(RowKind.INSERT)
+              .addContainedKind(RowKind.UPDATE_AFTER)
+              .build();
     }
   }
 

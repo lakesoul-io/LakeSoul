@@ -33,6 +33,9 @@ import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.PartitionPathUtils;
+import org.apache.flink.types.RowKind;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -40,6 +43,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulOneSplitRecordsReader.class);
 
     private final LakeSoulSplit split;
     private final Configuration conf;
@@ -55,11 +60,12 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     boolean isStreaming;
     String cdcColumn;
     RowData.FieldGetter cdcFieldGetter;
-    long skipRowCount = 0;
     private String splitId;
     private LakeSoulArrowReader reader;
     private VectorSchemaRoot currentVCR;
-    private int curRecordId = 0;
+
+    // record index in current arrow batch (currentVCR)
+    private int curRecordIdx = 0;
 
     // arrow batch -> row, returned by native reader
     private ArrowReader curArrowReader;
@@ -112,6 +118,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             reader.setDefaultColumnValue(partition.getKey(), partition.getValue());
         }
 
+        LOG.info("Initialize reader for split {}, pk={}, partitions={}, non partition cols={}, cdc column={}", split,
+                pkColumns, partitions, nonPartitionColumns, cdcColumn);
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader, 10000);
     }
@@ -130,20 +138,39 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 ArrowUtils.createArrowReader(new VectorSchemaRoot(requestedVectors), schema);
     }
 
-    private void recoverFromSkipRecord() {
+    private void recoverFromSkipRecord() throws IOException {
+        LOG.info("Recover from skip record={} for split={}", skipRecords, split);
         if (skipRecords > 0) {
-            while (skipRowCount <= skipRecords && this.reader.hasNext()) {
-                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+            boolean hasNext;
+            long skipRowCount = 0;
+            while (skipRowCount <= skipRecords) {
+                hasNext = this.reader.hasNext();
+                if (!hasNext) {
+                    this.reader.close();
+                    this.reader = null;
+                    String error =
+                            String.format("Encounter unexpected EOF in split=%s, skipRecords=%s, skipRowCount=%s",
+                                    split, skipRecords, skipRowCount);
+                    LOG.error(error);
+                    throw new IOException(error);
+                }
                 skipRowCount += this.currentVCR.getRowCount();
             }
+            this.currentVCR = this.reader.nextResultVectorSchemaRoot();
             skipRowCount -= currentVCR.getRowCount();
-            curRecordId = (int) (skipRecords - skipRowCount);
+            curRecordIdx = (int) (skipRecords - skipRowCount);
         } else {
             if (this.reader.hasNext()) {
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
-                curRecordId = 0;
+                curRecordIdx = 0;
             } else {
                 this.reader.close();
+                this.reader = null;
+                String error =
+                        String.format("Encounter unexpected EOF in split=%s, skipRecords=%s",
+                                split, skipRecords);
+                LOG.error(error);
+                throw new IOException(error);
             }
         }
         makeCurrentArrowReader();
@@ -152,6 +179,16 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Nullable
     @Override
     public String nextSplit() {
+        if (this.split == null) {
+            if (this.currentVCR != null) {
+                this.currentVCR.close();
+                this.currentVCR = null;
+            }
+            if (this.reader != null) {
+                this.reader.close();
+                this.reader = null;
+            }
+        }
         String nextSplit = this.splitId;
         this.splitId = null;
         return nextSplit;
@@ -161,29 +198,35 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Override
     public RowData nextRecordFromSplit() {
         while (true) {
-            if (curRecordId >= currentVCR.getRowCount()) {
+            if (curRecordIdx >= currentVCR.getRowCount()) {
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     makeCurrentArrowReader();
-                    curRecordId = 0;
+                    curRecordIdx = 0;
                 } else {
                     this.reader.close();
+                    LOG.info("Reach end of split file {}", split);
                     return null;
                 }
             }
 
             RowData rd = null;
+            RowKind rk = RowKind.INSERT;
             int rowId = 0;
 
-            while (curRecordId < currentVCR.getRowCount()) {
-                rowId = curRecordId;
-                curRecordId++;
+            while (curRecordIdx < currentVCR.getRowCount()) {
+                rowId = curRecordIdx;
+                curRecordIdx++;
+                // row kind by default is insert
                 rd = this.curArrowReader.read(rowId);
                 if (!cdcColumn.isEmpty()) {
                     if (this.isStreaming) {
-                        rd.setRowKind(FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd)));
+                        // set rowkind according to cdc row kind field value
+                        rk = FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd));
+                        LOG.debug("Set RowKind to {}", rk);
                     } else {
                         if (FlinkUtil.isCDCDelete((StringData) cdcFieldGetter.getFieldOrNull(rd))) {
+                            // batch read from cdc table should filter delete rows
                             rd = null;
                             continue;
                         }
@@ -197,7 +240,10 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             }
 
             // we have get one valid row, return row with requested schema
-            return this.curArrowReaderRequestedSchema.read(rowId);
+            rd = this.curArrowReaderRequestedSchema.read(rowId);
+            // change rowkind if needed
+            rd.setRowKind(rk);
+            return rd;
         }
     }
 
