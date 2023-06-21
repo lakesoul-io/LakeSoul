@@ -66,7 +66,8 @@ public class StreamReadSuite extends AbstractTestBase {
             createTableEnv.executeSql(createUserSql);
 
             String testSql = String.format(
-                    "select * from test_stream /*+ OPTIONS('readstarttime'='%s','readtype'='incremental','timezone'='Africa/Accra')*/",
+                    "select * from test_stream /*+ OPTIONS('readstarttime'='%s','readtype'='incremental'," +
+                            "'timezone'='Africa/Accra', 'discoveryinterval'='1000')*/",
                     TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis())));
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
@@ -127,7 +128,9 @@ public class StreamReadSuite extends AbstractTestBase {
             createTableEnv.executeSql("DROP TABLE if exists user_multi");
             createTableEnv.executeSql(createSql);
 
-            String testMultiRangeSelect = "select * from user_multi where `region`='UK' and score > 80";
+            String testMultiRangeSelect = "select * from user_multi" +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    "where `region`='UK' and score > 80";
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
@@ -188,7 +191,9 @@ public class StreamReadSuite extends AbstractTestBase {
             createTableEnv.executeSql("DROP TABLE if exists user_info");
             createTableEnv.executeSql(createUserSql);
 
-            String testSelectWhere = "select * from user_info where order_id=3";
+            String testSelectWhere = "select * from user_info" +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    " where order_id=3";
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
@@ -255,7 +260,12 @@ public class StreamReadSuite extends AbstractTestBase {
             createTableEnv.executeSql(createOrderSql);
 
             String testSelectJoin = "select ui.order_id,sum(oi.price) as total_price,count(*) as total " +
-                    "from user_info2 as ui inner join order_info as oi " +
+                    "from user_info2" +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    " as ui inner join " +
+                    "order_info " +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    "as oi " +
                     "on ui.order_id=oi.id group by ui.order_id having ui.order_id>2";
 
 
@@ -316,7 +326,9 @@ public class StreamReadSuite extends AbstractTestBase {
             createTableEnv.executeSql("DROP TABLE if exists user_info3");
             createTableEnv.executeSql(createUserSql);
 
-            String testSelectDistinct = "select distinct order_id from user_info3 where order_id<5";
+            String testSelectDistinct = "select distinct order_id from user_info3" +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    " where order_id<5";
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
