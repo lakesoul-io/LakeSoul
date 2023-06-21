@@ -145,12 +145,12 @@ Using Flink SQL, the format of the specified conditional query is `SELECT * FROM
 
 In the query, `/* OPTIONS() */` are query options (hints). Hints must be placed directly after the table name (before any other subclause) and the options when LakeSoul reads include:
 
-| Parameter | Explanation of meaning| Parameter filling format |
-| ----------------- | -------------------------------- | ------------ |
-| readtype | read type, you can specify incremental read incremental, snapshot read snapshot, do not specify the default full read | 'readtype'='incremental' |
-| discoveryinterval | The time interval for discovering new data in streaming incremental read, in milliseconds, the default is 2000 | 'discoveryinterval'='10000' |
-| readstarttime | Start read timestamp, if no start timestamp is specified, it will read from the start version number by default | 'readstarttime'='2023-05-01 15:15:15' |
-| readendtime | End read timestamp, if no end timestamp is specified, the current latest version number will be read by default | 'readendtime'='2023-05-01 15:20:15' |
+| Parameter | Explanation of meaning                                                                                                                                                       | Parameter filling format |
+| ----------------- |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ------------ |
+| readtype | read type, you can specify incremental read incremental, snapshot read snapshot, do not specify the default full read                                                        | 'readtype'='incremental' |
+| discoveryinterval | The time interval for discovering new data in streaming incremental read, in milliseconds, the default is 30000                                                              | 'discoveryinterval'='10000' |
+| readstarttime | Start read timestamp, if no start timestamp is specified, it will read from the start version number by default                                                              | 'readstarttime'='2023-05-01 15:15:15' |
+| readendtime | End read timestamp, if no end timestamp is specified, the current latest version number will be read by default                                                              | 'readendtime'='2023-05-01 15:20:15' |
 | timezone | The time zone information of the timestamp, if the time zone information of the timestamp is not specified, it will be processed according to the local time zone by default | 'timezone'='Asia/Sahanghai' |
 
 ### 4.1 Full Read

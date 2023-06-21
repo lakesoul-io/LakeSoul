@@ -74,7 +74,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
 
         this.flinkDatabase = catalogName + "." + DATABASE;
         this.flinkTable = "test_table";
-        this.flinkTablePath = "file:/tmp/" + flinkTable;
+        this.flinkTablePath = getTempDirUri(flinkTable);
         this.lakesoulNamespace = baseNamespace;
     }
 

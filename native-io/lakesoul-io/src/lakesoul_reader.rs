@@ -23,10 +23,10 @@ use arrow_schema::SchemaRef;
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::col as logical_col;
 use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
+use datafusion::physical_plan::SendableRecordBatchStream;
 
 use datafusion::prelude::SessionContext;
 
@@ -35,13 +35,12 @@ use datafusion::physical_plan::RecordBatchStream;
 use futures::future::try_join_all;
 use futures::StreamExt;
 
-
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
+use crate::default_column_stream::DefaultColumnStream;
 use crate::filter::Parser as FilterParser;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 use crate::sorted_merge::merge_operator::MergeOperator;
@@ -69,38 +68,47 @@ impl LakeSoulReader {
         let schema: SchemaRef = self.config.schema.0.clone();
         if self.config.primary_keys.is_empty() {
             if !self.config.files.is_empty() {
-                let mut stream_vec = Vec::<SendableRecordBatchStream>::with_capacity(self.config.files.len());
+                let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
                 for i in 0..self.config.files.len() {
-                    let mut df = self
-                        .sess_ctx
-                        .read_parquet(self.config.files[i].as_str(), Default::default())
-                        .await?;
+                    let file = self.config.files[i].clone();
+                    let sess_ctx = self.sess_ctx.clone();
+                    let filter_str = self.config.filter_strs.clone();
+                    let batch_size = self.config.batch_size;
+                    let schema = schema.clone();
+                    let future = async move {
+                        let mut df = sess_ctx.read_parquet(file, Default::default()).await?;
 
-                    let file_schema = Arc::new(Schema::from(df.schema()));
+                        let file_schema = Arc::new(Schema::from(df.schema()));
 
-                    let cols = schema
-                        .fields()
-                        .iter()
-                        .filter_map(|field| match file_schema.column_with_name(field.name()) {
-                            Some((_, file_field)) => Some(logical_col(file_field.name())),
-                            _ => None,
-                        })
-                        // .map(|field| logical_col(field.name().as_str()))
-                        .collect::<Vec<_>>();
+                        let cols = schema
+                            .fields()
+                            .iter()
+                            .filter_map(|field| match file_schema.column_with_name(field.name()) {
+                                Some((_, file_field)) => Some(logical_col(file_field.name())),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
 
-                let stream = if cols.is_empty() {
-                    Box::pin(EmptySchemaStream::new(self.config.batch_size, df.count().await?))
-                } else {
-                    df = df.select(cols)?;
+                        let stream = if cols.is_empty() {
+                            Box::pin(EmptySchemaStream::new(batch_size, df.count().await?))
+                        } else {
+                            df = df.select(cols)?;
 
-                        df = self.config.filter_strs.iter().try_fold(df, |df, f| {
-                            df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                        })?;
-                        df.execute_stream().await?
+                            df = filter_str.iter().try_fold(df, |df, f| {
+                                df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                            })?;
+                            df.execute_stream().await?
+                        };
+                        Result::<SendableRecordBatchStream>::Ok(stream)
                     };
-                    stream_vec.push(stream);
+                    stream_init_futs.push(future);
                 }
-                let stream = DefaultColumnStream::new_from_streams_with_default(stream_vec, schema.clone(), Arc::new(self.config.default_column_value.clone()));
+                let stream_vec = try_join_all(stream_init_futs).await?;
+                let stream = DefaultColumnStream::new_from_streams_with_default(
+                    stream_vec,
+                    schema.clone(),
+                    Arc::new(self.config.default_column_value.clone()),
+                );
                 self.schema = Some(stream.schema());
                 self.stream = Some(Box::pin(stream));
 
@@ -111,83 +119,97 @@ impl LakeSoulReader {
                 ))
             }
         } else if self.config.files.is_empty() {
-                Err(DataFusionError::Internal(
-                    "LakeSoulReader has wrong number of file".to_string(),
-                ))
-            } else {
-                let finalize_schema: SchemaRef = self.config.schema.0.clone();
-                let schema: SchemaRef = Arc::new(Schema::new(finalize_schema.fields.iter().filter_map(|field|if self.config.default_column_value.get(field.name()).is_none() {Some(field.clone())} else {None}).collect::<Vec<_>>())); //merge_schema
-
-                let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
-                for i in 0..self.config.files.len() {
-                    let file = self.config.files[i].clone();
-                    let sess_ctx = self.sess_ctx.clone();
-                    let filter_str = self.config.filter_strs.clone();
-                    let schema = schema.clone();
-                    let future = async move {
-                        let mut df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
-
-                        let file_schema = Arc::new(Schema::from(df.schema()));
-                        let cols = file_schema
-                            .fields()
-                            .iter()
-                            .filter(|field| schema.index_of(field.name()).is_ok())
-                            .map(|field| logical_col(field.name().as_str()))
-                            .collect::<Vec<_>>();
-                        df = df.select(cols)?;
-                        df = filter_str.iter().try_fold(df, |df, f| {
-                            df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                        })?;
-                        df.execute_stream().await
-                    };
-                    stream_init_futs.push(future);
-                }
-
-                let stream_res = try_join_all(stream_init_futs).await?;
-                let streams = stream_res
-                    .into_iter()
-                    .map(|s| {
-                        SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone())))
-                    })
-                    .collect();
-
-                let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
-                for i in 0..self.config.primary_keys.len() {
-                    sort_exprs.push(PhysicalSortExpr {
-                        expr: col(self.config.primary_keys[i].as_str(), &schema).unwrap(),
-                        options: Default::default(),
-                    });
-                }
-
-                let merge_ops = self
-                    .config
-                    .schema
-                    .0
-                    .fields()
+            Err(DataFusionError::Internal(
+                "LakeSoulReader has wrong number of file".to_string(),
+            ))
+        } else {
+            let finalize_schema: SchemaRef = self.config.schema.0.clone();
+            let schema: SchemaRef = Arc::new(Schema::new(
+                finalize_schema
+                    .fields
                     .iter()
-                    .map(|field| {
-                        MergeOperator::from_name(
-                            self.config
-                                .merge_operators
-                                .get(field.name())
-                                .unwrap_or(&String::from("UseLast")),
-                        )
+                    .filter_map(|field| {
+                        if self.config.default_column_value.get(field.name()).is_none() {
+                            Some(field.clone())
+                        } else {
+                            None
+                        }
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<_>>(),
+            )); //merge_schema
 
-                let merge_stream = SortedStreamMerger::new_from_streams(
-                    streams,
-                    schema.clone(),
-                    self.config.primary_keys.clone(),
-                    self.config.batch_size,
-                    merge_ops,
-                )
-                .unwrap();
-                let finalized_stream = DefaultColumnStream::new_from_streams_with_default(vec![Box::pin(merge_stream)], finalize_schema.clone(), Arc::new(self.config.default_column_value.clone()));
-                self.schema = Some(finalized_stream.schema());
-                self.stream = Some(Box::pin(finalized_stream));
-                Ok(())
+            let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
+            for i in 0..self.config.files.len() {
+                let file = self.config.files[i].clone();
+                let sess_ctx = self.sess_ctx.clone();
+                let filter_str = self.config.filter_strs.clone();
+                let schema = schema.clone();
+                let future = async move {
+                    let mut df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
+
+                    let file_schema = Arc::new(Schema::from(df.schema()));
+                    let cols = file_schema
+                        .fields()
+                        .iter()
+                        .filter(|field| schema.index_of(field.name()).is_ok())
+                        .map(|field| logical_col(field.name().as_str()))
+                        .collect::<Vec<_>>();
+                    df = df.select(cols)?;
+                    df = filter_str.iter().try_fold(df, |df, f| {
+                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
+                    })?;
+                    df.execute_stream().await
+                };
+                stream_init_futs.push(future);
             }
+
+            let stream_res = try_join_all(stream_init_futs).await?;
+            let streams = stream_res
+                .into_iter()
+                .map(|s| SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone()))))
+                .collect();
+
+            let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
+            for i in 0..self.config.primary_keys.len() {
+                sort_exprs.push(PhysicalSortExpr {
+                    expr: col(self.config.primary_keys[i].as_str(), &schema)?,
+                    options: Default::default(),
+                });
+            }
+
+            let merge_ops = self
+                .config
+                .schema
+                .0
+                .fields()
+                .iter()
+                .map(|field| {
+                    MergeOperator::from_name(
+                        self.config
+                            .merge_operators
+                            .get(field.name())
+                            .unwrap_or(&String::from("UseLast")),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let merge_stream = SortedStreamMerger::new_from_streams(
+                streams,
+                schema.clone(),
+                self.config.primary_keys.clone(),
+                self.config.batch_size,
+                merge_ops,
+            )
+            .unwrap();
+            let finalized_stream = DefaultColumnStream::new_from_streams_with_default(
+                vec![Box::pin(merge_stream)],
+                finalize_schema.clone(),
+                Arc::new(self.config.default_column_value.clone()),
+            );
+            self.schema = Some(finalized_stream.schema());
+            self.stream = Some(Box::pin(finalized_stream));
+            Ok(())
+        }
     }
 
     pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
