@@ -22,6 +22,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Source split for LakeSoul's flink source
@@ -63,7 +64,8 @@ public class LakeSoulSplit implements SourceSplit {
     @Override
     public String toString() {
         return "LakeSoulSplit[" +
-                files.toString() +
+                files.stream().map(Object::toString)
+                        .collect(Collectors.joining(", ")) +
                 "]";
     }
 

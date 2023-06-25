@@ -19,9 +19,9 @@ package org.apache.flink.lakesoul.connector;
 
 import com.dmetasoul.lakesoul.meta.*;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.google.common.base.Splitter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.filesystem.PartitionFetcher;
 import org.apache.flink.table.utils.PartitionPathUtils;
 

@@ -19,19 +19,17 @@
 
 package org.apache.flink.lakesoul.test.connector.sink;
 
-import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.streaming.api.CheckpointingMode;
-import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.util.FiniteTestSource;
-import org.apache.flink.table.api.*;
-
+import org.apache.flink.table.api.ExplainDetail;
+import org.apache.flink.table.api.SqlDialect;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -51,19 +49,12 @@ import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
-import static org.apache.flink.table.api.Expressions.$;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.SINK_PARTITION_COMMIT_DELAY;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.SINK_PARTITION_COMMIT_POLICY_KIND;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStageId;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStreamNodeId;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 
-public class LakeSoulTableSinkCase {
+public class LakeSoulTableSinkCase extends AbstractTestBase {
 
     private static LakeSoulCatalog lakeSoulCatalog;
 
@@ -78,6 +69,16 @@ public class LakeSoulTableSinkCase {
         if (lakeSoulCatalog != null) {
             lakeSoulCatalog.close();
         }
+    }
+
+    private static List<String> fetchRows(Iterator<Row> iter, int size) {
+        List<String> strings = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            Assert.assertTrue(iter.hasNext());
+            strings.add(iter.next().toString());
+        }
+        strings.sort(String::compareTo);
+        return strings;
     }
 
     @Test
@@ -146,7 +147,9 @@ public class LakeSoulTableSinkCase {
 
     @Test
     public void testLakeSoulTableSinkWithParallelismInStreaming() {
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        Configuration config = new Configuration();
+        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         final TableEnvironment tEnv =
                 LakeSoulTestUtils.createTableEnvInStreamingMode(env, SqlDialect.DEFAULT);
         testLakeSoulTableSinkWithParallelismBase(
@@ -218,9 +221,11 @@ public class LakeSoulTableSinkCase {
                                 + "'= '3',"
                                 + "'"
                                 + LAKESOUL_TABLE_PATH.key()
-                                + "'='/tmp/test_table',"
+                                + "'='" +
+                                getTempDirUri("/test_table")
+                                + "',"
                                 + "'"
-                                + FactoryUtil.FORMAT.key()
+                                + "connector"
                                 + "'='lakesoul'"
                                 + ")"));
         tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
@@ -232,36 +237,9 @@ public class LakeSoulTableSinkCase {
         assertEquals(
                 replaceStreamNodeId(replaceStageId(actual)),
                 expected
-                );
+        );
 
         tEnv.executeSql("drop database db1 cascade");
-    }
-
-    @Test
-    public void testBatchAppend() throws Exception {
-        TableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
-        tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        tEnv.useCatalog(lakeSoulCatalog.getName());
-        tEnv.executeSql("create database if not exists db1");
-        tEnv.useDatabase("db1");
-        try {
-            String ddl = String.format("create table append_table (i int, j int) with ('%s'='/tmp/append_table', '%s'='lakesoul')", LAKESOUL_TABLE_PATH.key(), FactoryUtil.FORMAT.key());
-            tEnv.executeSql(ddl);
-            tEnv.executeSql("insert into append_table select 1, 1").await();
-            tEnv.executeSql("insert into append_table select 2, 2").await();
-            List<Row> rows =
-                    CollectionUtil.iteratorToList(
-                            tEnv.executeSql("select * from append_table").collect());
-            rows.sort(Comparator.comparingInt(o -> (int) o.getField(0)));
-            Assert.assertEquals(Arrays.asList(Row.of(1, 1), Row.of(2, 2)), rows);
-        } finally {
-            tEnv.executeSql("drop database db1 cascade");
-        }
-    }
-
-    @Test
-    public void testDefaultSerPartStreamingWrite() throws Exception {
-        testStreamingWrite(true, false,  this::checkDirExists);
     }
 
 //    @Test
@@ -301,37 +279,67 @@ public class LakeSoulTableSinkCase {
 //    }
 
     @Test
+    public void testBatchAppend() throws Exception {
+        TableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        tEnv.useCatalog(lakeSoulCatalog.getName());
+        tEnv.executeSql("create database if not exists db1");
+        tEnv.useDatabase("db1");
+        try {
+            String ddl = String.format(
+                    "create table append_table (i int, j int) with ('%s'='%s', '%s'='lakesoul')",
+                    LAKESOUL_TABLE_PATH.key(), getTempDirUri("/append_table"), FactoryUtil.FORMAT.key());
+            tEnv.executeSql(ddl);
+            tEnv.executeSql("insert into append_table select 1, 1").await();
+            tEnv.executeSql("insert into append_table select 2, 2").await();
+            List<Row> rows =
+                    CollectionUtil.iteratorToList(
+                            tEnv.executeSql("select * from append_table").collect());
+            rows.sort(Comparator.comparingInt(o -> (int) o.getField(0)));
+            Assert.assertEquals(Arrays.asList(Row.of(1, 1), Row.of(2, 2)), rows);
+        } finally {
+            tEnv.executeSql("drop database db1 cascade");
+        }
+    }
+
+    @Test
+    public void testDefaultSerPartStreamingWrite() throws Exception {
+        testStreamingWrite(true, this::checkDirExists);
+    }
+
+    @Test
     public void testStreamingAppend() throws Exception {
         testStreamingWrite(
-                false,
                 false,
                 (p) -> {
                     Configuration config = new Configuration();
                     config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(config);
+                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
                     env.setParallelism(1);
 
                     env.enableCheckpointing(1000);
                     env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+                    env.getCheckpointConfig().configure(config);
 
                     CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
-//                    if (parameter.get(JOB_CHECKPOINT_MODE.key(), JOB_CHECKPOINT_MODE.defaultValue()).equals("AT_LEAST_ONCE")) {
-//                        checkpointingMode = CheckpointingMode.AT_LEAST_ONCE;
-//                    }
                     env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
-                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
                     StreamTableEnvironment streamEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
                     streamEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
                     streamEnv.useCatalog(lakeSoulCatalog.getName());
 
-                    TableEnvironment bEnv = LakeSoulTestUtils.createTableEnvWithLakeSoulCatalog(lakeSoulCatalog);
                     try {
-//                        bEnv.executeSql(
                         streamEnv.executeSql(
                                         "insert into db1.sink_table select 6,'a','b','2020-05-03','12'")
                                 .await();
                     } catch (Exception e) {
                         Assert.fail("Failed to execute sql: " + e.getMessage());
+                    }
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
                     }
 
                     assertBatch(
@@ -351,17 +359,6 @@ public class LakeSoulTableSinkCase {
                 });
     }
 
-
-    private static List<String> fetchRows(Iterator<Row> iter, int size) {
-        List<String> strings = new ArrayList<>(size);
-        for (int i = 0; i < size; i++) {
-            Assert.assertTrue(iter.hasNext());
-            strings.add(iter.next().toString());
-        }
-        strings.sort(String::compareTo);
-        return strings;
-    }
-
     private void checkDirExists(String path) {
         File basePath = new File(path, "d=2020-05-03");
         Assert.assertEquals(5, basePath.list().length);
@@ -373,45 +370,17 @@ public class LakeSoulTableSinkCase {
     }
 
     private void testStreamingWrite(
-            boolean part, boolean useMr, Consumer<String> pathConsumer)
+            boolean part, Consumer<String> pathConsumer)
             throws Exception {
         StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();
         StreamTableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
         tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tEnv.useCatalog(lakeSoulCatalog.getName());
         tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-//        if (useMr) {
-//            tEnv.getConfig()
-//                    .getConfiguration()
-//                    .set(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_WRITER, true);
-//        } else {
-//            tEnv.getConfig()
-//                    .getConfiguration()
-//                    .set(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_WRITER, false);
-//        }
 
         try {
             tEnv.executeSql("create database if not exists db1");
             tEnv.useDatabase("db1");
-
-            // prepare source
-            List<Row> data =
-                    Arrays.asList(
-                            Row.of(1, "a", "b", "2020-05-03", "7"),
-                            Row.of(2, "p", "q", "2020-05-03", "8"),
-                            Row.of(3, "x", "y", "2020-05-03", "9"),
-                            Row.of(4, "x", "y", "2020-05-03", "10"),
-                            Row.of(5, "x", "y", "2020-05-03", "11"));
-            DataStream<Row> stream =
-                    env.addSource(
-                            new FiniteTestSource<>(data),
-                            new RowTypeInfo(
-                                    Types.INT,
-                                    Types.STRING,
-                                    Types.STRING,
-                                    Types.STRING,
-                                    Types.STRING));
-            tEnv.createTemporaryView("my_table", stream, $("a"), $("b"), $("c"), $("d"), $("e"));
 
             // DDL
             tEnv.executeSql("DROP TABLE IF EXISTS sink_table");
@@ -423,28 +392,15 @@ public class LakeSoulTableSinkCase {
 
                             + " WITH ("
                             + "'"
-                            + PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN.key()
-                            + "'='$d $e:00:00',"
-                            + "'"
-                            + SINK_PARTITION_COMMIT_DELAY.key()
-                            + "'='1h',"
-                            + "'"
-                            + SINK_PARTITION_COMMIT_POLICY_KIND.key()
-                            + "'='metastore,success-file',"
-                            + "'"
-                            + SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME.key()
-                            + "'='_MY_SUCCESS',"
-                            + "'"
                             + LAKESOUL_TABLE_PATH.key()
-                            + "'='/tmp/sink_table',"
-                            + "'"
-                            + FactoryUtil.FORMAT.key()
-                            + "'='lakesoul'"
+                            + "'='"
+                            + getTempDirUri("/sink_table")
+                            + "',"
+                            + "'connector'='lakesoul'"
                             + ")");
 
             // hive dialect only works with hive tables at the moment, switch to default dialect
             tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-//            tEnv.sqlQuery("select * from my_table").executeInsert("sink_table").await();
             tEnv.executeSql("insert into db1.sink_table values " +
                     "(1,'a','b','2020-05-03','7')," +
                     "(1,'a','b','2020-05-03','7')," +
@@ -456,6 +412,7 @@ public class LakeSoulTableSinkCase {
                     "(4,'x','y','2020-05-03','10')," +
                     "(5,'x','y','2020-05-03','11')," +
                     "(5,'x','y','2020-05-03','11')").await();
+            Thread.sleep(3000);
 
             assertBatch(
                     "db1.sink_table",
@@ -496,69 +453,5 @@ public class LakeSoulTableSinkCase {
         results.sort(String::compareTo);
         expected.sort(String::compareTo);
         Assert.assertEquals(expected, results);
-    }
-
-    public static void main(String[] args) throws ExecutionException, InterruptedException {
-        // using batch table env to query.
-        String table = "db1.sink_table";
-        List<String> results = new ArrayList<>();
-        TableEnvironment batchTEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
-        LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
-
-        batchTEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        batchTEnv.useCatalog(lakeSoulCatalog.getName());
-        batchTEnv.executeSql("create database if not exists db1");
-        batchTEnv.useDatabase("db1");
-
-        boolean part = false;
-        String ddl =
-                "create table if not exists db1.sink_table (a int,b string,c string"
-                        + (part ? "" : ",d string,e string")
-                        + ") "
-                        + (part ? "partitioned by (d string,e string) " : "")
-
-                        + " WITH ("
-                        + "'"
-                        + PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN.key()
-                        + "'='$d $e:00:00',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_DELAY.key()
-                        + "'='1h',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_POLICY_KIND.key()
-                        + "'='metastore,success-file',"
-                        + "'"
-                        + SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME.key()
-                        + "'='_MY_SUCCESS',"
-                        + "'"
-                        + LAKESOUL_TABLE_PATH.key()
-                        + "'='/tmp/sink_table',"
-                        + "'"
-                        + FactoryUtil.FORMAT.key()
-                        + "'='lakesoul'"
-                        + ")";
-        batchTEnv.executeSql(ddl);
-
-
-
-        StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();
-        StreamTableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
-        tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
-        tEnv.useCatalog(lakeSoulCatalog.getName());
-        tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
-
-        tEnv.executeSql(ddl);
-
-        tEnv.executeSql("insert into db1.sink_table select 6,'a','b','2020-05-03','12'").await();
-//        batchTEnv.executeSql("insert into db1.sink_table select 6,'a','b','2020-05-03','12'").await();
-
-        batchTEnv
-                .executeSql("select * from " + table)
-                .collect()
-                .forEachRemaining(r -> results.add(r.toString()));
-        results.sort(String::compareTo);
-        System.out.println(results);
-//        expected.sort(String::compareTo);
-//        Assert.assertEquals(expected, results);
     }
 }

@@ -34,30 +34,23 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
 
-public class LakeSoulSplitReader
-        implements SplitReader<RowData, LakeSoulSplit> {
+public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSplitReader.class);
 
     private final Configuration conf;
 
     private final Queue<LakeSoulSplit> splits;
-
-    @Nullable
-    private LakeSoulArrowReader currentReader;
-
-    @Nullable
-    private String currentSplitId;
-
     RowType rowType;
     RowType rowTypeWithPk;
-    boolean partitionNon;
-
     List<String> pkColumns;
     boolean isStreaming;
     String cdcColumn;
+    @Nullable
+    private LakeSoulArrowReader currentReader;
 
-    public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns, boolean partitionNon,boolean isStreaming,String cdcColumn) {
+    public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns,
+                               boolean isStreaming, String cdcColumn) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
@@ -65,21 +58,19 @@ public class LakeSoulSplitReader
         this.pkColumns = pkColumns;
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
-        this.partitionNon = partitionNon;
     }
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk, this.pkColumns, this.partitionNon,this.isStreaming,this.cdcColumn);
+        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk,
+                this.pkColumns, this.isStreaming, this.cdcColumn);
     }
 
     @Override
     public void handleSplitsChanges(SplitsChange<LakeSoulSplit> splitChange) {
         if (!(splitChange instanceof SplitsAddition)) {
             throw new UnsupportedOperationException(
-                    String.format(
-                            "The SplitChange type of %s is not supported.",
-                            splitChange.getClass()));
+                    String.format("The SplitChange type of %s is not supported.", splitChange.getClass()));
         }
 
         LOG.info("Handling split change {}", splitChange);

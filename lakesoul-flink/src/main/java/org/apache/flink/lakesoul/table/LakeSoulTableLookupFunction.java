@@ -126,7 +126,8 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                 long count = 0;
                 GenericRowData reuse = new GenericRowData(rowType.getFieldCount());
 //                List<LakeSoulPartition> partitionList = (List<LakeSoulPartition>) partitionFetcher.fetch(fetcherContext);
-                partitionReader.open(partitionFetcher.fetch(fetcherContext));
+                partitionReader.
+                        open(partitionFetcher.fetch(fetcherContext));
                 RowData row;
                 while ((row = partitionReader.read(reuse)) != null) {
                     count++;
@@ -136,7 +137,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                     rows.add(rowData);
 
                     if (cache.size() >= CACHE_MAX_SIZE) {
-                        System.out.println("Warning: Lookup Cache has cached " + cache.size() + " records with " +count+ " rows, other rows will not be cached");
                         LOG.warn(
                                 String.format(
                                         "Lookup Cache has cached %d records with %d rows, other rows will not be cached",
@@ -152,7 +152,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                 return;
             } catch (Exception e) {
                 if (numRetry >= MAX_RETRIES) {
-                    System.out.println("Failed to load table into cache after %d retries" + numRetry);
                     throw new FlinkRuntimeException(
                             String.format(
                                     "Failed to load table into cache after %d retries", numRetry),
@@ -160,7 +159,6 @@ public class LakeSoulTableLookupFunction<P> extends TableFunction<RowData> {
                 }
                 numRetry++;
                 long toSleep = numRetry * RETRY_INTERVAL.toMillis();
-                System.out.println("Failed to load table into cache, will retry in %d seconds" + toSleep/1000);
                 LOG.warn(
                         String.format(
                                 "Failed to load table into cache, will retry in %d seconds",

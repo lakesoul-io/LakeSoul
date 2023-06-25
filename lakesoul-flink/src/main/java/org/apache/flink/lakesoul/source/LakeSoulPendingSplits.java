@@ -68,4 +68,11 @@ public class LakeSoulPendingSplits {
     public int getHashBucketNum() {
         return hashBucketNum;
     }
+
+    @Override
+    public String toString() {
+        return "LakeSoulPendingSplits{" + "splits=" + splits + ", lastReadTimestamp=" + lastReadTimestamp +
+                ", tableid='" + tableid + '\'' + ", parDesc='" + parDesc + '\'' + ", discoverInterval=" +
+                discoverInterval + ", hashBucketNum=" + hashBucketNum + '}';
+    }
 }

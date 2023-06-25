@@ -26,6 +26,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
@@ -122,24 +123,24 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData INSERT = StringData.fromString("insert");
+    private static final StringData UPDATE = StringData.fromString("update");
+    private static final StringData DELETE = StringData.fromString("delete");
+
     public static RowKind operationToRowKind(StringData operation) {
-        if (StringData.fromString("insert").equals(operation)) {
+        if (INSERT.equals(operation)) {
             return RowKind.INSERT;
         }
-        if (StringData.fromString("update").equals(operation)) {
+        if (UPDATE.equals(operation)) {
             return RowKind.UPDATE_AFTER;
         }
-        if (StringData.fromString("delete").equals(operation)) {
+        if (DELETE.equals(operation)) {
             return RowKind.DELETE;
         }
         return null;
     }
     public static boolean isCDCDelete(StringData operation){
-        if (StringData.fromString("delete").equals(operation)) {
-            return true;
-        }else{
-            return false;
-        }
+        return StringData.fromString("delete").equals(operation);
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
@@ -269,6 +270,10 @@ public class FlinkUtil {
 
     public static void setFSConfigs(Configuration conf, NativeIOBase io) {
         conf.addAll(GlobalConfiguration.loadConfiguration());
+        org.apache.hadoop.conf.Configuration hadoopConf = HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
+        String defaultFS = hadoopConf.get("fs.defaultFS");
+        io.setObjectStoreOption("fs.defaultFS", defaultFS);
+
         // try hadoop's s3 configs
         setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
         setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key", io);

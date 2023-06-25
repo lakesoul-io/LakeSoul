@@ -199,14 +199,15 @@ public class LakeSoulCatalog implements Catalog {
         if (tableExists(tablePath)) {
             if (!ignoreIfExists) {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
-            }
-            else return;
+            } else return;
         }
         String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
         Map<String, String> tableOptions = table.getOptions();
 
         // adding cdc options
-        tableOptions.put(RECORD_KEY_NAME, primaryKeys);
+        if (!"".equals(primaryKeys)) {
+            tableOptions.put(RECORD_KEY_NAME, primaryKeys);
+        }
         boolean cdcMark;
         if ("true".equals(tableOptions.get(USE_CDC.key()))) {
             if (primaryKeys.isEmpty()) {
@@ -245,7 +246,7 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void alterTable(ObjectPath tablePath, CatalogBaseTable catalogBaseTable, boolean b) throws TableNotExistException, CatalogException {
+    public void alterTable(ObjectPath tablePath, CatalogBaseTable catalogBaseTable, boolean b) throws CatalogException {
         throw new CatalogException("Alter lakesoul table not supported now");
     }
 
@@ -299,8 +300,8 @@ public class LakeSoulCatalog implements Catalog {
         List<CatalogPartitionSpec> partitions = listPartitions(tablePath);
         List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
         for (Expression exp : list) {
-            if(exp instanceof CallExpression){
-                if(!"equals".equals(((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get().toLowerCase())){
+            if (exp instanceof CallExpression) {
+                if (!"equals".equalsIgnoreCase(((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get())) {
                     throw new CatalogException("just support equal;such as range=val and range=val2");
                 }
             }
@@ -349,13 +350,13 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public void createPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
                                 CatalogPartition catalogPartition, boolean ignoreIfExists)
-            throws PartitionAlreadyExistsException, CatalogException {
+            throws CatalogException {
         throw new CatalogException("not supported now");
     }
 
     @Override
     public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
-                              boolean ignoreIfExists) throws PartitionNotExistException, CatalogException {
+                              boolean ignoreIfExists) throws CatalogException {
         throw new CatalogException("not supported now");
     }
 
@@ -383,7 +384,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
-        return;
+
     }
 
     @Override

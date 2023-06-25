@@ -19,8 +19,8 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.google.common.collect.Lists
-import org.apache.hadoop.fs.Path
+import org.apache.flink.core.fs.Path
+import org.apache.flink.shaded.guava30.com.google.common.collect.Lists
 
 import java.util.UUID
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
