@@ -125,25 +125,25 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData INSERT = StringData.fromString("insert");
+    private static final StringData UPDATE = StringData.fromString("update");
+    private static final StringData DELETE = StringData.fromString("delete");
+
     public static RowKind operationToRowKind(StringData operation) {
-        if (StringData.fromString("insert").equals(operation)) {
+        if (INSERT.equals(operation)) {
             return RowKind.INSERT;
         }
-        if (StringData.fromString("update").equals(operation)) {
+        if (UPDATE.equals(operation)) {
             return RowKind.UPDATE_AFTER;
         }
-        if (StringData.fromString("delete").equals(operation)) {
+        if (DELETE.equals(operation)) {
             return RowKind.DELETE;
         }
         return null;
     }
 
-    public static boolean isCDCDelete(StringData operation) {
-        if (StringData.fromString("delete").equals(operation)) {
-            return true;
-        } else {
-            return false;
-        }
+    public static boolean isCDCDelete(StringData operation){
+        return StringData.fromString("delete").equals(operation);
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {

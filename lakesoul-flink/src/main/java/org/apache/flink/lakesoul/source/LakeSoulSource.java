@@ -47,7 +47,9 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     Map<String, String> optionParams;
     List<Map<String, String>> remainingPartitions;
 
-    public LakeSoulSource(TableId tableId, RowType rowType, RowType rowTypeWithPk, boolean isStreaming, List<String> pkColumns, Map<String, String> optionParams, List<Map<String, String>> remainingPartitions) {
+    public LakeSoulSource(TableId tableId, RowType rowType, RowType rowTypeWithPk, boolean isStreaming,
+                          List<String> pkColumns, Map<String, String> optionParams,
+                          List<Map<String, String>> remainingPartitions) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.rowTypeWithPk = rowTypeWithPk;
@@ -70,47 +72,47 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     public SourceReader<RowData, LakeSoulSplit> createReader(SourceReaderContext readerContext) throws Exception {
         Configuration conf = Configuration.fromMap(optionParams);
         conf.addAll(readerContext.getConfiguration());
-        return new LakeSoulSourceReader(() -> {
-            return new LakeSoulSplitReader(conf, this.rowType, this.rowTypeWithPk, this.pkColumns, null != this.remainingPartitions && this.remainingPartitions.size() == 0, this.isStreaming, this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""));
-        }, new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
+        return new LakeSoulSourceReader(
+                () -> new LakeSoulSplitReader(conf, this.rowType, this.rowTypeWithPk, this.pkColumns, this.isStreaming,
+                        this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "")),
+                new LakeSoulRecordEmitter(), readerContext.getConfiguration(), readerContext);
     }
 
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> createEnumerator(
             SplitEnumeratorContext<LakeSoulSplit> enumContext) {
         TableInfo tif = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<String> readStartTimestampWithTimeZone = Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_START_TIME(), ""),
-                optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+        List<String> readStartTimestampWithTimeZone =
+                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_START_TIME(), ""),
+                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
         String readType = optionParams.getOrDefault(LakeSoulOptions.READ_TYPE(), "");
         if (this.isStreaming) {
-            return new LakeSoulDynamicSplitEnumerator(
-                    enumContext,
+            return new LakeSoulDynamicSplitEnumerator(enumContext,
                     new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "5000")),
-                    convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
-                    tif.getTableId(),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "30000")),
+                    convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone), tif.getTableId(),
                     optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), ""),
-                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")
-            );
+                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1"));
         } else {
             return staticSplitEnumerator(enumContext, tif, readStartTimestampWithTimeZone, readType);
         }
     }
 
-    private LakeSoulStaticSplitEnumerator staticSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> enumContext, TableInfo tif, List<String> readStartTimestampWithTimeZone, String readType) {
-        List<String> readEndTimestampWithTimeZone = Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
-                optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+    private LakeSoulStaticSplitEnumerator staticSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> enumContext,
+                                                                TableInfo tif,
+                                                                List<String> readStartTimestampWithTimeZone,
+                                                                String readType) {
+        List<String> readEndTimestampWithTimeZone =
+                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
+                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
         DataFileInfo[] dfinfos;
         if (readType.equals("") || readType.equals("fullread")) {
             dfinfos = getTargetDataFileInfo(tif);
         } else {
-            dfinfos = DataOperation.getIncrementalPartitionDataInfo(
-                    tif.getTableId(),
+            dfinfos = DataOperation.getIncrementalPartitionDataInfo(tif.getTableId(),
                     optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), ""),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
-                    convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
-                    readType
-            );
+                    convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone), readType);
         }
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
@@ -119,13 +121,14 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             for (DataFileInfo dfinfo : dfinfos) {
                 ArrayList<Path> tmp = new ArrayList<>();
                 tmp.add(new Path(dfinfo.path()));
-                splits.add(new LakeSoulSplit(i + "", tmp, 0));
+                splits.add(new LakeSoulSplit(String.valueOf(i), tmp, 0));
             }
         } else {
-            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
+            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+                    FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
             for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                    splits.add(new LakeSoulSplit(i + "", split.getValue(), 0));
+                    splits.add(new LakeSoulSplit(String.valueOf(i), split.getValue(), 0));
                 }
             }
         }
@@ -145,7 +148,8 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         }
         long readTimeStamp = 0;
         if (!time.equals("")) {
-            readTimeStamp = LocalDateTime.parse(time, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")).atZone(ZoneId.of(timeZone)).toInstant().toEpochMilli();
+            readTimeStamp = LocalDateTime.parse(time, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                    .atZone(ZoneId.of(timeZone)).toInstant().toEpochMilli();
         }
         return readTimeStamp;
     }
@@ -153,7 +157,10 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     @Override
     public SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> restoreEnumerator(
             SplitEnumeratorContext<LakeSoulSplit> enumContext, LakeSoulPendingSplits checkpoint) throws Exception {
-        return new LakeSoulDynamicSplitEnumerator(enumContext, new LakeSoulDynSplitAssigner(checkpoint.getSplits(), checkpoint.getHashBucketNum() + ""), checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(), checkpoint.getParDesc(), checkpoint.getHashBucketNum() + "");
+        return new LakeSoulDynamicSplitEnumerator(enumContext,
+                new LakeSoulDynSplitAssigner(checkpoint.getSplits(), String.valueOf(checkpoint.getHashBucketNum())),
+                checkpoint.getDiscoverInterval(), checkpoint.getLastReadTimestamp(), checkpoint.getTableid(),
+                checkpoint.getParDesc(), String.valueOf(checkpoint.getHashBucketNum()));
     }
 
     @Override
