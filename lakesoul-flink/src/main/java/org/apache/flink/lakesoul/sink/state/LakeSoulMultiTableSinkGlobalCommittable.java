@@ -39,7 +39,6 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
     private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables;
 
     public LakeSoulMultiTableSinkGlobalCommittable(Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
-        System.out.println("org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable.LakeSoulMultiTableSinkGlobalCommittable");
         groupedCommitables.forEach((key, disorderedCommitables) -> {
             disorderedCommitables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
             List<LakeSoulMultiTableSinkCommittable> mergedCommittables = new ArrayList<>();

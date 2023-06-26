@@ -195,6 +195,17 @@ public class LakeSoulTableSinkCase {
                         "      \"ship_strategy\" : \"CUSTOM\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"parallelism\" : 1,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
                         "  } ]\n" +
                         "}");
     }
@@ -232,7 +243,7 @@ public class LakeSoulTableSinkCase {
         assertEquals(
                 replaceStreamNodeId(replaceStageId(actual)),
                 expected
-                );
+        );
 
         tEnv.executeSql("drop database db1 cascade");
     }
@@ -261,7 +272,7 @@ public class LakeSoulTableSinkCase {
 
     @Test
     public void testDefaultSerPartStreamingWrite() throws Exception {
-        testStreamingWrite(true, false,  this::checkDirExists);
+        testStreamingWrite(true, false, this::checkDirExists);
     }
 
 //    @Test
@@ -538,7 +549,6 @@ public class LakeSoulTableSinkCase {
                         + "'='lakesoul'"
                         + ")";
         batchTEnv.executeSql(ddl);
-
 
 
         StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();

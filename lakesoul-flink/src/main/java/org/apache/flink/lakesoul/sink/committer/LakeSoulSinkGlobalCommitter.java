@@ -23,6 +23,8 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
@@ -33,12 +35,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -54,10 +54,12 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
 
     private final LakeSoulSinkCommitter committer;
     private final DBManager dbManager;
+    private final Configuration conf;
 
-    public LakeSoulSinkGlobalCommitter() {
+    public LakeSoulSinkGlobalCommitter(Configuration conf) {
         committer = LakeSoulSinkCommitter.INSTANCE;
         dbManager = new DBManager();
+        this.conf = conf;
     }
 
 
@@ -105,21 +107,22 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
 
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry : globalCommittable.getGroupedCommitables().entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
-            // TODO: 2023/6/15 more information from identity is need
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, identity.isCdc).json();
+            Boolean isCdc = Boolean.valueOf(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
+            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
                 String partition = String.join(";", String.join(",", identity.partitionKeyList), String.join(",", identity.primaryKeys));
+
                 dbManager.createNewTable(
                         tableId,
                         tableNamespace,
                         tableName,
                         identity.tableLocation,
                         sparkSchema,
-                        new JSONObject(),
+                        identity.properties,
                         partition
                 );
             } else if (!tableInfo.getTableSchema().equals(sparkSchema)) {

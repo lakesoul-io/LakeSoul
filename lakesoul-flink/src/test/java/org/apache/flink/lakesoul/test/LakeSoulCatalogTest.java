@@ -31,6 +31,7 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.exceptions.DatabaseAlreadyExistException;
 import org.apache.spark.sql.types.StructType;
+import org.assertj.core.api.Assertions;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -55,6 +56,7 @@ public class LakeSoulCatalogTest {
         env.setParallelism(1);
         tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
+        ((LakeSoulCatalog) lakesoulCatalog).cleanForTest();
         lakesoulCatalog.open();
 
         try {
@@ -89,12 +91,34 @@ public class LakeSoulCatalogTest {
     @Test
     public void createTable() {
         tEnvs.executeSql("CREATE TABLE if not exists user_behaviorgg ( user_id BIGINT, dt STRING, name STRING,primary key (user_id)" +
-                         " NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name', 'hashBucketNum'='2'," +
-                         "'lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043', 'path'='/tmp/user_behaviorgg')");
+                " NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name', 'hashBucketNum'='2'," +
+                "'lakesoul_meta_host'='127.0.0.2','lakesoul_meta_host_port'='9043', 'path'='/tmp/user_behaviorgg')");
         tEnvs.executeSql("show tables").print();
         TableInfo info = DbManage.getTableInfoByNameAndNamespace("user_behaviorgg", "test_lakesoul_meta");
         assertTrue(info.getTableSchema().equals(new StructType().add("user_id", LongType, false).add("dt", StringType).add("name", StringType).json()));
         tEnvs.executeSql("DROP TABLE user_behaviorgg");
+    }
+
+    @Test
+    public void createTableWithLike() {
+        tEnvs.executeSql("CREATE TABLE if not exists user_behaviorgg ( user_id BIGINT, dt STRING, name STRING NOT NULL,primary key (user_id)" +
+                " NOT ENFORCED ) PARTITIONED BY (dt) with ('lakesoul_cdc_change_column'='name', 'hashBucketNum'='2'," +
+                "'lakesoul_meta_host_port'='9043', 'path'='/tmp/user_behaviorgg', 'use_cdc'='true')");
+
+        TableInfo info = DbManage.getTableInfoByNameAndNamespace("user_behaviorgg", "test_lakesoul_meta");
+        Assertions.assertThat(info.getTableSchema()).isEqualTo(new StructType().add("user_id", LongType, false).add("dt", StringType).add("name", StringType, false).json());
+
+        tEnvs.executeSql("CREATE TABLE if not exists like_table with ('path'='/tmp/like_table') like user_behaviorgg");
+        TableInfo info2 = DbManage.getTableInfoByNameAndNamespace("like_table", "test_lakesoul_meta");
+        Assertions.assertThat(info2.getTableSchema()).isEqualTo(new StructType().add("user_id", LongType, false).add("dt", StringType).add("name", StringType, false).json());
+        Assertions.assertThat(info.getProperties().get("lakesoul_cdc_change_column")).isEqualTo(info2.getProperties().get("lakesoul_cdc_change_column"));
+        Assertions.assertThat(info.getProperties().get("path")).isEqualTo("/tmp/user_behaviorgg");
+        Assertions.assertThat(info2.getProperties().get("path")).isEqualTo("/tmp/like_table");
+        System.out.println(info);
+        System.out.println(info2);
+
+        tEnvs.executeSql("DROP TABLE user_behaviorgg");
+        tEnvs.executeSql("DROP TABLE like_table");
     }
 
     @Test

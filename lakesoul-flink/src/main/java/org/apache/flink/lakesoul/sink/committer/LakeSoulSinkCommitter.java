@@ -43,6 +43,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
+
 /**
  * Committer implementation for {@link LakeSoulMultiTablesSink}.
  *
@@ -95,8 +97,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 // commit LakeSoul Meta
                 TableSchemaIdentity identity = committable.getIdentity();
                 List<DataFileOp> dataFileOpList = new ArrayList<>();
-                String fileExistCols = String.join(",",
-                        identity.rowType.getFieldNames());
+                String fileExistCols = identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD)).collect(Collectors.joining(","));
                 for (String file : files) {
                     DataFileOp dataFileOp = new DataFileOp();
                     dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);

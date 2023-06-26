@@ -42,11 +42,13 @@ public class BinaryDebeziumDeserializationSchema implements DebeziumDeserializat
     @Override
     public void deserialize(SourceRecord sourceRecord, Collector<BinarySourceRecord> collector) throws Exception {
 //        collector.collect(BinarySourceRecord.fromKafkaSourceRecord(sourceRecord, this.convert));
-        collector.collect(BinarySourceRecord.fromMysqlSourceRecord(sourceRecord, this.convert, this.basePath));
+        BinarySourceRecord binarySourceRecord = BinarySourceRecord.fromMysqlSourceRecord(sourceRecord, this.convert, this.basePath);
+        if (binarySourceRecord != null) collector.collect(binarySourceRecord);
     }
 
     @Override
     public TypeInformation<BinarySourceRecord> getProducedType() {
-        return TypeInformation.of(new TypeHint<BinarySourceRecord>() {});
+        return TypeInformation.of(new TypeHint<BinarySourceRecord>() {
+        });
     }
 }

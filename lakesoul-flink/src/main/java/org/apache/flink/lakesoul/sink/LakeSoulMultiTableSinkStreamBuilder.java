@@ -67,7 +67,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public LakeSoulMultiTableSinkStreamBuilder(Context context) {
         this.context = context;
-        this.convert = new LakeSoulRecordConvert(context.conf.getBoolean(USE_CDC), context.conf.getString(SERVER_TIME_ZONE));
+        this.convert = new LakeSoulRecordConvert(context.conf, context.conf.getString(SERVER_TIME_ZONE));
     }
 
     public DataStreamSource<BinarySourceRecord> buildMultiTableSource() {
@@ -94,14 +94,15 @@ public class LakeSoulMultiTableSinkStreamBuilder {
      * second one contains all DDL records.
      */
     public Tuple2<DataStream<BinarySourceRecord>, DataStream<BinarySourceRecord>> buildCDCAndDDLStreamsFromSource(
-         DataStreamSource<BinarySourceRecord> source
+            DataStreamSource<BinarySourceRecord> source
     ) {
-        final OutputTag<BinarySourceRecord> outputTag = new OutputTag<BinarySourceRecord>("ddl-side-output") {};
+        final OutputTag<BinarySourceRecord> outputTag = new OutputTag<BinarySourceRecord>("ddl-side-output") {
+        };
 
         SingleOutputStreamOperator<BinarySourceRecord> cdcStream = source.process(
-                new BinarySourceRecordSplitProcessFunction(
-                        outputTag, context.conf.getString(WAREHOUSE_PATH)))
-                                                                       .name("cdc-dml-stream")
+                        new BinarySourceRecordSplitProcessFunction(
+                                outputTag, context.conf.getString(WAREHOUSE_PATH)))
+                .name("cdc-dml-stream")
                 .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
 
         DataStream<BinarySourceRecord> ddlStream = cdcStream.getSideOutput(outputTag);
@@ -117,15 +118,15 @@ public class LakeSoulMultiTableSinkStreamBuilder {
         LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
-                                                          .withPartSuffix(".parquet")
-                                                          .build();
+                .withPartSuffix(".parquet")
+                .build();
         LakeSoulMultiTablesSink<BinarySourceRecord> sink = LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
-           .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
-           .withRollingPolicy(rollingPolicy)
-           .withOutputFileConfig(fileNameConfig)
-           .build();
+                .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
+                .withRollingPolicy(rollingPolicy)
+                .withOutputFileConfig(fileNameConfig)
+                .build();
         return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
-                     .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+                .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDDLSink(DataStream<BinarySourceRecord> stream) {

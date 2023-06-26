@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.types;
 
+import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -29,14 +30,17 @@ public class LakeSoulRowDataWrapper {
     RowType beforeType;
     RowType afterType;
 
+    JSONObject properties;
+
     public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType,
-                                  RowType afterType) {
+                                  RowType afterType, JSONObject properties) {
         this.tableId = tableId;
         this.op = op;
         this.before = before;
         this.after = after;
         this.beforeType = beforeType;
         this.afterType = afterType;
+        this.properties = properties;
     }
 
     public TableId getTableId() {
@@ -63,23 +67,28 @@ public class LakeSoulRowDataWrapper {
         return op;
     }
 
+    public JSONObject getProperties() {
+        return properties;
+    }
+
     @Override
     public String toString() {
         return "LakeSoulRowDataWrapper{" +
-               "tableId=" + tableId +
-               ", op='" + op + '\'' +
-               ", before=" + before +
-               ", after=" + after +
-               ", beforeType=" + beforeType +
-               ", afterType=" + afterType +
-               '}';
+                "tableId=" + tableId +
+                ", op='" + op + '\'' +
+                ", before=" + before +
+                ", after=" + after +
+                ", beforeType=" + beforeType +
+                ", afterType=" + afterType +
+                ", properties=" + properties +
+                '}';
     }
 
-    public static Build newBuild() {
-        return new Build();
+    public static Builder newBuilder() {
+        return new Builder();
     }
 
-    public static class Build {
+    public static class Builder {
         TableId tableId;
         String op;
         RowData before;
@@ -87,39 +96,46 @@ public class LakeSoulRowDataWrapper {
         RowType beforeType;
         RowType afterType;
 
-        public Build setTableId(TableId tableId) {
+        JSONObject properties;
+
+        public Builder setTableId(TableId tableId) {
             this.tableId = tableId;
             return this;
         }
 
-        public Build setOperation(String op) {
+        public Builder setOperation(String op) {
             this.op = op;
             return this;
         }
 
-        public Build setBeforeRowData(RowData before) {
+        public Builder setBeforeRowData(RowData before) {
             this.before = before;
             return this;
         }
 
-        public Build setAfterRowData(RowData after) {
+        public Builder setAfterRowData(RowData after) {
             this.after = after;
             return this;
         }
 
-        public Build setBeforeRowType(RowType before) {
+        public Builder setBeforeRowType(RowType before) {
             this.beforeType = before;
             return this;
         }
 
-        public Build setAfterType(RowType after) {
+        public Builder setAfterType(RowType after) {
             this.afterType = after;
+            return this;
+        }
+
+        public Builder setProperties(JSONObject properties) {
+            this.properties = properties;
             return this;
         }
 
         public LakeSoulRowDataWrapper build() {
             return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType,
-                                              this.afterType);
+                    this.afterType, this.properties);
         }
     }
 }

@@ -54,8 +54,7 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                 element.getTableLocation(),
                 element.getPrimaryKeys(),
                 element.getPartitionKeys(),
-                true
-        );
+                element.getData().getProperties());
     }
 
     @Override

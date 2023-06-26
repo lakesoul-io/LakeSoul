@@ -129,7 +129,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     @Override
     public LakeSoulSinkGlobalCommitter createGlobalCommitter() throws IOException {
-        return new LakeSoulSinkGlobalCommitter();
+        return new LakeSoulSinkGlobalCommitter(conf);
     }
 
     @Override

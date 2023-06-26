@@ -208,15 +208,15 @@ public class LakeSoulCatalog implements Catalog {
         if (!"".equals(primaryKeys)) {
             tableOptions.put(RECORD_KEY_NAME, primaryKeys);
         }
-        boolean cdcMark;
+        Optional<String> cdcColumn;
         if ("true".equals(tableOptions.get(USE_CDC.key()))) {
             if (primaryKeys.isEmpty()) {
                 throw new CatalogException("CDC table must have primary key(s)");
             }
-            cdcMark = true;
-            tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
+            cdcColumn = Optional.of(tableOptions.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
+            tableOptions.put(CDC_CHANGE_COLUMN, cdcColumn.get());
         } else {
-            cdcMark = false;
+            cdcColumn = Optional.empty();
         }
 
         // adding hash bucket options
@@ -241,7 +241,7 @@ public class LakeSoulCatalog implements Catalog {
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                FlinkUtil.toSparkSchema(schema, cdcMark).json(),
+                FlinkUtil.toSparkSchema(schema, cdcColumn).json(),
                 properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
     }
 

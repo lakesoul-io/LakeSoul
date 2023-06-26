@@ -68,7 +68,7 @@ public class TableSchemaWriterCreator implements Serializable {
             Configuration conf) throws IOException {
         TableSchemaWriterCreator creator = new TableSchemaWriterCreator();
         creator.conf = conf;
-        creator.identity = new TableSchemaIdentity(tableId, rowType, tableLocation, primaryKeys, partitionKeyList);
+        creator.identity = new TableSchemaIdentity(tableId, rowType, tableLocation, primaryKeys, partitionKeyList, FlinkUtil.getPropertiesFromConfiguration(conf));
         creator.primaryKeys = primaryKeys;
         creator.partitionKeyList = partitionKeyList;
         creator.outputFileConfig = OutputFileConfig.builder().build();

@@ -19,6 +19,8 @@
 
 package org.apache.flink.lakesoul.types;
 
+import com.alibaba.fastjson.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
@@ -42,6 +44,8 @@ import io.debezium.time.Timestamp;
 import io.debezium.time.Year;
 import io.debezium.time.ZonedTime;
 import io.debezium.time.ZonedTimestamp;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
@@ -56,28 +60,31 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulRecordConvert implements Serializable {
     private final ZoneId serverTimeZone;
+    private final String cdcColumn;
 
-    boolean useCDC;
+    final boolean useCDC;
 
     List<String> partitionFields;
 
-    public LakeSoulRecordConvert(boolean useCDC, String serverTimeZone) {
-        this(useCDC, serverTimeZone, Collections.emptyList());
+    private final JSONObject properties;
+
+    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
+        this(conf, serverTimeZone, Collections.emptyList());
     }
 
-    public LakeSoulRecordConvert(boolean useCDC, String serverTimeZone, List<String> partitionFields) {
-        this.useCDC = useCDC;
+    public LakeSoulRecordConvert(Configuration conf, String serverTimeZone, List<String> partitionFields) {
+        this.useCDC = conf.getBoolean(USE_CDC);
+        this.cdcColumn = conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
         this.serverTimeZone = ZoneId.of(serverTimeZone);
         this.partitionFields = partitionFields;
+
+        properties = FlinkUtil.getPropertiesFromConfiguration(conf);
     }
 
     private boolean partitionFieldsChanged(RowType beforeType, RowData beforeData, RowType afterType, RowData afterData) {
@@ -122,20 +129,20 @@ public class LakeSoulRecordConvert implements Serializable {
     public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long sortField) throws Exception {
         Envelope.Operation op = getOperation(sch, value);
         Schema valueSchema = value.schema();
-        LakeSoulRowDataWrapper.Build build = LakeSoulRowDataWrapper.newBuild().setTableId(tableId);
+        LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId).setProperties(properties);
         if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);
             RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
             RowType rt = toFlinkRowType(afterSchema);
             insert.setRowKind(RowKind.INSERT);
-            build.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
+            builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
         } else if (op == Envelope.Operation.DELETE) {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
             Struct before = value.getStruct(Envelope.FieldName.BEFORE);
             RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
             RowType rt = toFlinkRowType(beforeSchema);
-            build.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
+            builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
             delete.setRowKind(RowKind.DELETE);
         } else {
             Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
@@ -150,20 +157,20 @@ public class LakeSoulRecordConvert implements Serializable {
             afterData.setRowKind(RowKind.UPDATE_AFTER);
             if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                 // partition fields changed. we need to emit both before and after RowData
-                build.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
+                builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
                         .setAfterRowData(afterData).setAfterType(afterRT);
             } else {
                 // otherwise we only need to keep the after RowData
-                build.setOperation("update")
+                builder.setOperation("update")
                         .setAfterRowData(afterData).setAfterType(afterRT);
             }
         }
 
-        return build.build();
+        return builder.build();
     }
 
     public RowType toFlinkRowTypeCDC(RowType rowType) {
-        if (!useCDC) {
+        if (!useCDC || rowType.getFieldNames().contains(cdcColumn)) {
             return rowType;
         }
         LogicalType[] colTypes = new LogicalType[rowType.getFieldCount() + 1];
@@ -172,7 +179,7 @@ public class LakeSoulRecordConvert implements Serializable {
             colNames[i] = rowType.getFieldNames().get(i);
             colTypes[i] = rowType.getTypeAt(i);
         }
-        colNames[rowType.getFieldCount()] = "rowKinds";
+        colNames[rowType.getFieldCount()] = cdcColumn;
         colTypes[rowType.getFieldCount()] = new VarCharType(Integer.MAX_VALUE);
         return RowType.of(colTypes, colNames);
     }
@@ -193,7 +200,7 @@ public class LakeSoulRecordConvert implements Serializable {
         colNames[useCDC ? arity - 2 : arity - 1] = SORT_FIELD;
         colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
         if (useCDC) {
-            colNames[arity - 1] = "rowKinds";
+            colNames[arity - 1] = CDC_CHANGE_COLUMN_DEFAULT;
             colTypes[arity - 1] = new VarCharType(Integer.MAX_VALUE);
         }
         return RowType.of(colTypes, colNames);

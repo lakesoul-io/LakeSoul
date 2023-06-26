@@ -131,7 +131,7 @@ public class MysqlSourceCdc {
 
         sourceBuilder.includeSchemaChanges(true);
         sourceBuilder.scanNewlyAddedTableEnabled(true);
-        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf.getBoolean(USE_CDC), conf.getString(SERVER_TIME_ZONE));
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)));
         Properties jdbcProperties = new Properties();
         jdbcProperties.put("allowPublicKeyRetrieval", "true");

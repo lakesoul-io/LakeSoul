@@ -110,7 +110,7 @@ public class LakeSoulTableSource
     }
 
     private RowType readFieldsAddPk(String cdcColumn) {
-        int[] fieldIndexs =  (projectedFields == null || projectedFields.length == 0)
+        int[] fieldIndexs = (projectedFields == null || projectedFields.length == 0)
                 ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
                 : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
         List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
@@ -125,7 +125,7 @@ public class LakeSoulTableSource
         }
         projectNames.addAll(pkNamesNotExistInReadFields);
         projectTypes.addAll(pkTypesNotExistInReadFields);
-        if (!cdcColumn.equals("")) {
+        if (!cdcColumn.equals("") && !projectNames.contains(cdcColumn)) {
             projectNames.add(cdcColumn);
             projectTypes.add(new VarCharType());
         }
@@ -135,9 +135,9 @@ public class LakeSoulTableSource
     @Override
     public ChangelogMode getChangelogMode() {
         boolean isCdc = !optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "").equals("");
-        if(this.isStreaming && isCdc){
+        if (this.isStreaming && isCdc) {
             return ChangelogMode.upsert();
-        }else{
+        } else {
             return ChangelogMode.insertOnly();
         }
     }

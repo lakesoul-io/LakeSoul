@@ -24,7 +24,6 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -33,17 +32,12 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_FILE_INDEX;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_POSITION;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {

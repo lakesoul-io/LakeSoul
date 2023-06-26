@@ -55,7 +55,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
@@ -83,18 +83,19 @@ public class FlinkUtil {
 
         for (RowType.RowField field : rowType.getFields()) {
             String name = field.getName();
+            if (name.equals(SORT_FIELD)) continue;
             LogicalType logicalType = field.getType();
             org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
             stNew = stNew.add(name, dataType, logicalType.isNullable());
         }
 
         if (isCdc) {
-            stNew.add("rowKinds", StringType, true);
+            stNew.add(CDC_CHANGE_COLUMN_DEFAULT, StringType, true);
         }
         return stNew;
     }
 
-    public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
+    public static StructType toSparkSchema(TableSchema tsc, Optional<String> cdcColumn) {
         StructType stNew = new StructType();
 
         for (int i = 0; i < tsc.getFieldCount(); i++) {
@@ -103,8 +104,9 @@ public class FlinkUtil {
             org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, dt.getLogicalType()));
             stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
         }
-        if (isCdc) {
-            stNew = stNew.add("rowKinds", StringType, true);
+        if (cdcColumn.isPresent()) {
+            String cdcCol = cdcColumn.get();
+            if (stNew.getFieldIndex(cdcCol).isEmpty()) stNew = stNew.add(CDC_CHANGE_COLUMN_DEFAULT, StringType, true);
         }
         return stNew;
     }
@@ -175,9 +177,6 @@ public class FlinkUtil {
         boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
 
         for (RowType.RowField field : rowType.getFields()) {
-            if (contains && field.getName().equals(lakesoulCdcColumnName)) {
-                continue;
-            }
             bd.column(field.getName(), field.getType().asSerializableString());
         }
         List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
@@ -254,7 +253,7 @@ public class FlinkUtil {
         final List<String> names = getFieldNames(dataType);
         final List<DataType> dataTypes = getFieldDataTypes(dataType);
         if (isCdc) {
-            names.add("rowKinds");
+            names.add(CDC_CHANGE_COLUMN_DEFAULT);
             dataTypes.add(DataTypes.VARCHAR(30));
         }
         return IntStream.range(0, names.size())
@@ -434,5 +433,13 @@ public class FlinkUtil {
 
     public static void setLocalTimeZone(Configuration options, ZoneId localTimeZone) {
         options.setString(TableConfigOptions.LOCAL_TIME_ZONE, localTimeZone.toString());
+    }
+
+    public static JSONObject getPropertiesFromConfiguration(Configuration conf) {
+        Map<String, Object> map = new HashMap<>();
+        map.put(USE_CDC.key(), String.valueOf(conf.getBoolean(USE_CDC)));
+        map.put(HASH_BUCKET_NUM.key(), String.valueOf(conf.getInteger(BUCKET_PARALLELISM)));
+        map.put(CDC_CHANGE_COLUMN, conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
+        return new JSONObject(map);
     }
 }
