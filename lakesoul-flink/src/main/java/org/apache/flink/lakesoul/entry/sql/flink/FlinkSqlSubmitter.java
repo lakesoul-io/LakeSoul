@@ -20,6 +20,8 @@
 package org.apache.flink.lakesoul.entry.sql.flink;
 
 
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.lakesoul.entry.sql.common.FlinkOption;
 import org.apache.flink.lakesoul.entry.sql.common.JobType;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
@@ -28,6 +30,7 @@ import org.apache.flink.lakesoul.entry.sql.Submitter;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.streaming.api.CheckpointingMode;
@@ -61,12 +64,13 @@ public class FlinkSqlSubmitter extends Submitter {
                     .inStreamingMode()
                     .build();
 
-            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-            tEnv = StreamTableEnvironment.create(env, settings);
+            Configuration conf = new Configuration();
+            conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
             this.setCheckpoint(env);
+            tEnv = StreamTableEnvironment.create(env, settings);
         } else if (submitOption.getJobType().equals(JobType.BATCH.getType())) {
             settings = EnvironmentSettings.newInstance()
-                    .useBlinkPlanner()
                     .inBatchMode()
                     .build();
             tEnv = TableEnvironment.create(settings);
@@ -91,13 +95,14 @@ public class FlinkSqlSubmitter extends Submitter {
             checkpointingMode = CheckpointingMode.AT_LEAST_ONCE;
         }
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
         env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         env.getCheckpointConfig().setCheckpointStorage(flinkOption.getCheckpointPath());
-
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env.configure(config);
-
+        env.setRestartStrategy(RestartStrategies.failureRateRestart(
+                3, // max failures per interval
+                Time.of(10, TimeUnit.MINUTES), //time interval for measuring failure rate
+                Time.of(20, TimeUnit.SECONDS) // delay
+        ));
     }
 
 }
