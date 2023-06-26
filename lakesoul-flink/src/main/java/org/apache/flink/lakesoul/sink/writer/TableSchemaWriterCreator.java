@@ -74,7 +74,7 @@ public class TableSchemaWriterCreator implements Serializable {
         creator.outputFileConfig = OutputFileConfig.builder().build();
 
         creator.partitionComputer = new CdcPartitionComputer(
-                "default",
+                "null",
                 rowType.getFieldNames().toArray(new String[0]),
                 rowType,
                 partitionKeyList.toArray(new String[0]),
