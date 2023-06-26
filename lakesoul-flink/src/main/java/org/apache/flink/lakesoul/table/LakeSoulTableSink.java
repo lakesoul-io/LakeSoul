@@ -103,14 +103,19 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         };
     }
 
-    @Override
-    public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
-        if (flinkConf.getBoolean(USE_CDC)) {
-            return ChangelogMode.upsert();
-        } else {
-            return ChangelogMode.insertOnly();
-        }
+  @Override
+  public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
+    if (flinkConf.getBoolean(USE_CDC)) {
+      return ChangelogMode.upsert();
+    } else if (this.primaryKeyList.isEmpty()) {
+      return ChangelogMode.insertOnly();
+    } else {
+      return ChangelogMode.newBuilder()
+              .addContainedKind(RowKind.INSERT)
+              .addContainedKind(RowKind.UPDATE_AFTER)
+              .build();
     }
+  }
 
     /**
      * DataStream sink fileSystem and upload metadata

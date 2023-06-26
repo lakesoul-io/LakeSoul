@@ -24,7 +24,6 @@ import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
-import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 import org.assertj.core.api.Assertions;
@@ -35,7 +34,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.util.List;
 
-public class LakeSoulFlinkTestBase extends TestBaseUtils {
+public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
     @ClassRule
     public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();

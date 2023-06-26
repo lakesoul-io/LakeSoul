@@ -143,25 +143,25 @@ public class FlinkUtil {
         return null;
     }
 
+    private static final StringData INSERT = StringData.fromString("insert");
+    private static final StringData UPDATE = StringData.fromString("update");
+    private static final StringData DELETE = StringData.fromString("delete");
+
     public static RowKind operationToRowKind(StringData operation) {
-        if (StringData.fromString("insert").equals(operation)) {
+        if (INSERT.equals(operation)) {
             return RowKind.INSERT;
         }
-        if (StringData.fromString("update").equals(operation)) {
+        if (UPDATE.equals(operation)) {
             return RowKind.UPDATE_AFTER;
         }
-        if (StringData.fromString("delete").equals(operation)) {
+        if (DELETE.equals(operation)) {
             return RowKind.DELETE;
         }
         return null;
     }
 
-    public static boolean isCDCDelete(StringData operation) {
-        if (StringData.fromString("delete").equals(operation)) {
-            return true;
-        } else {
-            return false;
-        }
+    public static boolean isCDCDelete(StringData operation){
+        return StringData.fromString("delete").equals(operation);
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
@@ -177,6 +177,9 @@ public class FlinkUtil {
         boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
 
         for (RowType.RowField field : rowType.getFields()) {
+            if (contains && field.getName().equals(lakesoulCdcColumnName)) {
+                continue;
+            }
             bd.column(field.getName(), field.getType().asSerializableString());
         }
         List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
@@ -318,10 +321,12 @@ public class FlinkUtil {
             return null;
         }
         LogicalTypeRoot typeRoot = type.getTypeRoot();
+        if (typeRoot == LogicalTypeRoot.VARCHAR)
+            return StringData.fromString(valStr);
+        if ("null".equals(valStr)) return null;
+
         switch (typeRoot) {
             case CHAR:
-            case VARCHAR:
-                return StringData.fromString(valStr);
             case BOOLEAN:
                 return Boolean.parseBoolean(valStr);
             case TINYINT:

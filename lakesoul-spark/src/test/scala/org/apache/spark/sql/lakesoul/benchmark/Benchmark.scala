@@ -145,12 +145,16 @@ object Benchmark {
       lakesoulDF = changeDF(lakesoulDF)
     }
 
-    val diff = jdbcDF.rdd.subtract(lakesoulDF.rdd)
+    val diff1 = jdbcDF.rdd.subtract(lakesoulDF.rdd)
+    val diff2 = lakesoulDF.rdd.subtract(jdbcDF.rdd)
 
-    val result = diff.count() == 0
+    val result = diff1.count() == 0 && diff2.count() == 0
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
-      spark.createDataFrame(diff, lakesoulDF.schema).show()
+      println("*************diff1**************")
+      spark.createDataFrame(diff1, lakesoulDF.schema).show()
+      println("*************diff2**************")
+      spark.createDataFrame(diff2, lakesoulDF.schema).show()
       println(table + " data verification ERROR!!!")
       System.exit(1)
     }

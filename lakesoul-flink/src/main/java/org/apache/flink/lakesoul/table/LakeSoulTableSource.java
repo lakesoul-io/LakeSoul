@@ -38,10 +38,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public class LakeSoulTableSource
-        implements SupportsFilterPushDown,
-        SupportsPartitionPushDown,
-        SupportsProjectionPushDown,
-        ScanTableSource {
+        implements SupportsFilterPushDown, SupportsPartitionPushDown, SupportsProjectionPushDown, ScanTableSource {
     protected TableId tableId;
     protected RowType rowType;
 
@@ -53,7 +50,8 @@ public class LakeSoulTableSource
 
     protected List<Map<String, String>> remainingPartitions;
 
-    public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns, Map<String, String> optionParams) {
+    public LakeSoulTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns,
+                               Map<String, String> optionParams) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.isStreaming = isStreaming;
@@ -64,7 +62,8 @@ public class LakeSoulTableSource
 
     @Override
     public DynamicTableSource copy() {
-        LakeSoulTableSource lsts = new LakeSoulTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns, this.optionParams);
+        LakeSoulTableSource lsts = new LakeSoulTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns,
+                this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
         return lsts;
@@ -77,7 +76,7 @@ public class LakeSoulTableSource
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
-        return Result.of(new ArrayList(filters), new ArrayList(filters));
+        return Result.of(new ArrayList<>(filters), new ArrayList<>(filters));
     }
 
     @Override
@@ -100,21 +99,24 @@ public class LakeSoulTableSource
         this.projectedFields = projectedFields;
     }
 
-    protected RowType readFields(String cdcColumn) {
-        int[] fieldIndexs = (projectedFields == null || projectedFields.length == 0)
-                ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
-                : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
-        List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
-        List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
-        return RowType.of(projectTypes.toArray(new LogicalType[0]), projectNames.toArray(new String[0]));
+    private int[] getFieldIndexs() {
+        return (projectedFields == null || projectedFields.length == 0) ?
+                IntStream.range(0, this.rowType.getFieldCount()).toArray() :
+                Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
+    }
+
+    protected RowType readFields() {
+        int[] fieldIndexs = getFieldIndexs();
+        return RowType.of(Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).toArray(LogicalType[]::new),
+                Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).toArray(String[]::new));
     }
 
     private RowType readFieldsAddPk(String cdcColumn) {
-        int[] fieldIndexs = (projectedFields == null || projectedFields.length == 0)
-                ? IntStream.range(0, this.rowType.getFieldCount()).toArray()
-                : Arrays.stream(projectedFields).mapToInt(array -> array[0]).toArray();
-        List<LogicalType> projectTypes = Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
-        List<String> projectNames = Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
+        int[] fieldIndexs = getFieldIndexs();
+        List<LogicalType> projectTypes =
+                Arrays.stream(fieldIndexs).mapToObj(this.rowType::getTypeAt).collect(Collectors.toList());
+        List<String> projectNames =
+                Arrays.stream(fieldIndexs).mapToObj(this.rowType.getFieldNames()::get).collect(Collectors.toList());
         List<String> pkNamesNotExistInReadFields = new ArrayList<>();
         List<LogicalType> pkTypesNotExistInReadFields = new ArrayList<>();
         for (String pk : pkColumns) {
@@ -134,10 +136,16 @@ public class LakeSoulTableSource
 
     @Override
     public ChangelogMode getChangelogMode() {
-        boolean isCdc = !optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "").equals("");
+        boolean isCdc = !optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "").isEmpty();
         if (this.isStreaming && isCdc) {
             return ChangelogMode.upsert();
+        } else if (this.isStreaming && !this.pkColumns.isEmpty()) {
+            return ChangelogMode.newBuilder()
+                    .addContainedKind(RowKind.INSERT)
+                    .addContainedKind(RowKind.UPDATE_AFTER)
+                    .build();
         } else {
+            // batch read or streaming read without pk
             return ChangelogMode.insertOnly();
         }
     }
@@ -145,14 +153,8 @@ public class LakeSoulTableSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext runtimeProviderContext) {
         String cdcColumn = optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, "");
-        return SourceProvider.of(new LakeSoulSource(
-                this.tableId,
-                readFields(cdcColumn),
-                readFieldsAddPk(cdcColumn),
-                this.isStreaming,
-                this.pkColumns,
-                this.optionParams,
-                this.remainingPartitions)
-        );
+        return SourceProvider.of(
+                new LakeSoulSource(this.tableId, readFields(), readFieldsAddPk(cdcColumn), this.isStreaming,
+                        this.pkColumns, this.optionParams, this.remainingPartitions));
     }
 }

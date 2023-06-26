@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{new_null_array, types::*, ArrayRef, RecordBatchOptions, StructArray, StringArray, PrimitiveArray};
+use arrow_array::{new_null_array, types::*, ArrayRef, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, BooleanArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
@@ -42,7 +42,12 @@ pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
 }
 
 pub fn uniform_record_batch(batch: RecordBatch) -> RecordBatch {
-    transform_record_batch(uniform_schema(batch.schema()), batch, false, Arc::new(Default::default()))
+    transform_record_batch(
+        uniform_schema(batch.schema()),
+        batch,
+        false,
+        Arc::new(Default::default()),
+    )
 }
 
 pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default: bool) -> SchemaRef {
@@ -54,13 +59,22 @@ pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default
                 .fields()
                 .iter()
                 .enumerate()
-                .filter_map(|(_, target_field)| schema.column_with_name(target_field.name()).map(|_| target_field.clone()))
+                .filter_map(|(_, target_field)| {
+                    schema
+                        .column_with_name(target_field.name())
+                        .map(|_| target_field.clone())
+                })
                 .collect::<Vec<_>>(),
         ))
     }
 }
 
-pub fn transform_record_batch(target_schema: SchemaRef, batch: RecordBatch, use_default: bool, default_column_value: Arc<HashMap<String, String>>) -> RecordBatch {
+pub fn transform_record_batch(
+    target_schema: SchemaRef,
+    batch: RecordBatch,
+    use_default: bool,
+    default_column_value: Arc<HashMap<String, String>>,
+) -> RecordBatch {
     let num_rows = batch.num_rows();
     let orig_schema = batch.schema();
     let mut transform_arrays = Vec::new();
@@ -73,17 +87,21 @@ pub fn transform_record_batch(target_schema: SchemaRef, batch: RecordBatch, use_
                 |(_, target_field)| match orig_schema.column_with_name(target_field.name()) {
                     Some((idx, _)) => {
                         let data_type = target_field.data_type();
-                        let transformed_array =
-                            transform_array(target_field.name().to_string(), data_type.clone(), batch.column(idx).clone(), num_rows, use_default, default_column_value.clone());
+                        let transformed_array = transform_array(
+                            target_field.name().to_string(),
+                            data_type.clone(),
+                            batch.column(idx).clone(),
+                            num_rows,
+                            use_default,
+                            default_column_value.clone(),
+                        );
                         transform_arrays.push(transformed_array);
                         Some(target_field.clone())
                     }
                     None if use_default => {
                         let default_value_array = match default_column_value.get(target_field.name()) {
-                            Some(value) => {
-                                make_default_array(&target_field.data_type().clone(), value, num_rows)
-                            }
-                            _ => new_null_array(&target_field.data_type().clone(), num_rows)
+                            Some(value) => make_default_array(&target_field.data_type().clone(), value, num_rows),
+                            _ => new_null_array(&target_field.data_type().clone(), num_rows),
                         };
                         transform_arrays.push(default_value_array);
                         Some(target_field.clone())
@@ -101,7 +119,14 @@ pub fn transform_record_batch(target_schema: SchemaRef, batch: RecordBatch, use_
     .unwrap()
 }
 
-pub fn transform_array(name: String, target_datatype: DataType, array: ArrayRef, num_rows: usize, use_default: bool, default_column_value: Arc<HashMap<String, String>>) -> ArrayRef {
+pub fn transform_array(
+    name: String,
+    target_datatype: DataType,
+    array: ArrayRef,
+    num_rows: usize,
+    use_default: bool,
+    default_column_value: Arc<HashMap<String, String>>,
+) -> ArrayRef {
     match target_datatype {
         DataType::Timestamp(target_unit, Some(target_tz)) => make_array(match &target_unit {
             TimeUnit::Second => as_primitive_array::<TimestampSecondType>(&array)
@@ -124,14 +149,19 @@ pub fn transform_array(name: String, target_datatype: DataType, array: ArrayRef,
                 .filter_map(|field| match orig_array.column_by_name(field.name()) {
                     Some(array) => Some((
                         field.clone(),
-                        transform_array(name.as_str().to_owned() + "." + field.name(), field.data_type().clone(), array.clone(), num_rows, use_default, default_column_value.clone()),
+                        transform_array(
+                            name.as_str().to_owned() + "." + field.name(),
+                            field.data_type().clone(),
+                            array.clone(),
+                            num_rows,
+                            use_default,
+                            default_column_value.clone(),
+                        ),
                     )),
                     None if use_default => {
                         let default_value_array = match default_column_value.get(field.name()) {
-                            Some(value) => {
-                                make_default_array(&field.data_type().clone(), value, num_rows)
-                            }
-                            _ => new_null_array(&field.data_type().clone(), num_rows)
+                            Some(value) => make_default_array(&field.data_type().clone(), value, num_rows),
+                            _ => new_null_array(&field.data_type().clone(), num_rows),
                         };
                         Some((field.clone(), default_value_array))
                     }
@@ -145,23 +175,58 @@ pub fn transform_array(name: String, target_datatype: DataType, array: ArrayRef,
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                panic!("Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}", name, target_datatype, array.data_type())
+                panic!(
+                    "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
+                    name,
+                    target_datatype,
+                    array.data_type()
+                )
             }
             array.clone()
         }
-        
     }
 }
 
 pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) -> ArrayRef {
+    if value == "null" || value == "NULL" {
+        return new_null_array(datatype, num_rows);
+    }
     match datatype {
         DataType::Utf8 => Arc::new(StringArray::from(vec![value.as_str(); num_rows])),
-        DataType::Int32 => Arc::new(PrimitiveArray::<Int32Type>::from(vec![value.as_str().parse::<i32>().unwrap(); num_rows])),
-        DataType::Int64 => Arc::new(PrimitiveArray::<Int64Type>::from(vec![value.as_str().parse::<i64>().unwrap(); num_rows])),
-        DataType::Date32 => Arc::new(PrimitiveArray::<Date32Type>::from(vec![value.as_str().parse::<i32>().unwrap(); num_rows])),
+        DataType::Int32 => Arc::new(PrimitiveArray::<Int32Type>::from(vec![
+            value
+                .as_str()
+                .parse::<i32>()
+                .unwrap();
+            num_rows
+        ])),
+        DataType::Int64 => Arc::new(PrimitiveArray::<Int64Type>::from(vec![
+            value
+                .as_str()
+                .parse::<i64>()
+                .unwrap();
+            num_rows
+        ])),
+        DataType::Date32 => Arc::new(PrimitiveArray::<Date32Type>::from(vec![
+            value
+                .as_str()
+                .parse::<i32>()
+                .unwrap();
+            num_rows
+        ])),
+        DataType::Boolean => Arc::new(BooleanArray::from(vec![
+            value
+                .as_str()
+                .parse::<bool>()
+                .unwrap();
+            num_rows
+        ])),
         _ => {
-            println!("make_default_array() datatype not match, datatype={:?}, value={:?}", datatype, value);
-            new_null_array(&datatype.clone(), num_rows)    
+            println!(
+                "make_default_array() datatype not match, datatype={:?}, value={:?}",
+                datatype, value
+            );
+            new_null_array(datatype, num_rows)
         }
     }
 }
