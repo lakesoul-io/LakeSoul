@@ -198,6 +198,17 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "      \"ship_strategy\" : \"CUSTOM\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"parallelism\" : 1,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
                         "  } ]\n" +
                         "}");
     }

@@ -44,7 +44,7 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                                         long bucketCheckInterval,
                                         Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,
-              bucketCheckInterval, conf);
+                bucketCheckInterval, conf);
     }
 
     private TableSchemaIdentity getIdentity(RowType rowType, BinarySourceRecord element) {
@@ -53,8 +53,8 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                 rowType,
                 element.getTableLocation(),
                 element.getPrimaryKeys(),
-                element.getPartitionKeys()
-        );
+                element.getPartitionKeys(),
+                element.getData().getProperties());
     }
 
     @Override

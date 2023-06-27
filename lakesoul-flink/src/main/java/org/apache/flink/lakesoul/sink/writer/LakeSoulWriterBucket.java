@@ -206,12 +206,12 @@ public class LakeSoulWriterBucket {
 
     void onProcessingTime(long timestamp) throws IOException {
         if (inProgressPartWriter != null
-            && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
+                && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
-                        "policy "
-                        + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
+                                "policy "
+                                + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
                         bucketId,
                         uniqueId,
                         inProgressPartWriter.getCreationTime(),
@@ -248,15 +248,15 @@ public class LakeSoulWriterBucket {
         return new Path(
                 bucketPath,
                 outputFileConfig.getPartPrefix()
-                + '-'
-                + subTask
-                + '-'
-                + uniqueId
-                + '_'
-                + subTask
-                + ".c"
-                + count
-                + outputFileConfig.getPartSuffix());
+                        + '-'
+                        + subTask
+                        + '-'
+                        + uniqueId
+                        + '_'
+                        + subTask
+                        + ".c"
+                        + count
+                        + outputFileConfig.getPartSuffix());
     }
 
     private void closePartFile() throws IOException {

@@ -50,7 +50,7 @@ public class LakeSoulCatalog implements Catalog {
 
     public static final String CATALOG_NAME = "lakesoul";
     private static final String TABLE_PATH = "path";
-    private static final String TABLE_ID_PREFIX = "table_";
+    public static final String TABLE_ID_PREFIX = "table_";
     private final DBManager dbManager;
 
 
@@ -150,6 +150,7 @@ public class LakeSoulCatalog implements Catalog {
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
                 tablePath.getObjectName(),
                 tablePath.getDatabaseName());
+        System.out.println(tableInfo);
         return FlinkUtil.toFlinkCatalog(tableInfo);
     }
 
@@ -208,15 +209,15 @@ public class LakeSoulCatalog implements Catalog {
         if (!"".equals(primaryKeys)) {
             tableOptions.put(RECORD_KEY_NAME, primaryKeys);
         }
-        boolean cdcMark;
+        Optional<String> cdcColumn;
         if ("true".equals(tableOptions.get(USE_CDC.key()))) {
             if (primaryKeys.isEmpty()) {
                 throw new CatalogException("CDC table must have primary key(s)");
             }
-            cdcMark = true;
-            tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
+            cdcColumn = Optional.of(tableOptions.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
+            tableOptions.put(CDC_CHANGE_COLUMN, cdcColumn.get());
         } else {
-            cdcMark = false;
+            cdcColumn = Optional.empty();
         }
 
         // adding hash bucket options
@@ -239,9 +240,10 @@ public class LakeSoulCatalog implements Catalog {
             e.printStackTrace();
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-
+        
+        String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                FlinkUtil.toSparkSchema(schema, cdcMark).json(),
+                sparkSchema,
                 properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
     }
 

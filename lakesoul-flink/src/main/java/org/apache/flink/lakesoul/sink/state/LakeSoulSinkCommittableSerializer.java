@@ -24,6 +24,7 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
+import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
@@ -33,10 +34,13 @@ import java.util.List;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/** Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}. */
+/**
+ * Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}.
+ */
 public class LakeSoulSinkCommittableSerializer
         implements SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> {
 
+    public static final LakeSoulSinkCommittableSerializer INSTANCE = new LakeSoulSinkCommittableSerializer(NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     private static final int MAGIC_NUMBER = 0x1e765c80;
 
     private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
@@ -85,7 +89,7 @@ public class LakeSoulSinkCommittableSerializer
             dataOutputView.writeBoolean(true);
             dataOutputView.writeInt(committable.getPendingFiles().size());
             for (InProgressFileWriter.PendingFileRecoverable pennding :
-                committable.getPendingFiles()) {
+                    committable.getPendingFiles()) {
                 SimpleVersionedSerialization.writeVersionAndSerialize(
                         pendingFileSerializer, pennding, dataOutputView);
             }

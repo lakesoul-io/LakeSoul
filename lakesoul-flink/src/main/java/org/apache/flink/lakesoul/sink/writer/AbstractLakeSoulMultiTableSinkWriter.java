@@ -55,7 +55,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         implements SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState>,
-                Sink.ProcessingTimeService.ProcessingTimeCallback {
+        Sink.ProcessingTimeService.ProcessingTimeCallback {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractLakeSoulMultiTableSinkWriter.class);
 
@@ -167,6 +167,9 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     @Override
     public void write(IN element, Context context) throws IOException {
+        if (element == null) {
+            return;
+        }
         // setting the values in the bucketer context
         bucketerContext.update(
                 context.timestamp(),
@@ -240,7 +243,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
                             bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
             LOG.info("Create new bucket {}, {}, {}",
-                     identity, bucketId, bucketPath);
+                    identity, bucketId, bucketPath);
         }
         return bucket;
     }
@@ -280,7 +283,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
      */
     private static final class BucketerContext implements BucketAssigner.Context {
 
-        @Nullable private Long elementTimestamp;
+        @Nullable
+        private Long elementTimestamp;
 
         private long currentWatermark;
 
