@@ -50,17 +50,14 @@
             <version>2.6</version>
         </dependency>
         <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>14.0.1</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-
-        <!--fastjson-->
-        <dependency>
             <groupId>com.alibaba</groupId>
             <artifactId>fastjson</artifactId>
             <version>1.2.83</version>
+        </dependency>
+        <dependency>
+            <groupId>org.casbin</groupId>
+            <artifactId>jdbc-adapter</artifactId>
+            <version>LATEST</version>
         </dependency>
     </dependencies>
 
