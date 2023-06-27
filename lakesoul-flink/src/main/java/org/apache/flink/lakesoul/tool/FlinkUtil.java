@@ -33,6 +33,7 @@ import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -42,10 +43,12 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
+import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Option;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -78,7 +81,7 @@ public class FlinkUtil {
         return "Null";
     }
 
-    public static StructType toSparkSchema(RowType rowType, Boolean isCdc) {
+    public static StructType toSparkSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
         StructType stNew = new StructType();
 
         for (RowType.RowField field : rowType.getFields()) {
@@ -89,13 +92,23 @@ public class FlinkUtil {
             stNew = stNew.add(name, dataType, logicalType.isNullable());
         }
 
-        if (isCdc) {
-            stNew.add(CDC_CHANGE_COLUMN_DEFAULT, StringType, true);
+        if (cdcColumn.isPresent()) {
+            String cdcColName = cdcColumn.get();
+            StructField cdcField = new StructField(cdcColName, StringType, false, null);
+            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
+
+            if (cdcFieldIndex.isEmpty()) {
+                stNew = stNew.add(cdcField);
+            } else {
+                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
+                if (!field.toString().equals(cdcField.toString()))
+                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + "has an invalid field of" + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+            }
         }
         return stNew;
     }
 
-    public static StructType toSparkSchema(TableSchema tsc, Optional<String> cdcColumn) {
+    public static StructType toSparkSchema(TableSchema tsc, Optional<String> cdcColumn) throws CatalogException {
         StructType stNew = new StructType();
 
         for (int i = 0; i < tsc.getFieldCount(); i++) {
@@ -105,8 +118,17 @@ public class FlinkUtil {
             stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
         }
         if (cdcColumn.isPresent()) {
-            String cdcCol = cdcColumn.get();
-            if (stNew.getFieldIndex(cdcCol).isEmpty()) stNew = stNew.add(CDC_CHANGE_COLUMN_DEFAULT, StringType, true);
+            String cdcColName = cdcColumn.get();
+            StructField cdcField = new StructField(cdcColName, StringType, false, Metadata.empty());
+            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
+
+            if (cdcFieldIndex.isEmpty()) {
+                stNew = stNew.add(cdcField);
+            } else {
+                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
+                if (!field.toString().equals(cdcField.toString()))
+                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + " has an invalid field of " + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+            }
         }
         return stNew;
     }
@@ -160,7 +182,7 @@ public class FlinkUtil {
         return null;
     }
 
-    public static boolean isCDCDelete(StringData operation){
+    public static boolean isCDCDelete(StringData operation) {
         return StringData.fromString("delete").equals(operation);
     }
 

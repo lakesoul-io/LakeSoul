@@ -110,7 +110,7 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             Boolean isCdc = Boolean.valueOf(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
-            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc).json();
+            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) : Optional.empty()).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();

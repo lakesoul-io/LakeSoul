@@ -55,14 +55,11 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         tEnvs = StreamTableEnvironment.create(env);
-        Catalog lakesoulCatalog = new LakeSoulCatalog();
+        LakeSoulCatalog lakesoulCatalog = new LakeSoulCatalog();
+        lakesoulCatalog.cleanForTest();
         lakesoulCatalog.open();
 
-        try {
-            lakesoulCatalog.createDatabase("test_lakesoul_meta", new LakesoulCatalogDatabase(), true);
-        } catch (DatabaseAlreadyExistException e) {
-            throw new RuntimeException(e);
-        }
+        lakesoulCatalog.createDatabase("test_lakesoul_meta", new LakesoulCatalogDatabase(), true);
         tEnvs.registerCatalog(LAKESOUL, lakesoulCatalog);
         tEnvs.useCatalog(LAKESOUL);
         tEnvs.useDatabase("test_lakesoul_meta");

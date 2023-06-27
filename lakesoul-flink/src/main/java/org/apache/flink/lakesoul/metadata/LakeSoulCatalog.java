@@ -150,6 +150,7 @@ public class LakeSoulCatalog implements Catalog {
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
                 tablePath.getObjectName(),
                 tablePath.getDatabaseName());
+        System.out.println(tableInfo);
         return FlinkUtil.toFlinkCatalog(tableInfo);
     }
 
@@ -239,9 +240,10 @@ public class LakeSoulCatalog implements Catalog {
             e.printStackTrace();
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-
+        
+        String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                FlinkUtil.toSparkSchema(schema, cdcColumn).json(),
+                sparkSchema,
                 properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
     }
 
