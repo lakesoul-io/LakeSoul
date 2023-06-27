@@ -128,10 +128,6 @@ public class BinarySourceRecord {
         TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
         boolean isDDL = SCHEMA_CHANGE_EVENT_KEY_NAME.equalsIgnoreCase(keySchema.name());
         if (isDDL) {
-//            return new BinarySourceRecord(sourceRecord.topic(), null,
-//                    Collections.emptyList(), null, SourceRecordJsonSerde.getInstance().serializeValue(sourceRecord),
-//                    tableId,
-//                    true);
             return null;
         } else {
             List<String> primaryKeys = new ArrayList<>();
