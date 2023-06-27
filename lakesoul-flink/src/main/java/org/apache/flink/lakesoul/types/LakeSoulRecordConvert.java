@@ -180,7 +180,7 @@ public class LakeSoulRecordConvert implements Serializable {
             colTypes[i] = rowType.getTypeAt(i);
         }
         colNames[rowType.getFieldCount()] = cdcColumn;
-        colTypes[rowType.getFieldCount()] = new VarCharType(Integer.MAX_VALUE);
+        colTypes[rowType.getFieldCount()] = new VarCharType(false, Integer.MAX_VALUE);
         return RowType.of(colTypes, colNames);
     }
 
@@ -200,8 +200,8 @@ public class LakeSoulRecordConvert implements Serializable {
         colNames[useCDC ? arity - 2 : arity - 1] = SORT_FIELD;
         colTypes[useCDC ? arity - 2 : arity - 1] = new BigIntType();
         if (useCDC) {
-            colNames[arity - 1] = CDC_CHANGE_COLUMN_DEFAULT;
-            colTypes[arity - 1] = new VarCharType(Integer.MAX_VALUE);
+            colNames[arity - 1] = cdcColumn;
+            colTypes[arity - 1] = new VarCharType(false, Integer.MAX_VALUE);
         }
         return RowType.of(colTypes, colNames);
     }
