@@ -29,7 +29,9 @@ import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
 
-/** A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}. */
+/**
+ * A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}.
+ */
 @Internal
 public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketFactory {
 
@@ -57,6 +59,6 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             OutputFileConfig outputFileConfig)
             throws IOException {
         return LakeSoulWriterBucket.restore(subTaskId, tableId, bucketWriter,
-                                            rollingPolicy, bucketState, outputFileConfig);
+                rollingPolicy, bucketState, outputFileConfig);
     }
 }

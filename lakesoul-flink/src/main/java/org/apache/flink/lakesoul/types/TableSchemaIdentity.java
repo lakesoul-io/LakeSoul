@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.types;
 
+import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.Serializable;
@@ -35,20 +36,16 @@ public final class TableSchemaIdentity implements Serializable {
 
     public final List<String> partitionKeyList;
 
-    public TableSchemaIdentity() {
-        this.tableId = null;
-        this.tableLocation = null;
-        this.primaryKeys = null;
-        this.partitionKeyList = null;
-    }
+    public final JSONObject properties;
 
     public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
-                               List<String> partitionKeyList) {
+                               List<String> partitionKeyList, JSONObject properties) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.tableLocation = tableLocation;
         this.primaryKeys = primaryKeys;
         this.partitionKeyList = partitionKeyList;
+        this.properties = properties;
     }
 
     @Override
@@ -68,8 +65,8 @@ public final class TableSchemaIdentity implements Serializable {
     @Override
     public String toString() {
         return "TableSchemaIdentity{" +
-               "tableId=" + tableId +
-               ", rowType=" + rowType +
-               '}';
+                "tableId=" + tableId +
+                ", rowType=" + rowType +
+                '}';
     }
 }
