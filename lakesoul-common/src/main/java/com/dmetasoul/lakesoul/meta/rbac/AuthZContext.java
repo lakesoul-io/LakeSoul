@@ -1,14 +1,14 @@
 package com.dmetasoul.lakesoul.meta.rbac;
 
-public class AuthContext {
+public class AuthZContext {
 
-    public final String LAKE_SOUL_SUBJECT_ENV = "LAKE_SOUL_SUBJECT";
-    public final String LAKE_SOUL_DOMAIN_ENV = "LAKE_SOUL_DOMAIN";
-    private static final AuthContext CONTEXT =  new AuthContext();
+    public final String LAKESOUL_AUTHZ_SUBJECT_ENV = "LAKESOUL_AUTHZ_SUBJECT";
+    public final String LAKESOUL_AUTHZ_DOMAIN_ENV = "LAKESOUL_AUTHZ_DOMAIN";
+    private static final AuthZContext CONTEXT =  new AuthZContext();
 
-    private AuthContext(){
-        this.domain = System.getenv(LAKE_SOUL_SUBJECT_ENV);
-        this.subject = System.getenv(LAKE_SOUL_DOMAIN_ENV);
+    private AuthZContext(){
+        this.domain = System.getenv(LAKESOUL_AUTHZ_SUBJECT_ENV);
+        this.subject = System.getenv(LAKESOUL_AUTHZ_DOMAIN_ENV);
         if(this.domain == null) {
             this.domain = "";
         }
@@ -17,7 +17,7 @@ public class AuthContext {
         }
     }
 
-    public static AuthContext getInstance(){
+    public static AuthZContext getInstance(){
         return CONTEXT;
     }
 

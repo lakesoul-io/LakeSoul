@@ -7,15 +7,15 @@ import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 
 @Aspect
-public class AuthAspect {
+public class AuthZAspect {
 
-    AuthAdvice advice;
+    AuthZAdvice advice;
 
-    public AuthAspect(){
-        this.advice = new AuthAdvice();
+    public AuthZAspect(){
+        this.advice = new AuthZAdvice();
     }
 
-    @Pointcut("execution(* *(..)) && @annotation(com.dmetasoul.lakesoul.meta.rbac.Auth)")
+    @Pointcut("execution(* *(..)) && @annotation(com.dmetasoul.lakesoul.meta.rbac.AuthZ)")
     public void pointcut(){
 
     }
@@ -24,7 +24,7 @@ public class AuthAspect {
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
 
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
-        Auth annotation = methodSignature.getMethod().getAnnotation(Auth.class);
+        AuthZ annotation = methodSignature.getMethod().getAnnotation(AuthZ.class);
         String object = annotation.object();
         String action = annotation.action();
         String value = annotation.value();
@@ -40,6 +40,6 @@ public class AuthAspect {
             return result;
         }
 
-        throw new AuthException();
+        throw new AuthZException();
     }
 }

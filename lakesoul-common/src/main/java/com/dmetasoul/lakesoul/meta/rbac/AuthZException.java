@@ -1,7 +1,7 @@
 package com.dmetasoul.lakesoul.meta.rbac;
 
-public class AuthException extends RuntimeException {
-    public AuthException(){
+public class AuthZException extends RuntimeException {
+    public AuthZException(){
         super("lakesoul access denied!");
     }
 }
