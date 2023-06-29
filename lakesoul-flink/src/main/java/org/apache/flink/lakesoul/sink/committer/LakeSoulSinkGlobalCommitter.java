@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -114,7 +115,7 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-                String partition = String.join(";", String.join(",", identity.partitionKeyList), String.join(",", identity.primaryKeys));
+                String partition = String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, identity.partitionKeyList), String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
 
                 dbManager.createNewTable(
                         tableId,

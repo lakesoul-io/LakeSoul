@@ -17,6 +17,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.CommitType
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
@@ -132,8 +133,8 @@ trait TransactionalWrite {
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
     var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
-    if(isCompaction){
-      outputPath =  SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString+"/compact_"+System.currentTimeMillis()))
+    if (isCompaction) {
+      outputPath = SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()))
     }
 
     val (queryExecution, output) = normalizeData(data)
@@ -200,7 +201,7 @@ trait TransactionalWrite {
     }
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
-    val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
+    val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
     (committer.addedStatuses.map(file => file.copy(
       file_exist_cols = real_write_cols
     )), outputPath)

@@ -16,6 +16,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import org.apache.spark.internal.Logging
 
 object MetaUtils extends Logging {
@@ -26,7 +27,7 @@ object MetaUtils extends Logging {
 
   lazy val MAX_COMMIT_ATTEMPTS: Int = 5
   lazy val DROP_TABLE_WAIT_SECONDS: Int = 1
-  lazy val PART_MERGE_FILE_MINIMUM_NUM:Int = 5
+  lazy val PART_MERGE_FILE_MINIMUM_NUM: Int = 5
 
   /** get partition key string from scala Map */
   def getPartitionKeyFromList(cols: List[(String, String)]): String = {
@@ -35,7 +36,7 @@ object MetaUtils extends Logging {
     } else {
       cols.map(list => {
         list._1 + "=" + list._2
-      }).mkString(",")
+      }).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
     }
   }
 
@@ -43,7 +44,7 @@ object MetaUtils extends Logging {
   def getPartitionMapFromKey(range_value: String): Map[String, String] = {
     var partition_values = Map.empty[String, String]
     if (!range_value.equals(DEFAULT_RANGE_PARTITION_VALUE)) {
-      val range_list = range_value.split(",")
+      val range_list = range_value.split(LAKESOUL_RANGE_PARTITION_SPLITTER)
       for (range <- range_list) {
         val parts = range.split("=")
         partition_values = partition_values ++ Map(parts(0) -> parts(1))
