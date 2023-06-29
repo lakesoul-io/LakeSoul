@@ -69,7 +69,7 @@ public class AuthZEnforcer {
         String modelQuery = GlobalConfig.get().getAuthZCasbinModelQuery();
         ResultSet rs = stmt.executeQuery(modelQuery);
         if (rs.next()) {
-            String modelConfValue = rs.getString(0);
+            String modelConfValue = rs.getString(1);
             LOG.info("Casbin model: {}", modelConfValue);
 
             // init casbin model

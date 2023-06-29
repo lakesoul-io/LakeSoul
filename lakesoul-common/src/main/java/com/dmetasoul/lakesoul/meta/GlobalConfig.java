@@ -84,7 +84,7 @@ public class GlobalConfig {
     }
 
     private ResultSet getResultSet(String key, PreparedStatement pstmt) throws SQLException {
-        pstmt.setString(0, key);
+        pstmt.setString(1, key);
         return pstmt.executeQuery();
     }
 
