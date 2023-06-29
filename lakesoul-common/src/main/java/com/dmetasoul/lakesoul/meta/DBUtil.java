@@ -68,14 +68,14 @@ public class DBUtil {
     }
 
     /**
-     *  PG connection config retrieved in the following order:
-     *  1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
-     *  2. A system property "lakesoul_home" (in lower case) point to a property file;
-     *      Following config keys are used to read the property file:
-     *          lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
-     *  3. Any of the following env var exist:
-     *      LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
-     *  4. Otherwise, resolved to each's config's default
+     * PG connection config retrieved in the following order:
+     * 1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
+     * 2. A system property "lakesoul_home" (in lower case) point to a property file;
+     * Following config keys are used to read the property file:
+     * lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
+     * 3. Any of the following env var exist:
+     * LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
+     * 4. Otherwise, resolved to each's config's default
      */
     public static DataBaseProperty getDBInfo() {
 
@@ -205,53 +205,5 @@ public class DBUtil {
         return rsList;
     }
 
-    public static String changeUUIDListToString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("'%s',", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static String changeUUIDListToOrderString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("%s,", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static List<UUID> changeStringToUUIDList(String s) {
-        List<UUID> uuidList = new ArrayList<>();
-        if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo
-            return uuidList;
-        }
-        s = s.substring(1, s.length() - 1);
-        String[] uuids = s.split(",");
-        for (String uuid : uuids) {
-            uuidList.add(UUID.fromString(uuid));
-        }
-        return uuidList;
-    }
-
-    public static String changePartitionDescListToString(List<String> partitionDescList) {
-        StringBuilder sb = new StringBuilder();
-        if (partitionDescList.size() < 1) {
-            return sb.append("''").toString();
-        }
-        for (String s : partitionDescList) {
-            sb.append(String.format("'%s',", s));
-        }
-        return sb.substring(0, sb.length() - 1);
-    }
-
+    
 }

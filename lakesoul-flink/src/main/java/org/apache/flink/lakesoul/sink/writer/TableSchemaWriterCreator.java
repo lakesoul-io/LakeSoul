@@ -40,6 +40,8 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
+
 public class TableSchemaWriterCreator implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(TableSchemaWriterCreator.class);
 
@@ -74,7 +76,7 @@ public class TableSchemaWriterCreator implements Serializable {
         creator.outputFileConfig = OutputFileConfig.builder().build();
 
         creator.partitionComputer = new CdcPartitionComputer(
-                "null",
+                LAKESOUL_NULL_STRING,
                 rowType.getFieldNames().toArray(new String[0]),
                 rowType,
                 partitionKeyList.toArray(new String[0]),
