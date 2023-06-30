@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
@@ -57,7 +58,7 @@ trait Command {
         val partitionColumns = if (rangePartitionColumns.equalsIgnoreCase("")) {
           Seq.empty[String]
         } else {
-          rangePartitionColumns.split(",").toSeq
+          rangePartitionColumns.split(LAKESOUL_RANGE_PARTITION_SPLITTER).toSeq
         }
         partitionColumns.find(f => nameEquality(f, col.name)).getOrElse {
           throw new AnalysisException(

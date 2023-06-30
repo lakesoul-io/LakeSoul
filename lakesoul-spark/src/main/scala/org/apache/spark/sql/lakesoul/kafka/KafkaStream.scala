@@ -18,6 +18,7 @@
 package org.apache.spark.sql.lakesoul.kafka
 
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH
 import com.dmetasoul.lakesoul.meta.DBManager
 import io.confluent.kafka.schemaregistry.client.{CachedSchemaRegistryClient, SchemaRegistryClient}
 import io.confluent.kafka.serializers.AbstractKafkaAvroDeserializer
@@ -65,7 +66,7 @@ object KafkaStream {
       if (!tableExists) {
         val tableId = KAFKA_TABLE_PREFIX + UUID.randomUUID().toString
         if (autoAddPartition) {
-          dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), LAKESOUL_PARTITION_COLUMN + ";")
+          dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), LAKESOUL_PARTITION_COLUMN + LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)
         } else {
           dbManager.createNewTable(tableId, namespace, tableName, tablePath, schema, new JSONObject(), "")
         }
