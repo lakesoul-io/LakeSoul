@@ -21,6 +21,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import com.zaxxer.hikari.HikariConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -254,4 +255,14 @@ public class DBUtil {
         return sb.substring(0, sb.length() - 1);
     }
 
+    public static void fillDataSourceConfig(HikariConfig config) {
+        config.setConnectionTimeout(10000);
+        config.setIdleTimeout(60000);
+        config.setMaximumPoolSize(8);
+        config.setKeepaliveTime(10000);
+        config.setMinimumIdle(1);
+        config.addDataSourceProperty( "cachePrepStmts" , "true" );
+        config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
+        config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
+    }
 }
