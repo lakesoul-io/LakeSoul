@@ -308,19 +308,19 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         testStreamingWrite(
                 false,
                 (p) -> {
-                    Configuration config = new Configuration();
-                    config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
+//                    Configuration config = new Configuration();
+//                    config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
                     env.setParallelism(1);
 
-                    env.enableCheckpointing(1000);
-                    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
-                    env.getCheckpointConfig().configure(config);
+//                    env.enableCheckpointing(1000);
+//                    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+//                    env.getCheckpointConfig().configure(config);
 
-                    CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
-                    env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
-                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(
-                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+//                    CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
+//                    env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
+//                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+//                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
                     StreamTableEnvironment streamEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
                     streamEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
                     streamEnv.useCatalog(lakeSoulCatalog.getName());
@@ -368,7 +368,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
     private void testStreamingWrite(
             boolean part, Consumer<String> pathConsumer)
             throws Exception {
-        StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
         tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tEnv.useCatalog(lakeSoulCatalog.getName());

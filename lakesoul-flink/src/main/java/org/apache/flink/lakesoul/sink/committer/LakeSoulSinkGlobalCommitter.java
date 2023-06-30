@@ -102,7 +102,9 @@ public class LakeSoulSinkGlobalCommitter
             List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
                 LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
+        LOG.info("Committing: {}", globalCommittable);
 
+        int index = 0;
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
                 globalCommittable.getGroupedCommitables()
                         .entrySet()) {
@@ -114,11 +116,14 @@ public class LakeSoulSinkGlobalCommitter
                     identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) :
                     Optional.empty());
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
+            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
                 String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
                         identity.partitionKeyList);
 
+                LOG.info("Creating table: {}, {}, {}, {}, {}, {}, {}", tableId, tableNamespace, tableName,
+                        identity.tableLocation, msgSchema, identity.properties, partition);
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
                         identity.properties, partition);
             } else {
@@ -138,6 +143,8 @@ public class LakeSoulSinkGlobalCommitter
                         LOG.warn("Dropping Column {} Logically", droppedColumn.toString());
                         dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
                     } else {
+                        LOG.info("Changing table schema: {}, {}, {}, {}, {}", tableNamespace, tableName, identity.tableLocation,
+                                msgSchema, identity.properties);
                         dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
                     }
                 } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {

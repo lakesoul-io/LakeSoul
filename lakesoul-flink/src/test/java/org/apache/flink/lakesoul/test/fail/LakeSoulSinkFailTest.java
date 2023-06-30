@@ -51,9 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulSinkFailTest extends AbstractTestBase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkFailTest.class);
-
-
     public static Map<String, Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior>> parameters;
 
     static String dropSourceSql = "drop table if exists test_source";
