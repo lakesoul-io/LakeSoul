@@ -474,7 +474,6 @@
                             <include>com.fasterxml.jackson.module:jackson-module-scala_2.12</include>
                             <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
                             <include>com.thoughtworks.paranamer:paranamer</include>
-                            <include>commons-lang:commons-lang</include>
                         </includes>
                         <excludes>
                             <exclude>org.apache.logging.log4j:*</exclude>
