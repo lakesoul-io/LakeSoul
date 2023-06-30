@@ -19,7 +19,7 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.entity.TableNameId;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -34,7 +34,8 @@ public class TableNameIdDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName, tableNamespace);
+        String sql = String.format("select * from table_name_id where table_name = '%s' and table_namespace = '%s'",
+                tableName, tableNamespace);
         TableNameId tableNameId = null;
         try {
             conn = DBConnector.getConn();
@@ -58,7 +59,8 @@ public class TableNameIdDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select table_name from table_name_id where table_namespace = '%s'", table_namespace);
+        String sql =
+                String.format("select table_name from table_name_id where table_namespace = '%s'", table_namespace);
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -82,7 +84,8 @@ public class TableNameIdDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
+            pstmt = conn.prepareStatement(
+                    "insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.setString(3, tableNameId.getTableNamespace());
@@ -99,7 +102,9 @@ public class TableNameIdDao {
     public void delete(String tableName, String tableNamespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName, tableNamespace);
+        String sql =
+                String.format("delete from table_name_id where table_name = '%s' and table_namespace = '%s'", tableName,
+                        tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -133,7 +138,9 @@ public class TableNameIdDao {
         }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("update table_name_id set table_id = '%s' where table_name = '%s' and table_namespace = '%s'", table_id, tableName, tableNamespace);
+        String sql = String.format(
+                "update table_name_id set table_id = '%s' where table_name = '%s' and table_namespace = '%s'", table_id,
+                tableName, tableNamespace);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -150,7 +157,6 @@ public class TableNameIdDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from table_name_id;";
         try {
             conn = DBConnector.getConn();
