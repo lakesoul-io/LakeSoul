@@ -1,6 +1,7 @@
 package org.apache.flink.lakesoul.test.fail;
 
 import org.apache.flink.api.connector.source.*;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
@@ -15,6 +16,7 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
+import org.apache.flink.lakesoul.test.PostgresContainerHelper;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.SqlDialect;
@@ -44,6 +46,8 @@ import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -65,17 +69,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulSinkFailTest {
 
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkFailTest.class);
 
     private enum StopBehavior {
 
         FAIL_ON_BEFORE_ASSIGN_SPLIT,
         FAIL_ON_ASSIGN_SPLIT_FINISHED,
         FAIL_ON_CHECKPOINTING,
-        FAIL_ON_COLLECT_FINISHED
+        FAIL_ON_COLLECT_FINISHED,
+        STOP_POSTGRES_ON_CHECKPOINTING,
     }
 
+    static Optional<Tuple2<Integer, Integer>> FAIL_OPTION = Optional.empty();
     static long FAIL_OVER_INTERVAL_START = 0L;
     static long FAIL_OVER_INTERVAL_END = 0L;
+
 
     private static void tryStop(StopBehavior targetBehavior, StopBehavior behavior) {
         if (targetBehavior != behavior) return;
@@ -83,7 +91,12 @@ public class LakeSoulSinkFailTest {
         long current = System.currentTimeMillis();
         if (current > FAIL_OVER_INTERVAL_START && current < FAIL_OVER_INTERVAL_END) {
             String msg = "Sink fail with " + behavior + " at " + LocalDateTime.now();
-            System.out.println(msg);
+            LOG.warn(msg);
+            if (behavior == StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING) {
+                PostgresContainerHelper.stopPostgresForMills(8 * 1000);
+                return;
+            }
+
             throw new RuntimeException(msg);
         }
     }
@@ -110,7 +123,7 @@ public class LakeSoulSinkFailTest {
 
     @BeforeClass
     public static void setup() {
-        streamExecEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(2, 500L);
+        streamExecEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(2, 4000L, 4000L);
         streamTableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(streamExecEnv);
         testLakeSoulCatalog = new LakeSoulCatalogMocks.TestLakeSoulCatalog();
         LakeSoulTestUtils.registerLakeSoulCatalog(streamTableEnv, testLakeSoulCatalog);
@@ -128,6 +141,13 @@ public class LakeSoulSinkFailTest {
                                 Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
                         UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))), "PARTITIONED BY (`range`)",
                 StopBehavior.FAIL_ON_CHECKPOINTING));
+
+        parameters.put("testLakeSoulSinkStopPostgresOnCheckpointing", Tuple3.of(new ResolvedSchema(
+                        Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
+                                        DataTypes.STRING()),
+                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
+                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))), "PARTITIONED BY (`range`)",
+                StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
 
         parameters.put("testLakeSoulSinkFailOnCollectFinished", Tuple3.of(new ResolvedSchema(
                         Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()), Column.physical("range1",
@@ -298,6 +318,34 @@ public class LakeSoulSinkFailTest {
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
     }
 
+    @Test
+    public void testLakeSoulSinkStopPostgresOnCheckpointing() throws IOException {
+        String testName = "testLakeSoulSinkStopPostgresOnCheckpointing";
+        Tuple3<ResolvedSchema, String, StopBehavior> tuple3 = parameters.get(testName);
+        ResolvedSchema resolvedSchema = tuple3.f0;
+
+        indexBound = 40;
+        List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
+                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
+                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+
+        PostgresContainerHelper.setContainerName("yugabyte");
+        FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
+        testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
+                20 * 1000);
+        FAIL_OPTION = Optional.empty();
+
+        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
+                .stream()
+                .map(Row::toString)
+                .sorted(Comparator.comparing(Function.identity()))
+                .collect(Collectors.toList());
+        expectedData.sort(Comparator.comparing(Function.identity()));
+
+        System.out.println(actualData);
+        assertThat(actualData.toString()).isEqualTo(expectedData.toString());
+    }
+
     private void testLakeSoulSink(ResolvedSchema resolvedSchema, StopBehavior behavior, String partitionBy,
                                   String path, int timeout) throws IOException {
         testLakeSoulCatalog.cleanForTest();
@@ -320,7 +368,6 @@ public class LakeSoulSinkFailTest {
         streamTableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         streamTableEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("UTC").toZoneId());
 
-        FAIL_OVER_INTERVAL_START = 0L;
         TableResult tableResult = streamTableEnv.executeSql("insert into test_sink select * from test_source");
         try {
             tableResult.await(timeout, TimeUnit.MILLISECONDS);
@@ -636,10 +683,26 @@ public class LakeSoulSinkFailTest {
 
         @Override
         public void start() {
-            if (FAIL_OVER_INTERVAL_START == 0L) {
-                FAIL_OVER_INTERVAL_START = System.currentTimeMillis() + 200;
-                FAIL_OVER_INTERVAL_END = FAIL_OVER_INTERVAL_START + 500;
+            if (FAIL_OPTION.isPresent()) {
+                FAIL_OVER_INTERVAL_START = System.currentTimeMillis() + FAIL_OPTION.get().f0;
+                FAIL_OVER_INTERVAL_END = FAIL_OVER_INTERVAL_START + FAIL_OPTION.get().f1;
+                FAIL_OPTION = Optional.empty();
+                String msg = "Sink will fail with " + stopBehavior + " from " + LocalDateTime.ofInstant(Instant.ofEpochMilli(FAIL_OVER_INTERVAL_START), ZoneId.systemDefault()) + " to " +
+                        LocalDateTime.ofInstant(Instant.ofEpochMilli(FAIL_OVER_INTERVAL_END), ZoneId.systemDefault());
+                LOG.warn(msg);
             }
+        }
+
+        @Override
+        public void notifyCheckpointAborted(long checkpointId) throws Exception {
+            LOG.warn("notifyCheckpointAborted: " + checkpointId);
+            SplitEnumerator.super.notifyCheckpointAborted(checkpointId);
+        }
+
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) throws Exception {
+            LOG.warn("notifyCheckpointComplete: " + checkpointId);
+            SplitEnumerator.super.notifyCheckpointComplete(checkpointId);
         }
 
         @Override
@@ -647,6 +710,7 @@ public class LakeSoulSinkFailTest {
             tryStop(StopBehavior.FAIL_ON_BEFORE_ASSIGN_SPLIT, stopBehavior);
             if (backSplits.isEmpty()) {
                 if (index < indexBound) {
+                    LOG.warn("assignSplit: " + index);
                     enumContext.assignSplit(new MockSplit(index), subtaskId);
                     index++;
                 }
@@ -669,6 +733,7 @@ public class LakeSoulSinkFailTest {
         @Override
         public Integer snapshotState(long checkpointId) throws Exception {
             tryStop(StopBehavior.FAIL_ON_CHECKPOINTING, stopBehavior);
+            tryStop(StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING, stopBehavior);
             return index;
         }
 
@@ -693,6 +758,12 @@ public class LakeSoulSinkFailTest {
 
         @Override
         protected void onSplitFinished(Map<String, MockSplit> map) {
+            try {
+                int tps = 3;
+                Thread.sleep(1000 / tps);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
             context.sendSplitRequest();
         }
 

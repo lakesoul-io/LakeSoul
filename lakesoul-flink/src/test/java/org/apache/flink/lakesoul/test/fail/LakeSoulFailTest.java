@@ -294,6 +294,12 @@ public class LakeSoulFailTest {
         LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
         for (String value : testData) {
             batchTableEnv.executeSql(String.format("insert into test_source VALUES %s", value));
+            try {
+                int tps = 6;
+                Thread.sleep(1000 / tps);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
 
         try {
