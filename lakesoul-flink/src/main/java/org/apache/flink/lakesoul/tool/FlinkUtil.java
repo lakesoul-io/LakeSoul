@@ -33,17 +33,22 @@ import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
+import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Option;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -52,8 +57,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static java.time.ZoneId.SHORT_IDS;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 import static org.apache.spark.sql.types.DataTypes.StringType;
@@ -76,17 +82,54 @@ public class FlinkUtil {
         return "Null";
     }
 
-    public static StructType toSparkSchema(TableSchema tsc, Boolean isCdc) {
+    public static StructType toSparkSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
+        StructType stNew = new StructType();
+
+        for (RowType.RowField field : rowType.getFields()) {
+            String name = field.getName();
+            if (name.equals(SORT_FIELD)) continue;
+            LogicalType logicalType = field.getType();
+            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
+            stNew = stNew.add(name, dataType, logicalType.isNullable());
+        }
+
+        if (cdcColumn.isPresent()) {
+            String cdcColName = cdcColumn.get();
+            StructField cdcField = new StructField(cdcColName, StringType, false, null);
+            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
+
+            if (cdcFieldIndex.isEmpty()) {
+                stNew = stNew.add(cdcField);
+            } else {
+                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
+                if (!field.toString().equals(cdcField.toString()))
+                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + "has an invalid field of" + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+            }
+        }
+        return stNew;
+    }
+
+    public static StructType toSparkSchema(TableSchema tsc, Optional<String> cdcColumn) throws CatalogException {
         StructType stNew = new StructType();
 
         for (int i = 0; i < tsc.getFieldCount(); i++) {
             String name = tsc.getFieldName(i).get();
             DataType dt = tsc.getFieldDataType(i).get();
-            String dtName = dt.getLogicalType().getTypeRoot().name();
-            stNew = stNew.add(name, DataTypeUtil.convertDatatype(dt.getLogicalType()), dt.getLogicalType().isNullable());
+            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, dt.getLogicalType()));
+            stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
         }
-        if (isCdc) {
-            stNew = stNew.add("rowKinds", StringType, true);
+        if (cdcColumn.isPresent()) {
+            String cdcColName = cdcColumn.get();
+            StructField cdcField = new StructField(cdcColName, StringType, false, Metadata.empty());
+            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
+
+            if (cdcFieldIndex.isEmpty()) {
+                stNew = stNew.add(cdcField);
+            } else {
+                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
+                if (!field.toString().equals(cdcField.toString()))
+                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + " has an invalid field of " + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+            }
         }
         return stNew;
     }
@@ -139,54 +182,45 @@ public class FlinkUtil {
         }
         return null;
     }
-    public static boolean isCDCDelete(StringData operation){
+
+    public static boolean isCDCDelete(StringData operation) {
         return StringData.fromString("delete").equals(operation);
     }
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
-        Builder bd = Schema.newBuilder();
         JSONObject properties = tableInfo.getProperties();
+
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        RowType rowType = ArrowUtils.fromArrowSchema(arrowSchema);
+        Builder bd = Schema.newBuilder();
+
         String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
         boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
-        for (StructField sf : struct.fields()) {
-            if (contains && sf.name().equals(lakesoulCdcColumnName)) {
+
+        for (RowType.RowField field : rowType.getFields()) {
+            if (contains && field.getName().equals(lakesoulCdcColumnName)) {
                 continue;
             }
-            String tyname = DataTypeUtil.convertToFlinkDatatype(sf);
-            if (!sf.nullable()) {
-                tyname += NOT_NULL;
-            }
-            bd = bd.column(sf.name(), tyname);
+            bd.column(field.getName(), field.getType().asSerializableString());
         }
-        List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
+        List<String> partitionData = Splitter.on(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).splitToList(tableInfo.getPartitions());
         List<String> parKeys;
         String parKey = partitionData.get(0);
         String hashKey = partitionData.get(1);
         if (!"".equals(hashKey)) {
-            List<String> hashKeys = Splitter.on(',').splitToList(hashKey);
+            List<String> hashKeys = Splitter.on(LAKESOUL_HASH_PARTITION_SPLITTER).splitToList(hashKey);
             bd.primaryKey(hashKeys);
         }
         if (!"".equals(parKey)) {
-            parKeys = Splitter.on(',').splitToList(parKey);
+            parKeys = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(parKey);
         } else {
             parKeys = new ArrayList<>();
         }
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
         return CatalogTable.of(bd.build(), "", parKeys, conf);
-    }
-
-    public static String stringListToString(List<String> list) {
-        if (list.isEmpty()) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder();
-        for (String s : list) {
-            builder.append(s).append(",");
-        }
-        return builder.deleteCharAt(builder.length() - 1).toString();
     }
 
     public static String generatePartitionPath(LinkedHashMap<String, String> partitionSpec) {
@@ -234,7 +268,7 @@ public class FlinkUtil {
         final List<String> names = getFieldNames(dataType);
         final List<DataType> dataTypes = getFieldDataTypes(dataType);
         if (isCdc) {
-            names.add("rowKinds");
+            names.add(CDC_CHANGE_COLUMN_DEFAULT);
             dataTypes.add(DataTypes.VARCHAR(30));
         }
         return IntStream.range(0, names.size())
@@ -299,10 +333,12 @@ public class FlinkUtil {
             return null;
         }
         LogicalTypeRoot typeRoot = type.getTypeRoot();
+        if (typeRoot == LogicalTypeRoot.VARCHAR)
+            return StringData.fromString(valStr);
+        if ("null".equals(valStr)) return null;
+
         switch (typeRoot) {
             case CHAR:
-            case VARCHAR:
-                return StringData.fromString(valStr);
             case BOOLEAN:
                 return Boolean.parseBoolean(valStr);
             case TINYINT:
@@ -334,7 +370,7 @@ public class FlinkUtil {
             List<String> partitionDescs = remainingPartitions.stream()
                     .map(map -> map.entrySet().stream()
                             .map(entry -> entry.getKey() + "=" + entry.getValue())
-                            .collect(Collectors.joining(",")))
+                            .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER)))
                     .collect(Collectors.toList());
             List<PartitionInfo> partitionInfos = new ArrayList<>();
             for (String partitionDesc : partitionDescs) {
@@ -396,7 +432,9 @@ public class FlinkUtil {
                 : ZoneId.of(zone);
     }
 
-    /** Validates user configured time zone. */
+    /**
+     * Validates user configured time zone.
+     */
     private static void validateTimeZone(String zone) {
         final String zoneId = zone.toUpperCase();
         if (zoneId.startsWith("UTC+")
@@ -412,5 +450,13 @@ public class FlinkUtil {
 
     public static void setLocalTimeZone(Configuration options, ZoneId localTimeZone) {
         options.setString(TableConfigOptions.LOCAL_TIME_ZONE, localTimeZone.toString());
+    }
+
+    public static JSONObject getPropertiesFromConfiguration(Configuration conf) {
+        Map<String, Object> map = new HashMap<>();
+        map.put(USE_CDC.key(), String.valueOf(conf.getBoolean(USE_CDC)));
+        map.put(HASH_BUCKET_NUM.key(), String.valueOf(conf.getInteger(BUCKET_PARALLELISM)));
+        map.put(CDC_CHANGE_COLUMN, conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
+        return new JSONObject(map);
     }
 }

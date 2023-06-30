@@ -113,6 +113,34 @@
             <scope>runtime</scope>
             <classifier>native</classifier>
         </dependency>
+
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+            <version>${spark.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-all</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
     </dependencies>
 
     <profiles>
@@ -153,7 +181,8 @@
                                 </goals>
                                 <configuration>
                                     <executable>cargo</executable>
-                                    <commandlineArgs>build --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>+nightly build --release --all-features --package lakesoul-io-c
+                                    </commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>
@@ -212,7 +241,9 @@
                                 </goals>
                                 <configuration>
                                     <executable>cross</executable>
-                                    <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features --package lakesoul-io-c</commandlineArgs>
+                                    <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features
+                                        --package lakesoul-io-c
+                                    </commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>
                             </execution>
@@ -275,7 +306,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-resources-plugin</artifactId>
-                <version>2.3</version>
+                <version>2.4</version>
                 <configuration>
                     <encoding>UTF-8</encoding>
                 </configuration>
@@ -321,6 +352,34 @@
                     <compileOrder>Mixed</compileOrder>
                 </configuration>
             </plugin>
+            <!--            <plugin>-->
+            <!--                <groupId>org.apache.maven.plugins</groupId>-->
+            <!--                <artifactId>maven-shade-plugin</artifactId>-->
+            <!--                <version>3.2.4</version>-->
+            <!--                <executions>-->
+            <!--                    <execution>-->
+            <!--                        <phase>package</phase>-->
+            <!--                        <goals>-->
+            <!--                            <goal>shade</goal>-->
+            <!--                        </goals>-->
+            <!--                    </execution>-->
+            <!--                </executions>-->
+            <!--                <configuration>-->
+            <!--                    <artifactSet>-->
+            <!--                        <includes>-->
+            <!--                            <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>-->
+            <!--                        </includes>-->
+            <!--                        <excludes>-->
+            <!--                            <exclude>org.apache.logging.log4j:*</exclude>-->
+            <!--                            <exclude>org.slf4j:*</exclude>-->
+            <!--                        </excludes>-->
+            <!--                    </artifactSet>-->
+            <!--                    <transformers>-->
+            <!--                        <transformer-->
+            <!--                                implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>-->
+            <!--                    </transformers>-->
+            <!--                </configuration>-->
+            <!--            </plugin>-->
         </plugins>
     </build>
 </project>

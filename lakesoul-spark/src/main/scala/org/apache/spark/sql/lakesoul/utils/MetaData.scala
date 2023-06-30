@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.utils
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import com.dmetasoul.lakesoul.meta.{CommitState, CommitType}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
@@ -32,6 +33,7 @@ case class MetaInfo(table_info: TableInfo,
                     query_id: String = "",
                     batch_id: Long = -1L,
                     readPartitionInfo: Array[PartitionInfo] = null)
+
 //range_value -> partition_desc
 case class PartitionInfo(table_id: String,
                          range_value: String,
@@ -39,17 +41,19 @@ case class PartitionInfo(table_id: String,
                          read_files: Array[UUID] = Array.empty[UUID],
                          expression: String = "",
                          commit_op: String = ""
-                      ) {
+                        ) {
   override def toString: String = {
     s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
   }
 }
+
 case class Format(provider: String = "parquet",
                   options: Map[String, String] = Map.empty)
+
 // table_schema is json format data
 // range_column and hash_column are string， not json format ; hash_partition_column contains multi keys，concat with `,`
 case class TableInfo(namespace: String,
-                     table_path_s:  Option[String] = None,
+                     table_path_s: Option[String] = None,
                      table_id: String,
                      table_schema: String = null,
                      range_column: String = "",
@@ -57,7 +61,7 @@ case class TableInfo(namespace: String,
                      bucket_num: Int = -1,
                      configuration: Map[String, String] = Map.empty,
                      short_table_name: Option[String] = None
-                     ) {
+                    ) {
 
   lazy val table_path: Path = SparkUtil.makeQualifiedTablePath(new Path(table_path_s.get))
   lazy val range_partition_columns: Seq[String] = range_partition_schema.fieldNames
@@ -77,7 +81,7 @@ case class TableInfo(namespace: String,
   if (range_column.equalsIgnoreCase("")) {
     StructType.apply(Nil)
   } else {
-    StructType(range_column.split(",").map(c => schema(c)))
+    StructType(range_column.split(LAKESOUL_RANGE_PARTITION_SPLITTER).map(c => schema(c)))
   }
 
   //hash partition columns
@@ -86,14 +90,14 @@ case class TableInfo(namespace: String,
   if (hash_column.equalsIgnoreCase("")) {
     StructType.apply(Nil)
   } else {
-    StructType(hash_column.split(",").map(c => schema(c)))
+    StructType(hash_column.split(LAKESOUL_HASH_PARTITION_SPLITTER).map(c => schema(c)))
   }
 
   //all partition columns
   lazy val partition_schema: StructType = range_partition_schema.merge(hash_partition_schema)
 
   //hash is belong to data_schema !!!
-  private lazy val range_partition_set: Set[String] = range_column.split(",").toSet
+  private lazy val range_partition_set: Set[String] = range_column.split(LAKESOUL_RANGE_PARTITION_SPLITTER).toSet
   //all data schema except range partition columns
   @JsonIgnore
   lazy val data_schema: StructType = StructType(schema.filterNot(f => range_partition_set.contains(f.name)))
@@ -101,25 +105,26 @@ case class TableInfo(namespace: String,
   lazy val partition_cols: Seq[String] = {
     var seq = Seq.empty[String]
     if (range_column.nonEmpty) {
-      seq = seq ++ range_column.split(",")
+      seq = seq ++ range_column.split(LAKESOUL_RANGE_PARTITION_SPLITTER)
     }
     if (hash_column.nonEmpty) {
-      seq = seq ++ hash_column.split(",")
+      seq = seq ++ hash_column.split(LAKESOUL_HASH_PARTITION_SPLITTER)
     }
     seq
   }
 
   lazy val format: Format = Format()
 }
+
 //file_exist_cols col1,col2.col3
 case class DataFileInfo(
-                     range_partitions: String,
-                     path:String,
-                     file_op:String,
-                     size:Long,
-                     modification_time:Long = -1L,
-                     file_exist_cols:String = ""
-                     ) {
+                         range_partitions: String,
+                         path: String,
+                         file_op: String,
+                         size: Long,
+                         modification_time: Long = -1L,
+                         file_exist_cols: String = ""
+                       ) {
   lazy val range_version: String = range_partitions + "-" + file_exist_cols
 
   lazy val file_bucket_id: Int = BucketingUtils
@@ -129,14 +134,15 @@ case class DataFileInfo(
   //trans to files which need to delete
   def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
 }
+
 //single file info
 case class DataCommitInfo(table_id: String,
-                        range_value: String,
-                        commit_id: UUID,
-                        commit_type: String,
-                        modification_time:Long = -1L,
-                        file_ops:Array[DataFileInfo]=Array.empty[DataFileInfo]
-                      ) {
+                          range_value: String,
+                          commit_id: UUID,
+                          commit_type: String,
+                          modification_time: Long = -1L,
+                          file_ops: Array[DataFileInfo] = Array.empty[DataFileInfo]
+                         ) {
   lazy val range_key: String = commit_id.toString
   //identify for merge read
   lazy val range_version: String = range_key
@@ -144,9 +150,9 @@ case class DataCommitInfo(table_id: String,
 
 
 case class PartitionFilterInfo(
-                               range_value: String,
-                               range_partitions: Map[String, String],
-                               read_version: Long)
+                                range_value: String,
+                                range_partitions: Map[String, String],
+                                read_version: Long)
 
 
 /**
@@ -163,7 +169,6 @@ case class commitStateInfo(state: CommitState.Value,
                            commit_id: String,
                            tag: Int,
                            timestamp: Long)
-
 
 
 case class RelationTable(tableName: String,

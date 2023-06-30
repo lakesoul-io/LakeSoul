@@ -32,17 +32,18 @@ public class DBConnector {
     private static DBConnector instance = null;
 
     private void createDataSource() {
+        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
         try {
-            DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
-            config.setDriverClassName( dataBaseProperty.getDriver());
-            config.setJdbcUrl( dataBaseProperty.getUrl());
-            config.setUsername( dataBaseProperty.getUsername());
-            config.setPassword( dataBaseProperty.getPassword());
-            config.addDataSourceProperty( "cachePrepStmts" , "true" );
-            config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
-            config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
+            config.setDriverClassName(dataBaseProperty.getDriver());
+            config.setJdbcUrl(dataBaseProperty.getUrl());
+            config.setUsername(dataBaseProperty.getUsername());
+            config.setPassword(dataBaseProperty.getPassword());
+            DBUtil.fillDataSourceConfig(config);
             ds = new HikariDataSource( config );
         } catch (Throwable t) {
+            System.err.println("Failed to connect to PostgreSQL Server with configs: " +
+                    "driver=" + dataBaseProperty.getDriver() +
+                    "; url=" + dataBaseProperty.getUrl());
             t.printStackTrace();
             throw t;
         }

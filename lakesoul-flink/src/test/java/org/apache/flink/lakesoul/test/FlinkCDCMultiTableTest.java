@@ -21,28 +21,28 @@ package org.apache.flink.lakesoul.test;
 
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.WebOptions;
-import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
+import org.apache.flink.lakesoul.types.BinaryDebeziumDeserializationSchema;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
-import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
+import org.apache.flink.lakesoul.types.LakeSoulRecordConvert;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
-import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.catalog.Catalog;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.util.Properties;
+
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WAREHOUSE_PATH;
 
 public class FlinkCDCMultiTableTest {
 
@@ -81,22 +81,26 @@ public class FlinkCDCMultiTableTest {
             .username("root")
             .serverTimeZone("UTC")
             .password("root");
+        sourceBuilder.includeSchemaChanges(true);
+        sourceBuilder.scanNewlyAddedTableEnabled(true);
+        LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
+        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)));
+        Properties jdbcProperties = new Properties();
+        jdbcProperties.put("allowPublicKeyRetrieval", "true");
+        jdbcProperties.put("useSSL", "false");
+        sourceBuilder.jdbcProperties(jdbcProperties);
+        MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.sourceBuilder = sourceBuilder;
         context.conf = conf;
 
-        LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(context);
+        LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
 
-        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource();
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
 
-        Tuple2<DataStream<BinarySourceRecord>, DataStream<BinarySourceRecord>> streams = builder.buildCDCAndDDLStreamsFromSource(source);
-
-        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(streams.f0);
-
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
-        DataStreamSink<BinarySourceRecord> ddlSink = builder.buildLakeSoulDDLSink(streams.f1);
         env.execute("test");
     }
 }

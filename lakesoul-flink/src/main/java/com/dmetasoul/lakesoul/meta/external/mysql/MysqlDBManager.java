@@ -42,6 +42,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
+
 public class MysqlDBManager implements ExternalDBManager {
 
     private static final String EXTERNAL_MYSQL_TABLE_PREFIX = "external_mysql_table_";
@@ -69,7 +73,7 @@ public class MysqlDBManager implements ExternalDBManager {
                           String pathPrefix,
                           int hashBucketNum,
                           boolean useCdc
-                          ) {
+    ) {
         this(
                 dbName,
                 user,
@@ -168,10 +172,10 @@ public class MysqlDBManager implements ExternalDBManager {
 
                 String tableSchema = schemaAndPK.f0.json();
                 List<String> priKeys = schemaAndPK.f1;
-                String partitionsInTableInfo = ";" + String.join(",", priKeys);
+                String partitionsInTableInfo = LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + String.join(LAKESOUL_HASH_PARTITION_SPLITTER, priKeys);
                 JSONObject json = new JSONObject();
                 json.put("hashBucketNum", String.valueOf(hashBucketNum));
-                json.put("lakesoul_cdc_change_column", "rowKinds");
+                json.put("lakesoul_cdc_change_column", CDC_CHANGE_COLUMN_DEFAULT);
 
                 lakesoulDBManager.createNewTable(tableId, dbName, tableName, qualifiedPath,
                         tableSchema,
@@ -228,7 +232,7 @@ public class MysqlDBManager implements ExternalDBManager {
                 });
         //if uescdc add lakesoulcdccolumns
         if (useCdc) {
-            stNew[0] = stNew[0].add("rowKinds", DataTypes.StringType, true);
+            stNew[0] = stNew[0].add(CDC_CHANGE_COLUMN_DEFAULT, DataTypes.StringType, true);
         }
         return Tuple2.of(stNew[0], table.primaryKeyColumnNames());
     }

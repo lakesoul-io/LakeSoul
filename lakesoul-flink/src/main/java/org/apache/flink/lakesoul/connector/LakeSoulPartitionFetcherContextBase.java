@@ -28,7 +28,12 @@ import org.apache.flink.table.utils.PartitionPathUtils;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/** Base class for table partition fetcher context. */
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
+
+
+/**
+ * Base class for table partition fetcher context.
+ */
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
 
 
@@ -46,7 +51,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
     protected transient DBManager dbManager;
 
-    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys){
+    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys) {
         this.tableId = tableId;
         this.partitionKeys = partitionKeys;
         this.partitionOrderKeys = partitionOrderKeys;
@@ -79,7 +84,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
         TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
         List<String> partitionDescs = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
                 .map(partitionInfo -> partitionInfo.getPartitionDesc()).collect(Collectors.toList());
-        for (String partitionDesc: partitionDescs) {
+        for (String partitionDesc : partitionDescs) {
             partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }
         return partitionValueList;
@@ -94,7 +99,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
             @Override
             public List<String> getPartitionValue() {
-                return extractPartitionValues(partitionDesc.replaceAll(",", "/"));
+                return extractPartitionValues(partitionDesc.replaceAll(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"));
             }
 
             @Override
@@ -106,8 +111,8 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                     StringBuilder comparator = new StringBuilder();
                     // if partitionOrderKeys is null, default to use all partitionKeys to sort
                     Set<String> partitionOrderKeySet =
-                            partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
-                    List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
+                            partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionOrderKeys));
+                    List<String> singleParDescList = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionDesc);
                     Map<String, String> parDescMap = new HashMap<>();
                     singleParDescList.forEach(singleParDesc -> {
                         List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
@@ -116,13 +121,13 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                     // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
                     partitionKeys.forEach(partitionKey -> {
                         if (partitionOrderKeySet.contains(partitionKey)) {
-                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + ",");
+                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + LAKESOUL_RANGE_PARTITION_SPLITTER);
                         }
                     });
                     comparator.deleteCharAt(comparator.length() - 1);
                     return comparator.toString();
                 } else {
-                    return String.join(",", getPartitionValue());
+                    return String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, getPartitionValue());
                 }
             }
 

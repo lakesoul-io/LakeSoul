@@ -21,10 +21,12 @@ package org.apache.flink.lakesoul.sink.state;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
+import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -41,9 +43,11 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     private final TableSchemaIdentity identity;
 
-    @Nullable private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles;
+    @Nullable
+    private List<InProgressFileWriter.PendingFileRecoverable> pendingFiles;
 
-    @Nullable private final String commitId;
+    @Nullable
+    private final String commitId;
 
     /**
      * Constructor for {@link org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket} to prepare commit
@@ -54,7 +58,10 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
             TableSchemaIdentity identity) {
-        this(bucketId, identity, pendingFiles, creationTime, UUID.randomUUID().toString());
+        this(bucketId, identity, pendingFiles, creationTime,
+//                UUID.randomUUID().toString()
+                new UUID(Objects.hash(identity.tableId, bucketId), creationTime).toString()
+        );
     }
 
     /**
@@ -103,15 +110,27 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     @Override
     public String toString() {
         return "LakeSoulMultiTableSinkCommittable{" +
-               "creationTime=" + creationTime +
-               ", bucketId='" + bucketId + '\'' +
-               ", identity=" + identity +
-               ", commitId='" + commitId + '\'' +
-               '}';
+                "creationTime=" + creationTime +
+                ", bucketId='" + bucketId + '\'' +
+                ", identity=" + identity +
+                ", commitId='" + commitId + '\'' +
+                '}';
     }
 
     @Nullable
     public String getCommitId() {
         return commitId;
+    }
+
+    public void merge(LakeSoulMultiTableSinkCommittable committable) {
+        Preconditions.checkState(identity.equals(committable.getIdentity()));
+        Preconditions.checkState(bucketId.equals(committable.getBucketId()));
+        Preconditions.checkState(creationTime == committable.getCreationTime());
+        Preconditions.checkState(commitId.equals(committable.getCommitId()));
+        if (hasPendingFile()) {
+            if (committable.hasPendingFile()) pendingFiles.addAll(committable.getPendingFiles());
+        } else {
+            if (committable.hasPendingFile()) pendingFiles = committable.getPendingFiles();
+        }
     }
 }

@@ -28,6 +28,7 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultOneTableBulkFormatBuilder;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
@@ -43,7 +44,7 @@ import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState, Void> {
+public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState, LakeSoulMultiTableSinkGlobalCommittable> {
 
     private final BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder;
 
@@ -74,7 +75,7 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
 
     @Override
     public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
-        return Optional.of(bucketsBuilder.createCommitter());
+        return Optional.ofNullable(bucketsBuilder.createCommitter());
     }
 
     @Override
@@ -90,13 +91,20 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
     }
 
     @Override
-    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, Void>> createGlobalCommitter() {
-        return Optional.empty();
+    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter() throws IOException {
+        return Optional.ofNullable(bucketsBuilder.createGlobalCommitter());
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<Void>> getGlobalCommittableSerializer() {
-        return Optional.empty();
+    public Optional<SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable>> getGlobalCommittableSerializer() {
+        try {
+            return Optional.of(bucketsBuilder.getGlobalCommittableSerializer());
+        } catch (IOException e) {
+            // it's not optimal that we have to do this but creating the serializers for the
+            // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
+            // IOException.
+            throw new FlinkRuntimeException("Could not create global committable serializer.", e);
+        }
     }
 
     @Override

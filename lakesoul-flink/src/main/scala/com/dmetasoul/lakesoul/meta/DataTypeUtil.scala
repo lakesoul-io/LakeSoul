@@ -30,36 +30,9 @@ object DataTypeUtil {
   private val VARCHAR_TYPE = """varchar\(\s*(\d+)\s*\)""".r
   private val TimestampNTZType = DataType.fromJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"a\",\"type\":\"timestamp_ntz\",\"nullable\":true,\"metadata\":{}}]}").asInstanceOf[StructType].fields(0).dataType
 
-  def convertDatatype(datatype: LogicalType): DataType = {
-    val convert = datatype.getTypeRoot.name().toLowerCase match {
-      case "string" => StringType
-      case "varbinary" => BinaryType
-      case "binary" => BinaryType
-      case "bigint" => LongType
-      case "int" => IntegerType
-      case "tinyint" => IntegerType
-      case "smallint" => IntegerType
-      case "integer" => IntegerType
-      case "double" => DoubleType
-      case "float" => FloatType
-      case "date" => DateType
-      case "boolean" => BooleanType
-      case "timestamp" => TimestampType
-      case "timestamp_without_time_zone" => TimestampNTZType
-      case "timestamp_with_local_time_zone" => TimestampType
-      case "decimal" =>
-        val dt = datatype.asInstanceOf[org.apache.flink.table.types.logical.DecimalType]
-        DecimalType(dt.getPrecision, dt.getScale)
-      case FIXED_DECIMAL(precision, scale) => DecimalType(precision.toInt, scale.toInt)
-      case CHAR_TYPE(length) => CharType(length.toInt)
-      case "varchar" => StringType
-      case "char" => StringType
-    }
-    convert
-  }
 
   // since spark 3.2 support YearMonthIntervalType and DayTimeIntervalType
-  def convertMysqlToSparkDatatype(datatype: String,precisionNum:Int=9,scaleNum:Int=3): Option[DataType] = {
+  def convertMysqlToSparkDatatype(datatype: String, precisionNum: Int = 9, scaleNum: Int = 3): Option[DataType] = {
     val convert = datatype.toLowerCase match {
       case "bigint" => Some(LongType)
       case "int" => Some(IntegerType)
@@ -68,8 +41,8 @@ object DataTypeUtil {
       case "mediumint" => Some(IntegerType)
       case "double" => Some(DoubleType)
       case "float" => Some(FloatType)
-      case "numeric" => Some(DecimalType(precisionNum,scaleNum))
-      case "decimal" => Some(DecimalType(precisionNum,scaleNum))
+      case "numeric" => Some(DecimalType(precisionNum, scaleNum))
+      case "decimal" => Some(DecimalType(precisionNum, scaleNum))
       case "date" => Some(DateType)
       case "boolean" => Some(BooleanType)
       case "timestamp" => Some(TimestampType)
@@ -90,28 +63,5 @@ object DataTypeUtil {
     convert
   }
 
-
-  def convertToFlinkDatatype(structField: StructField): String = {
-
-    val convert = structField.dataType.typeName.toLowerCase match {
-      case "string" => "STRING"
-      case "byte" => "BYTES"
-      case "binary" => "BINARY"
-      case "long" => "BIGINT"
-      case "int" => "INT"
-      case "integer" => "INT"
-      case "float" => "FLOAT"
-      case "double" => "DOUBLE"
-      case "date" => "DATE"
-      case "boolean" => "BOOLEAN"
-      case "timestamp_ntz" => "TIMESTAMP"
-      case "timestamp" => "TIMESTAMP_LTZ"
-      case "decimal" => "DECIMAL"
-      case FIXED_DECIMAL(precision, scale) => "DECIMAL(" + precision.toInt + "," + scale.toInt + ")"
-      case CHAR_TYPE(length) => "CHAR(" + length.toInt + ")"
-      case "varchar" => "VARCHAR"
-    }
-    convert
-  }
 
 }

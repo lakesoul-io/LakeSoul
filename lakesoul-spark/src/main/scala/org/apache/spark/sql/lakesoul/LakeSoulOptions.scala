@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulOptions._
@@ -74,7 +75,7 @@ trait LakeSoulWriteOptionsImpl extends LakeSoulOptionParser {
       .getOrElse(
         options.get(PARTITION_BY)
           .map(LakeSoulDataSource.decodePartitioningColumns)
-          .getOrElse(Nil).mkString(","))
+          .getOrElse(Nil).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER))
   }
 
   def hashPartitions: String = {

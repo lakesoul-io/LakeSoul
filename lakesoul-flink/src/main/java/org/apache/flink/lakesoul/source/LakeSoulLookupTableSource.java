@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 import static org.apache.flink.lakesoul.tool.JobOptions.*;
 
 public class LakeSoulLookupTableSource extends LakeSoulTableSource implements LookupTableSource {
@@ -268,7 +269,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                 for (int i = 0; i < partitionKeys.size(); i++) {
                     kvPairs.add(String.join("=", partitionKeys.get(i), partValues.get(i)));
                 }
-                String partitionDesc = String.join(",", kvPairs);
+                String partitionDesc = String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, kvPairs);
                 DataFileInfo[] dataFileInfos = FlinkUtil.getSinglePartitionDataFileInfo(tableInfo, partitionDesc);
                 List<Path> paths = new ArrayList<>();
                 for (DataFileInfo dif : dataFileInfos) paths.add(new Path(dif.path()));

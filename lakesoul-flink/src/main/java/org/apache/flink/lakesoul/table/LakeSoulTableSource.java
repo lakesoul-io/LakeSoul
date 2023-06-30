@@ -127,7 +127,7 @@ public class LakeSoulTableSource
         }
         projectNames.addAll(pkNamesNotExistInReadFields);
         projectTypes.addAll(pkTypesNotExistInReadFields);
-        if (!cdcColumn.equals("")) {
+        if (!cdcColumn.equals("") && !projectNames.contains(cdcColumn)) {
             projectNames.add(cdcColumn);
             projectTypes.add(new VarCharType());
         }

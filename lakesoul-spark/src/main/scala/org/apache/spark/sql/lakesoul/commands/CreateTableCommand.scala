@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -36,11 +37,11 @@ import java.net.URI
   * Single entry point for all write or declaration operations for LakeSoul tables accessed through
   * the table name.
   *
-  * @param table            The table identifier for the LakeSoul table
+  * @param table             The table identifier for the LakeSoul table
   * @param existingTablePath The existing table for the same identifier if exists
-  * @param mode             The save mode when writing data. Relevant when the query is empty or set to Ignore
-  *                         with `CREATE TABLE IF NOT EXISTS`.
-  * @param query            The query to commit into the lakesoul table if it exist. This can come from
+  * @param mode              The save mode when writing data. Relevant when the query is empty or set to Ignore
+  *                          with `CREATE TABLE IF NOT EXISTS`.
+  * @param query             The query to commit into the lakesoul table if it exist. This can come from
   *                - CTAS
   *                - saveAsTable
   */
@@ -104,7 +105,7 @@ case class CreateTableCommand(var table: CatalogTable,
     // external options to store replace and partition properties
     var externalOptions = Map.empty[String, String]
     if (table.partitionColumnNames.nonEmpty) {
-      externalOptions ++= Map(LakeSoulOptions.RANGE_PARTITIONS -> table.partitionColumnNames.mkString(","))
+      externalOptions ++= Map(LakeSoulOptions.RANGE_PARTITIONS -> table.partitionColumnNames.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER))
     }
 
     val options = new LakeSoulOptions(
@@ -213,13 +214,13 @@ case class CreateTableCommand(var table: CatalogTable,
       }
     }
 
-//    val tableWithDefaultOptions = tableWithLocation.copy(
-//      schema = new StructType(),
-//      partitionColumnNames = Nil,
-//      tracksPartitionsInCatalog = true
-//    )
+    //    val tableWithDefaultOptions = tableWithLocation.copy(
+    //      schema = new StructType(),
+    //      partitionColumnNames = Nil,
+    //      tracksPartitionsInCatalog = true
+    //    )
 
-//    updateCatalog(sparkSession, tableWithDefaultOptions)
+    //    updateCatalog(sparkSession, tableWithDefaultOptions)
 
     Nil
 
@@ -234,7 +235,7 @@ case class CreateTableCommand(var table: CatalogTable,
       table_path_s = tc.tableInfo.table_path_s,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
-      range_column = table.partitionColumnNames.mkString(","),
+      range_column = table.partitionColumnNames.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
       hash_column = hashParitions,
       bucket_num = hashBucketNum,
       configuration = table.properties

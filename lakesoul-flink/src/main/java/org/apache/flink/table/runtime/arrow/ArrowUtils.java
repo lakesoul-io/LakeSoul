@@ -104,7 +104,6 @@ import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
 import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -128,7 +127,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/** Utilities for Arrow. */
+import static org.apache.arrow.vector.types.TimeUnit.*;
+
+/**
+ * Utilities for Arrow.
+ */
 @Internal
 public final class ArrowUtils {
 
@@ -163,7 +166,33 @@ public final class ArrowUtils {
         LocalTimeZone = localTimeZone;
     }
 
-    /** Returns the Arrow schema of the specified type. */
+    public static RowType fromArrowSchema(Schema schema) {
+        List<RowType.RowField> fields =
+                schema.getFields().stream()
+                        .map(f ->
+                                new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f))
+                        )
+                        .collect(Collectors.toCollection(ArrayList::new));
+        return new RowType(fields);
+    }
+
+    private static LogicalType fromArrowField(Field field) {
+        if (field.getType() instanceof ArrowType.Struct) {
+            return new RowType(field.getChildren().stream().map(f ->
+                    new RowType.RowField(f.getName(), ArrowUtils.fromArrowField(f))).collect(Collectors.toList()));
+        } else if (field.getType() instanceof ArrowType.List) {
+            return new ArrayType(fromArrowField(field.getChildren().get(0)));
+        }
+        LogicalType logicalType = field.getType().accept(ArrowTypeToLogicalTypeConverter.INSTANCE);
+        if (logicalType == null)
+            throw new UnsupportedOperationException(
+                    String.format("Unsupported type %s.", field.getType()));
+        return logicalType.copy(field.isNullable());
+    }
+
+    /**
+     * Returns the Arrow schema of the specified type.
+     */
     public static Schema toArrowSchema(RowType rowType) {
         Collection<Field> fields =
                 rowType.getFields().stream()
@@ -172,7 +201,7 @@ public final class ArrowUtils {
         return new Schema(fields);
     }
 
-    private static Field toArrowField(String fieldName, LogicalType logicalType) {
+    public static Field toArrowField(String fieldName, LogicalType logicalType) {
         FieldType fieldType =
                 new FieldType(
                         logicalType.isNullable(),
@@ -193,7 +222,9 @@ public final class ArrowUtils {
         return new Field(fieldName, fieldType, children);
     }
 
-    /** Creates an {@link ArrowWriter} for the specified {@link VectorSchemaRoot}. */
+    /**
+     * Creates an {@link ArrowWriter} for the specified {@link VectorSchemaRoot}.
+     */
     public static ArrowWriter<RowData> createRowDataArrowWriter(
             VectorSchemaRoot root, RowType rowType) {
         ArrowFieldWriter<RowData>[] fieldWriters =
@@ -331,7 +362,9 @@ public final class ArrowUtils {
         }
     }
 
-    /** Creates an {@link ArrowReader} for the specified {@link VectorSchemaRoot}. */
+    /**
+     * Creates an {@link ArrowReader} for the specified {@link VectorSchemaRoot}.
+     */
     public static ArrowReader createArrowReader(VectorSchemaRoot root, RowType rowType) {
         List<ColumnVector> columnVectors = new ArrayList<>();
         List<FieldVector> fieldVectors = root.getFieldVectors();
@@ -447,7 +480,9 @@ public final class ArrowUtils {
         }
     }
 
-    /** Fills a buffer with data read from the channel. */
+    /**
+     * Fills a buffer with data read from the channel.
+     */
     private static void readFully(ReadableByteChannel channel, ByteBuffer dst) throws IOException {
         int expected = dst.remaining();
         while (dst.hasRemaining()) {
@@ -458,7 +493,9 @@ public final class ArrowUtils {
         }
     }
 
-    /** Convert Flink table to Pandas DataFrame. */
+    /**
+     * Convert Flink table to Pandas DataFrame.
+     */
     public static CustomIterator<byte[]> collectAsPandasDataFrame(
             Table table, int maxArrowBatchSize) throws Exception {
         checkArrowUsable();
@@ -609,6 +646,11 @@ public final class ArrowUtils {
                 new LogicalTypeToArrowTypeConverter();
 
         @Override
+        public ArrowType visit(CharType charType) {
+            return ArrowType.Utf8.INSTANCE;
+        }
+
+        @Override
         public ArrowType visit(TinyIntType tinyIntType) {
             return new ArrowType.Int(8, true);
         }
@@ -671,39 +713,39 @@ public final class ArrowUtils {
         @Override
         public ArrowType visit(TimeType timeType) {
             if (timeType.getPrecision() == 0) {
-                return new ArrowType.Time(TimeUnit.SECOND, 32);
+                return new ArrowType.Time(SECOND, 32);
             } else if (timeType.getPrecision() >= 1 && timeType.getPrecision() <= 3) {
-                return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
+                return new ArrowType.Time(MILLISECOND, 32);
             } else if (timeType.getPrecision() >= 4 && timeType.getPrecision() <= 6) {
-                return new ArrowType.Time(TimeUnit.MICROSECOND, 64);
+                return new ArrowType.Time(MICROSECOND, 64);
             } else {
-                return new ArrowType.Time(TimeUnit.NANOSECOND, 64);
+                return new ArrowType.Time(NANOSECOND, 64);
             }
         }
 
         @Override
         public ArrowType visit(LocalZonedTimestampType localZonedTimestampType) {
             if (localZonedTimestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, LocalTimeZone.toString());
+                return new ArrowType.Timestamp(SECOND, LocalTimeZone.toString());
             } else if (localZonedTimestampType.getPrecision() >= 1
                     && localZonedTimestampType.getPrecision() <= 3) {
-                return new ArrowType.Timestamp(TimeUnit.MILLISECOND, LocalTimeZone.toString());
+                return new ArrowType.Timestamp(MILLISECOND, LocalTimeZone.toString());
             } else if (localZonedTimestampType.getPrecision() >= 4
                     && localZonedTimestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, LocalTimeZone.toString());
+                return new ArrowType.Timestamp(MICROSECOND, LocalTimeZone.toString());
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, LocalTimeZone.toString());
+                return new ArrowType.Timestamp(NANOSECOND, LocalTimeZone.toString());
             }
         }
 
         @Override
         public ArrowType visit(TimestampType timestampType) {
             if (timestampType.getPrecision() == 0) {
-                return new ArrowType.Timestamp(TimeUnit.SECOND, null);
+                return new ArrowType.Timestamp(SECOND, null);
             } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 6) {
-                return new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+                return new ArrowType.Timestamp(MICROSECOND, null);
             } else {
-                return new ArrowType.Timestamp(TimeUnit.NANOSECOND, null);
+                return new ArrowType.Timestamp(NANOSECOND, null);
             }
         }
 
@@ -748,5 +790,157 @@ public final class ArrowUtils {
             // should not happen, ignore
         }
         return precision;
+    }
+
+    private static class ArrowTypeToLogicalTypeConverter
+            implements ArrowType.ArrowTypeVisitor<LogicalType> {
+
+        private static final ArrowTypeToLogicalTypeConverter INSTANCE =
+                new ArrowTypeToLogicalTypeConverter();
+
+        @Override
+        public LogicalType visit(ArrowType.Null type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Struct type) {
+            List<RowType.RowField> fields = new ArrayList<>();
+            return new RowType(fields);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.List type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.LargeList type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.FixedSizeList type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Union type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Map type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Int type) {
+            int bitWidth = type.getBitWidth();
+            if (bitWidth <= 8) return new TinyIntType();
+            if (bitWidth <= 2 * 8) return new SmallIntType();
+            if (bitWidth <= 4 * 8) return new IntType();
+            return new BigIntType();
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.FloatingPoint type) {
+            switch (type.getPrecision()) {
+                case HALF:
+                case SINGLE:
+                    return new FloatType();
+                case DOUBLE:
+                    return new DoubleType();
+            }
+            return new DoubleType();
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Utf8 type) {
+            return new VarCharType(VarCharType.MAX_LENGTH);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.LargeUtf8 type) {
+            return new VarCharType(VarCharType.MAX_LENGTH);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Binary type) {
+            return new BinaryType();
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.LargeBinary type) {
+            return new VarBinaryType(VarBinaryType.MAX_LENGTH);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.FixedSizeBinary type) {
+            return new BinaryType(type.getByteWidth());
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Bool type) {
+            return new BooleanType();
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Decimal type) {
+            return new DecimalType(type.getPrecision(), type.getScale());
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Date type) {
+            return new DateType();
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Time type) {
+            int precision = 0;
+            switch (type.getUnit()) {
+                case SECOND:
+                    precision = 0;
+                    break;
+                case MILLISECOND:
+                    precision = 3;
+                    break;
+                case MICROSECOND:
+                    precision = 6;
+                    break;
+                case NANOSECOND:
+                    precision = 9;
+            }
+            return new TimeType(precision);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Timestamp type) {
+            int precision = 0;
+            switch (type.getUnit()) {
+                case SECOND:
+                    precision = 0;
+                    break;
+                case MILLISECOND:
+                    precision = 3;
+                    break;
+                case MICROSECOND:
+                    precision = 6;
+                    break;
+                case NANOSECOND:
+                    precision = 9;
+            }
+            return type.getTimezone() == null ? new TimestampType(precision) : new LocalZonedTimestampType(precision);
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Interval type) {
+            return null;
+        }
+
+        @Override
+        public LogicalType visit(ArrowType.Duration type) {
+            return null;
+        }
     }
 }
