@@ -42,6 +42,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
 
 public class MysqlDBManager implements ExternalDBManager {
@@ -170,7 +172,7 @@ public class MysqlDBManager implements ExternalDBManager {
 
                 String tableSchema = schemaAndPK.f0.json();
                 List<String> priKeys = schemaAndPK.f1;
-                String partitionsInTableInfo = ";" + String.join(",", priKeys);
+                String partitionsInTableInfo = LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + String.join(LAKESOUL_HASH_PARTITION_SPLITTER, priKeys);
                 JSONObject json = new JSONObject();
                 json.put("hashBucketNum", String.valueOf(hashBucketNum));
                 json.put("lakesoul_cdc_change_column", CDC_CHANGE_COLUMN_DEFAULT);

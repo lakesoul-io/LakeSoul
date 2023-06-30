@@ -57,6 +57,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static java.time.ZoneId.SHORT_IDS;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
@@ -204,33 +205,22 @@ public class FlinkUtil {
             }
             bd.column(field.getName(), field.getType().asSerializableString());
         }
-        List<String> partitionData = Splitter.on(';').splitToList(tableInfo.getPartitions());
+        List<String> partitionData = Splitter.on(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).splitToList(tableInfo.getPartitions());
         List<String> parKeys;
         String parKey = partitionData.get(0);
         String hashKey = partitionData.get(1);
         if (!"".equals(hashKey)) {
-            List<String> hashKeys = Splitter.on(',').splitToList(hashKey);
+            List<String> hashKeys = Splitter.on(LAKESOUL_HASH_PARTITION_SPLITTER).splitToList(hashKey);
             bd.primaryKey(hashKeys);
         }
         if (!"".equals(parKey)) {
-            parKeys = Splitter.on(',').splitToList(parKey);
+            parKeys = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(parKey);
         } else {
             parKeys = new ArrayList<>();
         }
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
         return CatalogTable.of(bd.build(), "", parKeys, conf);
-    }
-
-    public static String stringListToString(List<String> list) {
-        if (list.isEmpty()) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder();
-        for (String s : list) {
-            builder.append(s).append(",");
-        }
-        return builder.deleteCharAt(builder.length() - 1).toString();
     }
 
     public static String generatePartitionPath(LinkedHashMap<String, String> partitionSpec) {
@@ -380,7 +370,7 @@ public class FlinkUtil {
             List<String> partitionDescs = remainingPartitions.stream()
                     .map(map -> map.entrySet().stream()
                             .map(entry -> entry.getKey() + "=" + entry.getValue())
-                            .collect(Collectors.joining(",")))
+                            .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER)))
                     .collect(Collectors.toList());
             List<PartitionInfo> partitionInfos = new ArrayList<>();
             for (String partitionDesc : partitionDescs) {

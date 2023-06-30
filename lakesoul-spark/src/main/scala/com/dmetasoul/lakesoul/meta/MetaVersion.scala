@@ -17,6 +17,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH
 import com.google.common.base.Splitter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{DataCommitInfo, DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
@@ -78,7 +79,7 @@ object MetaVersion {
                      configuration: Map[String, String],
                      bucket_num: Int): Unit = {
 
-    val partitions = range_column + ";" + hash_column
+    val partitions = range_column + LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + hash_column
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
@@ -114,7 +115,7 @@ object MetaVersion {
     }
 
     // table may have no partition at all or only have range or hash partition
-    val partitionCols = Splitter.on(';').split(partitions).asScala.toArray
+    val partitionCols = Splitter.on(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).split(partitions).asScala.toArray
     val (range_column, hash_column) = partitionCols match {
       case Array(range, hash) => (range, hash)
       case _ => ("", "")

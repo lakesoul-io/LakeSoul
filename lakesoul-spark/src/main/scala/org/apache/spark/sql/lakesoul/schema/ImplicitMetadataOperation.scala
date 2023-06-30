@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.lakesoul.schema
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.TransactionCommit
 import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetadataMismatchErrorBuilder}
@@ -41,7 +42,7 @@ trait ImplicitMetadataOperation extends Logging {
     if (partitionColumns.equalsIgnoreCase("")) {
       Seq.empty[String]
     } else {
-      partitionColumns.split(",").toSeq
+      partitionColumns.split(LAKESOUL_RANGE_PARTITION_SPLITTER).toSeq
     }
   }
 
@@ -156,8 +157,8 @@ trait ImplicitMetadataOperation extends Logging {
           table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
           table_schema = dataSchema.json,
-          range_column = normalizedRangePartitionCols.mkString(","),
-          hash_column = normalizedHashPartitionCols.mkString(","),
+          range_column = normalizedRangePartitionCols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
+          hash_column = normalizedHashPartitionCols.mkString(LAKESOUL_HASH_PARTITION_SPLITTER),
           bucket_num = realHashBucketNum,
           configuration = configuration,
           short_table_name = table_info.short_table_name))

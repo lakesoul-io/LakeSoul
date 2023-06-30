@@ -43,6 +43,7 @@ import org.apache.flink.table.factories.Factory;
 import java.io.IOException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -202,7 +203,7 @@ public class LakeSoulCatalog implements Catalog {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
             } else return;
         }
-        String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
+        String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(LAKESOUL_HASH_PARTITION_SPLITTER, uniqueConstraint.getColumns())).orElse("");
         Map<String, String> tableOptions = table.getOptions();
 
         // adding cdc options
@@ -244,7 +245,7 @@ public class LakeSoulCatalog implements Catalog {
         String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
                 sparkSchema,
-                properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
+                properties, String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, partitionKeys), primaryKeys));
     }
 
     @Override
@@ -285,7 +286,7 @@ public class LakeSoulCatalog implements Catalog {
                 if ("-5".equals(item)) {
                     lhmap.put("", "-5");
                 } else {
-                    List<String> partitionData = Splitter.on(",").splitToList(item);
+                    List<String> partitionData = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(item);
                     for (String kv : partitionData) {
                         List<String> kvs = Splitter.on("=").splitToList(kv);
                         lhmap.put(kvs.get(0), kvs.get(1));

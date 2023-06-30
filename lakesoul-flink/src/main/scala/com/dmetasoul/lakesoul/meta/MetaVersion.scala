@@ -21,8 +21,11 @@ package com.dmetasoul.lakesoul.meta
 
 import java.util
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH
+
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
+
 object MetaVersion {
 
   val dbManager = new DBManager()
@@ -47,9 +50,9 @@ object MetaVersion {
     dbManager.isNamespaceExists(table_namespace)
   }
 
-//  //check whether short_table_name exists, and return table path if exists
-//  def isShortTableNameExists(short_table_name: String): (Boolean, String) =
-//    isShortTableNameExists(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  //  //check whether short_table_name exists, and return table path if exists
+  //  def isShortTableNameExists(short_table_name: String): (Boolean, String) =
+  //    isShortTableNameExists(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
   //check whether short_table_name exists, and return table path if exists
   def isShortTableNameExists(short_table_name: String, table_namespace: String): (Boolean, String) = {
@@ -57,8 +60,8 @@ object MetaVersion {
     if (path == null) (false, null) else (true, path)
   }
 
-//  def getTablePathFromShortTableName(short_table_name: String): String =
-//    getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  //  def getTablePathFromShortTableName(short_table_name: String): String =
+  //    getTablePathFromShortTableName(short_table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
 
   //get table path, if not exists, return "not found"
   def getTablePathFromShortTableName(short_table_name: String, table_namespace: String): String = {
@@ -75,62 +78,62 @@ object MetaVersion {
                      configuration: Map[String, String],
                      bucket_num: Int): Unit = {
 
-    val partitions = range_column + ";" + hash_column
+    val partitions = range_column + LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + hash_column
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
     dbManager.createNewTable(table_id, table_namespace, short_table_name, table_path, table_schema, json, partitions)
   }
 
-//  def listTables(): util.List[String] = {
-//    listTables(LakeSoulCatalog.showCurrentNamespace())
-//  }
+  //  def listTables(): util.List[String] = {
+  //    listTables(LakeSoulCatalog.showCurrentNamespace())
+  //  }
 
   def listTables(namespace: Array[String]): util.List[String] = {
     dbManager.listTablePathsByNamespace(namespace.mkString("."))
   }
 
-//  def getTableInfo(table_path: String): TableInfo = {
-//    getTableInfo(LakeSoulCatalog.showCurrentNamespace().mkString("."), table_path)
-//  }
+  //  def getTableInfo(table_path: String): TableInfo = {
+  //    getTableInfo(LakeSoulCatalog.showCurrentNamespace().mkString("."), table_path)
+  //  }
 
-//  def getTableInfo(namespace: String, table_path: String): TableInfo = {
-//    val info = dbManager.getTableInfoByPath(table_path)
-//    if (info == null) {
-//      return null
-//    }
-//    val short_table_name = info.getTableName
-//    val partitions = info.getPartitions
-//    val properties = info.getProperties.toString()
-//
-//    import scala.util.parsing.json.JSON
-//    val configuration = JSON.parseFull(properties)
-//    val configurationMap = configuration match {
-//      case Some(map: collection.immutable.Map[String, String]) => map
-//    }
-//
-//    // table may have no partition at all or only have range or hash partition
-//    val partitionCols = Splitter.on(';').split(partitions).asScala.toArray
-//    val (range_column, hash_column) = partitionCols match {
-//      case Array(range, hash) => (range, hash)
-//      case _ => ("", "")
-//    }
-//    val bucket_num = configurationMap.get("hashBucketNum") match {
-//      case Some(value) => value.toInt
-//      case _ => -1
-//    }
-//    TableInfo(
-//      namespace,
-//      Some(table_path),
-//      info.getTableId,
-//      info.getTableSchema,
-//      range_column,
-//      hash_column,
-//      bucket_num,
-//      configurationMap,
-//      if (short_table_name.equals("")) None else Some(short_table_name)
-//    )
-//  }
+  //  def getTableInfo(namespace: String, table_path: String): TableInfo = {
+  //    val info = dbManager.getTableInfoByPath(table_path)
+  //    if (info == null) {
+  //      return null
+  //    }
+  //    val short_table_name = info.getTableName
+  //    val partitions = info.getPartitions
+  //    val properties = info.getProperties.toString()
+  //
+  //    import scala.util.parsing.json.JSON
+  //    val configuration = JSON.parseFull(properties)
+  //    val configurationMap = configuration match {
+  //      case Some(map: collection.immutable.Map[String, String]) => map
+  //    }
+  //
+  //    // table may have no partition at all or only have range or hash partition
+  //    val partitionCols = Splitter.on(';').split(partitions).asScala.toArray
+  //    val (range_column, hash_column) = partitionCols match {
+  //      case Array(range, hash) => (range, hash)
+  //      case _ => ("", "")
+  //    }
+  //    val bucket_num = configurationMap.get("hashBucketNum") match {
+  //      case Some(value) => value.toInt
+  //      case _ => -1
+  //    }
+  //    TableInfo(
+  //      namespace,
+  //      Some(table_path),
+  //      info.getTableId,
+  //      info.getTableSchema,
+  //      range_column,
+  //      hash_column,
+  //      bucket_num,
+  //      configurationMap,
+  //      if (short_table_name.equals("")) None else Some(short_table_name)
+  //    )
+  //  }
 
   def getSinglePartitionInfo(table_id: String, range_value: String, range_id: String): PartitionInfo = {
     val info = dbManager.getSinglePartitionInfo(table_id, range_value)
@@ -230,9 +233,9 @@ object MetaVersion {
     dbManager.updateTableSchema(table_id, table_schema)
   }
 
-//  def deleteTableInfo(table_name: String, table_id: String): Unit = {
-//    deleteTableInfo(table_name, table_id, LakeSoulCatalog.showCurrentNamespace().mkString("."))
-//  }
+  //  def deleteTableInfo(table_name: String, table_id: String): Unit = {
+  //    deleteTableInfo(table_name, table_id, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  //  }
 
   def deleteTableInfo(table_name: String, table_id: String, table_namespace: String): Unit = {
     dbManager.deleteTableInfo(table_name, table_id, table_namespace)
@@ -258,9 +261,9 @@ object MetaVersion {
     dbManager.deletePartitionInfoByTableAndPartition(table_id, range_value)
   }
 
-//  def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
-//    deleteShortTableName(short_table_name, table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
-//  }
+  //  def deleteShortTableName(short_table_name: String, table_name: String): Unit = {
+  //    deleteShortTableName(short_table_name, table_name, LakeSoulCatalog.showCurrentNamespace().mkString("."))
+  //  }
 
   def deleteShortTableName(short_table_name: String, table_name: String, table_namespace: String): Unit = {
     dbManager.deleteShortTableName(short_table_name, table_name, table_namespace)

@@ -33,6 +33,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
+
 public class DBManager {
 
     private static final Logger LOG = LoggerFactory.getLogger(DBManager.class);
@@ -724,7 +726,7 @@ public class DBManager {
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
-        String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", ",");
+        String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
         UUID commitId = dataCommitInfo.getCommitId();
         String commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);
