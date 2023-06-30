@@ -276,10 +276,10 @@ class CompactionSuite extends QueryTest
       }
       assert(e1.getMessage().contains("is not a legal merge operator class"))
       val e2 = intercept[ClassNotFoundException] {
-        val mergeOperatorInfo = Map("value" -> "a")
+        val mergeOperatorInfo = Map("value" -> "ClassWillNeverExsit")
         table.compaction(true, mergeOperatorInfo)
       }
-      assert(e2.getMessage.contains("a"))
+      assert(e2.getMessage.contains("ClassWillNeverExsit"))
 
     })
   }
