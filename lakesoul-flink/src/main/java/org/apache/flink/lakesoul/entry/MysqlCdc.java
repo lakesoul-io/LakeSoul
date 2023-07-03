@@ -40,7 +40,6 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
@@ -78,12 +77,6 @@ public class MysqlCdc {
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
         //syncing mysql tables to lakesoul
-
-        List<String> tableList = mysqlDBManager.listTables();
-        if (tableList.isEmpty()) {
-            throw new IllegalStateException("Failed to discover captured tables");
-        }
-        tableList.forEach(mysqlDBManager::importOrSyncLakeSoulTable);
 
         Configuration conf = new Configuration();
 
