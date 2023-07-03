@@ -150,7 +150,6 @@ public class BinarySourceRecord {
                     binlogPosition = (Long) source.getWithoutDefault("pos");
                 }
 
-            }
             long sortField = (binlogFileIndex << 32) + binlogPosition;
             LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, sortField);
             String tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
