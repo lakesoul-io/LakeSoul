@@ -29,7 +29,7 @@ public class LakeSoulSinkOptions {
 
     public static final String FACTORY_IDENTIFIER = "lakesoul";
 
-    public static final String RECORD_KEY_NAME = "hashPartitions";
+    public static final String HASH_PARTITIONS = "hashPartitions";
 
     public static final String MERGE_COMMIT_TYPE = "MergeCommit";
 

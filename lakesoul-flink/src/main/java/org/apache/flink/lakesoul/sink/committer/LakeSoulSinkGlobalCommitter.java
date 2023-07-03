@@ -19,6 +19,7 @@
 package org.apache.flink.lakesoul.sink.committer;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -35,7 +36,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -111,25 +111,21 @@ public class LakeSoulSinkGlobalCommitter
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
                 LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
 
-        LOG.warn(globalCommittable.getGroupedCommitables() + "is committing, " + "globalCommittables group size = " +
-                globalCommittable.getGroupedCommitables().size());
-        int index = 0;
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
                 globalCommittable.getGroupedCommitables()
                 .entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            boolean isCdc = Boolean.parseBoolean(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
+            Boolean isCdc = Boolean.valueOf(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
             String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
                     identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) :
                     Optional.empty()).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-                String partition = String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH,
-                        String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, identity.partitionKeyList),
-                        String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
+                String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
+                        identity.partitionKeyList);
 
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, sparkSchema,
                         identity.properties, partition);
@@ -139,7 +135,6 @@ public class LakeSoulSinkGlobalCommitter
             }
 
             committer.commit(entry.getValue());
-            LOG.warn((index++) + "th committable of " + entry.getValue().get(0).getCommitId() + " has been committed");
         }
         return Collections.emptyList();
     }

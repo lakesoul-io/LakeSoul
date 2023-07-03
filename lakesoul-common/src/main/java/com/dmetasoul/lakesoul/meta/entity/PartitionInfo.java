@@ -32,7 +32,7 @@ public class PartitionInfo {
 
   /**
    * Range partition description, which defines a specific range partition of the table, in the formatted of comma-separated range_colum=range_value
-   * Especially, a table without range partitions use '-5' as partitionDesc
+   * Especially, a table without range partitions use LAKESOUL_NON_PARTITION_TABLE_PART_DESC as partitionDesc
    */
   private String partitionDesc;
 
