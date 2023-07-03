@@ -32,6 +32,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_EMPTY_STRING;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
+
 public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
   private static final long serialVersionUID = 1L;
@@ -120,8 +123,11 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
     for (int i = 0; i < partitionIndexes.length; i++) {
       Object field = partitionFieldGetters[i].getFieldOrNull(in);
       String partitionValue = field != null ? field.toString() : null;
-      if (partitionValue == null || "".equals(partitionValue)) {
-        partitionValue = defaultPartValue;
+      if (partitionValue == null) {
+        partitionValue = LAKESOUL_NULL_STRING;
+      }
+      if ("".equals(partitionValue)) {
+        partitionValue = LAKESOUL_EMPTY_STRING;
       }
       partSpec.put(partitionColumns[i], partitionValue);
     }

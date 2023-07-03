@@ -21,7 +21,8 @@ use arrow_array::{new_null_array, new_empty_array};
 use arrow_schema::DataType;
 
 pub const LAKESOUL_TIMEZONE : &str = "UTC";
-pub const LAKESOUL_NULL_STRING : &str = "L@KE$OUL_NU!L";
+pub const LAKESOUL_NULL_STRING : &str = "__L@KE$OUL_NULL__";
+pub const LAKESOUL_EMPTY_STRING : &str = "__L@KE$OUL_EMPTY_STRING__";
 
 
 #[derive(Debug, Default)]
