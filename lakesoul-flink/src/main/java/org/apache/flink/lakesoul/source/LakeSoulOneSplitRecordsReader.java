@@ -191,8 +191,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     public RowData nextRecordFromSplit() {
         while (true) {
             if (curRecordIdx >= currentVCR.getRowCount()) {
-                currentVCR.close();
-                currentVCR = null;
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     makeCurrentArrowReader();
