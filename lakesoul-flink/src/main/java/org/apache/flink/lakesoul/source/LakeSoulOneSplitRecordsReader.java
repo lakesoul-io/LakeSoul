@@ -141,10 +141,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private void recoverFromSkipRecord() throws IOException {
         LOG.info("Recover from skip record={} for split={}", skipRecords, split);
         if (skipRecords > 0) {
-            boolean hasNext;
             long skipRowCount = 0;
             while (skipRowCount <= skipRecords) {
-                hasNext = this.reader.hasNext();
+                boolean hasNext = this.reader.hasNext();
                 if (!hasNext) {
                     this.reader.close();
                     this.reader = null;
@@ -154,9 +153,9 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                     LOG.error(error);
                     throw new IOException(error);
                 }
+                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 skipRowCount += this.currentVCR.getRowCount();
             }
-            this.currentVCR = this.reader.nextResultVectorSchemaRoot();
             skipRowCount -= currentVCR.getRowCount();
             curRecordIdx = (int) (skipRecords - skipRowCount);
         } else {
