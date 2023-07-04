@@ -21,6 +21,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import com.zaxxer.hikari.HikariConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -68,14 +69,14 @@ public class DBUtil {
     }
 
     /**
-     * PG connection config retrieved in the following order:
-     * 1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
-     * 2. A system property "lakesoul_home" (in lower case) point to a property file;
-     * Following config keys are used to read the property file:
-     * lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
-     * 3. Any of the following env var exist:
-     * LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
-     * 4. Otherwise, resolved to each's config's default
+     *  PG connection config retrieved in the following order:
+     *  1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
+     *  2. A system property "lakesoul_home" (in lower case) point to a property file;
+     *      Following config keys are used to read the property file:
+     *          lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
+     *  3. Any of the following env var exist:
+     *      LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
+     *  4. Otherwise, resolved to each's config's default
      */
     public static DataBaseProperty getDBInfo() {
 
@@ -205,5 +206,14 @@ public class DBUtil {
         return rsList;
     }
 
-    
+    public static void fillDataSourceConfig(HikariConfig config) {
+        config.setConnectionTimeout(10000);
+        config.setIdleTimeout(60000);
+        config.setMaximumPoolSize(8);
+        config.setKeepaliveTime(10000);
+        config.setMinimumIdle(1);
+        config.addDataSourceProperty( "cachePrepStmts" , "true" );
+        config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
+        config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
+    }
 }

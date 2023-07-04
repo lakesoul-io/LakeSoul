@@ -19,7 +19,7 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.entity.TablePathId;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -221,7 +221,6 @@ public class TablePathIdDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from table_path_id;";
         try {
             conn = DBConnector.getConn();

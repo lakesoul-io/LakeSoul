@@ -38,8 +38,10 @@ public class DataCommitInfoDao {
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed)" +
-                    " values (?, ?, ?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement(
+                    "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
+                            "timestamp, committed)" +
+                            " values (?, ?, ?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, dataCommitInfo);
         } catch (SQLException e) {
             e.printStackTrace();
@@ -155,7 +157,9 @@ public class DataCommitInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from data_commit_info where table_id = '%s' order by timestamp DESC LIMIT 1", tableId);
+        String sql =
+                String.format("select * from data_commit_info where table_id = '%s' order by timestamp DESC LIMIT 1",
+                        tableId);
         DataCommitInfo dataCommitInfo = null;
         try {
             conn = DBConnector.getConn();
@@ -173,7 +177,8 @@ public class DataCommitInfoDao {
         return dataCommitInfo;
     }
 
-    public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<UUID> commitIdList) {
+    public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(String tableId, String partitionDesc,
+                                                                       List<UUID> commitIdList) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -229,8 +234,10 @@ public class DataCommitInfoDao {
         boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed)" +
-                    " values (?, ?, ?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement(
+                    "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
+                            "timestamp, committed)" +
+                            " values (?, ?, ?, ?, ?, ?, ?)");
             conn.setAutoCommit(false);
             for (DataCommitInfo dataCommitInfo : listData) {
                 dataCommitInsert(pstmt, dataCommitInfo);
