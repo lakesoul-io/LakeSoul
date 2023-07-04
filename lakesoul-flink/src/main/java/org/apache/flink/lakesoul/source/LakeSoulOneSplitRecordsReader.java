@@ -42,7 +42,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData> {
+public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData>, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulOneSplitRecordsReader.class);
 
@@ -73,9 +73,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     // arrow batch -> row, with requested schema
     private ArrowReader curArrowReaderRequestedSchema;
 
+    private final Set<String> finishedSplit;
+
     public LakeSoulOneSplitRecordsReader(Configuration conf, LakeSoulSplit split, RowType schema, RowType schemaWithPk,
                                          List<String> pkColumns, boolean isStreaming, String cdcColumn)
-            throws IOException {
+            throws Exception {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = new Configuration(conf);
@@ -85,6 +87,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.splitId = split.splitId();
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
+        this.finishedSplit = new HashSet<>();
         initializeReader();
         recoverFromSkipRecord();
     }
@@ -138,15 +141,15 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 ArrowUtils.createArrowReader(new VectorSchemaRoot(requestedVectors), schema);
     }
 
-    private void recoverFromSkipRecord() throws IOException {
+    private void recoverFromSkipRecord() throws Exception {
         LOG.info("Recover from skip record={} for split={}", skipRecords, split);
         if (skipRecords > 0) {
             long skipRowCount = 0;
             while (skipRowCount <= skipRecords) {
                 boolean hasNext = this.reader.hasNext();
                 if (!hasNext) {
-                    this.reader.close();
-                    this.reader = null;
+                    close();
+                    this.finishedSplit.add(splitId);
                     String error =
                             String.format("Encounter unexpected EOF in split=%s, skipRecords=%s, skipRowCount=%s",
                                     split, skipRecords, skipRowCount);
@@ -163,8 +166,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 curRecordIdx = 0;
             } else {
-                this.reader.close();
-                this.reader = null;
+                close();
+                this.finishedSplit.add(splitId);
                 String error =
                         String.format("Encounter unexpected EOF in split=%s, skipRecords=%s",
                                 split, skipRecords);
@@ -178,16 +181,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     @Nullable
     @Override
     public String nextSplit() {
-        if (this.split == null) {
-            if (this.currentVCR != null) {
-                this.currentVCR.close();
-                this.currentVCR = null;
-            }
-            if (this.reader != null) {
-                this.reader.close();
-                this.reader = null;
-            }
-        }
         String nextSplit = this.splitId;
         this.splitId = null;
         return nextSplit;
@@ -198,6 +191,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     public RowData nextRecordFromSplit() {
         while (true) {
             if (curRecordIdx >= currentVCR.getRowCount()) {
+                currentVCR.close();
+                currentVCR = null;
                 if (this.reader.hasNext()) {
                     this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                     makeCurrentArrowReader();
@@ -205,6 +200,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 } else {
                     this.reader.close();
                     LOG.info("Reach end of split file {}", split);
+                    this.finishedSplit.add(splitId);
                     return null;
                 }
             }
@@ -248,6 +244,18 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     @Override
     public Set<String> finishedSplits() {
-        return Collections.singleton(split.splitId());
+        return finishedSplit;
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (this.currentVCR != null) {
+            this.currentVCR.close();
+            this.currentVCR = null;
+        }
+        if (this.reader != null) {
+            this.reader.close();
+            this.reader = null;
+        }
     }
 }
