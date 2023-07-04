@@ -1,18 +1,7 @@
 package org.apache.flink.lakesoul.test.fail;
 
-import org.apache.flink.api.connector.source.*;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.connector.base.source.reader.RecordEmitter;
-import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
-import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSourceReaderBase;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
-import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.core.memory.DataInputDeserializer;
-import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
@@ -26,22 +15,12 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
-import org.apache.flink.table.connector.ChangelogMode;
-import org.apache.flink.table.connector.source.DynamicTableSource;
-import org.apache.flink.table.connector.source.InputFormatProvider;
-import org.apache.flink.table.connector.source.ScanTableSource;
-import org.apache.flink.table.connector.source.SourceProvider;
-import org.apache.flink.table.data.GenericRowData;
-import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
-import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.Row;
-import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CollectionUtil;
-import org.jetbrains.annotations.Nullable;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -50,7 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.Serializable;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -60,7 +38,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -145,6 +122,13 @@ public class LakeSoulSinkFailTest {
                                 Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
                         UniqueConstraint.primaryKey("primary key", Arrays.asList("hash1", "hash2"))),
                 "PARTITIONED BY (`range1`, `range2`)", MockTableSource.StopBehavior.FAIL_ON_BEFORE_ASSIGN_SPLIT));
+
+        parameters.put("testLakeSoulSinkWithoutPkStopPostgresOnCheckpointing", Tuple3.of(new ResolvedSchema(
+                        Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
+                                        DataTypes.STRING()),
+                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
+                        null), "PARTITIONED BY (`range`)",
+                MockTableSource.StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
     }
 
     public static Object generateObjectWithIndexByDatatype(Integer index, RowType.RowField field) {
@@ -295,6 +279,32 @@ public class LakeSoulSinkFailTest {
     @Test
     public void testLakeSoulSinkStopPostgresOnCheckpointing() throws IOException {
         String testName = "testLakeSoulSinkStopPostgresOnCheckpointing";
+        Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
+        ResolvedSchema resolvedSchema = tuple3.f0;
+
+        indexBound = 40;
+        List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
+                .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
+                .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
+
+        PostgresContainerHelper.setContainerName("yugabyte");
+        MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
+        testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
+                20 * 1000);
+
+        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
+                .stream()
+                .map(Row::toString)
+                .sorted(Comparator.comparing(Function.identity()))
+                .collect(Collectors.toList());
+        expectedData.sort(Comparator.comparing(Function.identity()));
+
+        assertThat(actualData.toString()).isEqualTo(expectedData.toString());
+    }
+
+    @Test
+    public void testLakeSoulSinkWithoutPkStopPostgresOnCheckpointing() throws IOException {
+        String testName = "testLakeSoulSinkWithoutPkStopPostgresOnCheckpointing";
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
