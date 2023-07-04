@@ -21,7 +21,6 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.core.fs.Path;
 
 import java.io.Serializable;
-import java.util.ArrayList;
 import java.util.List;
 
 @PublicEvolving
@@ -29,9 +28,10 @@ public class LakeSoulPartition implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private List<Path> paths;
+    private final List<Path> paths;
 
-    private List<String> partitionKeys= new ArrayList<>(), partitionValues= new ArrayList<>();
+    private final List<String> partitionKeys;
+    private final List<String> partitionValues;
 
     public LakeSoulPartition(List<Path> paths, List<String> partitionKeys, List<String> partitionValues) {
         this.paths = paths;

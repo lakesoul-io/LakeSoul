@@ -17,7 +17,11 @@
 
 package org.apache.flink.lakesoul.connector;
 
-import com.dmetasoul.lakesoul.meta.*;
+import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.DataFileInfo;
+import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
@@ -28,6 +32,7 @@ import org.apache.flink.table.utils.PartitionPathUtils;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_DESC_KV_DELIM;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
 
@@ -37,24 +42,24 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLI
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
 
 
-    List<Map<String, String>> remainingPartitions;
-
-    protected TableId tableId;
-
-    public TableId getTableId() {
-        return tableId;
-    }
-
     protected final List<String> partitionKeys;
-
     protected final String partitionOrderKeys;
-
+    protected TableId tableId;
     protected transient DBManager dbManager;
+    List<Map<String, String>> remainingPartitions;
 
     public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys) {
         this.tableId = tableId;
         this.partitionKeys = partitionKeys;
         this.partitionOrderKeys = partitionOrderKeys;
+    }
+
+    private static List<String> extractPartitionValues(String partitionName) {
+        return PartitionPathUtils.extractPartitionValues(new org.apache.flink.core.fs.Path(partitionName));
+    }
+
+    public TableId getTableId() {
+        return tableId;
     }
 
     /**
@@ -70,7 +75,6 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
         return FlinkUtil.getTargetDataFileInfo(tableInfo, null);
     }
 
-
     /**
      * Get list that contains partition with comparable object.
      *
@@ -81,17 +85,17 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
     @Override
     public List<ComparablePartitionValue> getComparablePartitionValueList() throws Exception {
         List<ComparablePartitionValue> partitionValueList = new ArrayList<>();
-        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+        TableInfo tableInfo =
+                DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
         List<String> partitionDescs = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
-                .map(partitionInfo -> partitionInfo.getPartitionDesc()).collect(Collectors.toList());
+                .map(PartitionInfo::getPartitionDesc).collect(Collectors.toList());
         for (String partitionDesc : partitionDescs) {
             partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }
         return partitionValueList;
     }
 
-    private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(
-            String partitionDesc) {
+    private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(String partitionDesc) {
         return new ComparablePartitionValue<List<String>, String>() {
             private static final long serialVersionUID = 1L;
             // TODO: delete the option
@@ -110,18 +114,15 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                 if (simpleLatestPartition == 1) {
                     StringBuilder comparator = new StringBuilder();
                     // if partitionOrderKeys is null, default to use all partitionKeys to sort
-                    Set<String> partitionOrderKeySet =
-                            partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionOrderKeys));
-                    List<String> singleParDescList = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionDesc);
-                    Map<String, String> parDescMap = new HashMap<>();
-                    singleParDescList.forEach(singleParDesc -> {
-                        List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
-                        parDescMap.put(kvs.get(0), kvs.get(1));
-                    });
+                    Set<String> partitionOrderKeySet = partitionOrderKeys == null ? new HashSet<>(partitionKeys) :
+                            new HashSet<>(
+                                    Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionOrderKeys));
+                    Map<String, String> parDescMap = DBUtil.parsePartitionDesc(partitionDesc);
                     // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
                     partitionKeys.forEach(partitionKey -> {
                         if (partitionOrderKeySet.contains(partitionKey)) {
-                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + LAKESOUL_RANGE_PARTITION_SPLITTER);
+                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) +
+                                    LAKESOUL_RANGE_PARTITION_SPLITTER);
                         }
                     });
                     comparator.deleteCharAt(comparator.length() - 1);
@@ -132,11 +133,6 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
             }
 
         };
-    }
-
-    private static List<String> extractPartitionValues(String partitionName) {
-        return PartitionPathUtils.extractPartitionValues(
-                new org.apache.flink.core.fs.Path(partitionName));
     }
 
     /**

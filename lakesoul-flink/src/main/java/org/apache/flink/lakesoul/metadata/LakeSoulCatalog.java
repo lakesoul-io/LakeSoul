@@ -29,7 +29,6 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
@@ -43,7 +42,8 @@ import org.apache.flink.table.factories.Factory;
 import java.io.IOException;
 import java.util.*;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.*;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -254,8 +254,7 @@ public class LakeSoulCatalog implements Catalog {
 
         String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
         dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath, sparkSchema,
-                properties,
-                DBUtil.formatTableInfoPartitionsField(primaryKeys, partitionKeys));
+                properties, DBUtil.formatTableInfoPartitionsField(primaryKeys, partitionKeys));
     }
 
     @Override
@@ -291,17 +290,7 @@ public class LakeSoulCatalog implements Catalog {
             if (null == item || "".equals(item)) {
                 throw new CatalogException("partition not exist");
             } else {
-                LinkedHashMap<String, String> lhmap = new LinkedHashMap<>();
-                if (LAKESOUL_NON_PARTITION_TABLE_PART_DESC.equals(item)) {
-                    lhmap.put("", LAKESOUL_NON_PARTITION_TABLE_PART_DESC);
-                } else {
-                    List<String> partitionData = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(item);
-                    for (String kv : partitionData) {
-                        List<String> kvs = Splitter.on("=").splitToList(kv);
-                        lhmap.put(kvs.get(0), kvs.get(1));
-                    }
-                }
-                al.add(new CatalogPartitionSpec(lhmap));
+                al.add(new CatalogPartitionSpec(DBUtil.parsePartitionDesc(item)));
             }
         }
         return al;
@@ -351,10 +340,7 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public CatalogPartition getPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec)
             throws PartitionNotExistException, CatalogException {
-        if (!partitionExists(tablePath, catalogPartitionSpec)) {
-            throw new PartitionNotExistException(CATALOG_NAME, tablePath, catalogPartitionSpec);
-        }
-        return null;
+        throw new CatalogException("not supported");
     }
 
     @Override
@@ -363,9 +349,14 @@ public class LakeSoulCatalog implements Catalog {
         TableInfo tableInfo =
                 dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
         if (tableInfo == null) {
-            return false;
+            throw new CatalogException(tablePath + " does not exist");
         }
-        return false;
+        if (tableInfo.getPartitions().equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            throw new CatalogException(tablePath + " is not partitioned");
+        }
+        List<PartitionInfo> partitionInfos = dbManager.getOnePartition(tableInfo.getTableId(),
+                DBUtil.formatPartitionDesc(catalogPartitionSpec.getPartitionSpec()));
+        return !partitionInfos.isEmpty();
     }
 
     @Override

@@ -31,6 +31,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 
@@ -294,6 +295,34 @@ public class DBUtil {
                 Arrays.asList(StringUtils.split(rangeAndPks[1], LAKESOUL_HASH_PARTITION_SPLITTER)),
                 Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER))
         );
+    }
+
+    // assume that map iteration order is partition level order
+    // usually implementations uses LinkedHashMap for this parameter
+    public static String formatPartitionDesc(Map<String, String> partitionDesc) {
+        if (partitionDesc.isEmpty()) {
+            return LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+        }
+        return partitionDesc.entrySet().stream().map(entry -> String.join(LAKESOUL_PARTITION_DESC_KV_DELIM,
+                entry.getKey(),
+                entry.getValue())).collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
+    }
+
+    public static LinkedHashMap<String, String> parsePartitionDesc(String partitionDesc) {
+        LinkedHashMap<String, String> descMap = new LinkedHashMap<>();
+        if (partitionDesc.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
+            descMap.put("", LAKESOUL_NON_PARTITION_TABLE_PART_DESC);
+            return descMap;
+        }
+        String[] splits = StringUtils.split(partitionDesc, LAKESOUL_RANGE_PARTITION_SPLITTER);
+        for (String part : splits) {
+            String[] kv = part.split(LAKESOUL_PARTITION_DESC_KV_DELIM, -1);
+            if (kv.length != 2 || kv[0].isEmpty()) {
+                throw new RuntimeException("Partition Desc " + part + " is not valid");
+            }
+            descMap.put(kv[0], kv[1]);
+        }
+        return descMap;
     }
 
     public static void fillDataSourceConfig(HikariConfig config) {

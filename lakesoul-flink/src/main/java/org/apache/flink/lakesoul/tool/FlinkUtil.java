@@ -359,15 +359,13 @@ public class FlinkUtil {
             return DataOperation.getTableDataInfo(tif.getTableId());
         } else {
             List<String> partitionDescs = remainingPartitions.stream()
-                    .map(map -> map.entrySet().stream()
-                            .map(entry -> entry.getKey() + "=" + entry.getValue())
-                            .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER)))
+                    .map(DBUtil::formatPartitionDesc)
                     .collect(Collectors.toList());
             List<PartitionInfo> partitionInfos = new ArrayList<>();
             for (String partitionDesc : partitionDescs) {
                 partitionInfos.add(MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, ""));
             }
-            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[partitionInfos.size()]);
+            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[0]);
             return DataOperation.getTableDataInfo(ptinfos);
         }
     }
