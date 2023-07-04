@@ -106,11 +106,13 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable = LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
 
+        LOG.warn(globalCommittable.getGroupedCommitables() + "is committing, " + "globalCommittables group size = " + globalCommittable.getGroupedCommitables().size());
+        int index = 0;
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry : globalCommittable.getGroupedCommitables().entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            Boolean isCdc = Boolean.valueOf(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
+            boolean isCdc = Boolean.parseBoolean(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
             String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) : Optional.empty()).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
@@ -132,6 +134,7 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
             }
 
             committer.commit(entry.getValue());
+            LOG.warn((index++) + "th committable of " + entry.getValue().get(0).getCommitId() + " has been committed");
         }
         return Collections.emptyList();
     }

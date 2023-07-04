@@ -21,6 +21,10 @@ public abstract class DBConfig {
 
     static int MAX_COMMIT_ATTEMPTS = 5;
 
+    public static String LAKESOUL_NULL_STRING = "__L@KE$OUL_NULL__";
+
+    public static String LAKESOUL_EMPTY_STRING = "__L@KE$OUL_EMPTY_STRING__";
+
     public static String LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH = ";";
 
     public static String LAKESOUL_RANGE_PARTITION_SPLITTER = ",";

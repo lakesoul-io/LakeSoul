@@ -153,17 +153,22 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String partitionString = DBUtil.changePartitionDescListToString(partitionDescList);
+
         String sql = String.format(
                 "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
-                        "where table_id = '%s' and partition_desc in (%s) " +
+                        "where table_id = ? and partition_desc in (%s) " +
                         "group by table_id,partition_desc) t " +
-                        "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", tableId, partitionString);
+                        "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", String.join(",", Collections.nCopies(partitionDescList.size(), "?")));
         List<PartitionInfo> rsList = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
+            pstmt.setString(1, tableId);
+            int index = 2;
+            for (String partition : partitionDescList) {
+                pstmt.setString(index++, partition);
+            }
             rs = pstmt.executeQuery();
             while (rs.next()) {
                 PartitionInfo partitionInfo = new PartitionInfo();

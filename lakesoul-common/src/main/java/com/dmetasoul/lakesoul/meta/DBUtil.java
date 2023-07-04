@@ -206,55 +206,6 @@ public class DBUtil {
         return rsList;
     }
 
-    public static String changeUUIDListToString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("'%s',", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static String changeUUIDListToOrderString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("%s,", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static List<UUID> changeStringToUUIDList(String s) {
-        List<UUID> uuidList = new ArrayList<>();
-        if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo
-            return uuidList;
-        }
-        s = s.substring(1, s.length() - 1);
-        String[] uuids = s.split(",");
-        for (String uuid : uuids) {
-            uuidList.add(UUID.fromString(uuid));
-        }
-        return uuidList;
-    }
-
-    public static String changePartitionDescListToString(List<String> partitionDescList) {
-        StringBuilder sb = new StringBuilder();
-        if (partitionDescList.size() < 1) {
-            return sb.append("''").toString();
-        }
-        for (String s : partitionDescList) {
-            sb.append(String.format("'%s',", s));
-        }
-        return sb.substring(0, sb.length() - 1);
-    }
-
     public static void fillDataSourceConfig(HikariConfig config) {
         config.setConnectionTimeout(10000);
         config.setIdleTimeout(60000);
