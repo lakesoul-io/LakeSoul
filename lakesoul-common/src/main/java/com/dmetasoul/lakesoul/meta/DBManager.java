@@ -20,6 +20,9 @@ package com.dmetasoul.lakesoul.meta;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZ;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZObject;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.NameSpaceCreateDropFetcher;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,6 +115,8 @@ public class DBManager {
         return tableInfoDao.selectByTableNameAndNameSpace(tableName, namespace);
     }
 
+    @AuthZ(value = "db.tb_create_drop")
+    @AuthZObject(name = "namespace")
     public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
 
@@ -242,6 +247,8 @@ public class DBManager {
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
     }
 
+    @AuthZ(value = "db.tb_create_drop")
+    @AuthZObject(name = "tableNamespace")
     public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
@@ -764,6 +771,7 @@ public class DBManager {
         return namespaceDao.listNamespaces();
     }
 
+    @AuthZ(value = "domain.db_create")
     public void createNewNamespace(String name,
                                    JSONObject properties,
                                    String comment) {
@@ -789,6 +797,8 @@ public class DBManager {
         namespaceDao.updatePropertiesByNamespace(namespace, properties);
     }
 
+    @AuthZ(value = "db.db_drop")
+    @AuthZObject(index = 0)
     public void deleteNamespace(String namespace) {
         namespaceDao.deleteByNamespace(namespace);
     }

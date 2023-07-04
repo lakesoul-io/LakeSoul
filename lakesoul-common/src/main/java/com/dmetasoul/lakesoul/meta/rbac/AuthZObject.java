@@ -14,11 +14,17 @@
  * limitations under the License.
  *
  */
-
 package com.dmetasoul.lakesoul.meta.rbac;
 
-public class AuthZException extends RuntimeException {
-    public AuthZException(){
-        super("lakesoul access denied!");
-    }
+import java.lang.annotation.*;
+
+@Documented
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface AuthZObject{
+    int index() default 0;
+    String name() default "";
 }
+
+
+
