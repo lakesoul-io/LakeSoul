@@ -24,6 +24,7 @@ import org.aspectj.lang.JoinPoint;
 import org.junit.Test;
 
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 
 public class AuthZTest {
@@ -72,41 +73,43 @@ public class AuthZTest {
 //        AuthZContext.getInstance().setDomain("test1");
 //        assert new TestClass().done5(0, "db1");
 //    }
-
-     public static class TestClass{
-         @AuthZ(object = "domain", action = "db_create")
-         public boolean done(){
-             return true;
-         }
-
-         @AuthZ(object = "db", action =  "tb_create_drop", fetcher = TestFetcher.class)
-         public boolean done2(String dbName){
-             return true;
-         }
-
-         @AuthZ(value = "db.tb_create_drop", fetcher = TestFetcher.class)
-         public boolean done3(String dbName){
-             return true;
-         }
-
-         @AuthZ(object = "db", action =  "tb_create_drop")
-         @AuthZObject(index = 1)
-         public boolean done4(int aaa, String dbName){
-             return true;
-         }
-
-         @AuthZ(value = "db.tb_create_drop")
-         @AuthZObject(name = "dbName")
-         public boolean done5(int aaa, String dbName){
-             return true;
-         }
-     }
-
-     public static class TestFetcher implements AuthZFetcher {
-         @Override
-         public List<String> getObject(JoinPoint point) {
-             String object = (String) point.getArgs()[0];
-             return List.of(object);
-         }
-     }
+//
+//     public static class TestClass{
+//         @AuthZ(object = "domain", action = "db_create")
+//         public boolean done(){
+//             return true;
+//         }
+//
+//         @AuthZ(object = "db", action =  "tb_create_drop", fetcher = TestFetcher.class)
+//         public boolean done2(String dbName){
+//             return true;
+//         }
+//
+//         @AuthZ(value = "db.tb_create_drop", fetcher = TestFetcher.class)
+//         public boolean done3(String dbName){
+//             return true;
+//         }
+//
+//         @AuthZ(object = "db", action =  "tb_create_drop")
+//         @AuthZObject(index = 1)
+//         public boolean done4(int aaa, String dbName){
+//             return true;
+//         }
+//
+//         @AuthZ(value = "db.tb_create_drop")
+//         @AuthZObject(name = "dbName")
+//         public boolean done5(int aaa, String dbName){
+//             return true;
+//         }
+//     }
+//
+//     public static class TestFetcher implements AuthZFetcher {
+//         @Override
+//         public List<String> getObject(JoinPoint point) {
+//             String object = (String) point.getArgs()[0];
+//             LinkedList<String> objects = new LinkedList<>();
+//             objects.add(object);
+//             return objects;
+//         }
+//     }
 }
