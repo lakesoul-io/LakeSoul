@@ -474,6 +474,10 @@
                             <include>com.fasterxml.jackson.module:jackson-module-scala_2.12</include>
                             <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
                             <include>com.thoughtworks.paranamer:paranamer</include>
+                            <include>com.thoughtworks.paranamer:paranamer</include>
+                            <!-- casbin & aspectj -->
+                            <include>org.casbin:jdbc-adapter</include>
+                            <include>org.aspectj:aspectjweaver</include>
                         </includes>
                         <excludes>
                             <exclude>org.apache.logging.log4j:*</exclude>
@@ -482,16 +486,16 @@
                     </artifactSet>
                     <filters>
                         <filter>
+                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <excludes>
+                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
                             <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
                             <excludes>
                                 <exclude>org/apache/flink/shaded/guava30/**</exclude>
                                 <exclude>META-INF/maven/com.google.guava/**</exclude>
-                            </excludes>
-                        </filter>
-                        <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
-                            <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
                         </filter>
                     </filters>
