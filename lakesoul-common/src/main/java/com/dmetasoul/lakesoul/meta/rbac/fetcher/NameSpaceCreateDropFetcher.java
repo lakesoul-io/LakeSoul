@@ -19,6 +19,7 @@ package com.dmetasoul.lakesoul.meta.rbac.fetcher;
 
 import org.aspectj.lang.JoinPoint;
 
+import java.util.LinkedList;
 import java.util.List;
 
 /**
@@ -28,7 +29,9 @@ public class NameSpaceCreateDropFetcher implements AuthZFetcher{
     @Override
     public List<String> getObject(JoinPoint point) {
         String object = (String) point.getArgs()[0];
-        return List.of(object);
+        LinkedList<String> objects = new LinkedList<>();
+        objects.add(object);
+        return objects;
     }
 }
 
