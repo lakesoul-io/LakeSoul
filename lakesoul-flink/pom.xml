@@ -477,6 +477,7 @@
                             <include>com.thoughtworks.paranamer:paranamer</include>
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>
+                            <include>org.aspectj:aspectjrt</include>
                             <include>org.aspectj:aspectjweaver</include>
                             <include>org.apache.commons:commons-collections4</include>
                             <include>org.casbin:jcasbin</include>
