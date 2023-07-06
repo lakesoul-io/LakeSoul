@@ -9,6 +9,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -31,9 +32,7 @@ import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkFunctionProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.factories.TableFactoryHarness;
-import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.types.Row;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -53,11 +52,13 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LakeSoulFailTest {
+public class LakeSoulSourceFailTest extends AbstractTestBase {
 
     public static Map<String, Tuple3<ResolvedSchema, String, StopBehavior>> parameters;
     static String createSourceSqlFormat = "create table if not exists test_source %s %s" +
-            "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d')";
+            "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d', " +
+            "'discoveryinterval'='1000'" +
+            ")";
     static String createSinkSqlFormat = "create table if not exists test_sink %s" +
             "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
     private static ArrayList<Integer> indexArr;

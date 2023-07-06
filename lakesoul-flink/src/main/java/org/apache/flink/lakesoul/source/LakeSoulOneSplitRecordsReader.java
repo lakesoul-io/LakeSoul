@@ -87,7 +87,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.splitId = split.splitId();
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
-        this.finishedSplit = new HashSet<>();
+        this.finishedSplit = Collections.singleton(splitId);
         initializeReader();
         recoverFromSkipRecord();
     }
@@ -149,7 +149,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 boolean hasNext = this.reader.hasNext();
                 if (!hasNext) {
                     close();
-                    this.finishedSplit.add(splitId);
                     String error =
                             String.format("Encounter unexpected EOF in split=%s, skipRecords=%s, skipRowCount=%s",
                                     split, skipRecords, skipRowCount);
@@ -167,7 +166,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 curRecordIdx = 0;
             } else {
                 close();
-                this.finishedSplit.add(splitId);
                 String error =
                         String.format("Encounter unexpected EOF in split=%s, skipRecords=%s",
                                 split, skipRecords);
@@ -198,7 +196,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 } else {
                     this.reader.close();
                     LOG.info("Reach end of split file {}", split);
-                    this.finishedSplit.add(splitId);
                     return null;
                 }
             }
@@ -242,6 +239,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     @Override
     public Set<String> finishedSplits() {
+        LOG.info("Finished splits {}", finishedSplit);
         return finishedSplit;
     }
 
