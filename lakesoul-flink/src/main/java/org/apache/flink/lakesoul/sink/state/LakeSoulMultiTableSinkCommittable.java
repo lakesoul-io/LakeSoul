@@ -124,7 +124,6 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         Preconditions.checkState(identity.equals(committable.getIdentity()));
         Preconditions.checkState(bucketId.equals(committable.getBucketId()));
         Preconditions.checkState(creationTime == committable.getCreationTime());
-        Preconditions.checkState(commitId.equals(committable.getCommitId()));
         if (hasPendingFile()) {
             if (committable.hasPendingFile()) pendingFiles.addAll(committable.getPendingFiles());
         } else {
