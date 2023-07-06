@@ -57,9 +57,8 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
  */
 public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCommittable> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkCommitter.class);
-
     public static final LakeSoulSinkCommitter INSTANCE = new LakeSoulSinkCommitter();
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkCommitter.class);
 
     public LakeSoulSinkCommitter() {
     }
@@ -99,7 +98,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 // commit LakeSoul Meta
                 TableSchemaIdentity identity = committable.getIdentity();
                 List<DataFileOp> dataFileOpList = new ArrayList<>();
-                String fileExistCols = identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD)).collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
+                String fileExistCols =
+                        identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD))
+                                .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
                 for (String file : files) {
                     DataFileOp dataFileOp = new DataFileOp();
                     dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);
@@ -112,12 +113,13 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 }
                 String partition = committable.getBucketId();
 
-                TableNameId tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(),
-                        identity.tableId.schema());
+                TableNameId tableNameId =
+                        lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
                 dataCommitInfo.setTableId(tableNameId.getTableId());
-                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? "-5" : partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
+                dataCommitInfo.setPartitionDesc(
+                        partition.isEmpty() ? "-5" : partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
                 dataCommitInfo.setFileOps(dataFileOpList);
                 dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
@@ -125,17 +127,13 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 dataCommitInfo.setCommitId(UUID.fromString(committable.getCommitId()));
 
                 if (LOG.isInfoEnabled()) {
-                    String fileOpStr = dataFileOpList.stream().map(
-                                    op -> String.format("%s,%s,%d,%s",
-                                            op.getPath(), op.getFileOp(),
-                                            op.getSize(), op.getFileExistCols()))
-                            .collect(Collectors.joining("\n\t"));
+                    String fileOpStr = dataFileOpList.stream()
+                            .map(op -> String.format("%s,%s,%d,%s", op.getPath(), op.getFileOp(), op.getSize(),
+                                    op.getFileExistCols())).collect(Collectors.joining("\n\t"));
                     LOG.info("Commit to LakeSoul: Table={}, TableId={}, Partition={}, Files:\n\t{}, " +
-                                    "CommitOp={}, Timestamp={}, UUID={}",
-                            identity.tableId.identifier(), tableNameId.getTableId(), partition,
-                            fileOpStr, dataCommitInfo.getCommitOp(),
-                            dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString()
-                    );
+                                    "CommitOp={}, Timestamp={}, UUID={}", identity.tableId.identifier(),
+                            tableNameId.getTableId(), partition, fileOpStr, dataCommitInfo.getCommitOp(),
+                            dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString());
                 }
 
                 lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo);

@@ -245,7 +245,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 120);
+                testData, 60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));

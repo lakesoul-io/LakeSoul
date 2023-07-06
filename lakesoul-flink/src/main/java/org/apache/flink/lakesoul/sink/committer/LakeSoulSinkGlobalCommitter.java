@@ -18,13 +18,11 @@
 
 package org.apache.flink.lakesoul.sink.committer;
 
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
@@ -49,7 +47,8 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
  * and commit them globally, or put them in "finished" state and ready to be consumed by downstream
  * applications or systems.
  */
-public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> {
+public class LakeSoulSinkGlobalCommitter
+        implements GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkGlobalCommitter.class);
 
@@ -72,25 +71,29 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
     /**
      * Find out which global committables need to be retried when recovering from the failure.
      *
-     * @param globalCommittables A list of {@link LakeSoulMultiTableSinkGlobalCommittable} for which we want to verify which
+     * @param globalCommittables A list of {@link LakeSoulMultiTableSinkGlobalCommittable} for which we want to
+     *                           verify which
      *                           ones were successfully committed and which ones did not.
      * @return A list of {@link LakeSoulMultiTableSinkGlobalCommittable} that should be committed again.
      * @throws IOException if fail to filter the recovered committables.
      */
     @Override
-    public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+    public List<LakeSoulMultiTableSinkGlobalCommittable> filterRecoveredCommittables(
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
         return globalCommittables;
     }
 
     /**
      * Compute an aggregated committable from a list of committables.
      *
-     * @param committables A list of {@link LakeSoulMultiTableSinkCommittable} to be combined into a {@link LakeSoulMultiTableSinkGlobalCommittable}.
+     * @param committables A list of {@link LakeSoulMultiTableSinkCommittable} to be combined into a
+     * {@link LakeSoulMultiTableSinkGlobalCommittable}.
      * @return an aggregated committable
      * @throws IOException if fail to combine the given committables.
      */
     @Override
-    public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables) throws IOException {
+    public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables)
+            throws IOException {
         return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables);
     }
 
@@ -103,31 +106,33 @@ public class LakeSoulSinkGlobalCommitter implements GlobalCommitter<LakeSoulMult
      * @throws IOException if the commit operation fail and do not want to retry any more.
      */
     @Override
-    public List<LakeSoulMultiTableSinkGlobalCommittable> commit(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
-        LakeSoulMultiTableSinkGlobalCommittable globalCommittable = LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
+    public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
+        LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
+                LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
 
-        LOG.warn(globalCommittable.getGroupedCommitables() + "is committing, " + "globalCommittables group size = " + globalCommittable.getGroupedCommitables().size());
+        LOG.warn(globalCommittable.getGroupedCommitables() + "is committing, " + "globalCommittables group size = " +
+                globalCommittable.getGroupedCommitables().size());
         int index = 0;
-        for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry : globalCommittable.getGroupedCommitables().entrySet()) {
+        for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
+                globalCommittable.getGroupedCommitables()
+                .entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             boolean isCdc = Boolean.parseBoolean(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
-            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) : Optional.empty()).json();
+            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
+                    identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) :
+                    Optional.empty()).json();
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
-                String partition = String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, identity.partitionKeyList), String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
+                String partition = String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH,
+                        String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, identity.partitionKeyList),
+                        String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
 
-                dbManager.createNewTable(
-                        tableId,
-                        tableNamespace,
-                        tableName,
-                        identity.tableLocation,
-                        sparkSchema,
-                        identity.properties,
-                        partition
-                );
+                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, sparkSchema,
+                        identity.properties, partition);
             } else if (!tableInfo.getTableSchema().equals(sparkSchema)) {
                 // TODO: 2023/6/15 order of schema changes should be considered
                 dbManager.updateTableSchema(tableInfo.getTableId(), sparkSchema);

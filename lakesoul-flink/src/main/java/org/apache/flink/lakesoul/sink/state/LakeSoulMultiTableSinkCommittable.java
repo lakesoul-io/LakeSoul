@@ -26,7 +26,6 @@ import org.apache.flink.util.Preconditions;
 import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -59,8 +58,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             long creationTime,
             TableSchemaIdentity identity) {
         this(bucketId, identity, pendingFiles, creationTime,
-//                UUID.randomUUID().toString()
-                new UUID(Objects.hash(identity.tableId, bucketId), creationTime).toString()
+                UUID.randomUUID().toString()
         );
     }
 
