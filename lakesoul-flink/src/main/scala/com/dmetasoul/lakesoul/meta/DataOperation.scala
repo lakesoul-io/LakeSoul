@@ -22,7 +22,7 @@ package com.dmetasoul.lakesoul.meta
 import org.apache.flink.core.fs.Path
 import org.apache.flink.shaded.guava30.com.google.common.collect.Lists
 
-import java.util.UUID
+import java.util.{Objects, UUID}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
@@ -63,6 +63,10 @@ case class DataFileInfo(
 
   //trans to files which need to delete
   def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
+
+  override def hashCode(): Int = {
+    Objects.hash(range_partitions, path, file_op)
+  }
 }
 
 case class PartitionInfo(table_id: String,

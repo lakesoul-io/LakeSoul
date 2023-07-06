@@ -109,7 +109,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -125,7 +125,7 @@ public class PartitionInfoDao {
             pstmt.setString(1, tableId);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -143,7 +143,7 @@ public class PartitionInfoDao {
             pstmt.setLong(3, utcMills);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -484,14 +484,13 @@ public class PartitionInfoDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from partition_info;";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

@@ -3,6 +3,7 @@ package org.apache.flink.lakesoul.test.fail;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.lakesoul.test.PostgresContainerHelper;
@@ -44,7 +45,7 @@ import java.util.stream.IntStream;
 import static org.apache.flink.lakesoul.test.fail.MockTableSource.MockSplitEnumerator.indexBound;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class LakeSoulSinkFailTest {
+public class LakeSoulSinkFailTest extends AbstractTestBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkFailTest.class);
 
@@ -53,7 +54,9 @@ public class LakeSoulSinkFailTest {
 
     static String dropSourceSql = "drop table if exists test_source";
     static String createSourceSqlFormat = "create table if not exists test_source %s " +
-            "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
+            "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2', " +
+            "'discoveryinterval'='1000'" +
+            ")";
 
     static String dropSinkSql = "drop table if exists test_sink";
     static String createSinkSqlFormat = "create table if not exists test_sink %s %s" +
@@ -287,7 +290,6 @@ public class LakeSoulSinkFailTest {
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        PostgresContainerHelper.setContainerName("yugabyte");
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
@@ -313,7 +315,6 @@ public class LakeSoulSinkFailTest {
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        PostgresContainerHelper.setContainerName("yugabyte");
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);

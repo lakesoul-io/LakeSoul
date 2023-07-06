@@ -3,6 +3,8 @@ version: '3'
 services:
   lakesoul-meta-db:
     image: postgres:14.5
+    container_name: lakesoul-test-pg
+    hostname: lakesoul-docker-compose-env-lakesoul-meta-db-1
     ports:
       - "5432:5432"
     restart: always
