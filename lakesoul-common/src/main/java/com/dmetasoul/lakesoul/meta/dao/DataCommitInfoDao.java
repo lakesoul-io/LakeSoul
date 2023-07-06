@@ -44,7 +44,7 @@ public class DataCommitInfoDao {
                             " values (?, ?, ?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, dataCommitInfo);
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -62,7 +62,7 @@ public class DataCommitInfoDao {
             pstmt.setString(3, commitId.toString());
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -88,7 +88,7 @@ public class DataCommitInfoDao {
             }
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -105,7 +105,7 @@ public class DataCommitInfoDao {
             pstmt.setString(2, partitionDesc);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -121,7 +121,7 @@ public class DataCommitInfoDao {
             pstmt.setString(1, tableId);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -189,8 +189,6 @@ public class DataCommitInfoDao {
         String uuidListOrderString = commitIdList.stream().map(UUID::toString).collect(Collectors.joining(","));
         String sql = String.format("select * from data_commit_info where table_id = ? and partition_desc = ? and " +
                 "commit_id in (%s) order by position(commit_id::text in ?) ", String.join(",", Collections.nCopies(commitIdList.size(), "?")));
-//        String sql = String.format("select * from data_commit_info where table_id = '%s' and partition_desc = '%s' and " +
-//                "commit_id in (%s) order by array_positions(array['%s'],commit_id::text) ", tableId, partitionDesc, uuidListString, uuidListOrderString);
 
         try {
             conn = DBConnector.getConn();
@@ -201,7 +199,6 @@ public class DataCommitInfoDao {
             for (UUID uuid : commitIdList) {
                 pstmt.setString(index++, uuid.toString());
             }
-//            pstmt.setString(3, uuidListString);
             pstmt.setString(index, uuidListOrderString);
 
             rs = pstmt.executeQuery();
@@ -279,7 +276,7 @@ public class DataCommitInfoDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

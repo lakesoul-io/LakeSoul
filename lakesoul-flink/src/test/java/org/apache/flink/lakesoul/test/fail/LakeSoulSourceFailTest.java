@@ -294,9 +294,10 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         TableEnvironment batchTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
         LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
         for (String value : testData) {
+            System.out.println("batch insert value: " + value);
             batchTableEnv.executeSql(String.format("insert into test_source VALUES %s", value));
             try {
-                int tps = 6;
+                int tps = 4;
                 Thread.sleep(1000 / tps);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
