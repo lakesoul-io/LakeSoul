@@ -290,7 +290,6 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        PostgresContainerHelper.setContainerName("yugabyte");
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
@@ -316,7 +315,6 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        PostgresContainerHelper.setContainerName("yugabyte");
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);

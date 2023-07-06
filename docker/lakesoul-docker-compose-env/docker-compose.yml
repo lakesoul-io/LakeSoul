@@ -3,6 +3,7 @@ version: '3'
 services:
   lakesoul-meta-db:
     image: postgres:14.5
+    container_name: lakesoul-test-pg
     ports:
       - "5432:5432"
     restart: always
