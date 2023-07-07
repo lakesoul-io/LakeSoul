@@ -68,7 +68,9 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
                     + AbstractTestBase.getTempDirUri("/failtest") +
                     "')";
     static String createSourceSqlFormat = "create table if not exists test_source %s %s" +
-            "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d')";
+            "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d', " +
+            "'discoveryinterval'='1000'" +
+            ")";
     static String createSinkSqlFormat = "create table if not exists test_sink %s" +
             "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
     private static ArrayList<Integer> indexArr;
@@ -266,7 +268,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         testLakeSoulSource(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                testData, 120);
+                testData, 60);
 
         List<String> actualData = new ArrayList<>(ExactlyOnceRowDataPrintFunction.finalizeList);
         actualData.sort(Comparator.comparing(Function.identity()));

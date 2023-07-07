@@ -69,8 +69,7 @@ public class FlinkCommitterTest {
                     SOURCE_DATA.stream()
                             .map(x -> Tuple3.of(x, null, Long.MIN_VALUE).toString())
                             .sorted()
-                            .collect(joining("+")),
-                    END_OF_INPUT_STR);
+                            .collect(joining("+")));
 
     static final Queue<String> COMMIT_QUEUE = new ConcurrentLinkedQueue<>();
 

@@ -5,7 +5,7 @@
 package org.apache.flink.lakesoul.source;
 
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.shaded.curator4.com.google.common.collect.ImmutableMap;
+import org.apache.flink.shaded.curator5.com.google.common.collect.ImmutableMap;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.expressions.*;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;

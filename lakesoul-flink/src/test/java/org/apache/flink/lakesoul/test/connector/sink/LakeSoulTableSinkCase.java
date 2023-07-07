@@ -89,15 +89,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"type\" : \"Source: Values[1]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"Source: Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"contents\" : \"[1]:Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"type\" : \"Calc[2]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[2]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -106,9 +106,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Writer\",\n" +
+                        "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Writer\",\n" +
+                        "    \"contents\" : \"Sink: Writer\",\n" +
                         "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -117,13 +117,24 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Committer\",\n" +
+                        "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Committer\",\n" +
+                        "    \"contents\" : \"Sink: Committer\",\n" +
+                        "    \"parallelism\" : 3,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Global Committer\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"ship_strategy\" : \"GLOBAL\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  } ]\n" +
@@ -157,15 +168,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values(tuples=[[{ 0 }]])\",\n" +
+                        "    \"type\" : \"Source: Values[1]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"Source: Values(tuples=[[{ 0 }]])\",\n" +
+                        "    \"contents\" : \"[1]:Values(tuples=[[{ 0 }]])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"type\" : \"Calc[2]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[2]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -174,9 +185,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed\",\n" +
+                        "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed\",\n" +
+                        "    \"contents\" : \"Sink: Writer\",\n" +
                         "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -185,13 +196,24 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"contents\" : \"Sink: Committer\",\n" +
+                        "    \"parallelism\" : 3,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Global Committer\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"ship_strategy\" : \"GLOBAL\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  } ]\n" +
@@ -228,12 +250,10 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final String actual =
                 tEnv.explainSql(
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
-        System.out.println(replaceStreamNodeId(replaceStageId(actual)));
+        String plan = replaceStreamNodeId(replaceStageId(actual));
+        System.out.println(plan);
 
-        assertEquals(
-                replaceStreamNodeId(replaceStageId(actual)),
-                expected
-        );
+        assertEquals(expected, plan);
 
         tEnv.executeSql("drop database db1 cascade");
     }
