@@ -162,7 +162,6 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
             case "integer":
                 return String.valueOf(value);
             case "varchar":
-//                return String.format("'%d$", value);
                 return value % 2 == 0 ? String.format("'%d$", value) : "";
             case "timestamp_with_local_time_zone":
                 return DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss ").format(LocalDateTime.ofInstant(Instant.ofEpochMilli((long) value * 3600 * 24 * 1000), ZoneId.of("UTC"))).replace("  ", "T").replace(" ", "Z");

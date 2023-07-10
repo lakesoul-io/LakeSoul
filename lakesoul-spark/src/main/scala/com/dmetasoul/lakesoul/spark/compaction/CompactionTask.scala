@@ -16,7 +16,7 @@
 
 package com.dmetasoul.lakesoul.spark.compaction
 
-import com.dmetasoul.lakesoul.meta.DBConnector
+import com.dmetasoul.lakesoul.meta.{DBConnector, MetaUtils}
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import com.google.gson.{JsonObject, JsonParser}
@@ -86,7 +86,8 @@ object CompactionTask {
               val partitionDesc = jsonObj.get("table_partition_desc").getAsString
               val tableNamespace = jsonObj.get("table_namespace").getAsString
               if (tableNamespace.equals(database) || database.equals("")) {
-                val rsPartitionDesc = if (partitionDesc.equals("-5")) "" else partitionDesc.replace("=", "='") + "'"
+                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc.replace("=",
+                  "='") + "'"
                 threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
               }
             }

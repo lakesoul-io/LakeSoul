@@ -17,13 +17,11 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
-import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH
-
-import java.util
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
 
+import java.util
 import scala.collection.JavaConverters
 
 object MetaCommit extends Logging {
@@ -45,7 +43,7 @@ object MetaCommit extends Logging {
     tableInfo.setTableNamespace(table_info.namespace)
     tableInfo.setTablePath(table_info.table_path.toString)
     tableInfo.setTableSchema(table_info.table_schema)
-    tableInfo.setPartitions(table_info.range_column + LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + table_info.hash_column)
+    tableInfo.setPartitions(DBUtil.formatTableInfoPartitionsField(table_info.hash_column, table_info.range_column))
     val json = new JSONObject()
     table_info.configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", table_info.bucket_num.toString)

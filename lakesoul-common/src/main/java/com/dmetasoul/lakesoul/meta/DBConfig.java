@@ -32,4 +32,8 @@ public abstract class DBConfig {
     public static String LAKESOUL_HASH_PARTITION_SPLITTER = ",";
 
     public static String LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER = ",";
+
+    public static String LAKESOUL_NON_PARTITION_TABLE_PART_DESC = "-5";
+
+    public static String LAKESOUL_PARTITION_DESC_KV_DELIM = "=";
 }

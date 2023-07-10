@@ -43,8 +43,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER;
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 /**
@@ -118,8 +117,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 DataCommitInfo dataCommitInfo = new DataCommitInfo();
                 dataCommitInfo.setTableId(tableNameId.getTableId());
-                dataCommitInfo.setPartitionDesc(
-                        partition.isEmpty() ? "-5" : partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
+                dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
+                        partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
                 dataCommitInfo.setFileOps(dataFileOpList);
                 dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
