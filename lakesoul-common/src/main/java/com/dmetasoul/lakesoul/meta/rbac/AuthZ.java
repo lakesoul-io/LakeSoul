@@ -30,6 +30,5 @@ public @interface AuthZ {
     String object() default "object";
     String action() default "action";
 
-    Class<? extends AuthZFetcher> fetcher() default AuthZNullFetcher.class;
 }
 

@@ -21,8 +21,11 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZ;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZObject;
-import com.dmetasoul.lakesoul.meta.rbac.fetcher.NameSpaceCreateDropFetcher;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZAfter;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZBefore;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.TableReadFetcher;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.TableReadFetcher;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.TableWriteFetcher;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,7 +119,7 @@ public class DBManager {
     }
 
     @AuthZ(value = "db.tb_create_drop")
-    @AuthZObject(name = "namespace")
+    @AuthZBefore(name = "namespace")
     public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
 
@@ -159,6 +162,8 @@ public class DBManager {
         return tablePathIdDao.listAllPathByNamespace(table_namespace);
     }
 
+    @AuthZ(value = "db.tb_read")
+    @AuthZAfter(fetcher = TableReadFetcher.class)
     public TableInfo getTableInfoByPath(String tablePath) {
         return tableInfoDao.selectByTablePath(tablePath);
     }
@@ -248,7 +253,7 @@ public class DBManager {
     }
 
     @AuthZ(value = "db.tb_create_drop")
-    @AuthZObject(name = "tableNamespace")
+    @AuthZBefore(name = "tableNamespace")
     public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
         tablePathIdDao.delete(tablePath);
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
@@ -355,6 +360,8 @@ public class DBManager {
         return dataCommitInfoDao.batchInsert(listData);
     }
 
+    @AuthZ(value = "db.tb_write")
+    @AuthZBefore(fetcher = TableWriteFetcher.class)
     public boolean commitData(MetaInfo metaInfo, boolean changeSchema, String commitOp) {
         List<PartitionInfo> listPartitionInfo = metaInfo.getListPartition();
         TableInfo tableInfo = metaInfo.getTableInfo();
@@ -798,7 +805,7 @@ public class DBManager {
     }
 
     @AuthZ(value = "db.db_drop")
-    @AuthZObject(index = 0)
+    @AuthZBefore(index = 0)
     public void deleteNamespace(String namespace) {
         namespaceDao.deleteByNamespace(namespace);
     }
