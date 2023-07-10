@@ -477,7 +477,7 @@ public class DBManager {
     }
 
     public boolean appendConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                  Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int time) {
+                                  Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int retryTimes) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
@@ -511,16 +511,15 @@ public class DBManager {
             }
         }
 
-        boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
-        while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            conflictFlag = appendConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, time + 1);
+        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        if (!success && retryTimes < DBConfig.MAX_COMMIT_ATTEMPTS) {
+            return appendConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, retryTimes + 1);
         }
-
-        return conflictFlag;
+        return success;
     }
 
     public boolean compactionConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                      Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int time) {
+                                      Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
@@ -559,17 +558,16 @@ public class DBManager {
             newPartitionList.add(curPartitionInfo);
         }
 
-        boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
-        while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            conflictFlag =
-                    compactionConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, time + 1);
+        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
+            return compactionConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, retryTime + 1);
         }
 
-        return conflictFlag;
+        return success;
     }
 
     public boolean updateConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                  Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int time) {
+                                  Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
@@ -617,15 +615,15 @@ public class DBManager {
             newPartitionList.add(curPartitionInfo);
         }
 
-        boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
-        while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            conflictFlag = updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, time + 1);
+        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
+            return updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, retryTime + 1);
         }
-        return conflictFlag;
+        return success;
     }
 
     public boolean mergeConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                 Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int time) {
+                                 Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
@@ -660,12 +658,12 @@ public class DBManager {
             }
         }
 
-        boolean conflictFlag = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
-        while (!conflictFlag && time < DBConfig.MAX_COMMIT_ATTEMPTS) {
-            conflictFlag = mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, time + 1);
+        boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
+        if (!success && retryTime < DBConfig.MAX_COMMIT_ATTEMPTS) {
+            return mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, retryTime + 1);
         }
 
-        return conflictFlag;
+        return success;
     }
 
     private void updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo curPartitionInfo,
