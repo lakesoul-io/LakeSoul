@@ -278,5 +278,4 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
             }
         }
     }
-
 }

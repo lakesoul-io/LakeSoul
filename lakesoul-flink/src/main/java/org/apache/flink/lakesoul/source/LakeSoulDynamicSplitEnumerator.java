@@ -130,14 +130,12 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
                 DataOperation.getIncrementalPartitionDataInfo(tid, parDesc, this.startTime, this.nextStartTime,
                         "incremental");
         LOG.info("Found new data info {}", (Object) dfinfos);
-        int capacity = 100;
-        ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
-        int i = 0;
+        ArrayList<LakeSoulSplit> splits = new ArrayList<>(16);
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                 FlinkUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(String.valueOf(i), split.getValue(), 0, split.getKey()));
+                splits.add(new LakeSoulSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey()));
             }
         }
         this.startTime = this.nextStartTime;

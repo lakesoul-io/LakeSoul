@@ -9,7 +9,7 @@ import java.io.InputStreamReader;
 
 public class PostgresContainerHelper {
     private static final Logger LOG = LoggerFactory.getLogger(PostgresContainerHelper.class);
-    private static String CONTAINER_NAME = "yugabytedb";
+    private static String CONTAINER_NAME = "lakesoul-test-pg";
 
 
     public static void setContainerName(String containerName) {

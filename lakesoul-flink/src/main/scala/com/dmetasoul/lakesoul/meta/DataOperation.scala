@@ -19,10 +19,11 @@
 
 package com.dmetasoul.lakesoul.meta
 
+import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
 import org.apache.flink.core.fs.Path
 import org.apache.flink.shaded.guava30.com.google.common.collect.Lists
 
-import java.util.UUID
+import java.util.{Objects, UUID}
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
@@ -47,31 +48,19 @@ object BucketingUtils {
   }
 }
 
-case class DataFileInfo(
-                         range_partitions: String,
-                         path: String,
-                         file_op: String,
-                         size: Long,
-                         modification_time: Long = -1L,
-                         file_exist_cols: String = ""
-                       ) {
-  lazy val range_version: String = range_partitions + "-" + file_exist_cols
+case class DataFileInfo(range_partitions: String, path: String, file_op: String, size: Long,
+                        modification_time: Long = -1L, file_exist_cols: String = "") {
 
-  lazy val file_bucket_id: Int = BucketingUtils
-    .getBucketId(new Path(path).getName)
+  lazy val file_bucket_id: Int = BucketingUtils.getBucketId(new Path(path).getName)
     .getOrElse(sys.error(s"Invalid bucket file $path"))
 
-  //trans to files which need to delete
-  def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
+  override def hashCode(): Int = {
+    Objects.hash(range_partitions, path, file_op)
+  }
 }
 
-case class PartitionInfo(table_id: String,
-                         range_value: String,
-                         version: Int = -1,
-                         read_files: Array[UUID] = Array.empty[UUID],
-                         expression: String = "",
-                         commit_op: String = ""
-                        ) {
+case class PartitionInfo(table_id: String, range_value: String, version: Int = -1,
+                         read_files: Array[UUID] = Array.empty[UUID], expression: String = "", commit_op: String = "") {
   override def toString: String = {
     s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
   }
@@ -90,19 +79,47 @@ object DataOperation {
     val file_info_buf = new ArrayBuffer[DataFileInfo]()
 
     for (partition_info <- partition_info_arr) {
-
       file_info_buf ++= getSinglePartitionDataInfo(partition_info)
     }
 
     file_info_buf.toArray
   }
 
-  //get fies info in this partition that match the current read version
-  def getSinglePartitionDataInfo(partition_info: PartitionInfo): ArrayBuffer[DataFileInfo] = {
-    val file_arr_buf = new ArrayBuffer[DataFileInfo]()
-    val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
-
+  private def filterFiles(file_arr_buf: ArrayBuffer[DataFileInfo]): ArrayBuffer[DataFileInfo] = {
     val dupCheck = new mutable.HashSet[String]()
+    val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
+    if (file_arr_buf.length > 1) {
+      for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
+        if (file_arr_buf(i).file_op.equals("del")) {
+          dupCheck.add(file_arr_buf(i).path)
+        } else {
+          if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
+            file_res_arr_buf += file_arr_buf(i)
+          }
+        }
+      }
+      file_res_arr_buf.reverse
+    } else {
+      file_arr_buf.filter(_.file_op.equals("add"))
+    }
+  }
+
+  private def fillFiles(file_arr_buf: ArrayBuffer[DataFileInfo],
+                        dataCommitInfoList: Array[DataCommitInfo]): ArrayBuffer[DataFileInfo] = {
+    dataCommitInfoList.foreach(data_commit_info => {
+      val fileOps = data_commit_info.getFileOps.asScala.toArray
+      fileOps.foreach(file => {
+        file_arr_buf += DataFileInfo(data_commit_info.getPartitionDesc, file.getPath, file.getFileOp, file.getSize,
+          data_commit_info.getTimestamp, file.getFileExistCols)
+      })
+    })
+    filterFiles(file_arr_buf)
+  }
+
+  //get fies info in this partition that match the current read version
+  private def getSinglePartitionDataInfo(partition_info: PartitionInfo): ArrayBuffer[DataFileInfo] = {
+    val file_arr_buf = new ArrayBuffer[DataFileInfo]()
+
     val metaPartitionInfo = new entity.PartitionInfo()
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
@@ -111,80 +128,38 @@ object DataOperation {
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOps.asScala.toArray
       for (file <- fileOps) {
-        file_arr_buf += DataFileInfo(
-          partition_info.range_value,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          metaDataCommitInfo.getTimestamp(),
-          file.getFileExistCols()
-        )
+        file_arr_buf += DataFileInfo(partition_info.range_value, file.getPath, file.getFileOp, file.getSize,
+          metaDataCommitInfo.getTimestamp, file.getFileExistCols)
       }
     }
-    if (file_arr_buf.length > 1) {
-      for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
-        if (file_arr_buf(i).file_op.equals("del")) {
-          dupCheck.add(file_arr_buf(i).path)
-        } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
-            file_res_arr_buf += file_arr_buf(i)
-          }
-        }
-      }
-      file_res_arr_buf.reverse
-    } else {
-      file_arr_buf.filter(_.file_op.equals("add"))
-    }
+    filterFiles(file_arr_buf)
   }
 
-  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, version: Int): ArrayBuffer[DataFileInfo] = {
+  private def getSinglePartitionDataInfo(table_id: String, partition_desc: String,
+                                         version: Int): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
-    val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
-    val dupCheck = new mutable.HashSet[String]()
     val dataCommitInfoList = dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
-    dataCommitInfoList.foreach(data_commit_info => {
-      val fileOps = data_commit_info.getFileOps.asScala.toArray
-      fileOps.foreach(file => {
-        file_arr_buf += DataFileInfo(
-          data_commit_info.getPartitionDesc,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          data_commit_info.getTimestamp(),
-          file.getFileExistCols()
-        )
-      })
-    })
-
-    if (file_arr_buf.length > 1) {
-      for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
-        if (file_arr_buf(i).file_op.equals("del")) {
-          dupCheck.add(file_arr_buf(i).path)
-        } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
-            file_res_arr_buf += file_arr_buf(i)
-          }
-        }
-      }
-      file_res_arr_buf.reverse
-    } else {
-      file_arr_buf.filter(_.file_op.equals("add"))
-    }
+    fillFiles(file_arr_buf, dataCommitInfoList)
   }
 
-  def getIncrementalPartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): Array[DataFileInfo] = {
+  def getIncrementalPartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long,
+                                      endTimestamp: Long, readType: String): Array[DataFileInfo] = {
     val endTime = if (endTimestamp == 0) Long.MaxValue else endTimestamp
     getSinglePartitionDataInfo(table_id, partition_desc, startTimestamp, endTime, readType).toArray
   }
 
-  def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long, endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
-    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
+  private def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long,
+                                         endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
+    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType
+      .equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
       if (null == partition_desc || "".equals(partition_desc)) {
         val partitions = dbManager.getAllPartitionInfo(table_id)
         val files_all_partitions_buf = new ArrayBuffer[DataFileInfo]()
         partitions.forEach(partition => {
-          val preVersionTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, startTimestamp)
-          files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition.getPartitionDesc, preVersionTimestamp, endTimestamp)
+          val preVersionTimestamp = dbManager
+            .getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, startTimestamp)
+          files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition.getPartitionDesc,
+            preVersionTimestamp, endTimestamp)
         })
         files_all_partitions_buf
       } else {
@@ -197,22 +172,23 @@ object DataOperation {
     }
   }
 
-  def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String, startVersionTimestamp: Long, endVersionTimestamp: Long): ArrayBuffer[DataFileInfo] = {
-    var preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
-    var compactionUUIDs = new mutable.LinkedHashSet[UUID]()
-    var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
+  private def getSinglePartitionIncrementalDataInfos(table_id: String, partition_desc: String,
+                                                     startVersionTimestamp: Long,
+                                                     endVersionTimestamp: Long): ArrayBuffer[DataFileInfo] = {
+    val preVersionUUIDs = new mutable.LinkedHashSet[UUID]()
+    val compactionUUIDs = new mutable.LinkedHashSet[UUID]()
+    val incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
     var updated: Boolean = false
-    val dataCommitInfoList = dbManager.getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp).asScala.toArray
-    //    if (dataCommitInfoList.size < 2) {
-    //      println("It is the latest version")
-    //      return new ArrayBuffer[DataFileInfo]()
-    //    }
+    val dataCommitInfoList = dbManager
+      .getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp)
+      .asScala.toArray
     var count: Int = 0
     val loop = new Breaks()
     loop.breakable {
       for (dataItem <- dataCommitInfoList) {
         count += 1
-        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem.getTimestamp && count != 1) {
+        if ("UpdateCommit".equals(dataItem.getCommitOp) && startVersionTimestamp != dataItem
+          .getTimestamp && count != 1) {
           updated = true
           loop.break()
         }
@@ -222,8 +198,8 @@ object DataOperation {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
             val compactShotList = dataItem.getSnapshot.asScala.toArray
             compactionUUIDs += compactShotList(0)
-            if (compactShotList.size > 1) {
-              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.size)
+            if (compactShotList.length > 1) {
+              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
             incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
@@ -232,45 +208,14 @@ object DataOperation {
       }
     }
     if (updated) {
-      println("Incremental query could not have update just for compaction merge and append")
       new ArrayBuffer[DataFileInfo]()
     } else {
       val tmpUUIDs = incrementalAllUUIDs -- preVersionUUIDs
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
-      val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
-      val dupCheck = new mutable.HashSet[String]()
-      val dataCommitInfoList = dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
-      dataCommitInfoList.foreach(data_commit_info => {
-        val fileOps = data_commit_info.getFileOps.asScala.toArray
-        fileOps.foreach(file => {
-          file_arr_buf += DataFileInfo(
-            data_commit_info.getPartitionDesc,
-            file.getPath(),
-            file.getFileOp(),
-            file.getSize(),
-            data_commit_info.getTimestamp(),
-            file.getFileExistCols()
-          )
-        })
-      })
-
-      if (file_arr_buf.length > 1) {
-        for (i <- Range(file_arr_buf.size - 1, -1, -1)) {
-          if (file_arr_buf(i).file_op.equals("del")) {
-            dupCheck.add(file_arr_buf(i).path)
-          } else {
-            if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
-              file_res_arr_buf += file_arr_buf(i)
-            }
-          }
-        }
-        file_res_arr_buf.reverse
-      } else {
-        file_arr_buf.filter(_.file_op.equals("add"))
-      }
+      val dataCommitInfoList = dbManager
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
+      fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }
-
-
 }

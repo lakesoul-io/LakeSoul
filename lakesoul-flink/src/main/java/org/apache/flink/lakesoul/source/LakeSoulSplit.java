@@ -19,15 +19,15 @@ package org.apache.flink.lakesoul.source;
 
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
 
+import java.io.Serializable;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
  * Source split for LakeSoul's flink source
  */
-public class LakeSoulSplit implements SourceSplit {
+public class LakeSoulSplit implements SourceSplit, Serializable {
 
     private final String id;
     private long skipRecord = 0;
@@ -36,12 +36,14 @@ public class LakeSoulSplit implements SourceSplit {
     private int bucketId = -1;
 
     public LakeSoulSplit(String id, List<Path> files, long skipRecord) {
+        assert id != null;
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
     }
 
     public LakeSoulSplit(String id, List<Path> files, long skipRecord, int bucketId) {
+        assert id != null;
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
@@ -63,7 +65,8 @@ public class LakeSoulSplit implements SourceSplit {
 
     @Override
     public String toString() {
-        return "LakeSoulSplit[" +
+        return "LakeSoulSplit:" + id +
+                "[" +
                 files.stream().map(Object::toString)
                         .collect(Collectors.joining(", ")) +
                 "]";

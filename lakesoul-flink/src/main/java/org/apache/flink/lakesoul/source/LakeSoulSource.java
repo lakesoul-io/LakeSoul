@@ -116,19 +116,18 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         }
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
-        int i = 0;
         if (!FlinkUtil.isExistHashPartition(tif)) {
             for (DataFileInfo dfinfo : dfinfos) {
                 ArrayList<Path> tmp = new ArrayList<>();
                 tmp.add(new Path(dfinfo.path()));
-                splits.add(new LakeSoulSplit(String.valueOf(i), tmp, 0));
+                splits.add(new LakeSoulSplit(String.valueOf(dfinfo.hashCode()), tmp, 0));
             }
         } else {
             Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(), dfinfos);
             for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                    splits.add(new LakeSoulSplit(String.valueOf(i), split.getValue(), 0));
+                    splits.add(new LakeSoulSplit(String.valueOf(split.hashCode()), split.getValue(), 0));
                 }
             }
         }
