@@ -30,12 +30,17 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommitta
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.spark.sql.arrow.DataTypeCastUtils;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.arrow.DataTypeCastUtils;
+import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -117,21 +122,29 @@ public class LakeSoulSinkGlobalCommitter
             TableSchemaIdentity identity = entry.getKey().f0;
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            Boolean isCdc = Boolean.valueOf(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
-            String sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
+            boolean isCdc = Boolean.parseBoolean(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
+            StructType sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
                     identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) :
-                    Optional.empty()).json();
+                    Optional.empty());
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
                 String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
                         identity.partitionKeyList);
 
-                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, sparkSchema,
+                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, sparkSchema.json(),
                         identity.properties, partition);
-            } else if (!tableInfo.getTableSchema().equals(sparkSchema)) {
-                // TODO: 2023/6/15 order of schema changes should be considered
-                dbManager.updateTableSchema(tableInfo.getTableId(), sparkSchema);
+            } else {
+                StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+                try {
+                    if (DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, sparkSchema)) {
+                        dbManager.updateTableSchema(tableInfo.getTableId(), sparkSchema.json());
+                    }
+                } catch (IOException e) {
+                    // to something
+                    e.printStackTrace();
+                }
+
             }
 
             committer.commit(entry.getValue());
