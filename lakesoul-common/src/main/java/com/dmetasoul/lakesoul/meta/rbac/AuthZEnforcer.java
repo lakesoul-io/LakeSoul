@@ -77,7 +77,7 @@ public class AuthZEnforcer {
             model.loadModelFromText(modelConfValue);
 
             // init casbin jdbc adapter
-            JDBCAdapter a = new JDBCAdapter(ds);
+            JDBCAdapter a = new JDBCAdapter(ds, true, "casbin_rule", false);
 
             enforcer = new SyncedEnforcer(model, a);
             LOG.info("Casbin enforcer successfully initialized");
