@@ -36,6 +36,7 @@ public class PartitionInfoDao {
                     "commit_op, snapshot, expression) values (?, ?, ?, ? ,?, ?)");
             insertSinglePartitionInfo(conn, pstmt, partitionInfo);
         } catch (SQLException e) {
+            // conflict will be handled in DBManager
             flag = false;
             e.printStackTrace();
         } finally {
@@ -69,10 +70,8 @@ public class PartitionInfoDao {
                     conn.rollback();
                 }
             } catch (SQLException ex) {
-                // TODO: 2023/5/25 unexpected rollback error handling
                 ex.printStackTrace();
             }
-            // TODO: 2023/5/25 unexpected e.printStackTrace
             e.printStackTrace();
         } finally {
             DBConnector.closeConn(pstmt, conn);
@@ -103,7 +102,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -119,7 +118,7 @@ public class PartitionInfoDao {
             pstmt.setString(1, tableId);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -137,7 +136,7 @@ public class PartitionInfoDao {
             pstmt.setLong(3, utcMills);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -147,22 +146,29 @@ public class PartitionInfoDao {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String partitionString = DBUtil.changePartitionDescListToString(partitionDescList);
+        String descPlaceholders = "?";
+        if (!partitionDescList.isEmpty()) {
+            descPlaceholders = String.join(",", Collections.nCopies(partitionDescList.size(), "?"));
+        }
         String sql = String.format(
                 "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
                         "where table_id = ? and partition_desc in (%s) " +
                         "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
-                partitionDescList.isEmpty() ? "''" : String.join(",", Collections.nCopies(partitionDescList.size(), "?")));
+                descPlaceholders);
         List<PartitionInfo> rsList = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             pstmt.setString(1, tableId);
             int index = 2;
-            for (String partition : partitionDescList) {
-                pstmt.setString(index++, partition);
+            if (partitionDescList.isEmpty()) {
+                pstmt.setString(index, "''");
+            } else {
+                for (String partition : partitionDescList) {
+                    pstmt.setString(index++, partition);
+                }
             }
             rs = pstmt.executeQuery();
             while (rs.next()) {
@@ -179,7 +185,7 @@ public class PartitionInfoDao {
                 rsList.add(partitionInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -220,7 +226,7 @@ public class PartitionInfoDao {
                 timestamp = rs.getLong("timestamp");
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -250,7 +256,7 @@ public class PartitionInfoDao {
                 }
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -280,7 +286,7 @@ public class PartitionInfoDao {
                 }
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -314,7 +320,7 @@ public class PartitionInfoDao {
                 rsList.add(partitionInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -351,7 +357,7 @@ public class PartitionInfoDao {
                 rsList.add(partitionInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -405,7 +411,7 @@ public class PartitionInfoDao {
                 rsList.add(rs.getString(1));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -431,7 +437,7 @@ public class PartitionInfoDao {
                 commitOps.add(rs.getString("commit_op"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -464,7 +470,7 @@ public class PartitionInfoDao {
                 partitions.add(partitionInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -494,7 +500,7 @@ public class PartitionInfoDao {
                 partitionInfo.setExpression(rs.getString("expression"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -511,7 +517,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

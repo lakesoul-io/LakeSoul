@@ -31,10 +31,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class NamespaceDao {
-    public boolean insert(Namespace namespace) {
+    public void insert(Namespace namespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into namespace(namespace, properties, comment) " +
@@ -44,12 +43,10 @@ public class NamespaceDao {
             pstmt.setString(3, namespace.getComment());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public Namespace findByNamespace(String name) {
@@ -69,7 +66,7 @@ public class NamespaceDao {
                 namespace.setComment(rs.getString("comment"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -106,7 +103,7 @@ public class NamespaceDao {
                 list.add(namespace);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -126,7 +123,7 @@ public class NamespaceDao {
             pstmt = conn.prepareStatement(sb.toString());
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

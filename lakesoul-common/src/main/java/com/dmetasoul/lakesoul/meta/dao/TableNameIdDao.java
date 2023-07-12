@@ -48,7 +48,7 @@ public class TableNameIdDao {
                 tableNameId.setTableNamespace(rs.getString("table_namespace"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -71,17 +71,16 @@ public class TableNameIdDao {
                 list.add(tableName);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public boolean insert(TableNameId tableNameId) {
+    public void insert(TableNameId tableNameId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
@@ -91,12 +90,10 @@ public class TableNameIdDao {
             pstmt.setString(3, tableNameId.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public void delete(String tableName, String tableNamespace) {
@@ -146,7 +143,7 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

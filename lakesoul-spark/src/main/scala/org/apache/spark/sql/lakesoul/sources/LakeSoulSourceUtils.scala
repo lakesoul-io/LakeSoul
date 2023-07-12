@@ -42,7 +42,6 @@ object LakeSoulSourceUtils {
   }
 
   def isLakeSoulTableExists(path: String): Boolean = {
-    //val table_name = MetaUtils.modifyTableString(path)
     val table_name = path
     MetaVersion.isTableExists(table_name)
   }
