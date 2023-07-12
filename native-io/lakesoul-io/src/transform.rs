@@ -178,12 +178,6 @@ pub fn transform_array(
         target_datatype => {
             if target_datatype != *array.data_type() {
                 cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).unwrap()
-                // panic!(
-                //     "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
-                //     name,
-                //     target_datatype,
-                //     array.data_type()
-                // )
             } else {
                 array.clone()
             }

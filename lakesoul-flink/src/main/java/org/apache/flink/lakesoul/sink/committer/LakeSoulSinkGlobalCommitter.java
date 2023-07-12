@@ -29,9 +29,8 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.spark.sql.arrow.DataTypeCastUtils;
-import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.arrow.DataTypeCastUtils;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
@@ -40,7 +39,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -61,10 +59,13 @@ public class LakeSoulSinkGlobalCommitter
     private final DBManager dbManager;
     private final Configuration conf;
 
+    private final boolean logicallyDropColumn;
+
     public LakeSoulSinkGlobalCommitter(Configuration conf) {
         committer = LakeSoulSinkCommitter.INSTANCE;
         dbManager = new DBManager();
         this.conf = conf;
+        logicallyDropColumn = conf.getBoolean(LOGICALLY_DROP_COLUM);
     }
 
 
@@ -92,7 +93,7 @@ public class LakeSoulSinkGlobalCommitter
      * Compute an aggregated committable from a list of committables.
      *
      * @param committables A list of {@link LakeSoulMultiTableSinkCommittable} to be combined into a
-     * {@link LakeSoulMultiTableSinkGlobalCommittable}.
+     *                     {@link LakeSoulMultiTableSinkGlobalCommittable}.
      * @return an aggregated committable
      * @throws IOException if fail to combine the given committables.
      */
@@ -118,7 +119,7 @@ public class LakeSoulSinkGlobalCommitter
 
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
                 globalCommittable.getGroupedCommitables()
-                .entrySet()) {
+                        .entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
@@ -135,12 +136,24 @@ public class LakeSoulSinkGlobalCommitter
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
                         identity.properties, partition);
             } else {
+                DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+                if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size() || !new HashSet<>(partitionKeys.primaryKeys).containsAll(identity.primaryKeys)) {
+                    throw new IOException("Change of primary key column of table " + tableName + " is forbidden");
+                }
+                if (partitionKeys.rangeKeys.size() != identity.partitionKeyList.size() || !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
+                    throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
+                }
                 StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
-                String equalOrCanCast = DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, msgSchema);
-                LOG.warn(equalOrCanCast);
+                String equalOrCanCast = DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, msgSchema, identity.partitionKeyList, identity.primaryKeys);
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}", origSchema.json(), msgSchema.json());
-                    dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                    if (logicallyDropColumn) {
+                        List<String> droppedColumn = DataTypeCastUtils.getDroppedColumn(origSchema, msgSchema);
+                        LOG.warn("Dropping Column {} Logically", droppedColumn.toString());
+                        dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
+                    } else {
+                        dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                    }
                 } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
                     throw new IOException(equalOrCanCast);
                 }

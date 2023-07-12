@@ -249,6 +249,18 @@ public class DBManager {
         tableInfoDao.deleteByIdAndPath(tableId, tablePath);
     }
 
+
+    public void logicallyDropColumn(String tableId, List<String> droppedColumn) {
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        JSONObject propertiesJson = tableInfo.getProperties();
+        String droppedColumnProperty = (String) propertiesJson.get(DBConfig.TableInfoProperty.DROPPED_COLUMN);
+        droppedColumnProperty = droppedColumnProperty == null ? "" : droppedColumnProperty;
+        HashSet<String> set = new HashSet<>(Arrays.asList(droppedColumnProperty.split(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER)));
+        set.addAll(droppedColumn);
+        propertiesJson.put(DBConfig.TableInfoProperty.DROPPED_COLUMN, String.join(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER, droppedColumn));
+        updateTableProperties(tableId, propertiesJson);
+    }
+
     public void deletePartitionInfoByTableId(String tableId) {
         partitionInfoDao.deleteByTableId(tableId);
     }
@@ -824,4 +836,5 @@ public class DBManager {
         tableNameIdDao.clean();
         partitionInfoDao.clean();
     }
+
 }
