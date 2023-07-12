@@ -20,7 +20,8 @@ use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
 use arrow::record_batch::RecordBatch;
 use arrow_array::{new_null_array, types::*, ArrayRef, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, BooleanArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING};
+use arrow::compute::kernels::cast::cast_with_options;
+use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING, ARROW_CAST_OPTIONS};
 
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
@@ -176,14 +177,16 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                panic!(
-                    "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
-                    name,
-                    target_datatype,
-                    array.data_type()
-                )
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).unwrap()
+                // panic!(
+                //     "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
+                //     name,
+                //     target_datatype,
+                //     array.data_type()
+                // )
+            } else {
+                array.clone()
             }
-            array.clone()
         }
     }
 }

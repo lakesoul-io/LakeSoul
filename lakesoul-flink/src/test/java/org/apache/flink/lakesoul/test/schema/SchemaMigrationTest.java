@@ -3,7 +3,6 @@ package org.apache.flink.lakesoul.test.schema;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
-import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.catalog.CatalogBaseTable;
@@ -11,12 +10,8 @@ import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
-import org.apache.flink.table.types.logical.BigIntType;
-import org.apache.flink.table.types.logical.IntType;
-import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.Row;
-import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -53,28 +48,110 @@ public class SchemaMigrationTest extends AbstractTestBase {
     }
 
     @Test
-    public void testSchemeMigration() throws IOException, ExecutionException, InterruptedException {
+    public void testFromIntToBigInt() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
-        testCatalog.cleanForTest();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
-        RowType.RowField field = new RowType.RowField("a", new IntType());
-        testCatalog.setCurrentTable(CatalogTable.of(Schema.newBuilder().column(field.getName(), field.getType().asSerializableString()).build(), "", Collections.emptyList(), options));
-        testEnv.executeSql("insert into test_sink values (1), (2)").await();
+        RowType.RowField beforeField = new RowType.RowField("a", new IntType());
+        RowType.RowField afterField = new RowType.RowField("a", new BigIntType());
+
+        testSchemaMigration(
+                CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                "insert into test_sink values (1), (2)",
+                "insert into test_sink values (300000000000), (4000000000000)",
+                "[+I[a, INT, true, null, null, null]]",
+                "[+I[a, BIGINT, true, null, null, null]]",
+                "[+I[1], +I[2]]",
+                "[+I[1], +I[2], +I[300000000000], +I[4000000000000]]"
+        );
+    }
+
+    @Test(expected = ExecutionException.class)
+    public void testFromBigIntToInt() throws IOException, ExecutionException, InterruptedException {
+        Map<String, String> options = new HashMap<>();
+        options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        RowType.RowField beforeField = new RowType.RowField("a", new BigIntType());
+        RowType.RowField afterField = new RowType.RowField("a", new IntType());
+
+        testSchemaMigration(
+                CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                "insert into test_sink values (10000000000), (20000000000)",
+                "insert into test_sink values (3), (4)",
+                "[+I[a, BIGINT, true, null, null, null]]",
+                "",
+                "[+I[10000000000], +I[20000000000]]",
+                ""
+        );
+    }
+
+    @Test
+    public void testFromFloatToDouble() throws IOException, ExecutionException, InterruptedException {
+        Map<String, String> options = new HashMap<>();
+        options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
+        RowType.RowField afterField = new RowType.RowField("a", new DoubleType());
+
+        testSchemaMigration(
+                CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                "insert into test_sink values (1.1111111111), (2.2222222222)",
+                "insert into test_sink values (3.33333333333), (4.44444444444)",
+                "[+I[a, FLOAT, true, null, null, null]]",
+                "[+I[a, DOUBLE, true, null, null, null]]",
+                "[+I[1.1111112], +I[2.2222223]]",
+                "[+I[1.1111111640930176], +I[2.222222328186035], +I[3.33333333333], +I[4.44444444444]]"
+        );
+    }
+
+    @Test(expected = ExecutionException.class)
+    public void testFromDoubleToFloat() throws IOException, ExecutionException, InterruptedException {
+        Map<String, String> options = new HashMap<>();
+        options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        RowType.RowField beforeField = new RowType.RowField("a", new DoubleType());
+        RowType.RowField afterField = new RowType.RowField("a", new FloatType());
+
+        testSchemaMigration(
+                CatalogTable.of(Schema.newBuilder().column(beforeField.getName(), beforeField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                CatalogTable.of(Schema.newBuilder().column(afterField.getName(), afterField.getType().asSerializableString()).build(), "", Collections.emptyList(), options),
+                "insert into test_sink values (1.11111111111), (2.22222222222)",
+                "insert into test_sink values (3.3333333333), (4.44444444444)",
+                "[+I[a, DOUBLE, true, null, null, null]]",
+                "",
+                "[+I[1.11111111111], +I[2.22222222222]]",
+                ""
+        );
+    }
+
+    void testSchemaMigration(CatalogTable beforeTable,
+                             CatalogTable afterTable,
+                             String beforeInsertSql,
+                             String afterInsertSql,
+                             String beforeExpectedDescription,
+                             String afterExpectedDescription,
+                             String beforeExpectedValue,
+                             String afterExpectedValue) throws IOException, ExecutionException, InterruptedException {
+        testCatalog.cleanForTest();
+        testCatalog.setCurrentTable(beforeTable);
+        testEnv.executeSql(beforeInsertSql).await();
         List<Row> desc_test_sink_before = CollectionUtil.iteratorToList(validateEnv.executeSql("desc test_sink").collect());
-        assertThat(desc_test_sink_before.toString()).isEqualTo("[+I[a, INT, true, null, null, null]]");
+        if (beforeExpectedDescription != null)
+            assertThat(desc_test_sink_before.toString()).isEqualTo(beforeExpectedDescription);
         List<Row> select_test_sink_before = CollectionUtil.iteratorToList(validateEnv.executeSql("select * from test_sink").collect());
         select_test_sink_before.sort(Comparator.comparing(Row::toString));
-        assertThat(select_test_sink_before.toString()).isEqualTo("[+I[1], +I[2]]");
+        if (beforeExpectedValue != null)
+            assertThat(select_test_sink_before.toString()).isEqualTo(beforeExpectedValue);
         validateEnv.executeSql("select * from test_sink").print();
 
-        field = new RowType.RowField("a", new BigIntType());
-        testCatalog.setCurrentTable(CatalogTable.of(Schema.newBuilder().column(field.getName(), field.getType().asSerializableString()).build(), "", Collections.emptyList(), options));
-        testEnv.executeSql("insert into test_sink values (3), (4)").await();
+        testCatalog.setCurrentTable(afterTable);
+        testEnv.executeSql(afterInsertSql).await();
         List<Row> desc_test_sink_after = CollectionUtil.iteratorToList(validateEnv.executeSql("desc test_sink").collect());
-        assertThat(desc_test_sink_after.toString()).isEqualTo("[+I[a, BIGINT, true, null, null, null]]");
+        if (afterExpectedDescription != null)
+            assertThat(desc_test_sink_after.toString()).isEqualTo(afterExpectedDescription);
         List<Row> select_test_sink_after = CollectionUtil.iteratorToList(validateEnv.executeSql("select * from test_sink").collect());
         select_test_sink_before.sort(Comparator.comparing(Row::toString));
-        assertThat(select_test_sink_after.toString()).isEqualTo("[+I[1], +I[2], +I[3], +I[4]]");
+        if (afterExpectedValue != null)
+            assertThat(select_test_sink_after.toString()).isEqualTo(afterExpectedValue);
         validateEnv.executeSql("select * from test_sink").print();
     }
 
@@ -88,6 +165,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
 
         @Override
         public CatalogBaseTable getTable(ObjectPath tablePath) throws TableNotExistException, CatalogException {
+            System.out.println(currentTable.getUnresolvedSchema());
             return currentTable;
         }
     }

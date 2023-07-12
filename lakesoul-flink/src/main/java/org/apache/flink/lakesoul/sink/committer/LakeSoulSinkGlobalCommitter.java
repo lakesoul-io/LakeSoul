@@ -123,7 +123,7 @@ public class LakeSoulSinkGlobalCommitter
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             boolean isCdc = Boolean.parseBoolean(identity.properties.getOrDefault(USE_CDC.key(), "false").toString());
-            StructType sparkSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
+            StructType msgSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
                     identity.properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString()) :
                     Optional.empty());
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
@@ -132,19 +132,17 @@ public class LakeSoulSinkGlobalCommitter
                 String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
                         identity.partitionKeyList);
 
-                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, sparkSchema.json(),
+                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
                         identity.properties, partition);
             } else {
                 StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
-                try {
-                    if (DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, sparkSchema)) {
-                        dbManager.updateTableSchema(tableInfo.getTableId(), sparkSchema.json());
-                    }
-                } catch (IOException e) {
-                    // to something
-                    e.printStackTrace();
+                String equalOrCanCast = DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, msgSchema);
+                if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
+                    LOG.warn("Schema change found, origin schema = {}, changed schema = {}", origSchema.json(), msgSchema.json());
+                    dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
+                    throw new IOException(equalOrCanCast);
                 }
-
             }
 
             committer.commit(entry.getValue());
