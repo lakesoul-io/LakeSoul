@@ -137,6 +137,7 @@ public class LakeSoulSinkGlobalCommitter
             } else {
                 StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
                 String equalOrCanCast = DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema, msgSchema);
+                LOG.warn(equalOrCanCast);
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}", origSchema.json(), msgSchema.json());
                     dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());

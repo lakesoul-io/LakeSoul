@@ -104,6 +104,64 @@ public class SchemaMigrationTest extends AbstractTestBase {
         );
     }
 
+    @Test
+    public void testAddColumn() throws IOException, ExecutionException, InterruptedException {
+        Map<String, String> options = new HashMap<>();
+        options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
+        RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());
+        RowType.RowField afterFieldB = new RowType.RowField("b", new IntType());
+
+        testSchemaMigration(
+                CatalogTable.of(
+                        Schema.newBuilder()
+                                .column(beforeField.getName(), beforeField.getType().asSerializableString())
+                                .build(),
+                        "", Collections.emptyList(), options),
+                CatalogTable.of(
+                        Schema.newBuilder()
+                                .column(afterFieldA.getName(), afterFieldA.getType().asSerializableString())
+                                .column(afterFieldB.getName(), afterFieldB.getType().asSerializableString())
+                                .build(),
+                        "", Collections.emptyList(), options),
+                "insert into test_sink values (1.1111111111), (2.2222222222)",
+                "insert into test_sink values (3.33333333333, 33), (4.4444444444, 44)",
+                "[+I[a, FLOAT, true, null, null, null]]",
+                "[+I[a, FLOAT, true, null, null, null], +I[b, INT, true, null, null, null]]",
+                "[+I[1.1111112], +I[2.2222223]]",
+                "[+I[1.1111112, null], +I[2.2222223, null], +I[3.3333333, 33], +I[4.4444447, 44]]"
+        );
+    }
+
+    @Test
+    public void testDropColumn() throws IOException, ExecutionException, InterruptedException {
+        Map<String, String> options = new HashMap<>();
+        options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
+        RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType());
+        RowType.RowField afterField = new RowType.RowField("a", new FloatType());
+
+        testSchemaMigration(
+                CatalogTable.of(
+                        Schema.newBuilder()
+                                .column(beforeFieldA.getName(), beforeFieldA.getType().asSerializableString())
+                                .column(beforeFieldB.getName(), beforeFieldB.getType().asSerializableString())
+                                .build(),
+                        "", Collections.emptyList(), options),
+                CatalogTable.of(
+                        Schema.newBuilder()
+                                .column(afterField.getName(), afterField.getType().asSerializableString())
+                                .build(),
+                        "", Collections.emptyList(), options),
+                "insert into test_sink values (1.1111111111, 1), (2.2222222222, 2)",
+                "insert into test_sink values (3.33333333333), (4.4444444444)",
+                "[+I[a, FLOAT, true, null, null, null], +I[b, INT, true, null, null, null]]",
+                "[+I[a, FLOAT, true, null, null, null]]",
+                "[+I[1.1111112, 1], +I[2.2222223, 2]]",
+                "[+I[1.1111112], +I[2.2222223], +I[3.3333333], +I[4.4444447]]"
+        );
+    }
+
     @Test(expected = ExecutionException.class)
     public void testFromDoubleToFloat() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();

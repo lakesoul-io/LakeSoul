@@ -18,16 +18,18 @@ object DataTypeCastUtils {
     * @return "equal" if two StructType is equal, "can_cast" if two StructType is not equal but Struct source can be cast to target, other if Struct source can not be cast to target
     */
   def checkSchemaEqualOrCanCast(source: StructType, target: StructType): String = {
-    var isEqual = source.length == target.length
+    var isEqual = source.fields.length == target.fields.length
     for (targetField <- target.fields) {
       val fieldIndex = source.getFieldIndex(targetField.name)
       if (fieldIndex.isDefined) {
         val sourceField = source.fields(fieldIndex.get)
         val eqaulOrCanCast = checkDataTypeEqualOrCanCast(sourceField.dataType, targetField.dataType)
-        if (eqaulOrCanCast != CAN_CAST | eqaulOrCanCast != IS_EQUAL) return eqaulOrCanCast
+        if (eqaulOrCanCast != CAN_CAST && eqaulOrCanCast != IS_EQUAL) return eqaulOrCanCast
         isEqual &= eqaulOrCanCast == IS_EQUAL
       }
     }
+    println(source)
+    println(target)
     if (isEqual) IS_EQUAL else CAN_CAST
   }
 
