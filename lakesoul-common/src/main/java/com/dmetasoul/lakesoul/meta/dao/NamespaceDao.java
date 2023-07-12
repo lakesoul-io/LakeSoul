@@ -36,11 +36,12 @@ public class NamespaceDao {
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into namespace(namespace, properties, comment) " +
-                    "values (?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into namespace(namespace, properties, comment, domain) " +
+                    "values (?, ?, ?, ?)");
             pstmt.setString(1, namespace.getNamespace());
             pstmt.setString(2, DBUtil.jsonToString(namespace.getProperties()));
             pstmt.setString(3, namespace.getComment());
+            pstmt.setString(4, namespace.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -64,6 +65,7 @@ public class NamespaceDao {
                 namespace.setNamespace(rs.getString("namespace"));
                 namespace.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
                 namespace.setComment(rs.getString("comment"));
+                namespace.setDomain(rs.getString("domain"));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

@@ -38,7 +38,7 @@ public class TableInfoDao {
 
     public TableInfo selectByTableNameAndNameSpace(String tableName, String namespace) {
         String sql = String.format("select * from table_info where table_name = '%s'" +
-                                   " and table_namespace='%s'", tableName, namespace);
+                " and table_namespace='%s'", tableName, namespace);
         return getTableInfo(sql);
     }
 
@@ -48,12 +48,14 @@ public class TableInfoDao {
     }
 
     public TableInfo selectByIdAndTablePath(String tableId, String tablePath) {
-        String sql = String.format("select * from table_info where table_id = '%s' and table_path = '%s' ", tableId, tablePath);
+        String sql = String.format("select * from table_info where table_id = '%s' and table_path = '%s' ", tableId,
+                tablePath);
         return getTableInfo(sql);
     }
 
     public TableInfo selectByIdAndTableName(String tableId, String tableName) {
-        String sql = String.format("select * from table_info where table_id = '%s' and table_name = '%s' ", tableId, tableName);
+        String sql = String.format("select * from table_info where table_id = '%s' and table_name = '%s' ", tableId,
+                tableName);
         return getTableInfo(sql);
     }
 
@@ -75,6 +77,7 @@ public class TableInfoDao {
                 tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
                 tableInfo.setPartitions(rs.getString("partitions"));
                 tableInfo.setTableNamespace(rs.getString("table_namespace"));
+                tableInfo.setDomain(rs.getString("domain"));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -89,8 +92,9 @@ public class TableInfoDao {
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions, table_namespace) " +
-                    "values (?, ?, ?, ?, ?, ?, ?)");
+            pstmt = conn.prepareStatement(
+                    "insert into table_info(table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain) " +
+                            "values (?, ?, ?, ?, ?, ?, ?, ?)");
             pstmt.setString(1, tableInfo.getTableId());
             pstmt.setString(2, tableInfo.getTableName());
             pstmt.setString(3, tableInfo.getTablePath());
@@ -98,6 +102,7 @@ public class TableInfoDao {
             pstmt.setString(5, DBUtil.jsonToString(tableInfo.getProperties()));
             pstmt.setString(6, tableInfo.getPartitions());
             pstmt.setString(7, tableInfo.getTableNamespace());
+            pstmt.setString(8, tableInfo.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -124,7 +129,8 @@ public class TableInfoDao {
     public void deleteByIdAndPath(String tableId, String tablePath) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        String sql = String.format("delete from table_info where table_id = '%s' and table_path = '%s'", tableId, tablePath);
+        String sql =
+                String.format("delete from table_info where table_id = '%s' and table_path = '%s'", tableId, tablePath);
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
@@ -174,7 +180,7 @@ public class TableInfoDao {
         if (StringUtils.isNotBlank(tableSchema)) {
             sb.append(String.format("table_schema = '%s', ", tableSchema));
         }
-        sb = new StringBuilder(sb.substring(0, sb.length()-2));
+        sb = new StringBuilder(sb.substring(0, sb.length() - 2));
         sb.append(String.format(" where table_id = '%s'", tableId));
         try {
             conn = DBConnector.getConn();

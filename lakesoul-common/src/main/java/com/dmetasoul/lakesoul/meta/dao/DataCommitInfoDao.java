@@ -40,8 +40,8 @@ public class DataCommitInfoDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
                     "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
-                            "timestamp, committed)" +
-                            " values (?, ?, ?, ?, ?, ?, ?)");
+                            "timestamp, committed, domain)" +
+                            " values (?, ?, ?, ?, ?, ?, ?, ?)");
             dataCommitInsert(pstmt, dataCommitInfo);
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -223,6 +223,7 @@ public class DataCommitInfoDao {
         dataCommitInfo.setCommitOp(rs.getString("commit_op"));
         dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
         dataCommitInfo.setCommitted(rs.getBoolean("committed"));
+        dataCommitInfo.setDomain(rs.getString("domain"));
     }
 
     public boolean batchInsert(List<DataCommitInfo> listData) {
@@ -233,8 +234,8 @@ public class DataCommitInfoDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
                     "insert into data_commit_info (table_id, partition_desc, commit_id, file_ops, commit_op, " +
-                            "timestamp, committed)" +
-                            " values (?, ?, ?, ?, ?, ?, ?)");
+                            "timestamp, committed, domain)" +
+                            " values (?, ?, ?, ?, ?, ?, ?, ?)");
             conn.setAutoCommit(false);
             for (DataCommitInfo dataCommitInfo : listData) {
                 dataCommitInsert(pstmt, dataCommitInfo);
@@ -263,6 +264,7 @@ public class DataCommitInfoDao {
         pstmt.setString(5, dataCommitInfo.getCommitOp());
         pstmt.setLong(6, dataCommitInfo.getTimestamp());
         pstmt.setBoolean(7, dataCommitInfo.isCommitted());
+        pstmt.setString(8, dataCommitInfo.getDomain());
         pstmt.execute();
     }
 

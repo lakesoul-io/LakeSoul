@@ -18,6 +18,7 @@
 package com.dmetasoul.lakesoul.meta.entity;
 
 import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 
 /**
  * Meta Information for LakeSoul Table
@@ -58,6 +59,12 @@ public class TableInfo {
      * Partition columns of table. Format of partitions is 'comma_separated_range_column;hash_column'
      */
     private String partitions;
+
+    /**
+     * Domain this entry belongs to.
+     * Only when rbac feature enabled will have contents different to 'public'
+     */
+    private String domain = DBUtil.getDomain();
 
     public String getTableId() {
         return tableId;
@@ -105,6 +112,9 @@ public class TableInfo {
 
     public void setProperties(JSONObject properties) {
         this.properties = properties;
+        if (!properties.containsKey("domain")) {
+            properties.put("domain", domain);
+        }
     }
 
     public String getPartitions() {
@@ -126,5 +136,13 @@ public class TableInfo {
                 ", properties=" + properties +
                 ", partitions='" + partitions + '\'' +
                 '}';
+    }
+
+    public String getDomain() {
+        return domain;
+    }
+
+    public void setDomain(String domain) {
+        this.domain = domain;
     }
 }
