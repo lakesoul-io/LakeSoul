@@ -109,7 +109,7 @@ object DataOperation {
     dataCommitInfoList.foreach(data_commit_info => {
       val fileOps = data_commit_info.getFileOpsList.asScala.toArray
       fileOps.foreach(file => {
-        file_arr_buf += DataFileInfo(data_commit_info.getPartitionDesc, file.getPath, file.getFileOp, file.getSize,
+        file_arr_buf += DataFileInfo(data_commit_info.getPartitionDesc, file.getPath, file.getFileOp.name, file.getSize,
           data_commit_info.getTimestamp, file.getFileExistCols)
       })
     })
@@ -128,7 +128,7 @@ object DataOperation {
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
       for (file <- fileOps) {
-        file_arr_buf += DataFileInfo(partition_info.range_value, file.getPath, file.getFileOp, file.getSize,
+        file_arr_buf += DataFileInfo(partition_info.range_value, file.getPath, file.getFileOp.name, file.getSize,
           metaDataCommitInfo.getTimestamp, file.getFileExistCols)
       }
     }

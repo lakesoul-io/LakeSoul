@@ -17,6 +17,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.entity.FileOp
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
@@ -112,7 +113,7 @@ object MetaCommit extends Logging {
       for (file_info <- dataCommitInfo.file_ops) {
         val metaDataFileInfo = entity.DataFileOp.newBuilder
         metaDataFileInfo.setPath(file_info.path)
-        metaDataFileInfo.setFileOp(file_info.file_op)
+        metaDataFileInfo.setFileOp(FileOp.valueOf(file_info.file_op))
         metaDataFileInfo.setSize(file_info.size)
         metaDataFileInfo.setFileExistCols(file_info.file_exist_cols)
         fileOps.add(metaDataFileInfo.build)

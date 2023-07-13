@@ -16,7 +16,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.meta.entity.DataFileOp
+import com.dmetasoul.lakesoul.meta.entity.{DataFileOp, FileOp}
 import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
@@ -59,11 +59,11 @@ object DataOperation extends Logging {
       for (file <- fileOps) {
         file_arr_buf += DataFileInfo(
           partition_info.range_value,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          metaDataCommitInfo.getTimestamp(),
-          file.getFileExistCols()
+          file.getPath,
+          file.getFileOp.name,
+          file.getSize,
+          metaDataCommitInfo.getTimestamp,
+          file.getFileExistCols
         )
       }
     }
@@ -72,7 +72,7 @@ object DataOperation extends Logging {
         if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+          if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
@@ -93,11 +93,11 @@ object DataOperation extends Logging {
       fileOps.foreach(file => {
         file_arr_buf += DataFileInfo(
           data_commit_info.getPartitionDesc,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          data_commit_info.getTimestamp(),
-          file.getFileExistCols()
+          file.getPath,
+          file.getFileOp.name,
+          file.getSize,
+          data_commit_info.getTimestamp,
+          file.getFileExistCols
         )
       })
     })
@@ -107,7 +107,7 @@ object DataOperation extends Logging {
         if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+          if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
@@ -187,11 +187,11 @@ object DataOperation extends Logging {
         fileOps.foreach(file => {
           file_arr_buf += DataFileInfo(
             data_commit_info.getPartitionDesc,
-            file.getPath(),
-            file.getFileOp(),
-            file.getSize(),
-            data_commit_info.getTimestamp(),
-            file.getFileExistCols()
+            file.getPath,
+            file.getFileOp.name,
+            file.getSize,
+            data_commit_info.getTimestamp,
+            file.getFileExistCols
           )
         })
       })
@@ -201,7 +201,7 @@ object DataOperation extends Logging {
           if (file_arr_buf(i).file_op.equals("del")) {
             dupCheck.add(file_arr_buf(i).path)
           } else {
-            if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+            if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
               file_res_arr_buf += file_arr_buf(i)
             }
           }
@@ -225,7 +225,7 @@ object DataOperation extends Logging {
                      modification_time: Long): Unit = {
     val dataFileInfo = DataFileOp.newBuilder
     dataFileInfo.setPath(file_path)
-    dataFileInfo.setFileOp(file_op)
+    dataFileInfo.setFileOp(FileOp.valueOf(file_op))
     dataFileInfo.setSize(size)
     dataFileInfo.setFileExistCols(file_exist_cols)
     val file_arr_buf = new ArrayBuffer[DataFileOp]()

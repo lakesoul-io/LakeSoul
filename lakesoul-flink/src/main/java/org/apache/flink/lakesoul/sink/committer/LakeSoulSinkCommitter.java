@@ -19,10 +19,7 @@
 package org.apache.flink.lakesoul.sink.committer;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.entity.CommitOp;
-import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
-import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
-import com.dmetasoul.lakesoul.meta.entity.TableNameId;
+import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
@@ -103,7 +100,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                                 .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
                 for (String file : files) {
                     DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
-                    dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);
+                    dataFileOp.setFileOp(FileOp.add);
                     dataFileOp.setPath(file);
                     Path path = new Path(file);
                     FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
