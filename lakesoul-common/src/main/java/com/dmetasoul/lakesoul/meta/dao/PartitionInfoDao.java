@@ -18,7 +18,6 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
-import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 
 import java.sql.*;
@@ -26,8 +25,7 @@ import java.util.*;
 
 public class PartitionInfoDao {
 
-    public boolean insert(PartitionInfo partitionInfo) {
-        boolean flag = true;
+    public void insert(PartitionInfo partitionInfo) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
@@ -36,13 +34,10 @@ public class PartitionInfoDao {
                     "commit_op, snapshot, expression) values (?, ?, ?, ? ,?, ?)");
             insertSinglePartitionInfo(conn, pstmt, partitionInfo);
         } catch (SQLException e) {
-            // conflict will be handled in DBManager
-            flag = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return flag;
     }
 
     public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<UUID> snapshotList) {
@@ -72,7 +67,13 @@ public class PartitionInfoDao {
             } catch (SQLException ex) {
                 ex.printStackTrace();
             }
-            e.printStackTrace();
+            if (e.getMessage().contains("duplicate key value violates unique constraint")) {
+                // only when primary key conflicts could we ignore the exception
+                e.printStackTrace();
+            } else {
+                // throw exception in all other cases
+                throw new RuntimeException(e);
+            }
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

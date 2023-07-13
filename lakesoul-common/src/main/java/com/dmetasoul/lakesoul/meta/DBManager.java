@@ -291,7 +291,9 @@ public class DBManager {
             p.setCommitOp("DeleteCommit");
             p.setExpression("");
         }
-        partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList());
+        if (!partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList())) {
+            throw new RuntimeException("Transactional insert partition info failed");
+        }
     }
 
     public void logicDeletePartitionInfoByRangeId(String tableId, String partitionDesc) {
@@ -761,14 +763,14 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
-    public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
+    public void rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         if (partitionInfo.getTableId() == null) {
-            return false;
+            return;
         }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
-        return partitionInfoDao.insert(partitionInfo);
+        partitionInfoDao.insert(partitionInfo);
     }
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
