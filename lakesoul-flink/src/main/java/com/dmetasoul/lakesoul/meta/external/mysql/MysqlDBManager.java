@@ -116,7 +116,7 @@ public class MysqlDBManager implements ExternalDBManager {
 
 
     @Override
-    public void importOrSyncLakeSoulTable(String tableName) {
+    public void importOrSyncLakeSoulTable(String tableName) throws IOException {
         if (!includeTables.contains(tableName) && excludeTables.contains(tableName)) {
             System.out.printf("Table %s is excluded by exclude table list%n", tableName);
             return;
@@ -166,7 +166,7 @@ public class MysqlDBManager implements ExternalDBManager {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             return;
         }
-        lakesoulDBManager.createNewNamespace(namespace, new JSONObject(), "");
+        lakesoulDBManager.createNewNamespace(namespace, new JSONObject().toJSONString(), "");
     }
 
     public String showCreateTable(String tableName) {

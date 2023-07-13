@@ -93,7 +93,7 @@ public class LakeSoulCatalog implements Catalog {
             throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
         } else {
 
-            Map<String, String> properties = DBUtil.jsonToStringMap(namespaceEntity.getProperties());
+            Map<String, String> properties = DBUtil.jsonToStringMap(JSON.parseObject(namespaceEntity.getProperties()));
 
             return new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
         }
@@ -115,7 +115,7 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException(String.format("database %s already exists", databaseName));
         }
         try {
-            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -130,7 +130,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
-        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()));
+        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
     }
 
     @Override

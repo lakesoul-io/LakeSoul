@@ -22,6 +22,7 @@ package com.dmetasoul.lakesoul.meta
 import com.alibaba.fastjson.JSONObject
 
 import java.util
+import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
@@ -30,7 +31,7 @@ object MetaVersion {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, new JSONObject(), "")
+    dbManager.createNewNamespace(namespace, new JSONObject().toJSONString, "")
   }
 
   def listNamespaces(): Array[String] = {
@@ -140,9 +141,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name
     )
   }
 
@@ -153,9 +154,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name
     )
     partitionVersionBuffer.toArray
 
@@ -171,7 +172,7 @@ object MetaVersion {
         range_value = res.getPartitionDesc,
         version = res.getVersion,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
@@ -207,9 +208,9 @@ object MetaVersion {
         table_id = res.getTableId,
         range_value = res.getPartitionDesc,
         version = res.getVersion,
-        read_files = res.getSnapshot.asScala.toArray,
+        read_files = res.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
@@ -263,10 +264,6 @@ object MetaVersion {
     dbManager.deleteShortTableName(short_table_name, table_name, table_namespace)
   }
 
-  def addShortTableName(short_table_name: String,
-                        table_name: String): Unit = {
-    dbManager.addShortTableName(short_table_name, table_name)
-  }
 
   def updateTableShortName(table_name: String,
                            table_id: String,

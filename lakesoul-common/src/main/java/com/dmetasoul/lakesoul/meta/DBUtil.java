@@ -198,7 +198,7 @@ public class DBUtil {
                 continue;
             }
             tmpElem = tmpElem.substring(1, tmpElem.length() - 1);
-            DataFileOp dataFileOp = new DataFileOp();
+            DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
@@ -207,7 +207,7 @@ public class DBUtil {
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setFileExistCols(tmpElem);
-            rsList.add(dataFileOp);
+            rsList.add(dataFileOp.build());
         }
         return rsList;
     }

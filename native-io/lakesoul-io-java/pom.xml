@@ -181,7 +181,7 @@
                                 </goals>
                                 <configuration>
                                     <executable>cargo</executable>
-                                    <commandlineArgs>+nightly build --release --all-features --package lakesoul-io-c
+                                    <commandlineArgs>build --release --all-features --package lakesoul-io-c
                                     </commandlineArgs>
                                     <workingDirectory>${basedir}/../</workingDirectory>
                                 </configuration>

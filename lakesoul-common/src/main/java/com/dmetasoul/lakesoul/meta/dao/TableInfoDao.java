@@ -69,15 +69,7 @@ public class TableInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                tableInfo = new TableInfo();
-                tableInfo.setTableId(rs.getString("table_id"));
-                tableInfo.setTableName(rs.getString("table_name"));
-                tableInfo.setTablePath(rs.getString("table_path"));
-                tableInfo.setTableSchema(rs.getString("table_schema"));
-                tableInfo.setProperties(DBUtil.stringToJSON(rs.getString("properties")));
-                tableInfo.setPartitions(rs.getString("partitions"));
-                tableInfo.setTableNamespace(rs.getString("table_namespace"));
-                tableInfo.setDomain(rs.getString("domain"));
+                tableInfo = tableInfoFromResultSet(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -99,7 +91,7 @@ public class TableInfoDao {
             pstmt.setString(2, tableInfo.getTableName());
             pstmt.setString(3, tableInfo.getTablePath());
             pstmt.setString(4, tableInfo.getTableSchema());
-            pstmt.setString(5, DBUtil.jsonToString(tableInfo.getProperties()));
+            pstmt.setString(5, tableInfo.getProperties());
             pstmt.setString(6, tableInfo.getPartitions());
             pstmt.setString(7, tableInfo.getTableNamespace());
             pstmt.setString(8, tableInfo.getDomain());
@@ -142,13 +134,13 @@ public class TableInfoDao {
         }
     }
 
-    public int updatePropertiesById(String tableId, JSONObject properties) {
+    public int updatePropertiesById(String tableId, String properties) {
         int result = 0;
         Connection conn = null;
         PreparedStatement pstmt = null;
         StringBuilder sb = new StringBuilder();
         sb.append("update table_info set ");
-        sb.append(String.format("properties = '%s'", properties.toJSONString()));
+        sb.append(String.format("properties = '%s'", properties));
         sb.append(String.format(" where table_id = '%s'", tableId));
         try {
             conn = DBConnector.getConn();
@@ -207,5 +199,18 @@ public class TableInfoDao {
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static TableInfo tableInfoFromResultSet(ResultSet rs) throws SQLException {
+        return TableInfo.newBuilder()
+                .setTableId(rs.getString("table_id"))
+                .setTableName(rs.getString("table_name"))
+                .setTablePath(rs.getString("table_path"))
+                .setTableSchema(rs.getString("table_schema"))
+                .setProperties(rs.getString("properties"))
+                .setPartitions(rs.getString("partitions"))
+                .setTableNamespace(rs.getString("table_namespace"))
+                .setDomain(rs.getString("domain"))
+                .build();
     }
 }

@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package proto.entity;
+
+option java_multiple_files = true;
+option java_package = "com.dmetasoul.lakesoul.meta.entity";
+
+message MetaInfo {
+  repeated PartitionInfo listPartition = 1;
+  TableInfo tableInfo = 2;
+  repeated PartitionInfo readPartitionInfo = 3;
+}
+
+message TableInfo {
+  string tableId = 1;
+  string tableNamespace = 2;
+  string tableName = 3;
+  string tablePath = 4;
+  string tableSchema = 5;
+  string properties = 7;
+  string partitions = 8;
+  string domain = 9;
+}
+
+message PartitionInfo {
+  string tableId = 1;
+  string partitionDesc = 2;
+  int32 version = 3;
+  CommitOp commitOp = 4;
+  int64 timestamp = 5;
+  repeated string snapshot = 7;
+  string expression = 8;
+  string domain = 9;
+}
+
+message Namespace {
+  string namespace = 1;
+  string properties = 2;
+  string comment = 3;
+  CommitOp commitOp = 4;
+  int64 timestamp = 5;
+  repeated string snapshot = 7;
+  string expression = 8;
+  string domain = 9;
+}
+
+enum CommitOp {
+  CompactionCommit = 0;
+  AppendCommit = 1;
+  MergeCommit = 2;
+  UpdateCommit = 3;
+  DeleteCommit = 4;
+}
+
+message DataFileOp {
+  string path = 1;
+  string fileOp = 2;
+  int64 size = 3;
+  string fileExistCols = 4;
+}
+
+message DataCommitInfo {
+  string tableId = 1;
+  string partitionDesc = 2;
+  string commitId = 3;
+  repeated DataFileOp fileOps = 4;
+  CommitOp commitOp = 5;
+  int64 timestamp = 6;
+  bool committed = 8;
+  string domain = 9;
+}
+
+message TableNameId {
+  string tableName = 1;
+  string tableId = 2;
+  string tableNamespace = 3;
+  string domain = 4;
+}
+
+message TablePathId {
+  string tablePath = 1;
+  string tableId = 2;
+  string tableNamespace = 3;
+  string domain = 4;
+}
