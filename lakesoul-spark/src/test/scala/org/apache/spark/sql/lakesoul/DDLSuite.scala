@@ -444,7 +444,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
-  test("ALTER TABLE with data CHANGE COLUMN from bigint to string - not supported") {
+  test("ALTER TABLE with data CHANGE COLUMN from bigint to string") {
     withTempDir { dir =>
       withTable("lakesoul_test") {
 
@@ -461,7 +461,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(spark.table("lakesoul_test").schema === expectedSchema)
 
         sql("INSERT INTO lakesoul_test SELECT 1, 'a'")
-        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
         val e1 = intercept[AnalysisException] {
@@ -471,7 +471,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
                |CHANGE COLUMN a a String""".stripMargin)
         }
         assert(e1.getMessage.contains("ALTER TABLE CHANGE COLUMN is not supported"))
-        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
 
@@ -481,11 +481,8 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           .add("a", StringType, nullable = true)
           .add("b", StringType, nullable = true)
         db.updateTableSchema(tableInfo.getTableId, updatedExpectedSchema.json)
-
         assert(spark.table("lakesoul_test").schema === updatedExpectedSchema)
-        val e2 = intercept[SparkException] {
-          sql("SELECT * FROM lakesoul_test").collect()
-        }
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row("1", "a"))
       }
     }
   }

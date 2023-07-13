@@ -154,7 +154,7 @@ public class PartitionInfoDao {
                         "where table_id = ? and partition_desc in (%s) " +
                         "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version",
-                String.join(",", Collections.nCopies(partitionDescList.size(), "?")));
+                partitionDescList.isEmpty() ? "''" : String.join(",", Collections.nCopies(partitionDescList.size(), "?")));
         List<PartitionInfo> rsList = new ArrayList<>();
         try {
             conn = DBConnector.getConn();

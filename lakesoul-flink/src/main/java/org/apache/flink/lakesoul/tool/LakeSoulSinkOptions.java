@@ -53,6 +53,12 @@ public class LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("The path of a directory");
 
+    public static final ConfigOption<Boolean> LOGICALLY_DROP_COLUM = ConfigOptions
+            .key("logically.drop.column")
+            .booleanType()
+            .defaultValue(false)
+            .withDescription("If true, Meta TableInfo will keep dropped column at schema and mark the column as \"dropped\", otherwise column will be dropped from schema");
+
     public static final ConfigOption<Integer> SOURCE_PARALLELISM = ConfigOptions
             .key("source.parallelism")
             .intType()

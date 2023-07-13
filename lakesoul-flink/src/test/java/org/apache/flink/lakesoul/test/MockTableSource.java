@@ -1,4 +1,4 @@
-package org.apache.flink.lakesoul.test.fail;
+package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.api.connector.source.*;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -12,7 +12,6 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
-import org.apache.flink.lakesoul.test.PostgresContainerHelper;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.InputFormatProvider;
@@ -42,7 +41,7 @@ public class MockTableSource implements ScanTableSource {
     private static final Logger LOG = LoggerFactory.getLogger(MockTableSource.class);
 
     public enum StopBehavior {
-
+        NO_FAILURE,
         FAIL_ON_BEFORE_ASSIGN_SPLIT,
         FAIL_ON_ASSIGN_SPLIT_FINISHED,
         FAIL_ON_CHECKPOINTING,
@@ -307,7 +306,7 @@ public class MockTableSource implements ScanTableSource {
         }
     }
 
-    static class MockSplitEnumerator implements SplitEnumerator<MockSplit, Integer> {
+    public static class MockSplitEnumerator implements SplitEnumerator<MockSplit, Integer> {
         private final StopBehavior stopBehavior;
         private int index;
 

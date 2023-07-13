@@ -8,7 +8,7 @@ import org.apache.flink.table.factories.Factory;
 
 import java.util.Optional;
 
-public class LakeSoulCatalogMocks {
+public class MockLakeSoulCatalog {
 
     public static class TestLakeSoulCatalog extends LakeSoulCatalog {
         Factory testFactory;
@@ -38,7 +38,7 @@ public class LakeSoulCatalogMocks {
 
         @Override
         public DynamicTableSink createDynamicTableSink(Context context) {
-            if (testSink==null) return super.createDynamicTableSink(context);
+            if (testSink == null) return super.createDynamicTableSink(context);
             return testSink;
         }
 
