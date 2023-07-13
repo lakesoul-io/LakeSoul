@@ -9,7 +9,7 @@ LakeSoul 由数元灵科技研发并于 2023 年 5 月正式捐赠给 Linux Foun
 
 LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量更新、高并发入库、批量扫描读取做了大量优化。云原生计算存储分离的架构使得部署非常简单，同时可以以很低的成本支撑极大的数据量。
 
-LakeSoul 通过类似 LSM-Tree 的方式在哈希分区主键 upsert 场景支持了高性能的写吞吐能力，在 S3 等对象存储系统上可以达到。同时高度优化的 Merge on Read 实现也保证了读性能（参考 [性能对比](https://lakesoul-io.github.io/zh-Hans/blog/2023/04/21/lakesoul-2.2.0-release)）。LakeSoul 通过 PostgreSQL 来管理元数据，实现元数据的高可扩展性和高并发事物能力。
+LakeSoul 通过类似 LSM-Tree 的方式在哈希分区主键 upsert 场景支持了高性能的写吞吐能力。同时高度优化的 Merge on Read 实现也保证了读性能（参考 [性能对比](https://lakesoul-io.github.io/zh-Hans/blog/2023/04/21/lakesoul-2.2.0-release)）。LakeSoul 通过 PostgreSQL 来管理元数据，实现元数据的高可扩展性和高并发事物能力。
 
 LakeSoul 支持流、批并发读写，读写全面兼容 CDC 语义，通过自动 Schema 演进和严格一次语义等功能，能够轻松构建全链路流式数仓。
 

@@ -17,7 +17,7 @@ LakeSoul was originally created by DMetaSoul company and was donated to Linux Fo
 
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates.
 
-LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput on cloud object store like S3 while providing optimized merge on read performance (refer to [Performance Benchmakrs](https://lakesoul-io.github.io/blog/2023/04/21/lakesoul-2.2.0-release)). LakeSoul scales metadata management and achieves ACID control by using PostgreSQL.
+LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieves very high write throughput while providing optimized merge on read performance (refer to [Performance Benchmarks](https://lakesoul-io.github.io/blog/2023/04/21/lakesoul-2.2.0-release)). LakeSoul scales metadata management and achieves ACID control by using PostgreSQL.
 
 LakeSoul supports concurrent batch or streaming read and write. Both read and write supports CDC semantics, and together with auto schema evolution and exacly-once guarantee, constructing realtime data warehouses is made easy.
 

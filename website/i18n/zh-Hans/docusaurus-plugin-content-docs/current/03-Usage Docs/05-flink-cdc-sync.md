@@ -155,5 +155,5 @@ Spark 中的类型，在 Spark SQL 中的类型名，可以在 [Spark Data Types
 ## 注意事项
 1. MySQL 中的表必须存在主键，无主键表目前暂不支持；
 2. DDL 变更目前支持在最后增加列，或删除中间某一列；新增列的默认值目前只支持 `null`，LakeSoul 读取旧数据时会自动对该列补 `null` 值；删除的列，LakeSoul 读取时会自动过滤该列；
-3. MySQL的TIME类型对应LakeSoul中LongType类型，因为Spark中没有TIME数据类型且Debezium在解析Time类型时，解析为当前值距离00:00:00经过的毫秒数，所以这里和Debezium保持一致；
+3. MySQL的TIME类型对应LakeSoul中LongType类型，因为Spark中没有TIME数据类型且Debezium在解析Time类型时，解析为当前值距离00:00:00经过的微秒数，所以这里和Debezium保持一致；
 4. MySQL中TIMESTAMP和DATETIME类型，在LakeSoul中会以UTC时区值进行存储，避免出现时区解析问题；在读的时候只需要指定时区便可按指定时区正确解析读出。所以在FLINK CDC任务启动时需要正确填写server_time_zone参数。
