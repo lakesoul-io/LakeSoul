@@ -40,6 +40,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
