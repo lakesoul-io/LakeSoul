@@ -61,7 +61,9 @@ trait DataFrameWriterV2Tests
 
   protected def getProperties(table: Table): Map[String, String] = {
     table.properties().asScala.toMap.filterKeys(key =>
-      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(key) && !(key == "hashBucketNum"))
+      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(key) && !(key == "hashBucketNum")
+        && !(key == "domain")
+    )
   }
 
   test("Append: basic append") {
