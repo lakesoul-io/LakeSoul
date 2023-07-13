@@ -14,7 +14,7 @@ LakeSoul 是由数元灵科技研发并于 2023 年 5 月捐赠给 Linux Foundat
 * 批流一体：LakeSoul 支持 streaming sink，可以同时处理流式数据摄入和历史数据批量回填、交互式查询等场景；
 * Schema 演进：支持新增、删除列，并在读取时自动兼容旧数据；
 * CDC 流、日志流自动同步：支持 MySQL 整库千表同步，自动建表和自动 Schema 变更；支持 Kafka 多 topic 合并同步、自动 Schema 解析、自动新 Topic 感知；
-* 云对象存储 IO 优化：使用 Rust Arrow 实现原生 Parquet IO，并对对象存储访问做了专门优化，性能优势明显；
+* 高性能 IO：使用 Rust Arrow 实现原生 Parquet IO，并对对象存储访问做了专门优化，性能优势明显；
 * 完整支持 Flink Changelog 语义，能够支持增量流式读取，通过 Flink SQL 即可实现实时数仓全链路增量计算；
 * 多种计算引擎支持：目前支持 Spark、Flink 以流或批的方式进行读和写，近期还将增加纯 Python 读等功能。
 
