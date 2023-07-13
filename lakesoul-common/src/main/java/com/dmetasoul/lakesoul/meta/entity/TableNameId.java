@@ -17,6 +17,8 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
+
 /**
  * Relationship between 'TableNamespace.TableName' and TableId
  */
@@ -35,6 +37,12 @@ public class TableNameId {
      * Namespace of table
      */
     private String tableNamespace;
+
+    /**
+     * Domain this entry belongs to.
+     * Only when rbac feature enabled will have contents different to 'public'
+     */
+    private String domain = DBUtil.getDomain();
 
     public TableNameId() {}
 
@@ -66,5 +74,13 @@ public class TableNameId {
 
     public String getTableNamespace() {
         return tableNamespace;
+    }
+
+    public String getDomain() {
+        return domain;
+    }
+
+    public void setDomain(String domain) {
+        this.domain = domain;
     }
 }

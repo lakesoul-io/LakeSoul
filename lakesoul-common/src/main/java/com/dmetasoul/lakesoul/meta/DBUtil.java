@@ -51,6 +51,7 @@ public class DBUtil {
     private static final String urlEnv = "LAKESOUL_PG_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
+    private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -106,6 +107,11 @@ public class DBUtil {
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         return dataBaseProperty;
+    }
+
+    public static String getDomain() {
+        String domain = System.getenv(domainENV);
+        return domain == null ? "public" : domain;
     }
 
     public static void cleanAllTable() {
@@ -181,14 +187,14 @@ public class DBUtil {
     public static List<DataFileOp> changeStringToDataFileOpList(String s) {
         List<DataFileOp> rsList = new ArrayList<>();
         if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo 这里应该报错
+            // todo throw error
             return rsList;
         }
         String[] fileOpTmp = s.substring(1, s.length() - 1).split("\",\"");
         for (String value : fileOpTmp) {
             String tmpElem = value.replace("\"", "").replace("\\", "");
             if (!tmpElem.startsWith("(") || !tmpElem.endsWith(")")) {
-                // todo 报错
+                // todo throw error
                 continue;
             }
             tmpElem = tmpElem.substring(1, tmpElem.length() - 1);

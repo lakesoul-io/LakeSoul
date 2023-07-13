@@ -17,6 +17,8 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -66,6 +68,12 @@ public class DataCommitInfo {
    * A mark define if this DataCommit has already committed as PartitionInfo of table
    */
   private boolean committed;
+
+  /**
+   * Domain this entry belongs to.
+   * Only when rbac feature enabled will have contents different to 'public'
+   */
+  private String domain = DBUtil.getDomain();
 
   public String getTableId() {
     return tableId;
@@ -142,6 +150,15 @@ public class DataCommitInfo {
             ", commitOp='" + commitOp + '\'' +
             ", timestamp=" + timestamp +
             ", committed=" + committed +
+            ", domain=" + domain +
             '}';
+  }
+
+  public String getDomain() {
+    return domain;
+  }
+
+  public void setDomain(String domain) {
+    this.domain = domain;
   }
 }

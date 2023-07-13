@@ -46,6 +46,7 @@ public class TableNameIdDao {
                 tableNameId.setTableName(rs.getString("table_name"));
                 tableNameId.setTableId(rs.getString("table_id"));
                 tableNameId.setTableNamespace(rs.getString("table_namespace"));
+                tableNameId.setDomain(rs.getString("domain"));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -84,10 +85,11 @@ public class TableNameIdDao {
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
-                    "insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
+                    "insert into table_name_id (table_name, table_id, table_namespace, domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.setString(3, tableNameId.getTableNamespace());
+            pstmt.setString(4, tableNameId.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
             throw new RuntimeException(e);

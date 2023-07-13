@@ -20,6 +20,7 @@ package com.dmetasoul.lakesoul.meta;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
+import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -50,6 +51,14 @@ public class DBConnector {
     }
 
     private DBConnector() {}
+
+    public static synchronized DataSource getDS() {
+        if (instance == null) {
+            instance = new DBConnector();
+            instance.createDataSource();
+        }
+        return instance.ds;
+    }
 
     public static synchronized Connection getConn() throws SQLException {
         if (instance == null) {

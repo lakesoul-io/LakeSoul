@@ -19,6 +19,7 @@
 package com.dmetasoul.lakesoul.meta.entity;
 
 import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import org.apache.commons.lang3.Validate;
 
 import java.util.function.Predicate;
@@ -37,6 +38,12 @@ public class Namespace {
     private JSONObject properties = new JSONObject();
 
     private String comment;
+
+    /**
+     * Domain this entry belongs to.
+     * Only when rbac feature enabled will have contents different to 'public'
+     */
+    private String domain = DBUtil.getDomain();
 
     private static final Namespace EMPTY_NAMESPACE = new Namespace();
 
@@ -104,6 +111,9 @@ public class Namespace {
 
     public void setProperties(JSONObject properties) {
         this.properties = properties;
+        if (!properties.containsKey("domain")) {
+            properties.put("domain", domain);
+        }
     }
 
     public void setComment(String comment) {
@@ -112,5 +122,13 @@ public class Namespace {
 
     public String getComment() {
         return comment;
+    }
+
+    public String getDomain() {
+        return domain;
+    }
+
+    public void setDomain(String domain) {
+        this.domain = domain;
     }
 }

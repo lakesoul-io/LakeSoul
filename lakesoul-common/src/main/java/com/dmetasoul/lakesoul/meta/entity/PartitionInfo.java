@@ -17,6 +17,8 @@
 
 package com.dmetasoul.lakesoul.meta.entity;
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -65,6 +67,12 @@ public class PartitionInfo {
    * TODO: Expression used to calculate or filter data, will be launched in the future. Now it's just a meaningless empty string.
    */
   private String expression;
+
+  /**
+   * Domain this entry belongs to.
+   * Only when rbac feature enabled will have contents different to 'public'
+   */
+  private String domain = DBUtil.getDomain();
 
   public String getTableId() {
     return tableId;
@@ -130,5 +138,13 @@ public class PartitionInfo {
 
   public void setExpression(String expression) {
     this.expression = expression;
+  }
+
+  public String getDomain() {
+    return domain;
+  }
+
+  public void setDomain(String domain) {
+    this.domain = domain;
   }
 }

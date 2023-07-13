@@ -44,6 +44,7 @@ public class TablePathIdDao {
                 tablePathId = new TablePathId();
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
+                tablePathId.setDomain(rs.getString("domain"));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -68,6 +69,7 @@ public class TablePathIdDao {
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
                 tablePathId.setTableNamespace(rs.getString("table_namespace"));
+                tablePathId.setDomain(rs.getString("domain"));
                 list.add(tablePathId);
             }
         } catch (SQLException e) {
@@ -93,6 +95,7 @@ public class TablePathIdDao {
                 tablePathId.setTablePath(rs.getString("table_path"));
                 tablePathId.setTableId(rs.getString("table_id"));
                 tablePathId.setTableNamespace(rs.getString("table_namespace"));
+                tablePathId.setDomain(rs.getString("domain"));
                 list.add(tablePathId);
             }
         } catch (SQLException e) {
@@ -152,10 +155,11 @@ public class TablePathIdDao {
         PreparedStatement pstmt = null;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace) values (?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace, domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tablePathId.getTablePath());
             pstmt.setString(2, tablePathId.getTableId());
             pstmt.setString(3, tablePathId.getTableNamespace());
+            pstmt.setString(4, tablePathId.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
             throw new RuntimeException(e);

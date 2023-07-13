@@ -31,7 +31,7 @@ public class PartitionInfoDao {
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into partition_info (table_id, partition_desc, version, " +
-                    "commit_op, snapshot, expression) values (?, ?, ?, ? ,?, ?)");
+                    "commit_op, snapshot, expression, domain) values (?, ?, ?, ? ,?, ?, ?)");
             insertSinglePartitionInfo(conn, pstmt, partitionInfo);
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -47,7 +47,7 @@ public class PartitionInfoDao {
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into partition_info (table_id, partition_desc, version, " +
-                    "commit_op, snapshot, expression) values (?, ?, ?, ? ,?, ?)");
+                    "commit_op, snapshot, expression, domain) values (?, ?, ?, ? ,?, ?, ?)");
             conn.setAutoCommit(false);
             for (PartitionInfo partitionInfo : partitionInfoList) {
                 insertSinglePartitionInfo(conn, pstmt, partitionInfo);
@@ -89,6 +89,7 @@ public class PartitionInfoDao {
         pstmt.setString(4, partitionInfo.getCommitOp());
         pstmt.setArray(5, array);
         pstmt.setString(6, partitionInfo.getExpression());
+        pstmt.setString(7, partitionInfo.getDomain());
         pstmt.execute();
     }
 
@@ -152,7 +153,7 @@ public class PartitionInfoDao {
             descPlaceholders = String.join(",", Collections.nCopies(partitionDescList.size(), "?"));
         }
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
                         "where table_id = ? and partition_desc in (%s) " +
                         "group by table_id,partition_desc) t " +
@@ -178,6 +179,7 @@ public class PartitionInfoDao {
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
+                partitionInfo.setDomain(rs.getString("domain"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
@@ -195,7 +197,7 @@ public class PartitionInfoDao {
 
     public PartitionInfo selectLatestPartitionInfo(String tableId, String partitionDesc) {
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
                         "where table_id = '%s' and partition_desc = '%s' " + "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m" +
@@ -313,6 +315,7 @@ public class PartitionInfoDao {
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
                 partitionInfo.setTimestamp(rs.getLong("timestamp"));
+                partitionInfo.setDomain(rs.getString("domain"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
@@ -334,7 +337,7 @@ public class PartitionInfoDao {
         ResultSet rs = null;
         List<PartitionInfo> rsList = new ArrayList<>();
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " + "where table_id = '%s' " +
                         "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m" +
@@ -350,6 +353,7 @@ public class PartitionInfoDao {
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
+                partitionInfo.setDomain(rs.getString("domain"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
@@ -463,6 +467,7 @@ public class PartitionInfoDao {
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
                 partitionInfo.setTimestamp(rs.getLong("timestamp"));
+                partitionInfo.setDomain(rs.getString("domain"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
@@ -494,6 +499,7 @@ public class PartitionInfoDao {
                 partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
                 partitionInfo.setVersion(rs.getInt("version"));
                 partitionInfo.setCommitOp(rs.getString("commit_op"));
+                partitionInfo.setDomain(rs.getString("domain"));
                 Array snapshotArray = rs.getArray("snapshot");
                 List<UUID> uuidList = new ArrayList<>();
                 Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
@@ -511,7 +517,6 @@ public class PartitionInfoDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from partition_info;";
         try {
             conn = DBConnector.getConn();
