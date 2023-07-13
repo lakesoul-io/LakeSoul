@@ -41,7 +41,7 @@ After unpacking spark package, you could find LakeSoul distribution jar from htt
 wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.3.5.tgz
 tar xf spark-3.3.2-bin-hadoop-3.3.5.tgz
 export SPARK_HOME=${PWD}/spark-3.3.2-bin-dmetasoul
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.2.0/lakesoul-spark-2.2.0-spark-3.3.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-spark-2.3.0-spark-3.3.jar -P $SPARK_HOME/jars
 ```
 
 :::tip

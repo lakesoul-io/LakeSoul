@@ -2,7 +2,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 # LakeSoul CDC 表格式
-CDC (Change Data Capture) 是湖仓重要的数据源之一. LakeSoul CDC 表的目标是能够从在线 OLTP 数据库快速同步数据到 LakeSoul 表中，从而下游分析计算任务在较小的时间间隔后就可以读到在线数据库的同步数据，消除了传统 T+1 复制的开销。
+CDC (Change Data Capture) 是湖仓重要的数据源之一. LakeSoul CDC 表的目标是能够从在线 OLTP 数据库快速同步数据到 LakeSoul 表中，从而下游分析计算任务在较小的时间间隔后就可以读到在线数据库的同步数据，消除了传统 T+1 复制的开销。相比普通支持 Upsert 的表，CDC 表额外支持了删除行的操作。
 
 LakeSoul CDC 表使用一个额外的操作列（列名可以自定义）来记录 CDC 的操作类型，可以支持从 [Debezium](https://debezium.io/), [canal](https://github.com/alibaba/canal) 和 [Flink CDC](https://github.com/ververica/flink-cdc-connectors) 中导入 CDC 数据。LakeSoul 默认建表并不会启用 CDC 表格式，默认表仅支持 Upsert 操作。要开启对 CDC 的支持，需要在建表时增加额外的属性。
 
@@ -52,4 +52,4 @@ LakeSoul CDC 表使用一个额外的操作列（列名可以自定义）来记�
 
 LakeSoul 的增量采用的是主键分片的模式，因此增量数据写入时不需要与存量数据做合并操作。对于 CDC 表，增量数据就是原始的 CDC 流的内容。对 LakeSoul 表的 CDC 增量读取，可以完整保留 CDC 操作标记，即 insert、update、delete。2.2.0 版本起在 Spark 中已经支持了增量流式读取。
 
-2.3.0 版本起，支持了 Flink Table Source，支持流式增量读取为 Flink ChangeLog Stream，请参考 [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) 。
+2.3.0 版本起，支持了 Flink Table Source，支持 Flink ChangeLog Stream 的流式增量读写，请参考 [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) 。

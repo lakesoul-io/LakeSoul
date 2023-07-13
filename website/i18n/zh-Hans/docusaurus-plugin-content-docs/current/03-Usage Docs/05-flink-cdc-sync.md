@@ -6,16 +6,16 @@ LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API
 
 在 Stream API 中，LakeSoul Sink 主要功能点有：
 * 支持整库千表（不同 schema）在同一个 Flink 作业中实时 CDC 同步，不同表会自动写入 LakeSoul 对应表名中
-* 支持 Schema 变更(DDL)自动同步到 LakeSoul，下游读取自动兼容（目前支持增删列）；
+* 支持 Schema 变更(DDL)自动同步到 LakeSoul，下游读取自动兼容新旧数据（目前支持增删列以及数值类型增加精度）；
 * 支持运行过程中上游数据库中新建表自动感知，在 LakeSoul 中自动建表；
 * 支持严格一次（Exactly Once）语义，即使 Flink 作业发生 Failover，能够保证数据不丢不重；
 * 提供 Flink 命令行启动入口类，支持指定库名、表名黑名单、并行度等参数；
 
 ## 命令行使用方法
 ### 1. 下载 LakeSoul Flink Jar
-可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.2.0/lakesoul-flink-2.2.0-flink-1.14.jar。
+可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar。
 
-如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.2.0-flink-1.14.jar。
+如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.3.0-flink-1.14.jar。
 
 目前支持的 Flink 版本为 1.14。
 
@@ -52,7 +52,7 @@ export LAKESOUL_PG_PASSWORD=root
 #### 2.2 启动同步作业
 ```bash
 bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
-    lakesoul-flink-2.2.0-flink-1.14.jar \
+    lakesoul-flink-2.3.0-flink-1.14.jar \
     --source_db.host localhost \
     --source_db.port 3306 \
     --source_db.db_name default \
@@ -71,7 +71,7 @@ bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
 | 参数      | 含义                                                                        | 取值说明    |
 |----------------|--------------------------------------------------------------------------------------|---------------------------------------------|
 | -c      | 任务运行main函数入口类                                                                        | org.apache.flink.lakesoul.entry.MysqlCdc    |
-| 主程序包           | 任务运行jar包                                                                     | lakesoul-flink-2.2.0-flink-1.14.jar                  |
+| 主程序包           | 任务运行jar包                                                                     | lakesoul-flink-2.3.0-flink-1.14.jar                  |
 | --source_db.host      | MySQL 数据库的地址                                                     |                                             |
 | --source_db.port      | MySQL 数据库的端口                                                     |                                             |
 | --source_db.user      | MySQL 数据库的用户名                                                     |                                             |
@@ -155,5 +155,5 @@ Spark 中的类型，在 Spark SQL 中的类型名，可以在 [Spark Data Types
 ## 注意事项
 1. MySQL 中的表必须存在主键，无主键表目前暂不支持；
 2. DDL 变更目前支持在最后增加列，或删除中间某一列；新增列的默认值目前只支持 `null`，LakeSoul 读取旧数据时会自动对该列补 `null` 值；删除的列，LakeSoul 读取时会自动过滤该列；
-3. MySQL的TIME类型对应LakeSoul中LongType类型，因为Spark中没有TIME数据类型且Debezium在解析Time类型时，解析为当前值距离00:00:00经过的毫秒数，所以这里和Debezium保持一致；
+3. MySQL的TIME类型对应LakeSoul中LongType类型，因为Spark中没有TIME数据类型且Debezium在解析Time类型时，解析为当前值距离00:00:00经过的微秒数，所以这里和Debezium保持一致；
 4. MySQL中TIMESTAMP和DATETIME类型，在LakeSoul中会以UTC时区值进行存储，避免出现时区解析问题；在读的时候只需要指定时区便可按指定时区正确解析读出。所以在FLINK CDC任务启动时需要正确填写server_time_zone参数。

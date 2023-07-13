@@ -15,7 +15,11 @@ LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata m
 
 LakeSoul was originally created by DMetaSoul company and was donated to Linux Foundation AI & Data as a sandbox project since May 2023.
 
-LakeSoul implements incremental upserts for both row and column and allows concurrent updates. LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieve very high write throughput (30MB/s/core) on cloud object store like S3 while providing optimized merge on read performance. LakeSoul scales metadata management and achieves ACID control by using PostgreSQL. LakeSoul provides tools to ingest CDC and log streams automatically in a zero-ETL style.
+LakeSoul implements incremental upserts for both row and column and allows concurrent updates.
+
+LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieves very high write throughput while providing optimized merge on read performance (refer to [Performance Benchmarks](https://lakesoul-io.github.io/blog/2023/04/21/lakesoul-2.2.0-release)). LakeSoul scales metadata management and achieves ACID control by using PostgreSQL.
+
+LakeSoul supports concurrent batch or streaming read and write. Both read and write supports CDC semantics, and together with auto schema evolution and exacly-once guarantee, constructing realtime data warehouses is made easy.
 
 More detailed features please refer to our doc page: [Documentations](https://lakesoul-io.github.io/docs/intro)
 
@@ -26,6 +30,7 @@ Follow the [Quick Start](https://lakesoul-io.github.io/docs/Getting%20Started/se
 Please find tutorials in doc site:
 
 * Checkout [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https://lakesoul-io.github.io/docs/Tutorials/flink-cdc-sink) on how to sync an entire MySQL database into LakeSoul in realtime, with auto table creation, auto DDL sync and exactly once guarantee.
+* Checkout [Flink SQL Usage](https://lakesoul-io.github.io/docs/Usage%20Docs/flink-lakesoul-connector) on using Flink SQL to read or write LakeSoul in both batch and streaming mode, with the supports of Flink Changelog Stream semantics and row-level upsert and delete.
 * Checkout [Multi Stream Merge and Build Wide Table Tutorial](https://lakesoul-io.github.io/docs/Tutorials/mutil-stream-merge) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
 * Checkout [Upsert Data and Merge UDF Tutorial](https://lakesoul-io.github.io/docs/Tutorials/upsert-and-merge-udf) on how to upsert data and Merge UDF to customize merge logic.
 * Checkout [Snapshot API Usage](https://lakesoul-io.github.io/docs/Tutorials/snapshot-manage) on how to do snapshot read (time travel), snapshot rollback and cleanup.
@@ -75,15 +80,12 @@ Please find usage documentations in doc site:
     - [x] Merge Into SQL with match on Primary Key (Merge on read)
     - [ ] Merge Into SQL with match on non-pk
     - [ ] Merge Into SQL with match condition and complex expression (Merge on read when match on PK) (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
-  - [x] Multiple Spark Versions Support
-    - [x] Support Spark 3.3, 3.2 and 3.1
 * Flink Integration and CDC Ingestion ([#57](https://github.com/lakesoul-io/LakeSoul/issues/57))
   - [x] Table API
-    - [x] Stream Sink
-    - [x] Batch Sink
+    - [x] Batch/Stream Sink
     - [x] Batch/Stream source
-    - [x] Stream Source as ChangeLog Stream
-    - [x] Exactly Once Sink
+    - [x] Stream Source/Sink for ChangeLog Stream Semantics
+    - [x] Exactly Once Source and Sink
   - [x] Flink CDC
     - [x] Auto Schema Change (DDL) Sync
     - [x] Auto Table Creation (depends on #78)
@@ -95,8 +97,11 @@ Please find usage documentations in doc site:
   - [x] CDC ingestion
   - [x] Time Travel (Snapshot read)
   - [x] Snapshot rollback
+  - [x] Automatic global compaction service
   - [ ] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
     - [ ] Presto/Trino
+* Data Science Integration
+  - [ ] Native Python Reader
 * Cloud and Native IO ([#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Object storage IO optimization
   - [x] Native merge on read

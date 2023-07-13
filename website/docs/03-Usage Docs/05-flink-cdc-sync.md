@@ -7,7 +7,7 @@ Since version 2.1.0, LakeSoul has implemented Flink CDC Sink, which can support 
 In the Stream API, the main functions of LakeSoul Sink are:
 
 * Support real-time CDC synchronization of thousands of tables (different schemas) in the same Flink job, and different tables will be automatically written to the corresponding table names of LakeSoul
-* Support automatic synchronization of schema changes (DDL) to LakeSoul, and automatic compatibility of downstream reads (currently supports adding and deleting columns);
+* Support automatic synchronization of schema changes (DDL) to LakeSoul, and automatic compatibility of downstream reads (currently supports adding and dropping columns as well as numeric type upcast);
 * Support automatic perception of new tables in the upstream database during operation, and automatic table creation in LakeSoul;
 * Support Exactly Once semantics, even if a Flink job fails, it can ensure that the data is not lost or heavy;
 * Provide Flink command line startup entry class, support specifying parameters such as database name, table name blacklist, parallelism, etc.;
@@ -15,7 +15,7 @@ In the Stream API, the main functions of LakeSoul Sink are:
 
 ## How to use the command line
 ### 1. Download LakeSoul Flink Jar
-It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.2.0/lakesoul-flink-2.2.0-flink-1.14.jar.
+It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar.
 
 The currently supported Flink version is 1.14.
 
@@ -54,7 +54,7 @@ export LAKESOUL_PG_PASSWORD=root
 #### 2.2 Start sync job
 ```bash
 bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
-    lakesoul-flink-2.2.0-flink-1.14.jar \
+    lakesoul-flink-2.3.0-flink-1.14.jar \
     --source_db.host localhost \
     --source_db.port 3306 \
     --source_db.db_name default \
@@ -73,7 +73,7 @@ Description of required parameters:
 | Parameter | Meaning | Value Description |
 |----------------|------------------------------------|-------------------------------------------- |
 | -c | The task runs the main function entry class | org.apache.flink.lakesoul.entry.MysqlCdc |
-| Main package | Task running jar | lakesoul-flink-2.2.0-flink-1.14.jar |
+| Main package | Task running jar | lakesoul-flink-2.3.0-flink-1.14.jar |
 | --source_db.host | The address of the MySQL database | |
 | --source_db.port | MySQL database port | |
 | --source_db.user | MySQL database username | |
@@ -157,5 +157,5 @@ Types in Spark, type names in Spark SQL, you can find the corresponding relation
 ## Precautions
 1. A table in MySQL must have a primary key, and tables without a primary key are currently not supported;
 2. The DDL change currently supports adding a column at the end, or deleting a column in the middle; the default value of a new column currently only supports `null`, and LakeSoul will automatically add a `null` value to the column when reading old data; the deleted column , LakeSoul will automatically filter this column when reading;
-3. The TIME type in MySQL corresponds to the LongType type in LakeSoul, as there is no TIME data type in Spark and Debezium resolves the TIME type to the current value in milliseconds from 00:00:00. Therefore, this is consistent with Debezium;
+3. The TIME type in MySQL corresponds to the LongType type in LakeSoul, as there is no TIME data type in Spark and Debezium resolves the TIME type to the current value in microseconds from 00:00:00. Therefore, this is consistent with Debezium;
 4. The TIMESTAMP and DATETIME types in MySQL are stored as UTC TIME ZOME values in LakeSoul to avoid time zone resolution issues; When reading, you just need to specify the time zone and it can be parsed according to the specified time zone. So it is necessary to correctly fill in the server_time_zone parameter when starting the FLINK CDC task.

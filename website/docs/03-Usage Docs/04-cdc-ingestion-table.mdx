@@ -2,7 +2,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 # Use LakeSoul CDC Table Format
-CDC (Change Data Capture) is an important data source for Lakehouse. The goal of LakeSoul CDC table format is to sync the change of online OLTP database into LakeSoul in a very low latency, usually several minutes, manner so that the downstream analytics could get the newest results as soon as possible without the need of tranditional T+1 database dump. 
+CDC (Change Data Capture) is an important data source for Lakehouse. The goal of LakeSoul CDC table format is to sync the change of online OLTP database into LakeSoul in a very low latency, usually several minutes, manner so that the downstream analytics could get the newest results as soon as possible without the need of tranditional T+1 database dump. Compared to normal table, CDC table format supports delete row capability.
 
 LakeSoul uses an extra change operation column (column name is configurable) to model the CDC data and can consume the CDC sources including [Debezium](https://debezium.io/), [canal](https://github.com/alibaba/canal) as well as [Flink CDC](https://github.com/ververica/flink-cdc-connectors). By default LakeSoul would not enable this format, that means normal table would only support upsert operations, but not delete. To enable CDC format, you need to add extra property to enable it when creating table.
 
@@ -55,4 +55,4 @@ The LakeSoul adopts the primary key sharding mode for incremental upsert, so the
 
 Version 2.2.0 supports incremental streaming reading in Spark.
 
-From version 2.3.0, Flink Table Source is supported, and streaming incremental reading is supported as Flink ChangeLog Stream, please refer to [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) .
+From version 2.3.0, Flink Table Source is supported, and streaming incremental reading/writing is supported for Flink ChangeLog Stream semantics, please refer to [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) .
