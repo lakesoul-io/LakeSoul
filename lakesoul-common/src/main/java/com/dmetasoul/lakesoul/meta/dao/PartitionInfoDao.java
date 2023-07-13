@@ -24,6 +24,7 @@ import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 
 import java.sql.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class PartitionInfoDao {
 
@@ -176,7 +177,7 @@ public class PartitionInfoDao {
             }
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(partitionInfoFromResultSet(rs));
+                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -327,7 +328,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(partitionInfoFromResultSet(rs));
+                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -450,7 +451,7 @@ public class PartitionInfoDao {
             rs = pstmt.executeQuery();
 
             while (rs.next()) {
-                partitionInfo = partitionInfoFromResultSet(rs);
+                partitionInfo = partitionInfoFromResultSetWithoutTimestamp(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -484,9 +485,19 @@ public class PartitionInfoDao {
                 .setDomain(rs.getString("domain"))
                 .setTimestamp(rs.getLong("timestamp"));
         Array snapshotArray = rs.getArray("snapshot");
-        List<String> uuidList = new ArrayList<>();
-        Collections.addAll(uuidList, (String[]) snapshotArray.getArray());
-        partitionInfo.addAllSnapshot(uuidList);
+        partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(UUID::toString).collect(Collectors.toList()));
+        partitionInfo.setExpression(rs.getString("expression"));
+        return partitionInfo.build();
+    }
+
+    public static PartitionInfo partitionInfoFromResultSetWithoutTimestamp(ResultSet rs) throws SQLException {
+        PartitionInfo.Builder partitionInfo = PartitionInfo.newBuilder()
+                .setTableId(rs.getString("table_id"))
+                .setPartitionDesc(rs.getString("partition_desc"))
+                .setVersion(rs.getInt("version"))
+                .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")));
+        Array snapshotArray = rs.getArray("snapshot");
+        partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(UUID::toString).collect(Collectors.toList()));
         partitionInfo.setExpression(rs.getString("expression"));
         return partitionInfo.build();
     }

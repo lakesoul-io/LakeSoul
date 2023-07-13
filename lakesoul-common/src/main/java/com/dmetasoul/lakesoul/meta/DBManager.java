@@ -89,7 +89,7 @@ public class DBManager {
 
     public String getTablePathFromShortTableName(String tableName, String tableNamespace) {
         TableNameId tableNameId = tableNameIdDao.findByTableName(tableName, tableNamespace);
-        if (tableNameId.getTableId() == null) return null;
+        if (tableNameId == null) return null;
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
         return tableInfo.getTablePath();
@@ -695,7 +695,7 @@ public class DBManager {
     private PartitionInfo.Builder updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo.Builder curPartitionInfo,
                                                                 PartitionInfo readPartition) {
         List<String> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
-        List<String> curSnapshot = curPartitionInfo.getSnapshotList();
+        List<String> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
         if (readPartition != null) {
             curSnapshot.removeAll(readPartition.getSnapshotList());
         }
@@ -820,7 +820,7 @@ public class DBManager {
         Namespace.Builder namespace = Namespace.newBuilder()
                 .setNamespace(name)
                 .setProperties(properties)
-                .setComment(comment);
+                .setComment(comment == null ? "" : comment);
 
         namespaceDao.insert(namespace.build());
     }
@@ -849,10 +849,7 @@ public class DBManager {
     public void cleanMeta() {
 
         namespaceDao.clean();
-        namespaceDao.insert(
-                Namespace.newBuilder()
-                        .setNamespace("default")
-                        .build());
+        namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();

@@ -37,11 +37,7 @@ message Namespace {
   string namespace = 1;
   string properties = 2;
   string comment = 3;
-  CommitOp commitOp = 4;
-  int64 timestamp = 5;
-  repeated string snapshot = 7;
-  string expression = 8;
-  string domain = 9;
+  string domain = 4;
 }
 
 enum CommitOp {

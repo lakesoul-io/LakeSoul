@@ -18,7 +18,6 @@
  */
 package com.dmetasoul.lakesoul.meta.dao;
 
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
@@ -152,4 +151,12 @@ public class NamespaceDao {
                 .setDomain(rs.getString("domain"))
                 .build();
     }
+
+    public static Namespace DEFAULT_NAMESPACE =
+            Namespace.newBuilder()
+                    .setNamespace(DBConfig.LAKESOUL_DEFAULT_NAMESPACE)
+                    .setProperties("{}")
+                    .setComment("")
+                    .build();
+
 }

@@ -56,7 +56,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
         return Collections.singletonList(
-                new Object[]{"lakesoul", DBConfig.LAKESOUL_DEFAULT_NAMESPACE});
+                new Object[]{"lakesoul", NamespaceDao.DEFAULT_NAMESPACE});
     }
 
     protected final String catalogName;
