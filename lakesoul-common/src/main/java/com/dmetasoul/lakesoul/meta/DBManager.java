@@ -118,20 +118,32 @@ public class DBManager {
         tableInfo.setProperties(properties);
 
         if (StringUtils.isNotBlank(tableName)) {
-            if (!tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace))) {
-                throw new IllegalStateException("this table name already exists!");
-            }
+            tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace));
         }
         if (StringUtils.isNotBlank(tablePath)) {
-            if (!tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace))) {
-                tableNameIdDao.deleteByTableId(tableId);
-                throw new IllegalStateException("this table path already exists!");
+            boolean ex = false;
+            try {
+                tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace));
+            } catch (Exception e) {
+                ex= true;
+                throw e;
+            } finally {
+                if (ex) {
+                    tableNameIdDao.deleteByTableId(tableId);
+                }
             }
         }
-        if (!tableInfoDao.insert(tableInfo)) {
-            tableNameIdDao.deleteByTableId(tableId);
-            tablePathIdDao.deleteByTableId(tableId);
-            throw new IllegalStateException("this table info already exists!");
+        boolean ex = false;
+        try {
+            tableInfoDao.insert(tableInfo);
+        } catch (Exception e) {
+            ex= true;
+            throw e;
+        } finally {
+            if (ex) {
+                tableNameIdDao.deleteByTableId(tableId);
+                tablePathIdDao.deleteByTableId(tableId);
+            }
         }
     }
 
@@ -279,7 +291,9 @@ public class DBManager {
             p.setCommitOp("DeleteCommit");
             p.setExpression("");
         }
-        partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList());
+        if (!partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList())) {
+            throw new RuntimeException("Transactional insert partition info failed");
+        }
     }
 
     public void logicDeletePartitionInfoByRangeId(String tableId, String partitionDesc) {
@@ -749,14 +763,14 @@ public class DBManager {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
-    public boolean rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
+    public void rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
         if (partitionInfo.getTableId() == null) {
-            return false;
+            return;
         }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
         partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
-        return partitionInfoDao.insert(partitionInfo);
+        partitionInfoDao.insert(partitionInfo);
     }
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
@@ -804,11 +818,7 @@ public class DBManager {
         namespace.setProperties(properties);
         namespace.setComment(comment);
 
-        boolean insertNamespaceFlag = namespaceDao.insert(namespace);
-        if (!insertNamespaceFlag) {
-            throw new IllegalStateException(String.format("namespace %s already exists!", name));
-        }
-
+        namespaceDao.insert(namespace);
     }
 
     public Namespace getNamespaceByNamespace(String namespace) {

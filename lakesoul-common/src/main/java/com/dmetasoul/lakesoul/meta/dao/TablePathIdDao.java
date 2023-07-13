@@ -46,7 +46,7 @@ public class TablePathIdDao {
                 tablePathId.setTableId(rs.getString("table_id"));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -71,7 +71,7 @@ public class TablePathIdDao {
                 list.add(tablePathId);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -96,7 +96,7 @@ public class TablePathIdDao {
                 list.add(tablePathId);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -118,7 +118,7 @@ public class TablePathIdDao {
                 list.add(tablePath);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -140,17 +140,16 @@ public class TablePathIdDao {
                 list.add(tablePath);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public boolean insert(TablePathId tablePathId) {
+    public void insert(TablePathId tablePathId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace) values (?, ?, ?)");
@@ -159,12 +158,10 @@ public class TablePathIdDao {
             pstmt.setString(3, tablePathId.getTableNamespace());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public void delete(String tablePath) {
@@ -210,7 +207,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }

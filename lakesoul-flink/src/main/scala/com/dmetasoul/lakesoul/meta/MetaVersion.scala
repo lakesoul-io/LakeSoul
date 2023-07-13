@@ -216,12 +216,7 @@ object MetaVersion {
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {
-    if (dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)) {
-      println(range_value + " toVersion " + toVersion + " success")
-    } else {
-      println(range_value + " toVersion " + toVersion + " failed. Please check partition value or versionNum is right")
-    }
-
+    dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion);
   }
 
   def updateTableSchema(table_name: String,

@@ -146,7 +146,7 @@ public class DataCommitInfoDao {
                 createDataCommitInfoFromRs(rs, dataCommitInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -170,7 +170,7 @@ public class DataCommitInfoDao {
                 createDataCommitInfoFromRs(rs, dataCommitInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -208,7 +208,7 @@ public class DataCommitInfoDao {
                 commitInfoList.add(dataCommitInfo);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -241,7 +241,6 @@ public class DataCommitInfoDao {
             }
             conn.commit();
         } catch (SQLException e) {
-            result = false;
             try {
                 if (conn != null) {
                     conn.rollback();
@@ -249,7 +248,7 @@ public class DataCommitInfoDao {
             } catch (SQLException ex) {
                 ex.printStackTrace();
             }
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
