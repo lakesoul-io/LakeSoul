@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "0.0.0"
+version = "2.3.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io-c"
-version = "0.0.0"
+version = "2.3.0"
 dependencies = [
  "arrow",
  "lakesoul-io",

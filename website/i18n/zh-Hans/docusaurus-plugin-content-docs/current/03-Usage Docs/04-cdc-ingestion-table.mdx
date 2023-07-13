@@ -52,4 +52,4 @@ LakeSoul CDC 表使用一个额外的操作列（列名可以自定义）来记�
 
 LakeSoul 的增量采用的是主键分片的模式，因此增量数据写入时不需要与存量数据做合并操作。对于 CDC 表，增量数据就是原始的 CDC 流的内容。对 LakeSoul 表的 CDC 增量读取，可以完整保留 CDC 操作标记，即 insert、update、delete。2.2.0 版本起在 Spark 中已经支持了增量流式读取。
 
-2.3.0 版本起，支持了 Flink Table Source，支持流式增量读取为 Flink ChangeLog Stream，请参考 [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) 。
+2.3.0 版本起，支持了 Flink Table Source，支持 Flink ChangeLog Stream 的流式增量读写，请参考 [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md) 。

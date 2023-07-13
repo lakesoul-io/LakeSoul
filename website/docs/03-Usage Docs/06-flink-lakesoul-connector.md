@@ -1,5 +1,9 @@
 # LakeSoul Flink Connector
 
+:::tip
+Since 2.3.0
+:::
+
 LakeSoul provides Flink Connector which implements the Dynamic Table interface, through which developers can use Flink's DataStream API, Table API or SQL to read and write LakeSoul data, and supports both streaming and batch modes for read and write. Read and Write in Flink streaming both support Flink Changelog Stream semantics.
 
 ## 1. Environment Preparation
@@ -13,7 +17,7 @@ In order to use Flink to create LakeSoul tables, it is recommended to use Flink 
 Switch to the flink folder and execute the command to start the SQLclient client.
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14-SNAPSHOT.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14.jar
 ```
 
 ## 2. DDL

@@ -1,6 +1,6 @@
 [package]
 name = "lakesoul-io"
-version = "0.0.0"
+version = "2.3.0"
 edition = "2021"
 
 [dependencies]
