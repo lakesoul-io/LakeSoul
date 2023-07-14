@@ -17,6 +17,7 @@
 
 package com.dmetasoul.lakesoul.meta;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
@@ -25,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
@@ -87,7 +89,7 @@ public class DBManager {
 
     public String getTablePathFromShortTableName(String tableName, String tableNamespace) {
         TableNameId tableNameId = tableNameIdDao.findByTableName(tableName, tableNamespace);
-        if (tableNameId.getTableId() == null) return null;
+        if (tableNameId == null) return null;
 
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableNameId.getTableId());
         return tableInfo.getTablePath();
@@ -108,24 +110,24 @@ public class DBManager {
     public void createNewTable(String tableId, String namespace, String tableName, String tablePath, String tableSchema,
                                JSONObject properties, String partitions) {
 
-        TableInfo tableInfo = new TableInfo();
+        TableInfo.Builder tableInfo = TableInfo.newBuilder();
         tableInfo.setTableId(tableId);
         tableInfo.setTableNamespace(namespace);
         tableInfo.setTableName(tableName);
         tableInfo.setTablePath(tablePath);
         tableInfo.setTableSchema(tableSchema);
         tableInfo.setPartitions(partitions);
-        tableInfo.setProperties(properties);
+        tableInfo.setProperties(properties.toJSONString());
 
         if (StringUtils.isNotBlank(tableName)) {
-            tableNameIdDao.insert(new TableNameId(tableName, tableId, namespace));
+            tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, namespace));
         }
         if (StringUtils.isNotBlank(tablePath)) {
             boolean ex = false;
             try {
-                tablePathIdDao.insert(new TablePathId(tablePath, tableId, namespace));
+                tablePathIdDao.insert(TablePathIdDao.newTablePathId(tablePath, tableId, namespace));
             } catch (Exception e) {
-                ex= true;
+                ex = true;
                 throw e;
             } finally {
                 if (ex) {
@@ -135,9 +137,9 @@ public class DBManager {
         }
         boolean ex = false;
         try {
-            tableInfoDao.insert(tableInfo);
+            tableInfoDao.insert(tableInfo.build());
         } catch (Exception e) {
-            ex= true;
+            ex = true;
             throw e;
         } finally {
             if (ex) {
@@ -209,11 +211,11 @@ public class DBManager {
     public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc, long utcMills,
                                               List<DataFileOp> fileOps, List<String> deleteFilePathList) {
         List<PartitionInfo> filterPartitionInfo = getFilterPartitionInfo(tableId, partitionDesc, utcMills);
-        List<UUID> snapshotList = new ArrayList<>();
-        filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshot()));
+        List<String> snapshotList = new ArrayList<>();
+        filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshotList()));
         List<DataCommitInfo> filterDataCommitInfo =
                 dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
-        filterDataCommitInfo.forEach(dataCommitInfo -> fileOps.addAll(dataCommitInfo.getFileOps()));
+        filterDataCommitInfo.forEach(dataCommitInfo -> fileOps.addAll(dataCommitInfo.getFileOpsList()));
         fileOps.forEach(fileOp -> deleteFilePathList.add(fileOp.getPath()));
         partitionInfoDao.deletePreviousVersionPartition(tableId, partitionDesc, utcMills);
         dataCommitInfoDao.deleteByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
@@ -236,8 +238,8 @@ public class DBManager {
         PartitionInfo rearVersionPartition = timestampToPartition.get(minValueToUtcMills);
         if (rearVersionPartition == null) {
             return singlePartitionAllVersionList;
-        } else if (rearVersionPartition.getCommitOp().equals("CompactionCommit") ||
-                rearVersionPartition.getCommitOp().equals("UpdateCommit") || filterPartition.size() == 0) {
+        } else if (rearVersionPartition.getCommitOp().equals(CommitOp.CompactionCommit) ||
+                rearVersionPartition.getCommitOp().equals(CommitOp.UpdateCommit) || filterPartition.size() == 0) {
             return filterPartition;
         } else {
             throw new IllegalStateException(
@@ -246,8 +248,6 @@ public class DBManager {
     }
 
     public void updateTableSchema(String tableId, String tableSchema) {
-        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        tableInfo.setTableSchema(tableSchema);
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
     }
 
@@ -264,13 +264,13 @@ public class DBManager {
 
     public void logicallyDropColumn(String tableId, List<String> droppedColumn) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject propertiesJson = tableInfo.getProperties();
+        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
         String droppedColumnProperty = (String) propertiesJson.get(DBConfig.TableInfoProperty.DROPPED_COLUMN);
         droppedColumnProperty = droppedColumnProperty == null ? "" : droppedColumnProperty;
         HashSet<String> set = new HashSet<>(Arrays.asList(droppedColumnProperty.split(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER)));
         set.addAll(droppedColumn);
         propertiesJson.put(DBConfig.TableInfoProperty.DROPPED_COLUMN, String.join(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER, droppedColumn));
-        updateTableProperties(tableId, propertiesJson);
+        updateTableProperties(tableId, propertiesJson.toJSONString());
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
@@ -284,26 +284,29 @@ public class DBManager {
 
     public void logicDeletePartitionInfoByTableId(String tableId) {
         List<PartitionInfo> curPartitionInfoList = partitionInfoDao.getPartitionDescByTableId(tableId);
-        for (PartitionInfo p : curPartitionInfoList) {
+        List<PartitionInfo> deletingPartitionInfoList = curPartitionInfoList.stream().map(p -> {
             int version = p.getVersion();
-            p.setVersion(version + 1);
-            p.setSnapshot(Collections.emptyList());
-            p.setCommitOp("DeleteCommit");
-            p.setExpression("");
-        }
-        if (!partitionInfoDao.transactionInsert(curPartitionInfoList, Collections.emptyList())) {
+            return p.toBuilder()
+                    .setVersion(version + 1)
+                    .clearSnapshot()
+                    .setCommitOp(CommitOp.DeleteCommit)
+                    .setExpression("")
+                    .build();
+        }).collect(Collectors.toList());
+        if (!partitionInfoDao.transactionInsert(deletingPartitionInfoList, Collections.emptyList())) {
             throw new RuntimeException("Transactional insert partition info failed");
         }
     }
 
     public void logicDeletePartitionInfoByRangeId(String tableId, String partitionDesc) {
-        PartitionInfo partitionInfo = getSinglePartitionInfo(tableId, partitionDesc);
+        PartitionInfo.Builder partitionInfo = getSinglePartitionInfo(tableId, partitionDesc).toBuilder();
         int version = partitionInfo.getVersion();
-        partitionInfo.setVersion(version + 1);
-        partitionInfo.setSnapshot(Collections.emptyList());
-        partitionInfo.setCommitOp("DeleteCommit");
-        partitionInfo.setExpression("");
-        partitionInfoDao.insert(partitionInfo);
+        partitionInfo
+                .setVersion(version + 1)
+                .clearSnapshot()
+                .setCommitOp(CommitOp.DeleteCommit)
+                .setExpression("");
+        partitionInfoDao.insert(partitionInfo.build());
     }
 
     public void deleteDataCommitInfo(String tableId, String partitionDesc, UUID commitId) {
@@ -333,20 +336,23 @@ public class DBManager {
     public void addShortTableName(String tableName, String tablePath) {
         TableInfo tableInfo = getTableInfoByPath(tablePath);
 
-        TableNameId tableNameId = new TableNameId();
-        tableNameId.setTableId(tableInfo.getTableId());
-        tableNameId.setTableName(tableName);
-        tableNameIdDao.insert(tableNameId);
+        tableNameIdDao.insert(
+                TableNameId.newBuilder()
+                        .setTableId(tableInfo.getTableId())
+                        .setTableName(tableName)
+                        .build());
     }
 
-    public void updateTableProperties(String tableId, JSONObject properties) {
+    public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        if (tableInfo.getProperties() != null && tableInfo.getProperties().containsKey("domain")) {
+        JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
+        JSONObject newProperties = JSONObject.parseObject(properties);
+
+        if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
             // do not modify domain in properties for this table
-            properties.put("domain", tableInfo.getProperties().get("domain"));
+            newProperties.put("domain", originProperties.get("domain"));
         }
-        tableInfo.setProperties(properties);
-        tableInfoDao.updatePropertiesById(tableId, properties);
+        tableInfoDao.updatePropertiesById(tableId, newProperties.toJSONString());
     }
 
     public void updateTableShortName(String tablePath, String tableId, String tableName, String tableNamespace) {
@@ -359,29 +365,22 @@ public class DBManager {
             }
             return;
         }
-        tableInfo.setTableName(tableName);
-        tableInfo.setTablePath(tablePath);
-        tableInfo.setTableNamespace(tableNamespace);
         tableInfoDao.updateByTableId(tableId, tableName, tablePath, "");
 
-        TableNameId tableNameId = new TableNameId();
-        tableNameId.setTableName(tableName);
-        tableNameId.setTableId(tableId);
-        tableNameId.setTableNamespace(tableNamespace);
-        tableNameIdDao.insert(tableNameId);
+        tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, tableNamespace));
     }
 
     public boolean batchCommitDataCommitInfo(List<DataCommitInfo> listData) {
         return dataCommitInfoDao.batchInsert(listData);
     }
 
-    public boolean commitData(MetaInfo metaInfo, boolean changeSchema, String commitOp) {
-        List<PartitionInfo> listPartitionInfo = metaInfo.getListPartition();
+    public boolean commitData(MetaInfo metaInfo, boolean changeSchema, CommitOp commitOp) {
+        List<PartitionInfo> listPartitionInfo = metaInfo.getListPartitionList();
         TableInfo tableInfo = metaInfo.getTableInfo();
-        List<PartitionInfo> readPartitionInfo = metaInfo.getReadPartitionInfo();
+        List<PartitionInfo> readPartitionInfo = metaInfo.getReadPartitionInfoList();
         String tableId = tableInfo.getTableId();
 
-        if (tableInfo.getTableName() != null && !"".equals(tableInfo.getTableName())) {
+        if (!"".equals(tableInfo.getTableName())) {
             updateTableShortName(tableInfo.getTablePath(), tableInfo.getTableId(), tableInfo.getTableName(),
                     tableInfo.getTableNamespace());
         }
@@ -392,34 +391,33 @@ public class DBManager {
         Map<String, PartitionInfo> newMap = new HashMap<>();
         Map<String, PartitionInfo> readPartitionMap = new HashMap<>();
         List<String> partitionDescList = new ArrayList<>();
-        List<UUID> snapshotList = new ArrayList<>();
+        List<String> snapshotList = new ArrayList<>();
 
         for (PartitionInfo partitionInfo : listPartitionInfo) {
             String partitionDesc = partitionInfo.getPartitionDesc();
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
-            snapshotList.addAll(partitionInfo.getSnapshot());
+            snapshotList.addAll(partitionInfo.getSnapshotList());
         }
 
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
-        if (commitOp.equals("AppendCommit") || commitOp.equals("MergeCommit")) {
+        if (commitOp.equals(CommitOp.AppendCommit) || commitOp.equals(CommitOp.MergeCommit)) {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
-                PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
-                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
+                PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
                 int curVersion = curPartitionInfo.getVersion();
                 int newVersion = curVersion + 1;
 
-                curSnapshot.addAll(partitionInfo.getSnapshot());
-                curPartitionInfo.setVersion(newVersion);
-                curPartitionInfo.setSnapshot(curSnapshot);
-                curPartitionInfo.setCommitOp(commitOp);
-                curPartitionInfo.setExpression(partitionInfo.getExpression());
-                newMap.put(partitionDesc, curPartitionInfo);
-                newPartitionList.add(curPartitionInfo);
+                curPartitionInfo
+                        .setVersion(newVersion)
+                        .addAllSnapshot(partitionInfo.getSnapshotList())
+                        .setCommitOp(commitOp)
+                        .setExpression(partitionInfo.getExpression());
+                newMap.put(partitionDesc, curPartitionInfo.build());
+                newPartitionList.add(curPartitionInfo.build());
             }
-        } else if (commitOp.equals("CompactionCommit") || commitOp.equals("UpdateCommit")) {
+        } else if (commitOp.equals(CommitOp.CompactionCommit) || commitOp.equals(CommitOp.UpdateCommit)) {
             if (readPartitionInfo != null) {
                 for (PartitionInfo p : readPartitionInfo) {
                     readPartitionMap.put(p.getPartitionDesc(), p);
@@ -427,7 +425,7 @@ public class DBManager {
             }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
-                PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+                PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
                 int curVersion = curPartitionInfo.getVersion();
 
                 PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -439,38 +437,38 @@ public class DBManager {
                 int newVersion = curVersion + 1;
 
                 if (readPartitionVersion == curVersion) {
-                    curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
+                    curPartitionInfo.clearSnapshot().addAllSnapshot(partitionInfo.getSnapshotList());
                 } else {
-                    Set<String> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc,
+                    Set<CommitOp> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc,
                             readPartitionVersion + 1, curVersion);
-                    if (commitOp.equals("UpdateCommit")) {
-                        if (middleCommitOps.contains("UpdateCommit") ||
-                                (middleCommitOps.size() > 1 && middleCommitOps.contains("CompactionCommit"))) {
+                    if (commitOp.equals(CommitOp.UpdateCommit)) {
+                        if (middleCommitOps.contains(CommitOp.UpdateCommit) ||
+                                (middleCommitOps.size() > 1 && middleCommitOps.contains(CommitOp.CompactionCommit))) {
                             throw new IllegalStateException(
                                     "current operation conflicts with other data writing tasks, table path: " +
                                             tableInfo.getTablePath());
-                        } else if (middleCommitOps.size() == 1 && middleCommitOps.contains("CompactionCommit")) {
+                        } else if (middleCommitOps.size() == 1 && middleCommitOps.contains(CommitOp.CompactionCommit)) {
                             List<PartitionInfo> midPartitions =
                                     getIncrementalPartitions(tableId, partitionDesc, readPartitionVersion + 1,
                                             curVersion);
                             for (PartitionInfo p : midPartitions) {
-                                if (p.getCommitOp().equals("CompactionCommit") && p.getSnapshot().size() > 1) {
+                                if (p.getCommitOp().equals(CommitOp.CompactionCommit) && p.getSnapshotCount() > 1) {
                                     throw new IllegalStateException(
                                             "current operation conflicts with other data writing tasks, table path: " +
                                                     tableInfo.getTablePath());
                                 }
                             }
-                            curPartitionInfo.setSnapshot(partitionInfo.getSnapshot());
+                            curPartitionInfo.clearSnapshot().addAllSnapshot(partitionInfo.getSnapshotList());
                         } else {
-                            updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
+                            curPartitionInfo = updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
                         }
                     } else {
-                        if (middleCommitOps.contains("UpdateCommit") || middleCommitOps.contains("CompactionCommit")) {
+                        if (middleCommitOps.contains(CommitOp.UpdateCommit) || middleCommitOps.contains(CommitOp.CompactionCommit)) {
                             partitionDescList.remove(partitionDesc);
-                            snapshotList.removeAll(partitionInfo.getSnapshot());
+                            snapshotList.removeAll(partitionInfo.getSnapshotList());
                             continue;
                         }
-                        updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
+                        curPartitionInfo = updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);
                     }
                 }
 
@@ -478,8 +476,8 @@ public class DBManager {
                 curPartitionInfo.setCommitOp(commitOp);
                 curPartitionInfo.setExpression(partitionInfo.getExpression());
 
-                newMap.put(partitionDesc, curPartitionInfo);
-                newPartitionList.add(curPartitionInfo);
+                newMap.put(partitionDesc, curPartitionInfo.build());
+                newPartitionList.add(curPartitionInfo.build());
             }
         } else {
             throw new IllegalStateException("this operation is Illegal of the table:" + tableInfo.getTablePath());
@@ -488,17 +486,17 @@ public class DBManager {
         boolean notConflict = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
         if (!notConflict) {
             switch (commitOp) {
-                case "AppendCommit":
+                case AppendCommit:
                     notConflict = appendConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
                     break;
-                case "CompactionCommit":
+                case CompactionCommit:
                     notConflict =
                             compactionConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, 0);
                     break;
-                case "UpdateCommit":
+                case UpdateCommit:
                     notConflict = updateConflict(tableId, partitionDescList, rawMap, readPartitionMap, snapshotList, 0);
                     break;
-                case "MergeCommit":
+                case MergeCommit:
                     notConflict = mergeConflict(tableId, partitionDescList, rawMap, newMap, snapshotList, 0);
             }
         }
@@ -507,32 +505,31 @@ public class DBManager {
     }
 
     public boolean appendConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                  Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int retryTimes) {
+                                  Map<String, PartitionInfo> newMap, List<String> snapshotList, int retryTimes) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
         for (String partitionDesc : partitionDescList) {
-            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
             int curVersion = curPartitionInfo.getVersion();
 
             int lastVersion = newMap.get(partitionDesc).getVersion();
             if (curVersion + 1 == lastVersion) {
                 newPartitionList.add(newMap.get(partitionDesc));
             } else {
-                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                String curCommitOp = curPartitionInfo.getCommitOp();
+                CommitOp curCommitOp = curPartitionInfo.getCommitOp();
 
                 int newVersion = curVersion + 1;
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
-                if (curCommitOp.equals("CompactionCommit") || curCommitOp.equals("AppendCommit") ||
-                        curCommitOp.equals("UpdateCommit")) {
-                    curSnapshot.addAll(partitionInfo.getSnapshot());
-                    curPartitionInfo.setVersion(newVersion);
-                    curPartitionInfo.setSnapshot(curSnapshot);
-                    curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
-                    curPartitionInfo.setExpression(partitionInfo.getExpression());
-                    newPartitionList.add(curPartitionInfo);
-                    newMap.put(partitionDesc, curPartitionInfo);
+                if (curCommitOp.equals(CommitOp.CompactionCommit) || curCommitOp.equals(CommitOp.AppendCommit) ||
+                        curCommitOp.equals(CommitOp.UpdateCommit)) {
+                    curPartitionInfo
+                            .setVersion(newVersion)
+                            .addAllSnapshot(partitionInfo.getSnapshotList())
+                            .setCommitOp(partitionInfo.getCommitOp())
+                            .setExpression(partitionInfo.getExpression());
+                    newPartitionList.add(curPartitionInfo.build());
+                    newMap.put(partitionDesc, curPartitionInfo.build());
                 } else {
                     // other operate conflict, so fail
                     throw new IllegalStateException(
@@ -549,14 +546,14 @@ public class DBManager {
     }
 
     public boolean compactionConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                      Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int retryTime) {
+                                      Map<String, PartitionInfo> readPartitionMap, List<String> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
         for (int i = 0; i < partitionDescList.size(); i++) {
             String partitionDesc = partitionDescList.get(i);
             PartitionInfo rawPartitionInfo = rawMap.get(partitionDesc);
-            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
             int curVersion = curPartitionInfo.getVersion();
 
             PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -567,25 +564,25 @@ public class DBManager {
 
             int newVersion = curVersion + 1;
             if (readPartitionVersion == curVersion) {
-                curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
+                curPartitionInfo.clearSnapshot().addAllSnapshot(rawPartitionInfo.getSnapshotList());
             } else {
-                Set<String> middleCommitOps =
+                Set<CommitOp> middleCommitOps =
                         partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1,
                                 curVersion);
-                if (middleCommitOps.contains("UpdateCommit") || middleCommitOps.contains("CompactionCommit")) {
+                if (middleCommitOps.contains(CommitOp.UpdateCommit) || middleCommitOps.contains(CommitOp.CompactionCommit)) {
                     partitionDescList.remove(i);
-                    snapshotList.removeAll(rawPartitionInfo.getSnapshot());
+                    snapshotList.removeAll(rawPartitionInfo.getSnapshotList());
                     i = i - 1;
                     continue;
                 }
-                updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
+                curPartitionInfo = updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
             }
 
             curPartitionInfo.setVersion(newVersion);
             curPartitionInfo.setCommitOp(rawPartitionInfo.getCommitOp());
             curPartitionInfo.setExpression(rawPartitionInfo.getExpression());
 
-            newPartitionList.add(curPartitionInfo);
+            newPartitionList.add(curPartitionInfo.build());
         }
 
         boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
@@ -597,13 +594,13 @@ public class DBManager {
     }
 
     public boolean updateConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                  Map<String, PartitionInfo> readPartitionMap, List<UUID> snapshotList, int retryTime) {
+                                  Map<String, PartitionInfo> readPartitionMap, List<String> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
         for (String partitionDesc : partitionDescList) {
             PartitionInfo rawPartitionInfo = rawMap.get(partitionDesc);
-            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
             int curVersion = curPartitionInfo.getVersion();
 
             PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
@@ -613,27 +610,27 @@ public class DBManager {
             }
 
             if (readPartitionVersion == curVersion) {
-                curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
+                curPartitionInfo.clearSnapshot().addAllSnapshot(rawPartitionInfo.getSnapshotList());
             } else {
-                Set<String> middleCommitOps =
+                Set<CommitOp> middleCommitOps =
                         partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc, readPartitionVersion + 1,
                                 curVersion);
-                if (middleCommitOps.contains("UpdateCommit") ||
-                        (middleCommitOps.size() > 1 && middleCommitOps.contains("CompactionCommit"))) {
+                if (middleCommitOps.contains(CommitOp.UpdateCommit) ||
+                        (middleCommitOps.size() > 1 && middleCommitOps.contains(CommitOp.CompactionCommit))) {
                     throw new IllegalStateException(
                             "current operation conflicts with other write data tasks, table id is: " + tableId);
-                } else if (middleCommitOps.size() == 1 && middleCommitOps.contains("CompactionCommit")) {
+                } else if (middleCommitOps.size() == 1 && middleCommitOps.contains(CommitOp.CompactionCommit)) {
                     List<PartitionInfo> midPartitions =
                             getIncrementalPartitions(tableId, partitionDesc, readPartitionVersion + 1, curVersion);
                     for (PartitionInfo p : midPartitions) {
-                        if (p.getCommitOp().equals("CompactionCommit") && p.getSnapshot().size() > 1) {
+                        if (p.getCommitOp().equals(CommitOp.CompactionCommit) && p.getSnapshotCount() > 1) {
                             throw new IllegalStateException(
                                     "current operation conflicts with other data writing tasks, table id: " + tableId);
                         }
                     }
-                    curPartitionInfo.setSnapshot(rawPartitionInfo.getSnapshot());
+                    curPartitionInfo.clearSnapshot().addAllSnapshot(rawPartitionInfo.getSnapshotList());
                 } else {
-                    updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
+                    curPartitionInfo = updateSubmitPartitionSnapshot(rawPartitionInfo, curPartitionInfo, readPartition);
                 }
             }
 
@@ -642,7 +639,7 @@ public class DBManager {
             curPartitionInfo.setCommitOp(rawPartitionInfo.getCommitOp());
             curPartitionInfo.setExpression(rawPartitionInfo.getExpression());
 
-            newPartitionList.add(curPartitionInfo);
+            newPartitionList.add(curPartitionInfo.build());
         }
 
         boolean success = partitionInfoDao.transactionInsert(newPartitionList, snapshotList);
@@ -653,12 +650,12 @@ public class DBManager {
     }
 
     public boolean mergeConflict(String tableId, List<String> partitionDescList, Map<String, PartitionInfo> rawMap,
-                                 Map<String, PartitionInfo> newMap, List<UUID> snapshotList, int retryTime) {
+                                 Map<String, PartitionInfo> newMap, List<String> snapshotList, int retryTime) {
         List<PartitionInfo> newPartitionList = new ArrayList<>();
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
 
         for (String partitionDesc : partitionDescList) {
-            PartitionInfo curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId);
+            PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
             int curVersion = curPartitionInfo.getVersion();
 
             int lastVersion = newMap.get(partitionDesc).getVersion();
@@ -666,20 +663,19 @@ public class DBManager {
             if (curVersion + 1 == lastVersion) {
                 newPartitionList.add(newMap.get(partitionDesc));
             } else {
-                List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
-                String curCommitOp = curPartitionInfo.getCommitOp();
+                CommitOp curCommitOp = curPartitionInfo.getCommitOp();
 
                 PartitionInfo partitionInfo = rawMap.get(partitionDesc);
                 int newVersion = curVersion + 1;
-                if (curCommitOp.equals("CompactionCommit") || curCommitOp.equals("UpdateCommit") ||
-                        curCommitOp.equals("MergeCommit")) {
-                    curSnapshot.addAll(partitionInfo.getSnapshot());
-                    curPartitionInfo.setVersion(newVersion);
-                    curPartitionInfo.setSnapshot(curSnapshot);
-                    curPartitionInfo.setCommitOp(partitionInfo.getCommitOp());
-                    curPartitionInfo.setExpression(partitionInfo.getExpression());
-                    newPartitionList.add(curPartitionInfo);
-                    newMap.put(partitionDesc, curPartitionInfo);
+                if (curCommitOp.equals(CommitOp.CompactionCommit) || curCommitOp.equals(CommitOp.UpdateCommit) ||
+                        curCommitOp.equals(CommitOp.MergeCommit)) {
+                    curPartitionInfo
+                            .setVersion(newVersion)
+                            .addAllSnapshot(partitionInfo.getSnapshotList())
+                            .setCommitOp(partitionInfo.getCommitOp())
+                            .setExpression(partitionInfo.getExpression());
+                    newPartitionList.add(curPartitionInfo.build());
+                    newMap.put(partitionDesc, curPartitionInfo.build());
                 } else {
                     // other operate conflict, so fail
                     throw new IllegalStateException(
@@ -696,26 +692,28 @@ public class DBManager {
         return success;
     }
 
-    private void updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo curPartitionInfo,
-                                               PartitionInfo readPartition) {
-        List<UUID> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshot());
-        List<UUID> curSnapshot = curPartitionInfo.getSnapshot();
+    private PartitionInfo.Builder updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo.Builder curPartitionInfo,
+                                                                PartitionInfo readPartition) {
+        List<String> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
+        List<String> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
         if (readPartition != null) {
-            curSnapshot.removeAll(readPartition.getSnapshot());
+            curSnapshot.removeAll(readPartition.getSnapshotList());
         }
         snapshot.addAll(curSnapshot);
-        curPartitionInfo.setSnapshot(snapshot);
+        return curPartitionInfo
+                .clearSnapshot()
+                .addAllSnapshot(snapshot);
     }
 
     private PartitionInfo getOrCreateCurPartitionInfo(Map<String, PartitionInfo> curMap, String partitionDesc,
                                                       String tableId) {
         PartitionInfo curPartitionInfo = curMap.get(partitionDesc);
         if (curPartitionInfo == null) {
-            curPartitionInfo = new PartitionInfo();
-            curPartitionInfo.setTableId(tableId);
-            curPartitionInfo.setPartitionDesc(partitionDesc);
-            curPartitionInfo.setVersion(-1);
-            curPartitionInfo.setSnapshot(new ArrayList<>());
+            curPartitionInfo = PartitionInfo.newBuilder()
+                    .setTableId(tableId)
+                    .setPartitionDesc(partitionDesc)
+                    .setVersion(-1)
+                    .build();
         }
         return curPartitionInfo;
     }
@@ -733,14 +731,14 @@ public class DBManager {
     public List<DataCommitInfo> getTableSinglePartitionDataInfo(PartitionInfo partitionInfo) {
         String tableId = partitionInfo.getTableId();
         String partitionDesc = partitionInfo.getPartitionDesc();
-        List<UUID> snapshotList = partitionInfo.getSnapshot();
+        List<String> snapshotList = partitionInfo.getSnapshotList();
 
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
     public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        List<UUID> commitList = partitionInfo.getSnapshot();
+        List<String> commitList = partitionInfo.getSnapshotList();
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
     }
 
@@ -763,7 +761,7 @@ public class DBManager {
     }
 
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc,
-                                                            List<UUID> dataCommitUUIDs) {
+                                                            List<String> dataCommitUUIDs) {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
@@ -773,40 +771,42 @@ public class DBManager {
             return;
         }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
-        partitionInfo.setVersion(curPartitionInfo.getVersion() + 1);
-        partitionInfoDao.insert(partitionInfo);
+        partitionInfoDao.insert(
+                partitionInfo.toBuilder()
+                        .setVersion(curPartitionInfo.getVersion() + 1)
+                        .build());
     }
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
-        UUID commitId = dataCommitInfo.getCommitId();
-        String commitOp = dataCommitInfo.getCommitOp();
+        String commitId = dataCommitInfo.getCommitId();
+        CommitOp commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);
-        if (metaCommitInfo != null && metaCommitInfo.isCommitted()) {
+        if (metaCommitInfo != null && metaCommitInfo.getCommitted()) {
             LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
             return;
         } else if (metaCommitInfo == null) {
             dataCommitInfoDao.insert(dataCommitInfo);
         }
-        MetaInfo metaInfo = new MetaInfo();
+        MetaInfo.Builder metaInfo = MetaInfo.newBuilder();
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
 
-        List<UUID> snapshot = new ArrayList<>();
+        List<String> snapshot = new ArrayList<>();
         snapshot.add(commitId);
 
         List<PartitionInfo> partitionInfoList = new ArrayList<>();
-        PartitionInfo p = new PartitionInfo();
-        p.setTableId(tableId);
-        p.setPartitionDesc(partitionDesc);
-        p.setCommitOp(commitOp);
-        p.setSnapshot(snapshot);
-        partitionInfoList.add(p);
+        PartitionInfo.Builder p = PartitionInfo.newBuilder()
+                .setTableId(tableId)
+                .setPartitionDesc(partitionDesc)
+                .setCommitOp(commitOp)
+                .addAllSnapshot(snapshot);
+        partitionInfoList.add(p.build());
 
         metaInfo.setTableInfo(tableInfo);
-        metaInfo.setListPartition(partitionInfoList);
+        metaInfo.addAllListPartition(partitionInfoList);
 
-        commitData(metaInfo, false, commitOp);
+        commitData(metaInfo.build(), false, commitOp);
     }
 
     //==============
@@ -816,27 +816,29 @@ public class DBManager {
         return namespaceDao.listNamespaces();
     }
 
-    public void createNewNamespace(String name, JSONObject properties, String comment) {
-        Namespace namespace = new Namespace();
-        namespace.setNamespace(name);
-        namespace.setProperties(properties);
-        namespace.setComment(comment);
+    public void createNewNamespace(String name, String properties, String comment) {
+        Namespace.Builder namespace = Namespace.newBuilder()
+                .setNamespace(name)
+                .setProperties(properties)
+                .setComment(comment == null ? "" : comment);
 
-        namespaceDao.insert(namespace);
+        namespaceDao.insert(namespace.build());
     }
 
     public Namespace getNamespaceByNamespace(String namespace) {
         return namespaceDao.findByNamespace(namespace);
     }
 
-    public void updateNamespaceProperties(String namespace, JSONObject properties) {
+    public void updateNamespaceProperties(String namespace, String properties) {
         Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
-        if (namespaceEntity.getProperties() != null && namespaceEntity.getProperties().containsKey("domain")) {
-            // do not modify domain in properties for this namespace
-            properties.put("domain", namespaceEntity.getProperties().get("domain"));
+        JSONObject originProperties = JSON.parseObject(namespaceEntity.getProperties());
+        JSONObject newProperties = JSONObject.parseObject(properties);
+
+        if (originProperties.containsKey("domain")) {
+            // do not modify domain in properties for this table
+            newProperties.put("domain", originProperties.get("domain"));
         }
-        namespaceEntity.setProperties(properties);
-        namespaceDao.updatePropertiesByNamespace(namespace, properties);
+        namespaceDao.updatePropertiesByNamespace(namespace, newProperties.toJSONString());
     }
 
     public void deleteNamespace(String namespace) {
@@ -847,7 +849,7 @@ public class DBManager {
     public void cleanMeta() {
 
         namespaceDao.clean();
-        namespaceDao.insert(new Namespace("default"));
+        namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();

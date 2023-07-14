@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.tool;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.meta.*;
@@ -188,7 +189,7 @@ public class FlinkUtil {
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
-        JSONObject properties = tableInfo.getProperties();
+        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
 
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
@@ -405,7 +406,7 @@ public class FlinkUtil {
     }
 
     public static boolean isExistHashPartition(TableInfo tif) {
-        JSONObject tableProperties = tif.getProperties();
+        JSONObject tableProperties = JSON.parseObject(tif.getProperties());
         if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
             return false;
         } else {

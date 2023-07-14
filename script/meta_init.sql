@@ -7,8 +7,7 @@ create table if not exists namespace
     primary key (namespace)
 );
 
-insert into namespace(namespace, properties)
-values ('default', '{}')
+insert into namespace(namespace, properties, comment) values ('default', '{}', '')
 ON CONFLICT DO NOTHING;
 
 create table if not exists table_info

@@ -17,6 +17,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.entity.FileOp
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
@@ -32,12 +33,12 @@ object MetaCommit extends Logging {
 
     val table_info = meta_info.table_info
     val partitionInfoArray = meta_info.partitionInfoArray
-    val commit_type = meta_info.commit_type
+    val commit_type = entity.CommitOp.valueOf(meta_info.commit_type.name)
     val table_schema = meta_info.table_info.table_schema
     val readPartitionInfo = meta_info.readPartitionInfo
 
-    val info = new com.dmetasoul.lakesoul.meta.entity.MetaInfo()
-    val tableInfo = new com.dmetasoul.lakesoul.meta.entity.TableInfo()
+    val info = com.dmetasoul.lakesoul.meta.entity.MetaInfo.newBuilder
+    val tableInfo = com.dmetasoul.lakesoul.meta.entity.TableInfo.newBuilder
 
     tableInfo.setTableId(table_info.table_id)
     tableInfo.setTableNamespace(table_info.namespace)
@@ -47,7 +48,7 @@ object MetaCommit extends Logging {
     val json = new JSONObject()
     table_info.configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", table_info.bucket_num.toString)
-    tableInfo.setProperties(json)
+    tableInfo.setProperties(json.toJSONString)
     if (table_info.short_table_name.isDefined) {
       tableInfo.setTableName(table_info.short_table_name.get)
     }
@@ -55,32 +56,32 @@ object MetaCommit extends Logging {
 
     val javaPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
     for (partition_info <- partitionInfoArray) {
-      val partitionInfo = new entity.PartitionInfo()
+      val partitionInfo = entity.PartitionInfo.newBuilder
       partitionInfo.setTableId(table_info.table_id)
       partitionInfo.setPartitionDesc(partition_info.range_value)
-      partitionInfo.setSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.toBuffer))
-      partitionInfo.setCommitOp(commit_type.name)
-      javaPartitionInfoList.add(partitionInfo)
+      partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+      partitionInfo.setCommitOp(commit_type)
+      javaPartitionInfoList.add(partitionInfo.build)
     }
-    info.setListPartition(javaPartitionInfoList)
+    info.addAllListPartition(javaPartitionInfoList)
 
     if (readPartitionInfo != null) {
       val readPartitionInfoList: util.List[entity.PartitionInfo] = new util.ArrayList[entity.PartitionInfo]()
       for (partition <- readPartitionInfo) {
-        val partitionInfo = new entity.PartitionInfo()
+        val partitionInfo = entity.PartitionInfo.newBuilder
         partitionInfo.setTableId(table_info.table_id)
         partitionInfo.setPartitionDesc(partition.range_value)
         partitionInfo.setVersion(partition.version)
-        partitionInfo.setSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.toBuffer))
-        partitionInfo.setCommitOp(commit_type.name)
-        readPartitionInfoList.add(partitionInfo)
+        partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.map(uuid => uuid.toString).toBuffer))
+        partitionInfo.setCommitOp(commit_type)
+        readPartitionInfoList.add(partitionInfo.build)
       }
-      info.setReadPartitionInfo(readPartitionInfoList)
+      info.addAllReadPartitionInfo(readPartitionInfoList)
     }
 
     var result = addDataInfo(meta_info)
     if (result) {
-      result = MetaVersion.dbManager.commitData(info, changeSchema, commit_type.name)
+      result = MetaVersion.dbManager.commitData(info.build, changeSchema, commit_type)
     } else {
       throw LakeSoulErrors.failCommitDataFile()
     }
@@ -103,23 +104,23 @@ object MetaCommit extends Logging {
 
     val metaDataCommitInfoList = new util.ArrayList[entity.DataCommitInfo]()
     for (dataCommitInfo <- dataCommitInfoArray) {
-      val metaDataCommitInfo = new entity.DataCommitInfo()
+      val metaDataCommitInfo = entity.DataCommitInfo.newBuilder
       metaDataCommitInfo.setTableId(table_id)
       metaDataCommitInfo.setPartitionDesc(dataCommitInfo.range_value)
-      metaDataCommitInfo.setCommitOp(commitType)
-      metaDataCommitInfo.setCommitId(dataCommitInfo.commit_id)
+      metaDataCommitInfo.setCommitOp(entity.CommitOp.valueOf(commitType))
+      metaDataCommitInfo.setCommitId(dataCommitInfo.commit_id.toString)
       val fileOps = new util.ArrayList[entity.DataFileOp]()
       for (file_info <- dataCommitInfo.file_ops) {
-        val metaDataFileInfo = new entity.DataFileOp()
+        val metaDataFileInfo = entity.DataFileOp.newBuilder
         metaDataFileInfo.setPath(file_info.path)
-        metaDataFileInfo.setFileOp(file_info.file_op)
+        metaDataFileInfo.setFileOp(FileOp.valueOf(file_info.file_op))
         metaDataFileInfo.setSize(file_info.size)
         metaDataFileInfo.setFileExistCols(file_info.file_exist_cols)
-        fileOps.add(metaDataFileInfo)
+        fileOps.add(metaDataFileInfo.build)
       }
-      metaDataCommitInfo.setFileOps(fileOps)
+      metaDataCommitInfo.addAllFileOps(fileOps)
       metaDataCommitInfo.setTimestamp(dataCommitInfo.modification_time)
-      metaDataCommitInfoList.add(metaDataCommitInfo)
+      metaDataCommitInfoList.add(metaDataCommitInfo.build)
     }
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
   }

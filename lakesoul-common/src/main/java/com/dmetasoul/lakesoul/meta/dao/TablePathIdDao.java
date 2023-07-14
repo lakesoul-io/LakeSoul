@@ -41,10 +41,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
-                tablePathId.setDomain(rs.getString("domain"));
+                tablePathId = tablePathIdFromResultSet(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -65,12 +62,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                TablePathId tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
-                tablePathId.setTableNamespace(rs.getString("table_namespace"));
-                tablePathId.setDomain(rs.getString("domain"));
-                list.add(tablePathId);
+                list.add(tablePathIdFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -91,12 +83,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                TablePathId tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
-                tablePathId.setTableNamespace(rs.getString("table_namespace"));
-                tablePathId.setDomain(rs.getString("domain"));
-                list.add(tablePathId);
+                list.add(tablePathIdFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -232,5 +219,23 @@ public class TablePathIdDao {
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static TablePathId tablePathIdFromResultSet(ResultSet rs) throws SQLException {
+        return TablePathId.newBuilder()
+                .setTablePath(rs.getString("table_path"))
+                .setTableId(rs.getString("table_id"))
+                .setTableNamespace(rs.getString("table_namespace"))
+                .setDomain(rs.getString("domain"))
+                .build();
+    }
+
+    public static TablePathId newTablePathId(String tablePath, String tableId, String namespace) {
+        return TablePathId
+                .newBuilder()
+                .setTablePath(tablePath)
+                .setTableId(tableId)
+                .setTableNamespace(namespace)
+                .build();
     }
 }

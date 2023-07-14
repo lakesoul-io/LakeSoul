@@ -21,6 +21,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.zaxxer.hikari.HikariConfig;
 import org.apache.commons.lang3.StringUtils;
 
@@ -174,7 +175,7 @@ public class DBUtil {
         sb.append("{");
         for (DataFileOp dataFileOp : dataFileOpList) {
             String path = dataFileOp.getPath();
-            String fileOp = dataFileOp.getFileOp();
+            String fileOp = dataFileOp.getFileOp().name();
             long size = dataFileOp.getSize();
             String fileExistCols = dataFileOp.getFileExistCols();
             sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
@@ -198,16 +199,16 @@ public class DBUtil {
                 continue;
             }
             tmpElem = tmpElem.substring(1, tmpElem.length() - 1);
-            DataFileOp dataFileOp = new DataFileOp();
+            DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
-            dataFileOp.setFileOp(fileOp);
+            dataFileOp.setFileOp(FileOp.valueOf(fileOp));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setFileExistCols(tmpElem);
-            rsList.add(dataFileOp);
+            rsList.add(dataFileOp.build());
         }
         return rsList;
     }

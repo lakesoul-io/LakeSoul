@@ -18,6 +18,8 @@
  */
 package org.apache.flink.lakesoul.test;
 
+import com.dmetasoul.lakesoul.meta.DBConfig;
+import com.dmetasoul.lakesoul.meta.dao.NamespaceDao;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
@@ -54,7 +56,7 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
     @Parameterized.Parameters(name = "catalogName = {0} baseNamespace = {1}")
     public static Iterable<Object[]> parameters() {
         return Collections.singletonList(
-                new Object[]{"lakesoul", Namespace.defaultNamespace()});
+                new Object[]{"lakesoul", NamespaceDao.DEFAULT_NAMESPACE});
     }
 
     protected final String catalogName;
@@ -76,13 +78,6 @@ public class LakeSoulCatalogTestBase extends LakeSoulFlinkTestBase {
         this.flinkTable = "test_table";
         this.flinkTablePath = getTempDirUri(flinkTable);
         this.lakesoulNamespace = baseNamespace;
-    }
-
-
-    protected String getFullQualifiedTableName(String tableName) {
-        final List<String> levels = Lists.newArrayList(lakesoulNamespace.getLevels());
-        levels.add(tableName);
-        return Joiner.on('.').join(levels);
     }
 
 

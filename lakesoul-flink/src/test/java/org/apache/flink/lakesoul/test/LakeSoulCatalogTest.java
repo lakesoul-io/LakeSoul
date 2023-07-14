@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.test;
 
+import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -112,9 +113,9 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
         tEnvs.executeSql("CREATE TABLE if not exists like_table with ('path'='/tmp/like_table') like user_behaviorgg");
         TableInfo info2 = DbManage.getTableInfoByNameAndNamespace("like_table", "test_lakesoul_meta");
         Assertions.assertThat(info2.getTableSchema()).isEqualTo(new StructType().add("user_id", LongType, false).add("dt", StringType).add("name", StringType, false).json());
-        Assertions.assertThat(info.getProperties().get("lakesoul_cdc_change_column")).isEqualTo(info2.getProperties().get("lakesoul_cdc_change_column"));
-        Assertions.assertThat(info.getProperties().get("path")).isEqualTo("/tmp/user_behaviorgg");
-        Assertions.assertThat(info2.getProperties().get("path")).isEqualTo("/tmp/like_table");
+        Assertions.assertThat(JSON.parseObject(info.getProperties()).get("lakesoul_cdc_change_column")).isEqualTo(JSON.parseObject(info2.getProperties()).get("lakesoul_cdc_change_column"));
+        Assertions.assertThat(JSON.parseObject(info.getProperties()).get("path")).isEqualTo("/tmp/user_behaviorgg");
+        Assertions.assertThat(JSON.parseObject(info2.getProperties()).get("path")).isEqualTo("/tmp/like_table");
         System.out.println(info);
         System.out.println(info2);
 

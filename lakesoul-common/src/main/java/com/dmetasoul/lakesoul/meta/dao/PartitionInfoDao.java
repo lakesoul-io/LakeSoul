@@ -18,10 +18,13 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.entity.CommitOp;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 
 import java.sql.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class PartitionInfoDao {
 
@@ -40,7 +43,7 @@ public class PartitionInfoDao {
         }
     }
 
-    public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<UUID> snapshotList) {
+    public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<String> snapshotList) {
         boolean flag = true;
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -53,8 +56,8 @@ public class PartitionInfoDao {
                 insertSinglePartitionInfo(conn, pstmt, partitionInfo);
             }
             pstmt = conn.prepareStatement("update data_commit_info set committed = 'true' where commit_id = ?");
-            for (UUID uuid : snapshotList) {
-                pstmt.setString(1, uuid.toString());
+            for (String uuid : snapshotList) {
+                pstmt.setString(1, uuid);
                 pstmt.execute();
             }
             conn.commit();
@@ -82,11 +85,11 @@ public class PartitionInfoDao {
 
     private void insertSinglePartitionInfo(Connection conn, PreparedStatement pstmt, PartitionInfo partitionInfo)
             throws SQLException {
-        Array array = conn.createArrayOf("UUID", partitionInfo.getSnapshot().toArray());
+        Array array = conn.createArrayOf("UUID", partitionInfo.getSnapshotList().toArray());
         pstmt.setString(1, partitionInfo.getTableId());
         pstmt.setString(2, partitionInfo.getPartitionDesc());
         pstmt.setInt(3, partitionInfo.getVersion());
-        pstmt.setString(4, partitionInfo.getCommitOp());
+        pstmt.setString(4, partitionInfo.getCommitOp().name());
         pstmt.setArray(5, array);
         pstmt.setString(6, partitionInfo.getExpression());
         pstmt.setString(7, partitionInfo.getDomain());
@@ -174,18 +177,7 @@ public class PartitionInfoDao {
             }
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                PartitionInfo partitionInfo = new PartitionInfo();
-                partitionInfo.setTableId(rs.getString("table_id"));
-                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
-                partitionInfo.setVersion(rs.getInt("version"));
-                partitionInfo.setCommitOp(rs.getString("commit_op"));
-                partitionInfo.setDomain(rs.getString("domain"));
-                Array snapshotArray = rs.getArray("snapshot");
-                List<UUID> uuidList = new ArrayList<>();
-                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                partitionInfo.setSnapshot(uuidList);
-                partitionInfo.setExpression(rs.getString("expression"));
-                rsList.add(partitionInfo);
+                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -309,19 +301,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                PartitionInfo partitionInfo = new PartitionInfo();
-                partitionInfo.setTableId(rs.getString("table_id"));
-                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
-                partitionInfo.setVersion(rs.getInt("version"));
-                partitionInfo.setCommitOp(rs.getString("commit_op"));
-                partitionInfo.setTimestamp(rs.getLong("timestamp"));
-                partitionInfo.setDomain(rs.getString("domain"));
-                Array snapshotArray = rs.getArray("snapshot");
-                List<UUID> uuidList = new ArrayList<>();
-                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                partitionInfo.setSnapshot(uuidList);
-                partitionInfo.setExpression(rs.getString("expression"));
-                rsList.add(partitionInfo);
+                rsList.add(partitionInfoFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -348,18 +328,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                PartitionInfo partitionInfo = new PartitionInfo();
-                partitionInfo.setTableId(rs.getString("table_id"));
-                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
-                partitionInfo.setVersion(rs.getInt("version"));
-                partitionInfo.setCommitOp(rs.getString("commit_op"));
-                partitionInfo.setDomain(rs.getString("domain"));
-                Array snapshotArray = rs.getArray("snapshot");
-                List<UUID> uuidList = new ArrayList<>();
-                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                partitionInfo.setSnapshot(uuidList);
-                partitionInfo.setExpression(rs.getString("expression"));
-                rsList.add(partitionInfo);
+                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -423,12 +392,12 @@ public class PartitionInfoDao {
         return rsList;
     }
 
-    public Set<String> getCommitOpsBetweenVersions(String tableId, String partitionDesc, int firstVersion,
-                                                   int secondVersion) {
+    public Set<CommitOp> getCommitOpsBetweenVersions(String tableId, String partitionDesc, int firstVersion,
+                                                     int secondVersion) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        Set<String> commitOps = new HashSet<>();
+        Set<CommitOp> commitOps = new HashSet<>();
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement("select distinct(commit_op) from partition_info where table_id = ? and " +
@@ -439,7 +408,7 @@ public class PartitionInfoDao {
             pstmt.setInt(4, secondVersion);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                commitOps.add(rs.getString("commit_op"));
+                commitOps.add(CommitOp.valueOf(rs.getString("commit_op")));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -461,19 +430,7 @@ public class PartitionInfoDao {
             rs = pstmt.executeQuery();
 
             while (rs.next()) {
-                partitionInfo = new PartitionInfo();
-                partitionInfo.setTableId(rs.getString("table_id"));
-                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
-                partitionInfo.setVersion(rs.getInt("version"));
-                partitionInfo.setCommitOp(rs.getString("commit_op"));
-                partitionInfo.setTimestamp(rs.getLong("timestamp"));
-                partitionInfo.setDomain(rs.getString("domain"));
-                Array snapshotArray = rs.getArray("snapshot");
-                List<UUID> uuidList = new ArrayList<>();
-                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                partitionInfo.setSnapshot(uuidList);
-                partitionInfo.setExpression(rs.getString("expression"));
-                partitions.add(partitionInfo);
+                partitions.add(partitionInfoFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -494,17 +451,7 @@ public class PartitionInfoDao {
             rs = pstmt.executeQuery();
 
             while (rs.next()) {
-                partitionInfo = new PartitionInfo();
-                partitionInfo.setTableId(rs.getString("table_id"));
-                partitionInfo.setPartitionDesc(rs.getString("partition_desc"));
-                partitionInfo.setVersion(rs.getInt("version"));
-                partitionInfo.setCommitOp(rs.getString("commit_op"));
-                partitionInfo.setDomain(rs.getString("domain"));
-                Array snapshotArray = rs.getArray("snapshot");
-                List<UUID> uuidList = new ArrayList<>();
-                Collections.addAll(uuidList, (UUID[]) snapshotArray.getArray());
-                partitionInfo.setSnapshot(uuidList);
-                partitionInfo.setExpression(rs.getString("expression"));
+                partitionInfo = partitionInfoFromResultSetWithoutTimestamp(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -527,5 +474,31 @@ public class PartitionInfoDao {
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static PartitionInfo partitionInfoFromResultSet(ResultSet rs) throws SQLException {
+        PartitionInfo.Builder partitionInfo = PartitionInfo.newBuilder()
+                .setTableId(rs.getString("table_id"))
+                .setPartitionDesc(rs.getString("partition_desc"))
+                .setVersion(rs.getInt("version"))
+                .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")))
+                .setDomain(rs.getString("domain"))
+                .setTimestamp(rs.getLong("timestamp"));
+        Array snapshotArray = rs.getArray("snapshot");
+        partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(UUID::toString).collect(Collectors.toList()));
+        partitionInfo.setExpression(rs.getString("expression"));
+        return partitionInfo.build();
+    }
+
+    public static PartitionInfo partitionInfoFromResultSetWithoutTimestamp(ResultSet rs) throws SQLException {
+        PartitionInfo.Builder partitionInfo = PartitionInfo.newBuilder()
+                .setTableId(rs.getString("table_id"))
+                .setPartitionDesc(rs.getString("partition_desc"))
+                .setVersion(rs.getInt("version"))
+                .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")));
+        Array snapshotArray = rs.getArray("snapshot");
+        partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(UUID::toString).collect(Collectors.toList()));
+        partitionInfo.setExpression(rs.getString("expression"));
+        return partitionInfo.build();
     }
 }

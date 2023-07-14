@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.test.schema;
 
+import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -256,7 +257,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
                 "[+I[1.1111112, 1], +I[2.2222223, 2]]",
                 "[+I[1.1111112, 1], +I[2.2222223, 2], +I[3.3333333, null], +I[4.4444447, null]]"
         );
-        Object properties = new DBManager().getTableInfoByName("test_sink").getProperties().get(DBConfig.TableInfoProperty.DROPPED_COLUMN);
+        Object properties = JSON.parseObject(new DBManager().getTableInfoByName("test_sink").getProperties()).get(DBConfig.TableInfoProperty.DROPPED_COLUMN);
         assertThat(Objects.requireNonNull(properties).toString()).contains("b");
     }
 

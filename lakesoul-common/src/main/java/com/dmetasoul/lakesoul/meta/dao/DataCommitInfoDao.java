@@ -19,6 +19,7 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.entity.CommitOp;
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
 
 import java.sql.Connection;
@@ -68,7 +69,7 @@ public class DataCommitInfoDao {
         }
     }
 
-    public void deleteByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<UUID> commitIdList) {
+    public void deleteByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<String> commitIdList) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         if (commitIdList.size() < 1) {
@@ -83,7 +84,7 @@ public class DataCommitInfoDao {
             pstmt.setString(1, tableId);
             pstmt.setString(2, partitionDesc);
             int index = 3;
-            for (UUID uuid : commitIdList) {
+            for (String uuid : commitIdList) {
                 pstmt.setString(index++, uuid.toString());
             }
             pstmt.execute();
@@ -127,7 +128,7 @@ public class DataCommitInfoDao {
         }
     }
 
-    public DataCommitInfo selectByPrimaryKey(String tableId, String partitionDesc, UUID commitId) {
+    public DataCommitInfo selectByPrimaryKey(String tableId, String partitionDesc, String commitId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -139,11 +140,10 @@ public class DataCommitInfoDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.setString(1, tableId);
             pstmt.setString(2, partitionDesc);
-            pstmt.setString(3, commitId.toString());
+            pstmt.setString(3, commitId);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                dataCommitInfo = new DataCommitInfo();
-                createDataCommitInfoFromRs(rs, dataCommitInfo);
+                dataCommitInfo = dataCommitInfoFromResultSet(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -166,8 +166,7 @@ public class DataCommitInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                dataCommitInfo = new DataCommitInfo();
-                createDataCommitInfoFromRs(rs, dataCommitInfo);
+                dataCommitInfo = dataCommitInfoFromResultSet(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -178,7 +177,7 @@ public class DataCommitInfoDao {
     }
 
     public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(String tableId, String partitionDesc,
-                                                                       List<UUID> commitIdList) {
+                                                                       List<String> commitIdList) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -186,7 +185,7 @@ public class DataCommitInfoDao {
         if (commitIdList.size() < 1) {
             return commitInfoList;
         }
-        String uuidListOrderString = commitIdList.stream().map(UUID::toString).collect(Collectors.joining(","));
+        String uuidListOrderString = commitIdList.stream().collect(Collectors.joining(","));
         String sql = String.format("select * from data_commit_info where table_id = ? and partition_desc = ? and " +
                 "commit_id in (%s) order by position(commit_id::text in ?) ", String.join(",", Collections.nCopies(commitIdList.size(), "?")));
 
@@ -196,15 +195,14 @@ public class DataCommitInfoDao {
             pstmt.setString(1, tableId);
             pstmt.setString(2, partitionDesc);
             int index = 3;
-            for (UUID uuid : commitIdList) {
-                pstmt.setString(index++, uuid.toString());
+            for (String uuid : commitIdList) {
+                pstmt.setString(index++, uuid);
             }
             pstmt.setString(index, uuidListOrderString);
 
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                DataCommitInfo dataCommitInfo = new DataCommitInfo();
-                createDataCommitInfoFromRs(rs, dataCommitInfo);
+                DataCommitInfo dataCommitInfo = dataCommitInfoFromResultSet(rs);
                 commitInfoList.add(dataCommitInfo);
             }
         } catch (SQLException e) {
@@ -215,15 +213,17 @@ public class DataCommitInfoDao {
         return commitInfoList;
     }
 
-    private void createDataCommitInfoFromRs(ResultSet rs, DataCommitInfo dataCommitInfo) throws SQLException {
-        dataCommitInfo.setTableId(rs.getString("table_id"));
-        dataCommitInfo.setPartitionDesc(rs.getString("partition_desc"));
-        dataCommitInfo.setCommitId(UUID.fromString(rs.getString("commit_id")));
-        dataCommitInfo.setFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")));
-        dataCommitInfo.setCommitOp(rs.getString("commit_op"));
-        dataCommitInfo.setTimestamp(rs.getLong("timestamp"));
-        dataCommitInfo.setCommitted(rs.getBoolean("committed"));
-        dataCommitInfo.setDomain(rs.getString("domain"));
+    public static DataCommitInfo dataCommitInfoFromResultSet(ResultSet rs) throws SQLException {
+        return DataCommitInfo.newBuilder()
+                .setTableId(rs.getString("table_id"))
+                .setPartitionDesc(rs.getString("partition_desc"))
+                .setCommitId(rs.getString("commit_id"))
+                .addAllFileOps(DBUtil.changeStringToDataFileOpList(rs.getString("file_ops")))
+                .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")))
+                .setTimestamp(rs.getLong("timestamp"))
+                .setCommitted(rs.getBoolean("committed"))
+                .setDomain(rs.getString("domain"))
+                .build();
     }
 
     public boolean batchInsert(List<DataCommitInfo> listData) {
@@ -260,10 +260,10 @@ public class DataCommitInfoDao {
         pstmt.setString(1, dataCommitInfo.getTableId());
         pstmt.setString(2, dataCommitInfo.getPartitionDesc());
         pstmt.setString(3, dataCommitInfo.getCommitId().toString());
-        pstmt.setString(4, DBUtil.changeDataFileOpListToString(dataCommitInfo.getFileOps()));
-        pstmt.setString(5, dataCommitInfo.getCommitOp());
+        pstmt.setString(4, DBUtil.changeDataFileOpListToString(dataCommitInfo.getFileOpsList()));
+        pstmt.setString(5, dataCommitInfo.getCommitOp().toString());
         pstmt.setLong(6, dataCommitInfo.getTimestamp());
-        pstmt.setBoolean(7, dataCommitInfo.isCommitted());
+        pstmt.setBoolean(7, dataCommitInfo.getCommitted());
         pstmt.setString(8, dataCommitInfo.getDomain());
         pstmt.execute();
     }
