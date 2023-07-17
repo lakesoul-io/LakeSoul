@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 数据更新 (Upsert) 和 Merge UDF 使用教程
 
 LakeSoul可以支持对已经入湖的数据做部分字段更新功能，而不必将整张数据表全部覆盖重写，避免这种繁重且浪费资源的操作。

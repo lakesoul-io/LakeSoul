@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Multi Stream Merge to Build Wide Table Tutorial
 
 To build wide table, traditional data warehouse or ETL uses multi tables join according to the primary and foreign key. When there is a large amount of data or multiple joins are required, there will be problems such as low efficiency, large memory consumption, and even OOM. In addition, the Shuffle process takes up most of the data exchange time, and is inefficient. LakeSoul has supported upsert with merge operator, which can be used to implement multi stream merge in realtime, and avoid the above problems by eliminating join and shuffle. The following is a specific example of this scenario.

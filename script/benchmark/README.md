@@ -1,4 +1,10 @@
- properties中设置数据库以及表链接信息
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
+properties中设置数据库以及表链接信息
 
  第一步：1_create_table.py 随机创建table_num张表，每张表主键id，除主键外还包含随机1~10个字段列，列字段类型随机，表名以`random_table_*`开头；
  第二步：2_insert_table_data.sh 向上个随机生成的表中插入数据；

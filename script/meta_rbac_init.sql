@@ -1,3 +1,7 @@
+-- SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+--
+-- SPDX-License-Identifier: Apache-2.0
+
 ALTER TABLE namespace
     ENABLE ROW LEVEL SECURITY;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS namespace_domain_index ON namespace (domain);

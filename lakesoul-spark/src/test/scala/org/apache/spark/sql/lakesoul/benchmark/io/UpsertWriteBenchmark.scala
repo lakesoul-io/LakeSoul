@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.spark.sql.lakesoul.benchmark.io
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable

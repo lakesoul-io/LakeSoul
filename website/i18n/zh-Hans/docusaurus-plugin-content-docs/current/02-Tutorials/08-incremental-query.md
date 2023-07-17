@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 增量查询功能教程
 
 LakeSoul提供基于时间戳的增量查询 API，方便用户获取自给定时间戳以后新增的数据流。用户通过指定起始时间戳和结束时间戳，可以查询这一时间范围内的增量数据，如果未指定结束时间戳，则查询起始时间到当前最新时间的增量数据。

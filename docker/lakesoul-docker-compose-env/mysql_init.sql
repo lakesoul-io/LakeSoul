@@ -1,3 +1,7 @@
+-- SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+--
+-- SPDX-License-Identifier: Apache-2.0
+
 create database if not exists test_cdc;
 
 use test_cdc;

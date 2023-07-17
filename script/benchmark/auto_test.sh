@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Note: Please ensure that these ports on the machine are not occupied: 5432, 3306, 8081, 9000, 9001
 # Note: Please install python3 before running auto_test.sh
 # Note: It is recommended that you install Docker-Desktop(or docker and docker-compose) in advance before running auto_test.sh

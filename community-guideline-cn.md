@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 社区指引
 欢迎使用LakeSoul！在LakeSoul社区，您的任何发声都会被重视，我们希望您能够分享您使用LakeSoul产品的场景、在使用LakeSoul产品时遇到的问题，无论是功能上的需求，还是代码出现的bug都将有社区成员为您进行解决；我们也希望您能够积极地和其他成员进行交流，为社区提供源源不断地活力。欢迎每一位技术从业者参与到LakeSoul社区的治理当中（包括但不限于产品更新迭代、社区生态维护等）。为了使您更加了解、更好地参与到LakeSoul开源社区的治理中，请您阅读以下社区指引，了解LakeSoul社区的原则、使用规范以及社区组织架构，希望您能加入其中共同构建友好、包容、领先的开源社区。
 
