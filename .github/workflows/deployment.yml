@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 name: Deployment
 on:
   push:
@@ -117,8 +121,8 @@ jobs:
       - name: Release to Maven Central Repository
         uses: samuelmeuli/action-maven-publish@v1
         with:
-          gpg_private_key: ${{ secrets.GPG_SIGNING_KEY }}
-          gpg_passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          gpg_private_key: ${{ secrets.MAVEN_SIGN_GPG_KEY }}
+          gpg_passphrase: ${{ secrets.MAVEN_SIGN_GPG_PASSPHRASE }}
           nexus_username: ${{ secrets.OSSRH_USERNAME }}
           nexus_password: ${{ secrets.OSSRH_PASSWORD }}
           maven_goals_phases: "deploy"

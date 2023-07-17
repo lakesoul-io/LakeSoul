@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Community Roles
 ## Users: 
 Users are technology users who only use products but do not contribute, but users can still play a role in the community, including but not limited to: 

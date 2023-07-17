@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Kafka 多 topic 数据入 LakeSoul 教程
 
 通过 LakeSul Kafka Stream 将 Kafka 中的数据同步到 LakeSul 非常方便。

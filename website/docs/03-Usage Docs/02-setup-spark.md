@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Setup Your Spark and Flink Project/Job
 
 ## Required Spark Version

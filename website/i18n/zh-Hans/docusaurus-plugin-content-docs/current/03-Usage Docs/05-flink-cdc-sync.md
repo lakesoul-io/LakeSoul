@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # LakeSoul Flink CDC 整库千表同步
 
 LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API 及 SQL （单表），以及 Stream API （整库多表）。目前支持的上游数据源为 MySQL（5.6-8.0）
