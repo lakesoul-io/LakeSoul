@@ -17,9 +17,9 @@ LakeSoul implements incremental upserts for both row and column and allows concu
 * ACID transactions: Use metadata DB's transaction to implement two-stage commit protocol to ensure that data committing are transactional, allowing concurrent updates on the same partition of the same table, and users will never see inconsistent data.
 * Multi-level partitioning and efficient upsert: LakeSoul supports range and hash partitioning, and a flexible upsert operation at row and column level. The upsert data are stored as delta files, which greatly improves the efficiency and concurrency of writing data, and the optimized merge scan provides efficient MergeOnRead performance.
 * Streaming and batch unification: Streaming Sink is supported in LakeSoul, which can handle streaming data ingesting, historical data filling in batch, interactive query and other scenarios simultaneously.
-* Schema evolution: Users can add new fields at any time and quickly populate the new fields with historical data.
+* Schema evolution: Users can add/drop fields at any time and historical data can be read in compatibility mode.
 * CDC stream and log stream ingestion: supports entire database sync in one Flink job with automatic table discovery and DDL synchronization; supports Kafka multi topics sync with auto schema detect and new topic discovery.
-* Cloud storage optimization: Use Rust's Arrow-rs library to read/write Parquet files on cloud object storage, and optimized the IO performance.
+* High IO performance: Use Rust's Arrow-rs library to read/write Parquet files on cloud object storage, and optimized the IO performance.
 * Multiple compute engines: Currently Spark and Flink are supported for both batch and streaming read/write. We will add support for pure Python reader in near future.
 * Use SQL, Python to develop your analytics and data science applications.
 

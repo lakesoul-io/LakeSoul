@@ -84,7 +84,7 @@ Submit a LakeSoul Flink CDC Sink job to the Flink cluster started above:
 ```bash
 ./bin/flink run -ys 1 -yjm 1G -ytm 2G \
    -c org.apache.flink.lakesoul.entry.MysqlCdc\
-   lakesoul-flink-2.2.0-flink-1.14.jar \
+   lakesoul-flink-2.3.0-flink-1.14.jar \
    --source_db.host localhost \
    --source_db.port 3306 \
    --source_db.db_name test_cdc \

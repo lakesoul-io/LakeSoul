@@ -395,8 +395,10 @@ impl AsyncBatchWriter for SortAsyncWriter {
     }
 }
 
+type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
+
 pub struct SyncSendableMutableLakeSoulWriter {
-    inner: Arc<Mutex<Box<dyn AsyncBatchWriter>>>,
+    inner: Arc<Mutex<SendableWriter>>,
     runtime: Arc<Runtime>,
     schema: SchemaRef,
 }
@@ -429,7 +431,7 @@ impl SyncSendableMutableLakeSoulWriter {
             let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
 
             let schema = writer.schema.clone();
-            let writer: Box<dyn AsyncBatchWriter> = if !config.primary_keys.is_empty() {
+            let writer: Box<dyn AsyncBatchWriter + Send> = if !config.primary_keys.is_empty() {
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
             } else {
                 Box::new(writer)

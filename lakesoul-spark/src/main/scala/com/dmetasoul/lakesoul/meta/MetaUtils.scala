@@ -21,7 +21,7 @@ import org.apache.spark.internal.Logging
 
 object MetaUtils extends Logging {
 
-  lazy val DEFAULT_RANGE_PARTITION_VALUE: String = "-5"
+  lazy val DEFAULT_RANGE_PARTITION_VALUE: String = DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC
 
   var DATA_BASE: String = "test_lakesoul_meta"
 

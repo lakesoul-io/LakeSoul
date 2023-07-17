@@ -41,14 +41,11 @@ public class TableNameIdDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
-            tableNameId = new TableNameId();
             while (rs.next()) {
-                tableNameId.setTableName(rs.getString("table_name"));
-                tableNameId.setTableId(rs.getString("table_id"));
-                tableNameId.setTableNamespace(rs.getString("table_namespace"));
+                tableNameId = tableNameIdFromResultSet(rs);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -71,32 +68,30 @@ public class TableNameIdDao {
                 list.add(tableName);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public boolean insert(TableNameId tableNameId) {
+    public void insert(TableNameId tableNameId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
-                    "insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
+                    "insert into table_name_id (table_name, table_id, table_namespace, domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.setString(3, tableNameId.getTableNamespace());
+            pstmt.setString(4, tableNameId.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public void delete(String tableName, String tableNamespace) {
@@ -110,7 +105,7 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -125,7 +120,7 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -146,7 +141,7 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -163,9 +158,27 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static TableNameId tableNameIdFromResultSet(ResultSet rs) throws SQLException {
+        return TableNameId.newBuilder()
+                .setTableName(rs.getString("table_name"))
+                .setTableId(rs.getString("table_id"))
+                .setTableNamespace(rs.getString("table_namespace"))
+                .setDomain(rs.getString("domain"))
+                .build();
+    }
+
+    public static TableNameId newTableNameId(String tableName, String tableId, String namespace) {
+        return TableNameId
+                .newBuilder()
+                .setTableName(tableName)
+                .setTableId(tableId)
+                .setTableNamespace(namespace)
+                .build();
     }
 }

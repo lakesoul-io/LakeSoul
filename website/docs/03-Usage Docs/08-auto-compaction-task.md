@@ -6,7 +6,7 @@ Since 2.3.0
 
 When the data is written in batch or streaming tasks, the data is mostly written in small batches, therefore there are some intermediate data and a large number of small files. In order to reduce the waste of resources caused by such data and improve the efficiency of data reading, compaction need to be executed periodically for all tables.
 
-If we perform compaction from within a writing job (such as a stream job), the write process may be blocked and latency and throughput maybe impacted. If we start compaction task for each table in a separate job, it will be cumbersome to setup and deploy. Therefore, LakeSoul provides a global automatic compaction service, which can automatically compress the data according to the database and write partition data.
+If we perform compaction from within a writing job (such as a stream job), the write process may be blocked and latency and throughput maybe impacted. If we start compaction task for each table in a separate job, it will be cumbersome to setup and deploy. Therefore, LakeSoul provides a global automatic compaction service, which can automatically compress the data according to the database and write partition data, and the compaction task can be automatically scaled.
 
 ## Implementation Details
 - Depending on PG's trigger notify listen mechanism, define a trigger function in PLSQL in PG: each time data is written, it can trigger the execution of a defined function, analyze and process the partitions that meet the compaction conditions in the function (for example, there are 10 submissions since the last compaction), and then publish the information;
@@ -41,7 +41,7 @@ The use the following command to start the compaction service job:
     --conf "spark.executor.extraJavaOptions=-XX:MaxDirectMemorySize=4G" \
     --conf "spark.executor.memoryOverhead=3g" \
     --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask  \
-    jars/lakesoul-spark-2.3.0-spark-3.3-SNAPSHOT.jar 
+    jars/lakesoul-spark-2.3.0-spark-3.3.jar 
     --threadpool.size=10
     --database=test
 ```

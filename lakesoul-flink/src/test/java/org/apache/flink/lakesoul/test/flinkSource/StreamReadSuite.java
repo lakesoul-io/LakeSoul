@@ -69,7 +69,7 @@ public class StreamReadSuite extends AbstractTestBase {
                     TestUtils.getDateTimeFromTimestamp(Instant.ofEpochMilli(System.currentTimeMillis())));
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
-                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,
@@ -132,7 +132,7 @@ public class StreamReadSuite extends AbstractTestBase {
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
-                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,
@@ -195,7 +195,7 @@ public class StreamReadSuite extends AbstractTestBase {
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
-                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,
@@ -268,7 +268,7 @@ public class StreamReadSuite extends AbstractTestBase {
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
-                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,
@@ -330,7 +330,7 @@ public class StreamReadSuite extends AbstractTestBase {
 
 
             StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
-                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism), parallelism);
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
             LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
             LakeSoulTestUtils.checkStreamingQueryAnswer(
                     tEnvs,

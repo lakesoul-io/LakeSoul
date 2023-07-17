@@ -20,6 +20,8 @@ use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
 use arrow::record_batch::RecordBatch;
 use arrow_array::{new_null_array, types::*, ArrayRef, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, BooleanArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow::compute::kernels::cast::cast_with_options;
+use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING, ARROW_CAST_OPTIONS};
 
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
@@ -175,24 +177,24 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                panic!(
-                    "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
-                    name,
-                    target_datatype,
-                    array.data_type()
-                )
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).unwrap()
+            } else {
+                array.clone()
             }
-            array.clone()
         }
     }
 }
 
 pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) -> ArrayRef {
-    if value == "null" || value == "NULL" {
+    if value == LAKESOUL_NULL_STRING {
         return new_null_array(datatype, num_rows);
     }
     match datatype {
-        DataType::Utf8 => Arc::new(StringArray::from(vec![value.as_str(); num_rows])),
+        DataType::Utf8 => if value == LAKESOUL_EMPTY_STRING {
+            Arc::new(StringArray::from(vec![""; num_rows]))
+        } else {
+            Arc::new(StringArray::from(vec![value.as_str(); num_rows]))
+        }
         DataType::Int32 => Arc::new(PrimitiveArray::<Int32Type>::from(vec![
             value
                 .as_str()

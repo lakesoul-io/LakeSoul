@@ -18,6 +18,7 @@
 
 package org.apache.flink.lakesoul.tool;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.meta.*;
@@ -27,7 +28,6 @@ import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.util.HadoopUtils;
-import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.config.TableConfigOptions;
@@ -57,7 +57,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.*;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 import static java.time.ZoneId.SHORT_IDS;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
@@ -189,7 +189,7 @@ public class FlinkUtil {
 
     public static CatalogTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
-        JSONObject properties = tableInfo.getProperties();
+        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
 
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
@@ -205,19 +205,11 @@ public class FlinkUtil {
             }
             bd.column(field.getName(), field.getType().asSerializableString());
         }
-        List<String> partitionData = Splitter.on(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).splitToList(tableInfo.getPartitions());
-        List<String> parKeys;
-        String parKey = partitionData.get(0);
-        String hashKey = partitionData.get(1);
-        if (!"".equals(hashKey)) {
-            List<String> hashKeys = Splitter.on(LAKESOUL_HASH_PARTITION_SPLITTER).splitToList(hashKey);
-            bd.primaryKey(hashKeys);
+        DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+        if (!partitionKeys.primaryKeys.isEmpty()) {
+            bd.primaryKey(partitionKeys.primaryKeys);
         }
-        if (!"".equals(parKey)) {
-            parKeys = Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(parKey);
-        } else {
-            parKeys = new ArrayList<>();
-        }
+        List<String> parKeys = partitionKeys.rangeKeys;
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
         return CatalogTable.of(bd.build(), "", parKeys, conf);
@@ -368,15 +360,13 @@ public class FlinkUtil {
             return DataOperation.getTableDataInfo(tif.getTableId());
         } else {
             List<String> partitionDescs = remainingPartitions.stream()
-                    .map(map -> map.entrySet().stream()
-                            .map(entry -> entry.getKey() + "=" + entry.getValue())
-                            .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER)))
+                    .map(DBUtil::formatPartitionDesc)
                     .collect(Collectors.toList());
             List<PartitionInfo> partitionInfos = new ArrayList<>();
             for (String partitionDesc : partitionDescs) {
                 partitionInfos.add(MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, ""));
             }
-            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[partitionInfos.size()]);
+            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[0]);
             return DataOperation.getTableDataInfo(ptinfos);
         }
     }
@@ -416,7 +406,7 @@ public class FlinkUtil {
     }
 
     public static boolean isExistHashPartition(TableInfo tif) {
-        JSONObject tableProperties = tif.getProperties();
+        JSONObject tableProperties = JSON.parseObject(tif.getProperties());
         if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
             return false;
         } else {

@@ -26,12 +26,10 @@ public class GlobalConfig {
     private static final Logger LOG = LoggerFactory.getLogger(GlobalConfig.class);
     public static final String authZEnabledKey = "lakesoul.authz.enabled";
     public static final boolean authZEnabledDefault = false;
-    public static final String authZCasbinModelQueryKey = "lakesoul.authz.casbin.model.query";
-    public static final String authZCasbinDBUrlKey = "lakesoul.authz.casbin.db.url";
+    public static final String authZCasbinModelKey = "lakesoul.authz.casbin.model";
     private static GlobalConfig instance = null;
     private boolean authZEnabled;
-    private String authZCasbinModelQuery;
-    private String authZCasbinDBUrl;
+    private String authZCasbinModel;
 
     private GlobalConfig() {
         Connection conn = null;
@@ -60,27 +58,19 @@ public class GlobalConfig {
         return authZEnabled;
     }
 
-    public String getAuthZCasbinModelQuery() {
-        return authZCasbinModelQuery;
-    }
-
-    public String getAuthZCasbinDBUrl() {
-        return authZCasbinDBUrl;
+    public String getAuthZCasbinModel() {
+        return authZCasbinModel;
     }
 
     private void loadAuthZConfig(PreparedStatement pstmt) throws SQLException {
         authZEnabled = getBooleanValue(authZEnabledKey, pstmt, authZEnabledDefault);
         if (authZEnabled) {
-            authZCasbinModelQuery = getStringValue(authZCasbinModelQueryKey, pstmt, "");
-            if (authZCasbinModelQuery.isEmpty()) {
+            authZCasbinModel = getStringValue(authZCasbinModelKey, pstmt, "");
+            if (authZCasbinModel.isEmpty()) {
                 throw new IllegalArgumentException("AuthZ enabled but model table not set");
             }
-            authZCasbinDBUrl = getStringValue(authZCasbinDBUrlKey, pstmt, "");
-            if (authZCasbinDBUrl.isEmpty()) {
-                throw new IllegalArgumentException("AuthZ enabled but policy table not set");
-            }
         }
-        LOG.info("AuthZ enabled {}, model: {}, policy: {}", authZEnabled, authZCasbinModelQuery, authZCasbinDBUrl);
+        LOG.info("AuthZ enabled {}, model: {}", authZEnabled, authZCasbinModel);
     }
 
     private ResultSet getResultSet(String key, PreparedStatement pstmt) throws SQLException {

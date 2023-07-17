@@ -51,10 +51,8 @@ public class JnrLoader {
         String libName = System.mapLibraryName("lakesoul_io_c");
 
         String finalPath = null;
-
-        if (System.getenv("LakeSoulLib") != null) {
-            finalPath = Paths.get(System.getenv("LakeSoulLib"), libName).toString();
-        } else if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
+        
+        if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
             try {
                 File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
                 temp.deleteOnExit();

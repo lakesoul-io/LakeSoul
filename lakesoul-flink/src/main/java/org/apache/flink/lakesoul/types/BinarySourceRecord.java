@@ -35,7 +35,6 @@ import java.util.List;
 import static com.ververica.cdc.connectors.mysql.source.utils.RecordUtils.SCHEMA_CHANGE_EVENT_KEY_NAME;
 
 public class BinarySourceRecord {
-    public static long MAX_BINLOG_SIZE = 1073741824;
 
     private final String topic;
 
@@ -152,7 +151,7 @@ public class BinarySourceRecord {
                 }
 
             }
-            long sortField = MAX_BINLOG_SIZE * (2 + binlogFileIndex) + binlogPosition;
+            long sortField = (binlogFileIndex << 32) + binlogPosition;
             LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, sortField);
             String tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
 

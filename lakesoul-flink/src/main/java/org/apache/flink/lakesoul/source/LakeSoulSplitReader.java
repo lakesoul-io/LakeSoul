@@ -17,7 +17,6 @@
 
 package org.apache.flink.lakesoul.source;
 
-import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
@@ -28,10 +27,10 @@ import org.apache.flink.table.types.logical.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Objects;
 import java.util.Queue;
 
 public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> {
@@ -46,8 +45,8 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
     List<String> pkColumns;
     boolean isStreaming;
     String cdcColumn;
-    @Nullable
-    private LakeSoulArrowReader currentReader;
+
+    private LakeSoulOneSplitRecordsReader lastSplitReader;
 
     public LakeSoulSplitReader(Configuration conf, RowType rowType, RowType rowTypeWithPk, List<String> pkColumns,
                                boolean isStreaming, String cdcColumn) {
@@ -62,8 +61,15 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
 
     @Override
     public RecordsWithSplitIds<RowData> fetch() throws IOException {
-        return new LakeSoulOneSplitRecordsReader(this.conf, splits.peek(), this.rowType, this.rowTypeWithPk,
-                this.pkColumns, this.isStreaming, this.cdcColumn);
+        try {
+            close();
+            lastSplitReader =
+                    new LakeSoulOneSplitRecordsReader(this.conf, Objects.requireNonNull(splits.poll()), this.rowType,
+                            this.rowTypeWithPk, this.pkColumns, this.isStreaming, this.cdcColumn);
+            return lastSplitReader;
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
     }
 
     @Override
@@ -79,14 +85,13 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
 
     @Override
     public void wakeUp() {
-
     }
 
     @Override
     public void close() throws Exception {
-        if (currentReader != null) {
-            currentReader.close();
-            currentReader = null;
+        if (lastSplitReader != null) {
+            lastSplitReader.close();
+            lastSplitReader = null;
         }
     }
 }

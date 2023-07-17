@@ -17,10 +17,8 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
-import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH
-import com.google.common.base.Splitter
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.utils.{DataCommitInfo, DataFileInfo, PartitionInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
 
 import java.util
 import java.util.UUID
@@ -32,7 +30,7 @@ object MetaVersion {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, new JSONObject(), "")
+    dbManager.createNewNamespace(namespace, new JSONObject().toJSONString, "")
   }
 
   def listNamespaces(): Array[String] = {
@@ -79,7 +77,7 @@ object MetaVersion {
                      configuration: Map[String, String],
                      bucket_num: Int): Unit = {
 
-    val partitions = range_column + LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH + hash_column
+    val partitions = DBUtil.formatTableInfoPartitionsField(hash_column, range_column)
     val json = new JSONObject()
     configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
@@ -115,11 +113,7 @@ object MetaVersion {
     }
 
     // table may have no partition at all or only have range or hash partition
-    val partitionCols = Splitter.on(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH).split(partitions).asScala.toArray
-    val (range_column, hash_column) = partitionCols match {
-      case Array(range, hash) => (range, hash)
-      case _ => ("", "")
-    }
+    val partitionCols = DBUtil.parseTableInfoPartitions(partitions);
     val bucket_num = configurationMap.get("hashBucketNum") match {
       case Some(value) => value.toInt
       case _ => -1
@@ -129,8 +123,8 @@ object MetaVersion {
       Some(table_path),
       info.getTableId,
       info.getTableSchema,
-      range_column,
-      hash_column,
+      partitionCols.getRangeKeyString,
+      partitionCols.getPKString,
       bucket_num,
       configurationMap,
       if (short_table_name.equals("")) None else Some(short_table_name)
@@ -143,9 +137,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name()
     )
   }
 
@@ -156,9 +150,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name()
     )
     partitionVersionBuffer.toArray
 
@@ -174,7 +168,7 @@ object MetaVersion {
         range_value = res.getPartitionDesc,
         version = res.getVersion,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
@@ -210,21 +204,16 @@ object MetaVersion {
         table_id = res.getTableId,
         range_value = res.getPartitionDesc,
         version = res.getVersion,
-        read_files = res.getSnapshot.asScala.toArray,
+        read_files = res.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {
-    if (dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)) {
-      println(range_value + " toVersion " + toVersion + " success")
-    } else {
-      println(range_value + " toVersion " + toVersion + " failed. Please check partition value or versionNum is right")
-    }
-
+    dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)
   }
 
   def updateTableSchema(table_name: String,
@@ -269,11 +258,6 @@ object MetaVersion {
 
   def deleteShortTableName(short_table_name: String, table_name: String, table_namespace: String): Unit = {
     dbManager.deleteShortTableName(short_table_name, table_name, table_namespace)
-  }
-
-  def addShortTableName(short_table_name: String,
-                        table_name: String): Unit = {
-    dbManager.addShortTableName(short_table_name, table_name)
   }
 
   def updateTableShortName(table_name: String,

@@ -19,8 +19,12 @@ use std::collections::HashMap;
 use arrow::array::ArrayRef;
 use arrow_array::{new_null_array, new_empty_array};
 use arrow_schema::DataType;
+use arrow::compute::CastOptions;
 
 pub const LAKESOUL_TIMEZONE : &str = "UTC";
+pub const LAKESOUL_NULL_STRING : &str = "__L@KE$OUL_NULL__";
+pub const LAKESOUL_EMPTY_STRING : &str = "__L@KE$OUL_EMPTY_STRING__";
+pub const ARROW_CAST_OPTIONS: CastOptions = CastOptions{safe: true};
 
 
 #[derive(Debug, Default)]

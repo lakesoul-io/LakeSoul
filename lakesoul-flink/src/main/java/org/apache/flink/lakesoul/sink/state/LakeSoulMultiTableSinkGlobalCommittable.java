@@ -20,16 +20,17 @@ package org.apache.flink.lakesoul.sink.state;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
-import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
-import javax.annotation.Nullable;
 import java.io.Serializable;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Wrapper class for both type of global committables in {@link LakeSoulMultiTablesSink}. One committable might be either
+ * Wrapper class for both type of global committables in {@link LakeSoulMultiTablesSink}. One committable might be
+ * either
  * one or more pending files to commit, or one in-progress file to clean up.
  */
 public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
@@ -38,7 +39,8 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
 
     private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables;
 
-    public LakeSoulMultiTableSinkGlobalCommittable(Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
+    public LakeSoulMultiTableSinkGlobalCommittable(
+            Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
         groupedCommitables.forEach((key, disorderedCommitables) -> {
             disorderedCommitables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
             List<LakeSoulMultiTableSinkCommittable> mergedCommittables = new ArrayList<>();
@@ -60,16 +62,23 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
         this.groupedCommitables = groupedCommitables;
     }
 
-    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables = new HashMap<>();
-        globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommitables().forEach((key, value) -> groupedCommitables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
+    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittables =
+                new HashMap<>();
+        globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommitables().forEach(
+                (key, value) -> groupedCommittables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommittables);
     }
 
-    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkCommittable(List<LakeSoulMultiTableSinkCommittable> committables) {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables = new HashMap<>();
-        committables.forEach(committable -> groupedCommitables.computeIfAbsent(Tuple2.of(committable.getIdentity(), committable.getBucketId()), tuple2 -> new ArrayList<>()).add(committable));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
+    public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkCommittable(
+            List<LakeSoulMultiTableSinkCommittable> committables) {
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittables =
+                new HashMap<>();
+        committables.forEach(committable -> groupedCommittables.computeIfAbsent(
+                        Tuple2.of(committable.getIdentity(), committable.getBucketId()), tuple2 -> new ArrayList<>())
+                .add(committable));
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommittables);
     }
 
 

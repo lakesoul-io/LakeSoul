@@ -14,11 +14,8 @@
 
 package com.dmetasoul.lakesoul.meta.rbac;
 
-import com.dmetasoul.lakesoul.meta.DBUtil;
-import com.dmetasoul.lakesoul.meta.DataBaseProperty;
+import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.GlobalConfig;
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import org.casbin.adapter.JDBCAdapter;
 import org.casbin.jcasbin.main.SyncedEnforcer;
 import org.casbin.jcasbin.model.Model;
@@ -26,9 +23,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
 
 public class AuthZEnforcer {
     private static final Logger LOG = LoggerFactory.getLogger(AuthZEnforcer.class);
@@ -54,36 +48,19 @@ public class AuthZEnforcer {
     private DataSource ds;
 
     private void initDataSource() {
-        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
-        HikariConfig config = new HikariConfig();
-        config.setDriverClassName(dataBaseProperty.getDriver());
-        config.setJdbcUrl(GlobalConfig.get().getAuthZCasbinDBUrl());
-        DBUtil.fillDataSourceConfig(config);
-        ds = new HikariDataSource(config);
-        LOG.info("Casbin datasource initialized");
+        ds = DBConnector.getDS();
     }
 
     private void initEnforcer() throws Exception {
-        Connection conn = ds.getConnection();
-        Statement stmt = conn.createStatement();
-        String modelQuery = GlobalConfig.get().getAuthZCasbinModelQuery();
-        ResultSet rs = stmt.executeQuery(modelQuery);
-        if (rs.next()) {
-            String modelConfValue = rs.getString(1);
-            LOG.info("Casbin model: {}", modelConfValue);
+        String modelValue = GlobalConfig.get().getAuthZCasbinModel();
+        Model model = new Model();
+        model.loadModelFromText(modelValue);
 
-            // init casbin model
-            Model model = new Model();
-            model.loadModelFromText(modelConfValue);
+        // init casbin jdbc adapter
+        JDBCAdapter a = new JDBCAdapter(ds, true, "casbin_rule", false);
 
-            // init casbin jdbc adapter
-            JDBCAdapter a = new JDBCAdapter(ds);
-
-            enforcer = new SyncedEnforcer(model, a);
-            LOG.info("Casbin enforcer successfully initialized");
-        } else {
-            throw new IllegalArgumentException("Cannot fetch casbin model config");
-        }
+        enforcer = new SyncedEnforcer(model, a);
+        LOG.info("Casbin enforcer successfully initialized");
     }
 
     private AuthZEnforcer() {

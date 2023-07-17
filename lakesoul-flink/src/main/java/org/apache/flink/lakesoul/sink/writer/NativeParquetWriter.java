@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
@@ -128,6 +129,11 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         public String toString() {
             return "PendingFile(" +
                     path + ", " + creationTime + ")";
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(path, creationTime);
         }
     }
 

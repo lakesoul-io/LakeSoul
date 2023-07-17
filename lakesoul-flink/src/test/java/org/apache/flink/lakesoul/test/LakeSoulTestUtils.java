@@ -79,17 +79,18 @@ public class LakeSoulTestUtils {
     }
 
     public static StreamExecutionEnvironment createStreamExecutionEnvironment() {
-        return createStreamExecutionEnvironment(2);
+        return createStreamExecutionEnvironment(2, 5000, 5000);
     }
 
-    public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism) {
+    public static StreamExecutionEnvironment createStreamExecutionEnvironment(int parallelism, long checkpointInterval, long checkpointTimeout) {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
         env.setParallelism(parallelism);
-        env.enableCheckpointing(5000);
+        env.enableCheckpointing(checkpointInterval);
         env.getCheckpointConfig().setCheckpointStorage(AbstractTestBase.getTempDirUri("/flinkchk"));
-        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(0);
+        env.getCheckpointConfig().setCheckpointTimeout(checkpointTimeout);
         env.getCheckpointConfig().configure(config);
         env.setRestartStrategy(RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, 1000L));
         return env;

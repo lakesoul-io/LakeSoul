@@ -109,7 +109,7 @@ class MergeMultiFileWithOperator(filesInfo: Seq[(MergePartitionedFile, Partition
   val mergeColumnarBatch: MergeColumnarBatchNew = MergeUtils.initMergeBatchNew(fileSeq, mergeOp, indexTypeArray)
 
 
-  var lastVersion: Long = -5
+  var lastVersion: Long = Long.MinValue
 
   def getRowByProxyMergeBatch(): InternalRow = {
     mergeColumnarBatch.getRow(resultIndex)
@@ -148,7 +148,7 @@ class MergeMultiFileWithOperator(filesInfo: Seq[(MergePartitionedFile, Partition
         if (!combineKey(currentVersion, currentRowAndLineId._1).equals(lastKey)) {
           mergeHeap.enqueue(currentFile)
           lastKey = null
-          lastVersion = -5
+          lastVersion = Long.MinValue
           // End the merge
           return
         }

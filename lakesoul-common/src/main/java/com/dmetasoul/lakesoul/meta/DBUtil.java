@@ -21,7 +21,9 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.zaxxer.hikari.HikariConfig;
+import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,12 +31,10 @@ import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 
 public class DBUtil {
 
@@ -52,6 +52,7 @@ public class DBUtil {
     private static final String urlEnv = "LAKESOUL_PG_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
+    private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -69,14 +70,14 @@ public class DBUtil {
     }
 
     /**
-     *  PG connection config retrieved in the following order:
-     *  1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
-     *  2. A system property "lakesoul_home" (in lower case) point to a property file;
-     *      Following config keys are used to read the property file:
-     *          lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
-     *  3. Any of the following env var exist:
-     *      LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
-     *  4. Otherwise, resolved to each's config's default
+     * PG connection config retrieved in the following order:
+     * 1. An env var "LAKESOUL_HOME" (case-insensitive) point to a property file or
+     * 2. A system property "lakesoul_home" (in lower case) point to a property file;
+     * Following config keys are used to read the property file:
+     * lakesoul.pg.driver, lakesoul.pg.url, lakesoul.pg.username, lakesoul.pg.password
+     * 3. Any of the following env var exist:
+     * LAKESOUL_PG_DRIVER, LAKESOUL_PG_URL, LAKESOUL_PG_USERNAME, LAKESOUL_PG_PASSWORD
+     * 4. Otherwise, resolved to each's config's default
      */
     public static DataBaseProperty getDBInfo() {
 
@@ -93,6 +94,7 @@ public class DBUtil {
                 properties.load(Files.newInputStream(Paths.get(configFile)));
             } catch (IOException e) {
                 e.printStackTrace();
+                throw new RuntimeException(e);
             }
         } else {
             properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
@@ -106,6 +108,11 @@ public class DBUtil {
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         return dataBaseProperty;
+    }
+
+    public static String getDomain() {
+        String domain = System.getenv(domainENV);
+        return domain == null ? "public" : domain;
     }
 
     public static void cleanAllTable() {
@@ -168,7 +175,7 @@ public class DBUtil {
         sb.append("{");
         for (DataFileOp dataFileOp : dataFileOpList) {
             String path = dataFileOp.getPath();
-            String fileOp = dataFileOp.getFileOp();
+            String fileOp = dataFileOp.getFileOp().name();
             long size = dataFileOp.getSize();
             String fileExistCols = dataFileOp.getFileExistCols();
             sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
@@ -181,78 +188,95 @@ public class DBUtil {
     public static List<DataFileOp> changeStringToDataFileOpList(String s) {
         List<DataFileOp> rsList = new ArrayList<>();
         if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo 这里应该报错
+            // todo throw error
             return rsList;
         }
         String[] fileOpTmp = s.substring(1, s.length() - 1).split("\",\"");
         for (String value : fileOpTmp) {
             String tmpElem = value.replace("\"", "").replace("\\", "");
             if (!tmpElem.startsWith("(") || !tmpElem.endsWith(")")) {
-                // todo 报错
+                // todo throw error
                 continue;
             }
             tmpElem = tmpElem.substring(1, tmpElem.length() - 1);
-            DataFileOp dataFileOp = new DataFileOp();
+            DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
-            dataFileOp.setFileOp(fileOp);
+            dataFileOp.setFileOp(FileOp.valueOf(fileOp));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setFileExistCols(tmpElem);
-            rsList.add(dataFileOp);
+            rsList.add(dataFileOp.build());
         }
         return rsList;
     }
 
-    public static String changeUUIDListToString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("'%s',", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
+    public static String formatTableInfoPartitionsField(List<String> primaryKeys, List<String> rangePartitions) {
+        return formatTableInfoPartitionsField(
+                String.join(LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys),
+                String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangePartitions));
     }
 
-    public static String changeUUIDListToOrderString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("%s,", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
+    public static String formatTableInfoPartitionsField(String primaryKeys, List<String> rangePartitions) {
+        return formatTableInfoPartitionsField(primaryKeys,
+                String.join(LAKESOUL_RANGE_PARTITION_SPLITTER,
+                        rangePartitions));
     }
 
-    public static List<UUID> changeStringToUUIDList(String s) {
-        List<UUID> uuidList = new ArrayList<>();
-        if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo
-            return uuidList;
-        }
-        s = s.substring(1, s.length() - 1);
-        String[] uuids = s.split(",");
-        for (String uuid : uuids) {
-            uuidList.add(UUID.fromString(uuid));
-        }
-        return uuidList;
+    public static String formatTableInfoPartitionsField(String primaryKeys, String rangePartitions) {
+        return String.join(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, rangePartitions, primaryKeys);
     }
 
-    public static String changePartitionDescListToString(List<String> partitionDescList) {
-        StringBuilder sb = new StringBuilder();
-        if (partitionDescList.size() < 1) {
-            return sb.append("''").toString();
+    public static TablePartitionKeys parseTableInfoPartitions(String partitions) {
+        if (StringUtils.isBlank(partitions) || partitions.equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            return new TablePartitionKeys();
         }
-        for (String s : partitionDescList) {
-            sb.append(String.format("'%s',", s));
+        // has hash keys, no range keys
+        String[] rangeAndPks = StringUtils.split(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH);
+        if (StringUtils.startsWith(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            return new TablePartitionKeys(
+                    Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_HASH_PARTITION_SPLITTER)),
+                    Collections.emptyList());
         }
-        return sb.substring(0, sb.length() - 1);
+        // has range keys, no pks
+        if (StringUtils.endsWith(partitions, LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            return new TablePartitionKeys(Collections.emptyList(),
+                    Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER)));
+        }
+        return new TablePartitionKeys(
+                Arrays.asList(StringUtils.split(rangeAndPks[1], LAKESOUL_HASH_PARTITION_SPLITTER)),
+                Arrays.asList(StringUtils.split(rangeAndPks[0], LAKESOUL_RANGE_PARTITION_SPLITTER))
+        );
+    }
+
+    // assume that map iteration order is partition level order
+    // usually implementations uses LinkedHashMap for this parameter
+    public static String formatPartitionDesc(Map<String, String> partitionDesc) {
+        if (partitionDesc.isEmpty()) {
+            return LAKESOUL_NON_PARTITION_TABLE_PART_DESC;
+        }
+        return partitionDesc.entrySet().stream().map(entry -> String.join(LAKESOUL_PARTITION_DESC_KV_DELIM,
+                entry.getKey(),
+                entry.getValue())).collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
+    }
+
+    public static LinkedHashMap<String, String> parsePartitionDesc(String partitionDesc) {
+        LinkedHashMap<String, String> descMap = new LinkedHashMap<>();
+        if (partitionDesc.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
+            descMap.put("", LAKESOUL_NON_PARTITION_TABLE_PART_DESC);
+            return descMap;
+        }
+        String[] splits = StringUtils.split(partitionDesc, LAKESOUL_RANGE_PARTITION_SPLITTER);
+        for (String part : splits) {
+            String[] kv = part.split(LAKESOUL_PARTITION_DESC_KV_DELIM, -1);
+            if (kv.length != 2 || kv[0].isEmpty()) {
+                throw new RuntimeException("Partition Desc " + part + " is not valid");
+            }
+            descMap.put(kv[0], kv[1]);
+        }
+        return descMap;
     }
 
     public static void fillDataSourceConfig(HikariConfig config) {
@@ -261,8 +285,37 @@ public class DBUtil {
         config.setMaximumPoolSize(8);
         config.setKeepaliveTime(10000);
         config.setMinimumIdle(1);
-        config.addDataSourceProperty( "cachePrepStmts" , "true" );
-        config.addDataSourceProperty( "prepStmtCacheSize" , "250" );
-        config.addDataSourceProperty( "prepStmtCacheSqlLimit" , "2048" );
+        config.addDataSourceProperty("cachePrepStmts", "true");
+        config.addDataSourceProperty("prepStmtCacheSize", "250");
+        config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+    }
+
+    public static class TablePartitionKeys {
+        public List<String> primaryKeys;
+        public List<String> rangeKeys;
+
+        public TablePartitionKeys() {
+            primaryKeys = Collections.emptyList();
+            rangeKeys = Collections.emptyList();
+        }
+
+        public TablePartitionKeys(List<String> pks, List<String> rks) {
+            primaryKeys = pks;
+            rangeKeys = rks;
+        }
+
+        public String getPartitionsString() {
+            return formatTableInfoPartitionsField(primaryKeys, rangeKeys);
+        }
+
+        public String getPKString() {
+            if (primaryKeys.isEmpty()) return "";
+            return String.join(LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys);
+        }
+
+        public String getRangeKeyString() {
+            if (rangeKeys.isEmpty()) return "";
+            return String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangeKeys);
+        }
     }
 }

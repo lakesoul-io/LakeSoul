@@ -86,6 +86,12 @@
             <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -93,6 +99,12 @@
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -182,6 +194,12 @@
             <artifactId>spark-hive_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!--      test deps        -->
@@ -297,7 +315,9 @@
                             <reuseForks>true</reuseForks>
                             <argLine>-Xmx3000m</argLine>
                             <systemPropertyVariables>
-                                <lakesoul.pg.url>jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified</lakesoul.pg.url>
+                                <lakesoul.pg.url>
+                                    jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified
+                                </lakesoul.pg.url>
                             </systemPropertyVariables>
                             <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
                             <includes>
@@ -377,6 +397,7 @@
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
                             <include>mysql:mysql-connector-java</include>
+                            <include>com.google.protobuf:protobuf-java</include>
                         </includes>
                     </artifactSet>
                     <filters>
@@ -419,6 +440,10 @@
                         <relocation>
                             <pattern>org.apache.arrow.vector</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.protobuf</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>
