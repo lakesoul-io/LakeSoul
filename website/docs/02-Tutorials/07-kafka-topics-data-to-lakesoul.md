@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Multiple Kafka Topics Data to LakeSoul Tutorial
 
 It is very convenient to synchronize the data in Kafka to LakeSoul by LakeSoul Kafka Stream.

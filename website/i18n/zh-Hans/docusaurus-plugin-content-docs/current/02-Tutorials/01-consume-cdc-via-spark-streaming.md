@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 通过 Spark Streaming 导入 LakeSoul CDC 表
 
 ## 1. CDC 入湖介绍

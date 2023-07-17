@@ -1,3 +1,7 @@
+-- SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+--
+-- SPDX-License-Identifier: Apache-2.0
+
 SET _domain.name TO :domain;
 SET _user.name TO :user;
 SET _is_admin.value to :is_admin;

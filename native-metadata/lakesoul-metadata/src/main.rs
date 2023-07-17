@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use tokio_postgres::{NoTls, Error};
 
 #[tokio::main] // By default, tokio_postgres uses the tokio crate as its runtime.
