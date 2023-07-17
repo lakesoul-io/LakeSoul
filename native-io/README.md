@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Native IO Layer for LakeSoul
 See [LakeSoul#66](https://github.com/lakesoul-io/LakeSoul/issues/66) for details.
 

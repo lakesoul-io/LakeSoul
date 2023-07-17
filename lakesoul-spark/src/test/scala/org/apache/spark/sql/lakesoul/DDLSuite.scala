@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -444,7 +432,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
-  test("ALTER TABLE with data CHANGE COLUMN from bigint to string - not supported") {
+  test("ALTER TABLE with data CHANGE COLUMN from bigint to string") {
     withTempDir { dir =>
       withTable("lakesoul_test") {
 
@@ -461,7 +449,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(spark.table("lakesoul_test").schema === expectedSchema)
 
         sql("INSERT INTO lakesoul_test SELECT 1, 'a'")
-        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
         val e1 = intercept[AnalysisException] {
@@ -471,7 +459,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
                |CHANGE COLUMN a a String""".stripMargin)
         }
         assert(e1.getMessage.contains("ALTER TABLE CHANGE COLUMN is not supported"))
-        assert(sql("SELECT * FROM lakesoul_test").collect().length == 1)
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row(1, "a"))
         LakeSoulTable.uncached(dir.getCanonicalPath)
 
 
@@ -481,11 +469,8 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           .add("a", StringType, nullable = true)
           .add("b", StringType, nullable = true)
         db.updateTableSchema(tableInfo.getTableId, updatedExpectedSchema.json)
-
         assert(spark.table("lakesoul_test").schema === updatedExpectedSchema)
-        val e2 = intercept[SparkException] {
-          sql("SELECT * FROM lakesoul_test").collect()
-        }
+        assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row("1", "a"))
       }
     }
   }

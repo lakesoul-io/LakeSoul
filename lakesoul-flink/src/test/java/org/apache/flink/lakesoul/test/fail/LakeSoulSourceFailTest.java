@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.test.fail;
 
 import org.apache.flink.api.common.functions.util.PrintSinkOutputWriter;
@@ -10,7 +14,7 @@ import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
-import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
+import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
@@ -65,7 +69,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
     private static final LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
     private static StreamExecutionEnvironment streamExecEnv;
     private static StreamTableEnvironment streamTableEnv;
-    private static LakeSoulCatalogMocks.TestLakeSoulCatalog testLakeSoulCatalog;
+    private static MockLakeSoulCatalog.TestLakeSoulCatalog testLakeSoulCatalog;
     @Rule
     public TemporaryFolder tempFolder = new TemporaryFolder();
 
@@ -73,7 +77,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
     public static void setup() {
         streamExecEnv = LakeSoulTestUtils.createStreamExecutionEnvironment();
         streamTableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(streamExecEnv);
-        testLakeSoulCatalog = new LakeSoulCatalogMocks.TestLakeSoulCatalog();
+        testLakeSoulCatalog = new MockLakeSoulCatalog.TestLakeSoulCatalog();
         LakeSoulTestUtils.registerLakeSoulCatalog(streamTableEnv, testLakeSoulCatalog);
 
         indexArr = new ArrayList<>();
@@ -258,8 +262,8 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
                                    String path, List<String> testData, int timeout) throws IOException {
 
         testLakeSoulCatalog.cleanForTest();
-        LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory testFactory =
-                new LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory();
+        MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
+                new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
         TestTableSink testTableSink =
                 new TestTableSink(resolvedSchema.toPhysicalRowDataType(), "test", false, 2, behavior);
         testFactory.setTestSink(testTableSink);

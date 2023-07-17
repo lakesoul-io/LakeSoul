@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Snapshot Related API Usage Tutorial
 
 LakeSoul uses snapshots to record each updated file set and generate a new version number in the metadata. If the historical snapshot version has not been cleaned up, it can also be read, rolled back and cleaned up through the LakeSoul API. Since the snapshot version is an internal mechanism, LakeSoul provides a timestamp-based snapshot management API for convenience.

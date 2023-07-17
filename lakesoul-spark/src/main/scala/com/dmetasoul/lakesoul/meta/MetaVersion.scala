@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta
 
@@ -21,6 +9,7 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
 
 import java.util
+import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
@@ -29,7 +18,7 @@ object MetaVersion {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, new JSONObject(), "")
+    dbManager.createNewNamespace(namespace, new JSONObject().toJSONString, "")
   }
 
   def listNamespaces(): Array[String] = {
@@ -136,9 +125,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name()
     )
   }
 
@@ -149,9 +138,9 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshot.asScala.toArray,
+      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
       expression = info.getExpression,
-      commit_op = info.getCommitOp
+      commit_op = info.getCommitOp.name()
     )
     partitionVersionBuffer.toArray
 
@@ -167,7 +156,7 @@ object MetaVersion {
         range_value = res.getPartitionDesc,
         version = res.getVersion,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
@@ -203,21 +192,16 @@ object MetaVersion {
         table_id = res.getTableId,
         range_value = res.getPartitionDesc,
         version = res.getVersion,
-        read_files = res.getSnapshot.asScala.toArray,
+        read_files = res.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
         expression = res.getExpression,
-        commit_op = res.getCommitOp
+        commit_op = res.getCommitOp.name
       )
     }
     partitionVersionBuffer.toArray
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {
-    if (dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)) {
-      println(range_value + " toVersion " + toVersion + " success")
-    } else {
-      println(range_value + " toVersion " + toVersion + " failed. Please check partition value or versionNum is right")
-    }
-
+    dbManager.rollbackPartitionByVersion(table_id, range_value, toVersion)
   }
 
   def updateTableSchema(table_name: String,
@@ -262,11 +246,6 @@ object MetaVersion {
 
   def deleteShortTableName(short_table_name: String, table_name: String, table_namespace: String): Unit = {
     dbManager.deleteShortTableName(short_table_name, table_name, table_namespace)
-  }
-
-  def addShortTableName(short_table_name: String,
-                        table_name: String): Unit = {
-    dbManager.addShortTableName(short_table_name, table_name)
   }
 
   def updateTableShortName(table_name: String,

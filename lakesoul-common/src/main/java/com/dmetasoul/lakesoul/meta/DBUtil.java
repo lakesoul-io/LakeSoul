@@ -1,19 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta;
 
@@ -21,6 +8,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
+import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.zaxxer.hikari.HikariConfig;
 import org.apache.commons.lang3.StringUtils;
 
@@ -51,6 +39,7 @@ public class DBUtil {
     private static final String urlEnv = "LAKESOUL_PG_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
+    private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -92,6 +81,7 @@ public class DBUtil {
                 properties.load(Files.newInputStream(Paths.get(configFile)));
             } catch (IOException e) {
                 e.printStackTrace();
+                throw new RuntimeException(e);
             }
         } else {
             properties.setProperty(driverNameKey, getConfigValue(driverNameEnv, driverNameKey, driverNameDefault));
@@ -105,6 +95,11 @@ public class DBUtil {
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
         return dataBaseProperty;
+    }
+
+    public static String getDomain() {
+        String domain = System.getenv(domainENV);
+        return domain == null ? "public" : domain;
     }
 
     public static void cleanAllTable() {
@@ -167,7 +162,7 @@ public class DBUtil {
         sb.append("{");
         for (DataFileOp dataFileOp : dataFileOpList) {
             String path = dataFileOp.getPath();
-            String fileOp = dataFileOp.getFileOp();
+            String fileOp = dataFileOp.getFileOp().name();
             long size = dataFileOp.getSize();
             String fileExistCols = dataFileOp.getFileExistCols();
             sb.append(String.format("\"(%s,%s,%s,\\\"%s\\\")\",", path, fileOp, size, fileExistCols));
@@ -180,89 +175,35 @@ public class DBUtil {
     public static List<DataFileOp> changeStringToDataFileOpList(String s) {
         List<DataFileOp> rsList = new ArrayList<>();
         if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo 这里应该报错
+            // todo throw error
             return rsList;
         }
         String[] fileOpTmp = s.substring(1, s.length() - 1).split("\",\"");
         for (String value : fileOpTmp) {
             String tmpElem = value.replace("\"", "").replace("\\", "");
             if (!tmpElem.startsWith("(") || !tmpElem.endsWith(")")) {
-                // todo 报错
+                // todo throw error
                 continue;
             }
             tmpElem = tmpElem.substring(1, tmpElem.length() - 1);
-            DataFileOp dataFileOp = new DataFileOp();
+            DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
             dataFileOp.setPath(tmpElem.substring(0, tmpElem.indexOf(",")));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             String fileOp = tmpElem.substring(0, tmpElem.indexOf(","));
-            dataFileOp.setFileOp(fileOp);
+            dataFileOp.setFileOp(FileOp.valueOf(fileOp));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setSize(Long.parseLong(tmpElem.substring(0, tmpElem.indexOf(","))));
             tmpElem = tmpElem.substring(tmpElem.indexOf(",") + 1);
             dataFileOp.setFileExistCols(tmpElem);
-            rsList.add(dataFileOp);
+            rsList.add(dataFileOp.build());
         }
         return rsList;
-    }
-
-    public static String changeUUIDListToString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("'%s',", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static String changeUUIDListToOrderString(List<UUID> uuidList) {
-        StringBuilder sb = new StringBuilder();
-        if (uuidList.size() == 0) {
-            return sb.toString();
-        }
-        for (UUID uuid : uuidList) {
-            sb.append(String.format("%s,", uuid.toString()));
-        }
-        sb = new StringBuilder(sb.substring(0, sb.length() - 1));
-        return sb.toString();
-    }
-
-    public static List<UUID> changeStringToUUIDList(String s) {
-        List<UUID> uuidList = new ArrayList<>();
-        if (!s.startsWith("{") || !s.endsWith("}")) {
-            // todo
-            return uuidList;
-        }
-        s = s.substring(1, s.length() - 1);
-        String[] uuids = s.split(",");
-        for (String uuid : uuids) {
-            uuidList.add(UUID.fromString(uuid));
-        }
-        return uuidList;
-    }
-
-    public static String changePartitionDescListToString(List<String> partitionDescList) {
-        StringBuilder sb = new StringBuilder();
-        if (partitionDescList.size() < 1) {
-            return sb.append("''").toString();
-        }
-        for (String s : partitionDescList) {
-            sb.append(String.format("'%s',", s));
-        }
-        return sb.substring(0, sb.length() - 1);
     }
 
     public static String formatTableInfoPartitionsField(List<String> primaryKeys, List<String> rangePartitions) {
         return formatTableInfoPartitionsField(
                 String.join(LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys),
                 String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangePartitions));
-    }
-
-    public static String formatTableInfoPartitionsField(List<String> primaryKeys, String rangePartitions) {
-        return formatTableInfoPartitionsField(String.join(LAKESOUL_HASH_PARTITION_SPLITTER, primaryKeys),
-                rangePartitions);
     }
 
     public static String formatTableInfoPartitionsField(String primaryKeys, List<String> rangePartitions) {

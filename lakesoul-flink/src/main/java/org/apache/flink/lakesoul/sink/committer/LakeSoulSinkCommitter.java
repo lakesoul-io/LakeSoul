@@ -1,27 +1,11 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.committer;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo;
-import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
-import com.dmetasoul.lakesoul.meta.entity.TableNameId;
+import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
@@ -101,29 +85,29 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                         identity.rowType.getFieldNames().stream().filter(name -> !name.equals(SORT_FIELD))
                                 .collect(Collectors.joining(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER));
                 for (String file : files) {
-                    DataFileOp dataFileOp = new DataFileOp();
-                    dataFileOp.setFileOp(LakeSoulSinkOptions.FILE_OPTION_ADD);
+                    DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
+                    dataFileOp.setFileOp(FileOp.add);
                     dataFileOp.setPath(file);
                     Path path = new Path(file);
                     FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
                     dataFileOp.setSize(fileStatus.getLen());
                     dataFileOp.setFileExistCols(fileExistCols);
-                    dataFileOpList.add(dataFileOp);
+                    dataFileOpList.add(dataFileOp.build());
                 }
                 String partition = committable.getBucketId();
 
                 TableNameId tableNameId =
                         lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
 
-                DataCommitInfo dataCommitInfo = new DataCommitInfo();
+                DataCommitInfo.Builder dataCommitInfo = DataCommitInfo.newBuilder();
                 dataCommitInfo.setTableId(tableNameId.getTableId());
                 dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
                         partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
-                dataCommitInfo.setFileOps(dataFileOpList);
-                dataCommitInfo.setCommitOp(LakeSoulSinkOptions.APPEND_COMMIT_TYPE);
+                dataCommitInfo.addAllFileOps(dataFileOpList);
+                dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
                 assert committable.getCommitId() != null;
-                dataCommitInfo.setCommitId(UUID.fromString(committable.getCommitId()));
+                dataCommitInfo.setCommitId(committable.getCommitId());
 
                 if (LOG.isInfoEnabled()) {
                     String fileOpStr = dataFileOpList.stream()
@@ -135,7 +119,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                             dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString());
                 }
 
-                lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo);
+                lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build());
             }
         }
 

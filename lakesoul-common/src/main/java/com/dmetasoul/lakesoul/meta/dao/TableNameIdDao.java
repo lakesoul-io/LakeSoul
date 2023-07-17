@@ -1,19 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta.dao;
 
@@ -41,14 +28,11 @@ public class TableNameIdDao {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
-            tableNameId = new TableNameId();
             while (rs.next()) {
-                tableNameId.setTableName(rs.getString("table_name"));
-                tableNameId.setTableId(rs.getString("table_id"));
-                tableNameId.setTableNamespace(rs.getString("table_namespace"));
+                tableNameId = tableNameIdFromResultSet(rs);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -71,32 +55,30 @@ public class TableNameIdDao {
                 list.add(tableName);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public boolean insert(TableNameId tableNameId) {
+    public void insert(TableNameId tableNameId) {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(
-                    "insert into table_name_id (table_name, table_id, table_namespace) values (?, ?, ?)");
+                    "insert into table_name_id (table_name, table_id, table_namespace, domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tableNameId.getTableName());
             pstmt.setString(2, tableNameId.getTableId());
             pstmt.setString(3, tableNameId.getTableNamespace());
+            pstmt.setString(4, tableNameId.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public void delete(String tableName, String tableNamespace) {
@@ -146,7 +128,7 @@ public class TableNameIdDao {
             pstmt = conn.prepareStatement(sql);
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -167,5 +149,24 @@ public class TableNameIdDao {
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static TableNameId tableNameIdFromResultSet(ResultSet rs) throws SQLException {
+        return TableNameId.newBuilder()
+                .setTableName(rs.getString("table_name"))
+                .setTableId(rs.getString("table_id"))
+                .setTableNamespace(rs.getString("table_namespace"))
+                .setDomain(rs.getString("domain"))
+                .build();
+    }
+
+    public static TableNameId newTableNameId(String tableName, String tableId, String namespace, String domain) {
+        return TableNameId
+                .newBuilder()
+                .setTableName(tableName)
+                .setTableId(tableId)
+                .setTableNamespace(namespace)
+                .setDomain(domain)
+                .build();
     }
 }

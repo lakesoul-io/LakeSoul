@@ -1,12 +1,16 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.test.fail;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
-import org.apache.flink.lakesoul.test.LakeSoulCatalogMocks;
+import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
+import org.apache.flink.lakesoul.test.MockTableSource;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
-import org.apache.flink.lakesoul.test.PostgresContainerHelper;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.SqlDialect;
@@ -42,7 +46,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.apache.flink.lakesoul.test.fail.MockTableSource.MockSplitEnumerator.indexBound;
+import static org.apache.flink.lakesoul.test.MockTableSource.MockSplitEnumerator.indexBound;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulSinkFailTest extends AbstractTestBase {
@@ -68,7 +72,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
     private static TableEnvironment batchEnv;
 
-    private static LakeSoulCatalogMocks.TestLakeSoulCatalog testLakeSoulCatalog;
+    private static MockLakeSoulCatalog.TestLakeSoulCatalog testLakeSoulCatalog;
     @Rule
     public TemporaryFolder tempFolder = new TemporaryFolder();
 
@@ -76,7 +80,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
     public static void setup() {
         streamExecEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(2, 4000L, 4000L);
         streamTableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(streamExecEnv);
-        testLakeSoulCatalog = new LakeSoulCatalogMocks.TestLakeSoulCatalog();
+        testLakeSoulCatalog = new MockLakeSoulCatalog.TestLakeSoulCatalog();
         LakeSoulTestUtils.registerLakeSoulCatalog(streamTableEnv, testLakeSoulCatalog);
         batchEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
         LakeSoulTestUtils.registerLakeSoulCatalog(batchEnv, lakeSoulCatalog);
@@ -334,8 +338,8 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
     private void testLakeSoulSink(ResolvedSchema resolvedSchema, MockTableSource.StopBehavior behavior, String partitionBy,
                                   String path, int timeout) throws IOException {
         testLakeSoulCatalog.cleanForTest();
-        LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory testFactory =
-                new LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory();
+        MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
+                new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
         MockTableSource testTableSource =
                 new MockTableSource(resolvedSchema.toPhysicalRowDataType(), "test", 2, behavior);
         testFactory.setTestSource(testTableSource);
@@ -367,8 +371,8 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
     @Test
     public void testMockTableSource() throws IOException {
         testLakeSoulCatalog.cleanForTest();
-        LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory testFactory =
-                new LakeSoulCatalogMocks.TestLakeSoulDynamicTableFactory();
+        MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
+                new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
         ResolvedSchema resolvedSchema = new ResolvedSchema(
                 Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()), Column.physical("range",
                                 DataTypes.STRING()),

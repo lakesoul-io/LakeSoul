@@ -1,13 +1,17 @@
+-- SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+--
+-- SPDX-License-Identifier: Apache-2.0
+
 create table if not exists namespace
 (
     namespace  text,
     properties json,
     comment    text,
+    domain     text default 'public',
     primary key (namespace)
 );
 
-insert into namespace(namespace, properties)
-values ('default', '{}')
+insert into namespace(namespace, properties, comment) values ('default', '{}', '')
 ON CONFLICT DO NOTHING;
 
 create table if not exists table_info
@@ -19,6 +23,7 @@ create table if not exists table_info
     table_schema    text,
     properties      json,
     partitions      text,
+    domain          text default 'public',
     primary key (table_id)
 );
 
@@ -27,6 +32,7 @@ create table if not exists table_name_id
     table_name      text,
     table_id        text,
     table_namespace text default 'default',
+    domain          text default 'public',
     primary key (table_name, table_namespace)
 );
 
@@ -35,6 +41,7 @@ create table if not exists table_path_id
     table_path      text,
     table_id        text,
     table_namespace text default 'default',
+    domain          text default 'public',
     primary key (table_path)
 );
 
@@ -62,6 +69,7 @@ create table if not exists data_commit_info
     commit_op      text,
     committed      boolean default 'false',
     timestamp      bigint,
+    domain         text default 'public',
     primary key (table_id, partition_desc, commit_id)
 );
 
@@ -74,6 +82,7 @@ create table if not exists partition_info
     timestamp      bigint DEFAULT (date_part('epoch'::text, now()) * (1000)::double precision),
     snapshot       UUID[],
     expression     text,
+    domain         text default 'public',
     primary key (table_id, partition_desc, version)
 );
 

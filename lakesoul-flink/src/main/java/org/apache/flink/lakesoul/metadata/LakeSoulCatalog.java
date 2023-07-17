@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.metadata;
 
@@ -93,7 +79,7 @@ public class LakeSoulCatalog implements Catalog {
             throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
         } else {
 
-            Map<String, String> properties = DBUtil.jsonToStringMap(namespaceEntity.getProperties());
+            Map<String, String> properties = DBUtil.jsonToStringMap(JSON.parseObject(namespaceEntity.getProperties()));
 
             return new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
         }
@@ -115,7 +101,7 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException(String.format("database %s already exists", databaseName));
         }
         try {
-            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -130,7 +116,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
-        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()));
+        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
     }
 
     @Override

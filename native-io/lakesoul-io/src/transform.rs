@@ -1,18 +1,7 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,7 +9,8 @@ use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
 use arrow::record_batch::RecordBatch;
 use arrow_array::{new_null_array, types::*, ArrayRef, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, BooleanArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING};
+use arrow::compute::kernels::cast::cast_with_options;
+use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING, ARROW_CAST_OPTIONS};
 
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
@@ -176,14 +166,10 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                panic!(
-                    "Parquet column cannot be converted in file. Column: [{}], Expected: {}, Found: {}",
-                    name,
-                    target_datatype,
-                    array.data_type()
-                )
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).unwrap()
+            } else {
+                array.clone()
             }
-            array.clone()
         }
     }
 }

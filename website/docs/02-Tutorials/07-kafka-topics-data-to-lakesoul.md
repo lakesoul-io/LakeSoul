@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Multiple Kafka Topics Data to LakeSoul Tutorial
 
 It is very convenient to synchronize the data in Kafka to LakeSoul by LakeSoul Kafka Stream.
@@ -74,7 +80,7 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-2.2.0-spark-3.3.jar \
+./jars/lakesoul-spark-2.3.0-spark-3.3.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false
 ```
 
@@ -151,6 +157,6 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-2.2.0-spark-3.3.jar \
+./jars/lakesoul-spark-2.3.0-spark-3.3.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false http://localhost:8081
 ```

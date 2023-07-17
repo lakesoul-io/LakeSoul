@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.tables
 
@@ -401,8 +389,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id, partitionValue, toVersionNum)
   }
 
-  def rollbackPartition(partitionValue: String, toTime: String): Unit = {
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
+  def rollbackPartition(partitionValue: String, toTime: String, timeZoneID: String = ""): Unit = {
+    val timeZone =
+      if (timeZoneID.equals("") || !TimeZone.getAvailableIDs.contains(timeZoneID)) TimeZone.getDefault
+      else TimeZone.getTimeZone(timeZoneID)
+    val endTime = TimestampFormatter.apply(timeZone).parse(toTime) / 1000
     val version = MetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, partitionValue, endTime)
     if (version < 0) {
       println("No version found in Table before time")
@@ -411,9 +402,11 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     }
   }
 
-  def cleanupPartitionData(partitionDesc: String, toTime: String): Unit = {
-    //"1970-01-01 01:00:00"
-    val endTime = TimestampFormatter.apply(TimeZone.getTimeZone("GMT+0")).parse(toTime) / 1000
+  def cleanupPartitionData(partitionDesc: String, toTime: String, timeZoneID: String = ""): Unit = {
+    val timeZone =
+      if (timeZoneID.equals("") || !TimeZone.getAvailableIDs.contains(timeZoneID)) TimeZone.getDefault
+      else TimeZone.getTimeZone(timeZoneID)
+    val endTime = TimestampFormatter.apply(timeZone).parse(toTime) / 1000
     assert(snapshotManagement.snapshot.getTableInfo.range_partition_columns.nonEmpty,
       s"Table `${snapshotManagement.table_path}` is not a range partitioned table, dropTable command can't use on it.")
     executeCleanupPartition(snapshotManagement, partitionDesc, endTime)

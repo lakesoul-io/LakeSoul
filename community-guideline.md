@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Community guidelines
 Welcome to the community! In the community, any voice of users is valued. We hope you can share your scenarios of using products and the problems you encounter when using products. No matter the functional requirements, or the bugs in the code, community members will solve them for you. We hope you can actively communicate with other community members to provide a continuous energy flow. Welcome every technical practitioner to participate in the governance of the community (including but not limited to product updates and iteration and community ecological maintenance.). To better understand and participate in the management of the open source community, please read the following community guidelines to understand the principles, usage specifications, and community organization structure of the community. We hope you can join us in building a friendly, inclusive, and leading open source community.
 

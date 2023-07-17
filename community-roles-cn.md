@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # 社区角色
 ## 使用者：
 使用者是仅使用LakeSoul但未进行贡献的技术者，但使用者仍可以在社区中发挥作用，包括但不限于：

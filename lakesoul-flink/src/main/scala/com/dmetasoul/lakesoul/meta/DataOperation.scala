@@ -1,21 +1,6 @@
-/*
- *
- * Copyright [2022] [DMetaSoul Team]
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta
 
@@ -107,9 +92,9 @@ object DataOperation {
   private def fillFiles(file_arr_buf: ArrayBuffer[DataFileInfo],
                         dataCommitInfoList: Array[DataCommitInfo]): ArrayBuffer[DataFileInfo] = {
     dataCommitInfoList.foreach(data_commit_info => {
-      val fileOps = data_commit_info.getFileOps.asScala.toArray
+      val fileOps = data_commit_info.getFileOpsList.asScala.toArray
       fileOps.foreach(file => {
-        file_arr_buf += DataFileInfo(data_commit_info.getPartitionDesc, file.getPath, file.getFileOp, file.getSize,
+        file_arr_buf += DataFileInfo(data_commit_info.getPartitionDesc, file.getPath, file.getFileOp.name, file.getSize,
           data_commit_info.getTimestamp, file.getFileExistCols)
       })
     })
@@ -120,15 +105,15 @@ object DataOperation {
   private def getSinglePartitionDataInfo(partition_info: PartitionInfo): ArrayBuffer[DataFileInfo] = {
     val file_arr_buf = new ArrayBuffer[DataFileInfo]()
 
-    val metaPartitionInfo = new entity.PartitionInfo()
+    val metaPartitionInfo = entity.PartitionInfo.newBuilder
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
-    metaPartitionInfo.setSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.toBuffer))
-    val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo).asScala.toArray
+    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+    val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo.build).asScala.toArray
     for (metaDataCommitInfo <- dataCommitInfoList) {
-      val fileOps = metaDataCommitInfo.getFileOps.asScala.toArray
+      val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
       for (file <- fileOps) {
-        file_arr_buf += DataFileInfo(partition_info.range_value, file.getPath, file.getFileOp, file.getSize,
+        file_arr_buf += DataFileInfo(partition_info.range_value, file.getPath, file.getFileOp.name, file.getSize,
           metaDataCommitInfo.getTimestamp, file.getFileExistCols)
       }
     }
@@ -193,16 +178,16 @@ object DataOperation {
           loop.break()
         }
         if (startVersionTimestamp == dataItem.getTimestamp) {
-          preVersionUUIDs ++= dataItem.getSnapshot.asScala
+          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            val compactShotList = dataItem.getSnapshot.asScala.toArray
+            val compactShotList = dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray
             compactionUUIDs += compactShotList(0)
             if (compactShotList.length > 1) {
               incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
-            incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
+            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
           }
         }
       }
@@ -214,7 +199,7 @@ object DataOperation {
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dataCommitInfoList = dbManager
-        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(uuid => uuid.toString).asJava)).asScala.toArray
       fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }
