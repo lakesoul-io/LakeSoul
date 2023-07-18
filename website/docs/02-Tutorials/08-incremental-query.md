@@ -1,10 +1,10 @@
+# Incremental Query Function Tutorial
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# Incremental Query Function Tutorial
 
 LakeSoul provides a timestamp-based incremental query API to facilitate users to obtain data streams added after a given timestamp. Users can query the incremental data within this time range by specifying the start timestamp and the end timestamp. If the end timestamp is not specified, the incremental data from the start time to the current latest time will be queried.
 

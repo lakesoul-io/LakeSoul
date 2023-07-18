@@ -1,10 +1,10 @@
+# 搭建本地测试环境
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# 搭建本地测试环境
 
 ## 启动一个 PostgreSQL 数据库
 可以通过docker使用下面命令快速搭建一个pg数据库：

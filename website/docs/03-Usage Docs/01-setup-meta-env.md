@@ -1,10 +1,10 @@
+# Setup LakeSoul Meta DB
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# Setup LakeSoul Meta DB
 
 LakeSoul use `lakesoul_home` (case insensitive) environment variable or `lakesoul_home` JVM property (case sensitive) to locate config file. The config file consists of required LakeSoul configs such as Postgres's connection info. An example property file is like the following:
 ```ini

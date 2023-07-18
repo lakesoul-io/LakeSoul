@@ -1,15 +1,16 @@
-<!--
-SPDX-FileCopyrightText: 2023 LakeSoul Contributors
-
-SPDX-License-Identifier: Apache-2.0
--->
-
 ---
 id: intro
 sidebar_position: 1
 ---
 
 # LakeSoul 介绍
+
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul 是由数元灵科技研发并于 2023 年 5 月捐赠给 Linux Foundation AI & Data 基金会的一个的云原生湖仓一体框架，具备高可扩展的元数据管理、ACID 事务、高效灵活的 upsert 操作、Schema 演进和批流一体化处理等特性。
 
 # LakeSoul 的主要特性：

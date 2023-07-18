@@ -1,13 +1,14 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# LakeSoul CDC 表格式
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-
-# LakeSoul CDC 表格式
 CDC (Change Data Capture) 是湖仓重要的数据源之一. LakeSoul CDC 表的目标是能够从在线 OLTP 数据库快速同步数据到 LakeSoul 表中，从而下游分析计算任务在较小的时间间隔后就可以读到在线数据库的同步数据，消除了传统 T+1 复制的开销。相比普通支持 Upsert 的表，CDC 表额外支持了删除行的操作。
 
 LakeSoul CDC 表使用一个额外的操作列（列名可以自定义）来记录 CDC 的操作类型，可以支持从 [Debezium](https://debezium.io/), [canal](https://github.com/alibaba/canal) 和 [Flink CDC](https://github.com/ververica/flink-cdc-connectors) 中导入 CDC 数据。LakeSoul 默认建表并不会启用 CDC 表格式，默认表仅支持 Upsert 操作。要开启对 CDC 的支持，需要在建表时增加额外的属性。

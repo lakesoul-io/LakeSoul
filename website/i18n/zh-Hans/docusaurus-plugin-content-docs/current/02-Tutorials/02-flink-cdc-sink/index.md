@@ -1,10 +1,10 @@
+# LakeSoul Flink CDC 整库同步使用教程
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# LakeSoul Flink CDC 整库同步使用教程
 
 LakeSoul Flink CDC Sink 支持从 MySQL 数据源整库同步到 LakeSoul，能够支持自动建表、自动 Schema 变更、Exactly Once 语义等。
 
