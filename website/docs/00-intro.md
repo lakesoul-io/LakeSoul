@@ -1,14 +1,14 @@
-<!--
-SPDX-FileCopyrightText: 2023 LakeSoul Contributors
-
-SPDX-License-Identifier: Apache-2.0
--->
-
 ---
 sidebar_position: 1
 ---
 
 # LakeSoul Introduction
+
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
 
 LakeSoul is a cloud-native Lakehouse framework and supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
 

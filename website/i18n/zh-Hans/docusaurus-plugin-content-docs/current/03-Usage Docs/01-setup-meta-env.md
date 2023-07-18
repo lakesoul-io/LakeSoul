@@ -1,10 +1,10 @@
+# 配置 LakeSoul 元数据库
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# 配置 LakeSoul 元数据库
 
 ## 使用配置文件
 LakeSoul 使用 `lakesoul_home` (大小写均可) 环境变量或者 `lakesoul_home` JVM Property （只能全小写）来定位元数据库的配置文件，配置文件中主要包含 PostgreSQL DB 的连接信息。一个示例配置文件:

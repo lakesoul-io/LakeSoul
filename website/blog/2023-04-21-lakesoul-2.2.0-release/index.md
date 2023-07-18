@@ -1,10 +1,10 @@
+# What's new in version 2.2.0
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# What's new in version 2.2.0
 
 Recently, after months of research and development, LakeSoul released version 2.2.0([Github Release Notes](https://github.com/lakesoul-io/LakeSoul/releases/tag/v2.2.0)). The most important upgrade in this version is that the new Native IO is enabled by default in both Spark and Flink, and LakeSoul's performance has once again significantly been improved and expanded its performance leadership advantage in the field of Cloud Native Data Lakehouse.This article provides you with a detailed explanation of the updates to LakeSoul version 2.2.0 and the technical details of Native IO.
 
