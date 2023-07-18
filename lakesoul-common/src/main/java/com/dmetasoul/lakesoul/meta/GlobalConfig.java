@@ -48,6 +48,10 @@ public class GlobalConfig {
         return authZEnabled;
     }
 
+    public void setAuthZEnabled(boolean enabled){
+        this.authZEnabled = enabled;
+    }
+
     public String getAuthZCasbinModel() {
         return authZCasbinModel;
     }

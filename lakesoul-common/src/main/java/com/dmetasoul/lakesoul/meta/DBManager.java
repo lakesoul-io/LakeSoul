@@ -8,6 +8,8 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZ;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZAspect;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
@@ -128,9 +130,9 @@ public class DBManager {
         }
         boolean ex = false;
         try {
-            if(AuthZEnforcer.authZEnabled()){
-                tableInfo.setDomain(AuthZContext.getInstance().getDomain());
-            }
+            tableInfo.setDomain( AuthZEnforcer.authZEnabled()
+                    ? AuthZContext.getInstance().getDomain()
+                    : "public");
             tableInfoDao.insert(tableInfo.build());
         } catch (Exception e) {
             ex = true;
@@ -327,17 +329,6 @@ public class DBManager {
         tableNameIdDao.delete(tableName, tableNamespace);
     }
 
-    public void addShortTableName(String tableName, String tablePath) {
-        TableInfo tableInfo = getTableInfoByPath(tablePath);
-
-        tableNameIdDao.insert(
-                TableNameId.newBuilder()
-                        .setTableId(tableInfo.getTableId())
-                        .setTableName(tableName)
-                        .setDomain(AuthZContext.getInstance().getDomain())
-                        .build());
-    }
-
     public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
@@ -362,9 +353,7 @@ public class DBManager {
         }
         tableInfoDao.updateByTableId(tableId, tableName, tablePath, "");
 
-        // TODO: 正确获取domain信息
-        // String domain = AuthZContext.getInstance().getDomain();
-        tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, tableNamespace, domain));
+        tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, tableNamespace, tableInfo.getDomain()));
     }
 
     public boolean batchCommitDataCommitInfo(List<DataCommitInfo> listData) {
@@ -819,10 +808,9 @@ public class DBManager {
                 .setProperties(properties)
                 .setComment(comment == null ? "" : comment);
 
-        if(AuthZEnforcer.authZEnabled()){
-            namespace.setDomain(AuthZContext.getInstance().getDomain());
-        }
-
+        namespace.setDomain(AuthZEnforcer.authZEnabled()
+                ? AuthZContext.getInstance().getDomain()
+                : "public");
         namespaceDao.insert(namespace.build());
 
     }

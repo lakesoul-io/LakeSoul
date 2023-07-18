@@ -14,6 +14,7 @@ import org.aspectj.lang.annotation.Pointcut;
 import org.aspectj.lang.reflect.MethodSignature;
 
 import java.util.List;
+import java.util.Objects;
 
 @Aspect
 public class AuthZAspect {
@@ -86,20 +87,28 @@ public class AuthZAspect {
         return result;
     }
 
-
     private void validate(String subject, String domain, String baseObject, List<String> objects, String action){
         for(String obj : objects){
             // override domain and object passed from outside
-            String objFullName = baseObject + "_" + obj;
-            List<List<String>> policies = AuthZEnforcer.get().getFilteredNamedPolicy("p", 2, objFullName);
-            if(policies.size() == 0) {
-                throw new AuthZException();
-            }
-            String objDomain = policies.get(0).get(1);
+            String objFullName = getObjectFullName(baseObject, obj);
+            String objDomain =getDomainByObject(objFullName);
             if(!advice.hasPermit(subject, objDomain, objFullName, action)){
                 throw new AuthZException();
             }
         }
 
     }
+
+    public static String getObjectFullName(String baseObject, String object){
+        return baseObject + "_" + object;
+    }
+
+    public static String getDomainByObject(String objectFullName){
+        List<List<String>> policies = Objects.requireNonNull(AuthZEnforcer.get()).getFilteredNamedPolicy("p", 2, objectFullName);
+        if(policies.size() == 0) {
+            throw new AuthZException();
+        }
+        return policies.get(0).get(1);
+    }
+
 }

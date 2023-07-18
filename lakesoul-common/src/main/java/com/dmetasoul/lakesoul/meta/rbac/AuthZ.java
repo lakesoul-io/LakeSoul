@@ -14,5 +14,19 @@ public @interface AuthZ {
     String object() default "object";
     String action() default "action";
 
+    public enum Object {
+        DOMAIN("domain"),
+        DATABASE("db"),
+
+        TABLE("tb");
+
+        public String value;
+
+        Object(String baseObject){
+            this.value = baseObject;
+        }
+
+    }
+
 }
 
