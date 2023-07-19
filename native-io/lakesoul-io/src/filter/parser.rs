@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ops::Not;
 use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::{col, Expr};
 use datafusion::scalar::ScalarValue;

@@ -10,10 +10,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow::datatypes::SchemaRef;
-use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 use arrow_schema::Schema;
 
+use datafusion::error::Result;
 use datafusion::physical_plan::RecordBatchStream;
+use datafusion_common::DataFusionError::ArrowError;
 
 #[derive(Debug)]
 pub(crate) struct EmptySchemaStream {
@@ -35,7 +37,7 @@ impl EmptySchemaStream {
 }
 
 impl Stream for EmptySchemaStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.remaining_num_rows > 0 {
@@ -50,7 +52,7 @@ impl Stream for EmptySchemaStream {
                 vec![],
                 &RecordBatchOptions::new().with_row_count(Some(row_count)),
             );
-            Poll::Ready(Some(batch))
+            Poll::Ready(Some(batch.map_err(|e| ArrowError(e))))
         } else {
             Poll::Ready(None)
         }

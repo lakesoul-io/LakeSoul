@@ -200,7 +200,7 @@ impl LakeSoulReader {
         }
     }
 
-    pub async fn next_rb(&mut self) -> Option<ArrowResult<RecordBatch>> {
+    pub async fn next_rb(&mut self) -> Option<Result<RecordBatch>> {
         if let Some(stream) = &mut self.stream {
             stream.next().await
         } else {
@@ -240,7 +240,7 @@ impl SyncSendableMutableLakeSoulReader {
 
     pub fn next_rb_callback(
         &self,
-        f: Box<dyn FnOnce(Option<ArrowResult<RecordBatch>>) + Send + Sync>,
+        f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>,
     ) -> JoinHandle<()> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
@@ -270,6 +270,7 @@ mod tests {
     use super::*;
     use rand::prelude::*;
     use std::mem::ManuallyDrop;
+    use std::ops::Not;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
     use tokio::runtime::Builder;

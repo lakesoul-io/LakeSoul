@@ -12,36 +12,36 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::Arc;
 
-pub use arrow::array::{export_array_into_raw, StructArray};
-use arrow::array::{make_array_from_raw, Array};
+pub use arrow::array::StructArray;
+use arrow::array::{Array, ArrayData};
 use arrow::datatypes::Schema;
-use arrow::error::ArrowError::CastError;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow::ffi::ArrowArray;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use tokio::runtime::{Builder, Runtime};
 
 use lakesoul_io::lakesoul_reader::{
-    ArrowResult, DataFusionError, LakeSoulReader, RecordBatch, SyncSendableMutableLakeSoulReader,
+    Result, LakeSoulReader, RecordBatch, SyncSendableMutableLakeSoulReader,
 };
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
 
 #[repr(C)]
-pub struct Result<OpaqueT> {
+pub struct CResult<OpaqueT> {
     ptr: *mut OpaqueT,
     err: *const c_char,
 }
 
-impl<OpaqueT> Result<OpaqueT> {
+impl<OpaqueT> CResult<OpaqueT> {
     pub fn new<T>(obj: T) -> Self {
-        Result {
+        CResult {
             ptr: convert_to_opaque_raw::<T, OpaqueT>(obj),
             err: std::ptr::null(),
         }
     }
 
     pub fn error(err_msg: &str) -> Self {
-        Result {
+        CResult {
             ptr: std::ptr::null_mut(),
             err: CString::new(err_msg).unwrap().into_raw(),
         }
@@ -301,18 +301,18 @@ pub extern "C" fn create_lakesoul_io_config_from_builder(builder: NonNull<IOConf
 pub extern "C" fn create_lakesoul_reader_from_config(
     config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
-) -> NonNull<Result<Reader>> {
+) -> NonNull<CResult<Reader>> {
     let config: LakeSoulIOConfig = from_opaque(config);
     let runtime: Runtime = from_opaque(runtime);
     let result = match LakeSoulReader::new(config) {
-        Ok(reader) => Result::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime)),
-        Err(e) => Result::<Reader>::error(format!("{}", e).as_str()),
+        Ok(reader) => CResult::<Reader>::new(SyncSendableMutableLakeSoulReader::new(reader, runtime)),
+        Err(e) => CResult::<Reader>::error(format!("{}", e).as_str()),
     };
     convert_to_nonnull(result)
 }
 
 #[no_mangle]
-pub extern "C" fn check_reader_created(reader: NonNull<Result<Reader>>) -> *const c_char {
+pub extern "C" fn check_reader_created(reader: NonNull<CResult<Reader>>) -> *const c_char {
     unsafe {
         if let Some(err) = reader.as_ref().err.as_ref() {
             err as *const c_char
@@ -345,7 +345,7 @@ fn call_i32_result_callback(callback: I32ResultCallback, status: i32, err: *cons
 }
 
 #[no_mangle]
-pub extern "C" fn start_reader(reader: NonNull<Result<Reader>>, callback: ResultCallback) {
+pub extern "C" fn start_reader(reader: NonNull<CResult<Reader>>, callback: ResultCallback) {
     unsafe {
         let mut reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
         let result = reader.as_mut().start_blocked();
@@ -362,14 +362,14 @@ pub extern "C" fn start_reader(reader: NonNull<Result<Reader>>, callback: Result
 
 #[no_mangle]
 pub extern "C" fn next_record_batch(
-    reader: NonNull<Result<Reader>>,
+    reader: NonNull<CResult<Reader>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
     callback: I32ResultCallback,
 ) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
-        let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+        let f = move |rb: Option<Result<RecordBatch>>| match rb {
             None => {
                 call_i32_result_callback(callback, -1, std::ptr::null());
             }
@@ -384,13 +384,11 @@ pub extern "C" fn next_record_batch(
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
                     let batch: Arc<StructArray> = Arc::new(rb.into());
-                    let result = export_array_into_raw(
-                        batch,
-                        array_addr as *mut FFI_ArrowArray,
-                        schema_addr as *mut FFI_ArrowSchema,
-                    );
-                    match result {
-                        Ok(()) => {
+                    *(array_addr as *mut FFI_ArrowArray) = FFI_ArrowArray::new(&batch.to_data());
+                    let schema_result = FFI_ArrowSchema::try_from(batch.data_type());
+                    match schema_result {
+                        Ok(schema) => {
+                            *(schema_addr as *mut FFI_ArrowSchema) = schema;
                             call_i32_result_callback(callback, rows, std::ptr::null());
                         }
                         Err(e) => {
@@ -409,7 +407,7 @@ pub extern "C" fn next_record_batch(
 }
 
 #[no_mangle]
-pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>, schema_addr: c_ptrdiff_t) {
+pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<CResult<Reader>>, schema_addr: c_ptrdiff_t) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
         let schema = reader.as_ref().get_schema().unwrap_or_else(|| Arc::new(Schema::empty()));
@@ -421,7 +419,7 @@ pub extern "C" fn lakesoul_reader_get_schema(reader: NonNull<Result<Reader>>, sc
 }
 
 #[no_mangle]
-pub extern "C" fn free_lakesoul_reader(reader: NonNull<Result<Reader>>) {
+pub extern "C" fn free_lakesoul_reader(reader: NonNull<CResult<Reader>>) {
     from_nonnull(reader).free::<SyncSendableMutableLakeSoulReader>();
 }
 
@@ -430,18 +428,18 @@ pub extern "C" fn free_lakesoul_reader(reader: NonNull<Result<Reader>>) {
 pub extern "C" fn create_lakesoul_writer_from_config(
     config: NonNull<IOConfig>,
     runtime: NonNull<TokioRuntime>,
-) -> NonNull<Result<Writer>> {
+) -> NonNull<CResult<Writer>> {
     let config: LakeSoulIOConfig = from_opaque(config);
     let runtime: Runtime = from_opaque(runtime);
     let result = match SyncSendableMutableLakeSoulWriter::try_new(config, runtime) {
-        Ok(writer) => Result::<Writer>::new(writer),
-        Err(e) => Result::<Writer>::error(format!("{}", e).as_str()),
+        Ok(writer) => CResult::<Writer>::new(writer),
+        Err(e) => CResult::<Writer>::error(format!("{}", e).as_str()),
     };
     convert_to_nonnull(result)
 }
 
 #[no_mangle]
-pub extern "C" fn check_writer_created(writer: NonNull<Result<Reader>>) -> *const c_char {
+pub extern "C" fn check_writer_created(writer: NonNull<CResult<Reader>>) -> *const c_char {
     unsafe {
         if let Some(err) = writer.as_ref().err.as_ref() {
             err as *const c_char
@@ -453,22 +451,21 @@ pub extern "C" fn check_writer_created(writer: NonNull<Result<Reader>>) -> *cons
 
 #[no_mangle]
 pub extern "C" fn write_record_batch(
-    writer: NonNull<Result<Writer>>,
+    writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
     callback: ResultCallback,
 ) {
     unsafe {
         let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
-        let array_ref = make_array_from_raw(array_addr as *mut FFI_ArrowArray, schema_addr as *mut FFI_ArrowSchema);
+        let mut ffi_array = FFI_ArrowArray::empty();
+        (array_addr as *mut FFI_ArrowArray).copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+        (schema_addr as *mut FFI_ArrowSchema).copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
+        let array = ArrowArray::new(ffi_array, ffi_schema);
         let result_fn = move || {
-            let array = array_ref?;
-            let struct_array = array
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .ok_or_else(|| DataFusionError::ArrowError(CastError(
-                    "Cannot cast to StructArray from array and schema addresses".to_string(),
-                )))?;
+            let array_data = ArrayData::try_from(array)?;
+            let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.as_ref().write_batch(rb)?;
             Ok(())
@@ -488,7 +485,7 @@ pub extern "C" fn write_record_batch(
 // consumes the writer pointer
 // this writer cannot be used again
 #[no_mangle]
-pub extern "C" fn flush_and_close_writer(writer: NonNull<Result<Writer>>, callback: ResultCallback) {
+pub extern "C" fn flush_and_close_writer(writer: NonNull<CResult<Writer>>, callback: ResultCallback) {
     unsafe {
         let writer =
             from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(NonNull::new_unchecked(writer.as_ref().ptr));
@@ -507,7 +504,7 @@ pub extern "C" fn flush_and_close_writer(writer: NonNull<Result<Writer>>, callba
 // consumes the writer pointer
 // this writer cannot be used again
 #[no_mangle]
-pub extern "C" fn abort_and_close_writer(writer: NonNull<Result<Writer>>, callback: ResultCallback) {
+pub extern "C" fn abort_and_close_writer(writer: NonNull<CResult<Writer>>, callback: ResultCallback) {
     unsafe {
         let writer =
             from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(NonNull::new_unchecked(writer.as_ref().ptr));
@@ -565,7 +562,7 @@ pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntim
 // runtime is usually moved to create reader/writer
 // so you don't need to free it unless it's used independently
 #[no_mangle]
-pub extern "C" fn free_tokio_runtime(runtime: NonNull<Result<TokioRuntime>>) {
+pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
@@ -585,7 +582,6 @@ mod tests {
     use std::os::raw::c_char;
     use std::ptr::NonNull;
     use std::sync::{Condvar, Mutex};
-    use std::time::Duration;
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
         unsafe {

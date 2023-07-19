@@ -12,13 +12,13 @@ use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
-use arrow::error::ArrowError;
+use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
-use arrow::{error::Result as ArrowResult, record_batch::RecordBatch};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{expressions::col, RecordBatchStream, SendableRecordBatchStream};
+use datafusion_common::DataFusionError::ArrowError;
 use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
 
@@ -172,7 +172,7 @@ impl SortedStreamMerger {
     /// If the stream at the given index is not exhausted, and the last batch range for the
     /// stream is finished, poll the stream for the next RecordBatch and create a new
     /// batch range for the stream from the returned result
-    fn maybe_poll_stream(&mut self, cx: &mut Context<'_>, idx: usize) -> Poll<ArrowResult<()>> {
+    fn maybe_poll_stream(&mut self, cx: &mut Context<'_>, idx: usize) -> Poll<Result<()>> {
         if !self.range_finished[idx] {
             // Range is not finished - don't need a new RecordBatch yet
             return Poll::Ready(Ok(()));
@@ -200,19 +200,13 @@ impl SortedStreamMerger {
                         let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,
                             Err(e) => {
-                                return Poll::Ready(Err(ArrowError::ExternalError(Box::new(e))));
+                                return Poll::Ready(Err(ArrowError(e)));
                             }
                         };
 
                         self.batch_idx_counter += 1;
                         let (batch, rows) = (Arc::new(batch), Arc::new(rows));
-                        let range = SortKeyBatchRange::new_and_init(
-                            0,
-                            idx,
-                            self.batch_idx_counter,
-                            batch,
-                            rows,
-                        );
+                        let range = SortKeyBatchRange::new_and_init(0, idx, self.batch_idx_counter, batch, rows);
 
                         self.range_finished[idx] = false;
 
@@ -234,7 +228,7 @@ impl SortedStreamMerger {
 
 impl SortedStreamMerger {
     #[inline]
-    fn poll_next_inner(self: &mut Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<ArrowResult<RecordBatch>>> {
+    fn poll_next_inner(self: &mut Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         if self.aborted {
             return Poll::Ready(None);
         }
@@ -265,7 +259,7 @@ impl SortedStreamMerger {
         loop {
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => {
-                    return Poll::Ready(Some(Err(e)));
+                    return Poll::Ready(Some(Err(ArrowError(e))));
                 }
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
@@ -290,14 +284,14 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch)),
+                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(|e| ArrowError(e)))),
             }
         }
     }
 }
 
 impl Stream for SortedStreamMerger {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.poll_next_inner(cx)
