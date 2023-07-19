@@ -357,7 +357,12 @@ public class DBManager {
     }
 
     public boolean batchCommitDataCommitInfo(List<DataCommitInfo> listData) {
-        return dataCommitInfoDao.batchInsert(listData);
+        List<DataCommitInfo> mappedListData = listData.stream().map(item -> {
+            return item.toBuilder()
+                    .setDomain(getTableDomain(item.getTableId()))
+                    .build();
+        }).collect(Collectors.toList());
+        return dataCommitInfoDao.batchInsert(mappedListData);
     }
 
     public boolean commitData(MetaInfo metaInfo, boolean changeSchema, CommitOp commitOp) {
@@ -699,6 +704,7 @@ public class DBManager {
                     .setTableId(tableId)
                     .setPartitionDesc(partitionDesc)
                     .setVersion(-1)
+                    .setDomain(getTableDomain(tableId))
                     .build();
         }
         return curPartitionInfo;
@@ -763,6 +769,16 @@ public class DBManager {
                         .build());
     }
 
+    private String getTableDomain(String tableId){
+        if(!AuthZEnforcer.authZEnabled()){
+            return "public";
+        }
+        TableInfo tableInfo = this.getTableInfoByTableId(tableId);
+        return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
+                AuthZ.Object.TABLE.value, tableInfo.getTableName()
+        ));
+    }
+
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
@@ -773,6 +789,9 @@ public class DBManager {
             LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
             return;
         } else if (metaCommitInfo == null) {
+            dataCommitInfo = dataCommitInfo.toBuilder()
+                    .setDomain(getTableDomain(tableId))
+                    .build();
             dataCommitInfoDao.insert(dataCommitInfo);
         }
         MetaInfo.Builder metaInfo = MetaInfo.newBuilder();
@@ -846,5 +865,4 @@ public class DBManager {
         tableNameIdDao.clean();
         partitionInfoDao.clean();
     }
-
 }
