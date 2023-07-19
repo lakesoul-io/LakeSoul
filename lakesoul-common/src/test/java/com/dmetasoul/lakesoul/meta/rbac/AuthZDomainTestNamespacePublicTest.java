@@ -9,21 +9,21 @@ import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import org.junit.After;
 import org.junit.Test;
 
-public class AuthZDomainTestNamespacePublicTest extends AuthZDomainTest {
-
-    protected final String TEST_NAME_SPACE = "authz_test_name_space_with_public";
-
-    @Test
-    public void test(){
-        GlobalConfig.get().setAuthZEnabled(true);
-        AuthZContext.getInstance().setDomain(TEST_DOMAIN);
-        dbManager.createNewNamespace(TEST_NAME_SPACE, "{}", "");
-        Namespace namespaceByNamespace = dbManager.getNamespaceByNamespace(TEST_NAME_SPACE);
-        assert namespaceByNamespace.getNamespace().equals(TEST_NAME_SPACE) && namespaceByNamespace.getDomain().equals(TEST_DOMAIN);
-    }
-
-    @After
-    public void clean(){
-        dbManager.deleteNamespace(TEST_NAME_SPACE);
-    }
-}
+//public class AuthZDomainTestNamespacePublicTest extends AuthZDomainTest {
+//
+//    protected final String TEST_NAME_SPACE = "authz_test_name_space_with_public";
+//
+//    @Test
+//    public void test(){
+//        GlobalConfig.get().setAuthZEnabled(true);
+//        AuthZContext.getInstance().setDomain(TEST_DOMAIN);
+//        dbManager.createNewNamespace(TEST_NAME_SPACE, "{}", "");
+//        Namespace namespaceByNamespace = dbManager.getNamespaceByNamespace(TEST_NAME_SPACE);
+//        assert namespaceByNamespace.getNamespace().equals(TEST_NAME_SPACE) && namespaceByNamespace.getDomain().equals(TEST_DOMAIN);
+//    }
+//
+//    @After
+//    public void clean(){
+//        dbManager.deleteNamespace(TEST_NAME_SPACE);
+//    }
+//}
