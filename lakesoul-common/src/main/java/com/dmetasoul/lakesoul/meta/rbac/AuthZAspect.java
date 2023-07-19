@@ -104,7 +104,7 @@ public class AuthZAspect {
         for(String obj : objects){
             // override domain and object passed from outside
             String objFullName = getObjectFullName(baseObject, obj);
-            String objDomain =getDomainByObject(objFullName);
+            String objDomain = getDomainByObject(objFullName);
             if(!advice.hasPermit(subject, objDomain, objFullName, action)){
                 throw new AuthZException();
             }

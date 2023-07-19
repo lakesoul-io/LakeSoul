@@ -775,7 +775,7 @@ public class DBManager {
         }
         TableInfo tableInfo = this.getTableInfoByTableId(tableId);
         return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
-                AuthZ.Object.TABLE.value, tableInfo.getTableName()
+                AuthZ.Object.DATABASE.value, tableInfo.getTableNamespace()
         ));
     }
 
