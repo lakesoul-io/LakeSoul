@@ -208,7 +208,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     let retry_config = RetryConfig::default();
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
-        .with_bucket_name(bucket.clone().unwrap())
+        .with_bucket_name(bucket.unwrap())
         .with_retry(retry_config)
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
@@ -218,7 +218,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
     let s3_store = Arc::new(s3_store_builder.build()?);
-    runtime.register_object_store(url, s3_store.clone());
+    runtime.register_object_store(url, s3_store);
     Ok(())
 }
 

@@ -483,6 +483,7 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs::File;
     use std::sync::Arc;
+    use arrow_array::Array;
     use tokio::runtime::Builder;
 
     #[test]
@@ -521,8 +522,8 @@ mod tests {
             assert_eq!(to_write.num_columns(), actual_batch.num_columns());
             assert_eq!(to_write.num_rows(), actual_batch.num_rows());
             for i in 0..to_write.num_columns() {
-                let expected_data = to_write.column(i).data();
-                let actual_data = actual_batch.column(i).data();
+                let expected_data = to_write.column(i).to_data();
+                let actual_data = actual_batch.column(i).to_data();
 
                 assert_eq!(expected_data, actual_data);
             }
@@ -555,8 +556,8 @@ mod tests {
             assert_eq!(to_read.num_columns(), actual_batch.num_columns());
             assert_eq!(to_read.num_rows(), actual_batch.num_rows());
             for i in 0..to_read.num_columns() {
-                let expected_data = to_read.column(i).data();
-                let actual_data = actual_batch.column(i).data();
+                let expected_data = to_read.column(i).to_data();
+                let actual_data = actual_batch.column(i).to_data();
 
                 assert_eq!(expected_data, actual_data);
             }
@@ -607,8 +608,8 @@ mod tests {
         assert_eq!(to_read.num_columns(), actual_batch.num_columns());
         assert_eq!(to_read.num_rows(), actual_batch.num_rows());
         for i in 0..to_read.num_columns() {
-            let expected_data = to_read.column(i).data();
-            let actual_data = actual_batch.column(i).data();
+            let expected_data = to_read.column(i).to_data();
+            let actual_data = actual_batch.column(i).to_data();
 
             assert_eq!(expected_data, actual_data);
         }

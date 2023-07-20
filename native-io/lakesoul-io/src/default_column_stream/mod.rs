@@ -79,20 +79,6 @@ impl DefaultColumnStream {
             default_column_value,
         }
     }
-
-    //  pub(crate) fn new_from_streams(
-    //      streams: Vec<SendableRecordBatchStream>,
-    //      target_schema: SchemaRef,
-    //      use_default: bool,
-    //  ) -> Self {
-    //      DefaultColumnStream {
-    //          schema: target_schema,
-    //          inner_stream: streams.into_iter().map(WrappedSendableRecordBatchStream::new).collect::<Vec<_>>(),
-    //          use_default,
-    //          cur_stream_idx: 0,
-    //          default_column_value: Arc::new(Default::default()),
-    //      }
-    //  }
 }
 
 impl Stream for DefaultColumnStream {

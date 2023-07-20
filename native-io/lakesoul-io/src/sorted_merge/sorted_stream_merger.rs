@@ -284,7 +284,7 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(|e| ArrowError(e)))),
+                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(ArrowError))),
             }
         }
     }
@@ -320,7 +320,6 @@ mod tests {
     use datafusion::assert_batches_eq;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
-    use datafusion::from_slice::FromSlice;
     use datafusion::logical_expr::col as logical_col;
     use datafusion::physical_plan::{common, memory::MemoryExec, ExecutionPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -473,7 +472,7 @@ mod tests {
     }
 
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
-        let a: ArrayRef = Arc::new(Int32Array::from_slice(vec));
+        let a: ArrayRef = Arc::new(Int32Array::from(Vec::from(vec)));
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()
     }
 
@@ -533,7 +532,7 @@ mod tests {
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
         let values = values
             .into_iter()
-            .map(|vec| Arc::new(Int32Array::from_slice(vec)) as ArrayRef)
+            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
             .collect::<Vec<ArrayRef>>();
         let iter = names.into_iter().zip(values).collect::<Vec<_>>();
         RecordBatch::try_from_iter(iter).unwrap()
@@ -547,8 +546,8 @@ mod tests {
         fourth_col_value: Vec<&str>,
     ) -> RecordBatch {
         let mut values: Vec<ArrayRef> = vec![];
-        values.push(Arc::new(Int32Array::from_slice(first_col_value)) as ArrayRef);
-        values.push(Arc::new(Int32Array::from_slice(second_col_value)) as ArrayRef);
+        values.push(Arc::new(Int32Array::from(Vec::from(first_col_value))) as ArrayRef);
+        values.push(Arc::new(Int32Array::from(Vec::from(second_col_value))) as ArrayRef);
         values.push(Arc::new(Float64Array::from(third_col_value)) as ArrayRef);
         values.push(Arc::new(StringArray::from(fourth_col_value)) as ArrayRef);
         let iter = names.into_iter().zip(values).collect::<Vec<_>>();

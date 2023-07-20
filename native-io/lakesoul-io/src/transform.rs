@@ -24,7 +24,10 @@ pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
                 match data_type {
                     DataType::Timestamp(unit, Some(_)) => Arc::new(Field::new(
                         field.name(),
-                        DataType::Timestamp(unit.clone(), Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE.clone()))),
+                        DataType::Timestamp(
+                            unit.clone(),
+                            Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE)),
+                        ),
                         field.is_nullable(),
                     )),
                     _ => field.clone(),

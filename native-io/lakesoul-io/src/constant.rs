@@ -11,9 +11,9 @@ use arrow_schema::DataType;
 
 use lazy_static::lazy_static;
 
-pub static LAKESOUL_TIMEZONE: &'static str = "UTC";
-pub static LAKESOUL_NULL_STRING: &'static str = "__L@KE$OUL_NULL__";
-pub static LAKESOUL_EMPTY_STRING: &'static str = "__L@KE$OUL_EMPTY_STRING__";
+pub static LAKESOUL_TIMEZONE: &str = "UTC";
+pub static LAKESOUL_NULL_STRING: &str = "__L@KE$OUL_NULL__";
+pub static LAKESOUL_EMPTY_STRING: &str = "__L@KE$OUL_EMPTY_STRING__";
 
 lazy_static! {
     pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions::default();

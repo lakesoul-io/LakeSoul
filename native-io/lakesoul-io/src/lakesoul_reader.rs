@@ -12,14 +12,14 @@ pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::col as logical_col;
-use datafusion::physical_plan::expressions::{col, PhysicalSortExpr};
+use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{DataFrame, SessionContext};
 
 use core::pin::Pin;
 use datafusion::physical_plan::RecordBatchStream;
+use datafusion::prelude::Expr::Column;
 use futures::future::try_join_all;
 use futures::StreamExt;
 
@@ -52,8 +52,40 @@ impl LakeSoulReader {
         })
     }
 
+    pub async fn prune_filter_and_execute(
+        df: DataFrame,
+        request_schema: SchemaRef,
+        filter_str: Vec<String>,
+        batch_size: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        let file_schema = df.schema().clone();
+
+        // find columns requested and prune others
+        let cols = request_schema
+            .fields()
+            .iter()
+            .filter_map(|field| match file_schema.field_with_name(None, field.name()) {
+                Ok(file_field) => Some(Column(datafusion::common::Column::new_unqualified(file_field.name()))),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if cols.is_empty() {
+            Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
+        } else {
+            // column pruning
+            let df = df.select(cols)?;
+            // row filtering
+            let arrow_schema = Arc::new(Schema::from(file_schema));
+            let df = filter_str.iter().try_fold(df, |df, f| {
+                df.filter(FilterParser::parse(f.clone(), arrow_schema.clone()))
+            })?;
+            df.execute_stream().await
+        }
+    }
+
     pub async fn start(&mut self) -> Result<()> {
         let schema: SchemaRef = self.config.schema.0.clone();
+        let batch_size = self.config.batch_size;
         if self.config.primary_keys.is_empty() {
             if !self.config.files.is_empty() {
                 let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
@@ -61,33 +93,10 @@ impl LakeSoulReader {
                     let file = self.config.files[i].clone();
                     let sess_ctx = self.sess_ctx.clone();
                     let filter_str = self.config.filter_strs.clone();
-                    let batch_size = self.config.batch_size;
                     let schema = schema.clone();
                     let future = async move {
-                        let mut df = sess_ctx.read_parquet(file, Default::default()).await?;
-
-                        let file_schema = Arc::new(Schema::from(df.schema()));
-
-                        let cols = schema
-                            .fields()
-                            .iter()
-                            .filter_map(|field| match file_schema.column_with_name(field.name()) {
-                                Some((_, file_field)) => Some(logical_col(file_field.name())),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>();
-
-                        let stream = if cols.is_empty() {
-                            Box::pin(EmptySchemaStream::new(batch_size, df.count().await?))
-                        } else {
-                            df = df.select(cols)?;
-
-                            df = filter_str.iter().try_fold(df, |df, f| {
-                                df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                            })?;
-                            df.execute_stream().await?
-                        };
-                        Result::<SendableRecordBatchStream>::Ok(stream)
+                        let df = sess_ctx.read_parquet(file.clone(), Default::default()).await?;
+                        LakeSoulReader::prune_filter_and_execute(df, schema, filter_str, batch_size).await
                     };
                     stream_init_futs.push(future);
                 }
@@ -133,20 +142,8 @@ impl LakeSoulReader {
                 let filter_str = self.config.filter_strs.clone();
                 let schema = schema.clone();
                 let future = async move {
-                    let mut df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
-
-                    let file_schema = Arc::new(Schema::from(df.schema()));
-                    let cols = file_schema
-                        .fields()
-                        .iter()
-                        .filter(|field| schema.index_of(field.name()).is_ok())
-                        .map(|field| logical_col(field.name().as_str()))
-                        .collect::<Vec<_>>();
-                    df = df.select(cols)?;
-                    df = filter_str.iter().try_fold(df, |df, f| {
-                        df.filter(FilterParser::parse(f.clone(), file_schema.clone()))
-                    })?;
-                    df.execute_stream().await
+                    let df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
+                    LakeSoulReader::prune_filter_and_execute(df, schema, filter_str, batch_size).await
                 };
                 stream_init_futs.push(future);
             }
@@ -160,7 +157,7 @@ impl LakeSoulReader {
             let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
             for i in 0..self.config.primary_keys.len() {
                 sort_exprs.push(PhysicalSortExpr {
-                    expr: col(self.config.primary_keys[i].as_str(), &schema)?,
+                    expr: datafusion::physical_expr::expressions::col(self.config.primary_keys[i].as_str(), &schema)?,
                     options: Default::default(),
                 });
             }
@@ -238,10 +235,7 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
-    pub fn next_rb_callback(
-        &self,
-        f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>,
-    ) -> JoinHandle<()> {
+    pub fn next_rb_callback(&self, f: Box<dyn FnOnce(Option<Result<RecordBatch>>) + Send + Sync>) -> JoinHandle<()> {
         let inner_reader = self.get_inner_reader();
         let runtime = self.get_runtime();
         runtime.spawn(async move {
@@ -328,7 +322,7 @@ mod tests {
         loop {
             let (tx, rx) = sync_channel(1);
             let start = Instant::now();
-            let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+            let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     thread::sleep(Duration::from_millis(200));
@@ -367,7 +361,7 @@ mod tests {
         static mut ROW_CNT: usize = 0;
         loop {
             let (tx, rx) = sync_channel(1);
-            let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+            let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     let rb = rb.unwrap();
@@ -448,7 +442,7 @@ mod tests {
         loop {
             let (tx, rx) = sync_channel(1);
 
-            let f = move |rb: Option<ArrowResult<RecordBatch>>| match rb {
+            let f = move |rb: Option<Result<RecordBatch>>| match rb {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     let num_rows = &rb.unwrap().num_rows();

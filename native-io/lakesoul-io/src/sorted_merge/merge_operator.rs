@@ -193,7 +193,7 @@ macro_rules! sum_with_primitive_type_and_append_value {
                     Some(buffer) => {
                         let null_buf_range = buffer.slice(offset + range.begin_row, range.end_row - range.begin_row);
                         is_none &=
-                            (null_buf_range.len() - null_buf_range.null_count()) == (range.end_row - range.begin_row);
+                            null_buf_range.inner().count_set_bits() == (range.end_row - range.begin_row);
                     }
                     None => is_none = false,
                 }
