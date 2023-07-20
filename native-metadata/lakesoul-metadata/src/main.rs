@@ -19,8 +19,9 @@ async fn main() -> Result<(), Error> {
     });
 
     // Now we can execute a simple statement that just returns its parameter.
+    
     let rows = client
-        .query("SELECT $1::TEXT, $2::TEXT", &[&"hello world", &"2"])
+        .query("SELECT $1::TEXT, $2::TEXT", &[&Some("hello world"), &Some("2")])
         .await?;
 
     // And then check that we got back the same string we sent over.

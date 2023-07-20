@@ -7,16 +7,21 @@ package com.dmetasoul.lakesoul.meta.dao;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import dev.failsafe.internal.util.Lists;
 
+import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class NamespaceDao {
@@ -40,24 +45,11 @@ public class NamespaceDao {
     }
 
     public Namespace findByNamespace(String name) {
-        Connection conn = null;
-        PreparedStatement pstmt = null;
-        ResultSet rs = null;
-        String sql = String.format("select * from namespace where namespace = '%s'", name);
-        Namespace namespace = null;
-        try {
-            conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(sql);
-            rs = pstmt.executeQuery();
-            while (rs.next()) {
-                namespace = namespaceFromResultSet(rs);
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        } finally {
-            DBConnector.closeConn(rs, pstmt, conn);
-        }
-        return namespace;
+        JniWrapper jniWrapper = NativeMetadataJavaClient.executeQuery("findByNamespace", Collections.singletonList(name));
+        if (jniWrapper == null) return null;
+        List<Namespace> namespaceList = jniWrapper.getNamespaceList();
+        return namespaceList.isEmpty() ? null : namespaceList.get(0);
+
     }
 
     public void deleteByNamespace(String namespace) {
@@ -132,11 +124,10 @@ public class NamespaceDao {
     }
 
     public static Namespace namespaceFromResultSet(ResultSet rs) throws SQLException {
-        String comment = rs.getString("comment");
         return Namespace.newBuilder()
                 .setNamespace(rs.getString("namespace"))
                 .setProperties(rs.getString("properties"))
-                .setComment(comment == null ? "" : comment )
+                .setComment(rs.getString("comment"))
                 .setDomain(rs.getString("domain"))
                 .build();
     }
@@ -146,8 +137,6 @@ public class NamespaceDao {
                     .setNamespace(DBConfig.LAKESOUL_DEFAULT_NAMESPACE)
                     .setProperties("{}")
                     .setComment("")
-                    .setDomain(AuthZContext.getInstance().getDomain())
                     .build();
 
 }
-

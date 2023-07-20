@@ -151,3 +151,7 @@ message TablePathId {
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 4;
 }
+
+message JniWrapper {
+  repeated Namespace namespace = 1;
+}
