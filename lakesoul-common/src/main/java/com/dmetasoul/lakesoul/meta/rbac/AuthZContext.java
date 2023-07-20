@@ -17,6 +17,9 @@
 
 package com.dmetasoul.lakesoul.meta.rbac;
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.GlobalConfig;
+
 public class AuthZContext {
 
     public final String LAKESOUL_AUTHZ_SUBJECT_ENV = "LAKESOUL_AUTHZ_SUBJECT";
@@ -24,8 +27,8 @@ public class AuthZContext {
     private static final AuthZContext CONTEXT =  new AuthZContext();
 
     private AuthZContext(){
-        this.domain = System.getenv(LAKESOUL_AUTHZ_SUBJECT_ENV);
-        this.subject = System.getenv(LAKESOUL_AUTHZ_DOMAIN_ENV);
+        this.domain = DBUtil.getDBInfo().getUsername();
+        this.subject = DBUtil.getDomain();
         if(this.domain == null) {
             this.domain = "";
         }

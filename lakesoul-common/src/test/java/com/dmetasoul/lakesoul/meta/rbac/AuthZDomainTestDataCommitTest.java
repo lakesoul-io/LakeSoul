@@ -17,16 +17,16 @@ import org.junit.Test;
 import java.util.LinkedList;
 import java.util.List;
 
-public class AuthZDomainTestDataCommitTest extends AuthZDomainTest{
-
-    protected final String TEST_NAME_SPACE = "authz_test_name_space_test_data_commit";
-
-
-    protected final String TEST_TABLE_ID = "016A6D2D-1BA1-5412-DB98-6DFFFE6975DA";
-
-
-    protected final String TEST_TABLE_NAME = "016A6D2D-1BA1-5412-DB98-6DFFFE6975DA";
-
+//public class AuthZDomainTestDataCommitTest extends AuthZDomainTest{
+//
+//    protected final String TEST_NAME_SPACE = "authz_test_name_space_test_data_commit";
+//
+//
+//    protected final String TEST_TABLE_ID = "016A6D2D-1BA1-5412-DB98-6DFFFE6975DA";
+//
+//
+//    protected final String TEST_TABLE_NAME = "016A6D2D-1BA1-5412-DB98-6DFFFE6975DA";
+//
 //    @Test
 //    public void testSingle(){
 //        GlobalConfig.get().setAuthZEnabled(true);
@@ -58,7 +58,7 @@ public class AuthZDomainTestDataCommitTest extends AuthZDomainTest{
 //        DataCommitInfo dataCommitInfo = dao.selectByTableId(TEST_TABLE_ID);
 //        assert dataCommitInfo.getDomain().equals("test1");
 //    }
-
+//
 //    @Test
 //    public void testBatch(){
 //        GlobalConfig.get().setAuthZEnabled(true);
@@ -98,4 +98,5 @@ public class AuthZDomainTestDataCommitTest extends AuthZDomainTest{
 //        dbManager.deleteTableInfo(TEST_TABLE_PATH, TEST_TABLE_ID, TEST_NAME_SPACE);
 //        dbManager.deleteDataCommitInfo(TEST_TABLE_ID);
 //    }
-}
+//}
+

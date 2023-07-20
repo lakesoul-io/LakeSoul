@@ -110,7 +110,7 @@ public class DBManager {
         tableInfo.setPartitions(partitions);
         tableInfo.setProperties(properties.toJSONString());
 
-        String domain = AuthZContext.getInstance().getDomain();
+        String domain = getNameSpaceDomain(namespace);
 
         if (StringUtils.isNotBlank(tableName)) {
             tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, namespace, domain));
@@ -130,9 +130,7 @@ public class DBManager {
         }
         boolean ex = false;
         try {
-            tableInfo.setDomain( AuthZEnforcer.authZEnabled()
-                    ? AuthZContext.getInstance().getDomain()
-                    : "public");
+            tableInfo.setDomain(domain);
             tableInfoDao.insert(tableInfo.build());
         } catch (Exception e) {
             ex = true;
@@ -776,6 +774,15 @@ public class DBManager {
         TableInfo tableInfo = this.getTableInfoByTableId(tableId);
         return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
                 AuthZ.Object.DATABASE.value, tableInfo.getTableNamespace()
+        ));
+    }
+
+    private String getNameSpaceDomain(String namespace){
+        if(!AuthZEnforcer.authZEnabled()){
+            return "public";
+        }
+        return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
+                AuthZ.Object.DATABASE.value, namespace
         ));
     }
 
