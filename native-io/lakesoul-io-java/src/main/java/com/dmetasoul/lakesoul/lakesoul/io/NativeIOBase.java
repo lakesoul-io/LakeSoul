@@ -81,8 +81,6 @@ public class NativeIOBase implements AutoCloseable {
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
-        // rust side doesn't release the schema
-        ffiSchema.release();
         ffiSchema.close();
     }
 

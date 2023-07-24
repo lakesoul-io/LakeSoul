@@ -5,12 +5,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING};
 use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
-use arrow::record_batch::RecordBatch;
-use arrow_array::{new_null_array, types::*, ArrayRef, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, BooleanArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::compute::kernels::cast::cast_with_options;
-use crate::constant::{LAKESOUL_NULL_STRING, LAKESOUL_EMPTY_STRING, ARROW_CAST_OPTIONS};
+use arrow::record_batch::RecordBatch;
+use arrow_array::{
+    new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
+};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
@@ -20,11 +22,14 @@ pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
             .map(|field| {
                 let data_type = field.data_type();
                 match data_type {
-                    DataType::Timestamp(unit, Some(_)) => Field::new(
+                    DataType::Timestamp(unit, Some(_)) => Arc::new(Field::new(
                         field.name(),
-                        DataType::Timestamp(unit.clone(), Some(String::from(crate::constant::LAKESOUL_TIMEZONE))),
+                        DataType::Timestamp(
+                            unit.clone(),
+                            Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE)),
+                        ),
                         field.is_nullable(),
-                    ),
+                    )),
                     _ => field.clone(),
                 }
             })
@@ -121,15 +126,19 @@ pub fn transform_array(
     match target_datatype {
         DataType::Timestamp(target_unit, Some(target_tz)) => make_array(match &target_unit {
             TimeUnit::Second => as_primitive_array::<TimestampSecondType>(&array)
+                .clone()
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Microsecond => as_primitive_array::<TimestampMicrosecondType>(&array)
+                .clone()
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Millisecond => as_primitive_array::<TimestampMillisecondType>(&array)
+                .clone()
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
             TimeUnit::Nanosecond => as_primitive_array::<TimestampNanosecondType>(&array)
+                .clone()
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
         }),
@@ -159,9 +168,10 @@ pub fn transform_array(
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            match orig_array.data().null_buffer() {
-                Some(buffer) => Arc::new(StructArray::from((child_array, buffer.clone()))),
-                None => Arc::new(StructArray::from(child_array)),
+            let (schema, arrays): (SchemaBuilder, _) = child_array.into_iter().unzip();
+            match orig_array.nulls() {
+                Some(buffer) => Arc::new(StructArray::new(schema.finish().fields, arrays, Some(buffer.clone()))),
+                None => Arc::new(StructArray::new(schema.finish().fields, arrays, None)),
             }
         }
         target_datatype => {
@@ -179,10 +189,12 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
         return new_null_array(datatype, num_rows);
     }
     match datatype {
-        DataType::Utf8 => if value == LAKESOUL_EMPTY_STRING {
-            Arc::new(StringArray::from(vec![""; num_rows]))
-        } else {
-            Arc::new(StringArray::from(vec![value.as_str(); num_rows]))
+        DataType::Utf8 => {
+            if value == LAKESOUL_EMPTY_STRING {
+                Arc::new(StringArray::from(vec![""; num_rows]))
+            } else {
+                Arc::new(StringArray::from(vec![value.as_str(); num_rows]))
+            }
         }
         DataType::Int32 => Arc::new(PrimitiveArray::<Int32Type>::from(vec![
             value
@@ -206,10 +218,7 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
             num_rows
         ])),
         DataType::Boolean => Arc::new(BooleanArray::from(vec![
-            value
-                .as_str()
-                .parse::<bool>()
-                .unwrap();
+            value.as_str().parse::<bool>().unwrap();
             num_rows
         ])),
         _ => {
