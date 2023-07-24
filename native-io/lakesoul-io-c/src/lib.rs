@@ -384,11 +384,14 @@ pub extern "C" fn next_record_batch(
                 Ok(rb) => {
                     let rows = rb.num_rows() as i32;
                     let batch: Arc<StructArray> = Arc::new(rb.into());
-                    *(array_addr as *mut FFI_ArrowArray) = FFI_ArrowArray::new(&batch.to_data());
+                    let ffi_array = FFI_ArrowArray::new(&batch.to_data());
+                    (&ffi_array as *const FFI_ArrowArray).copy_to(array_addr as *mut FFI_ArrowArray, 1);
+                    std::mem::forget(ffi_array);
                     let schema_result = FFI_ArrowSchema::try_from(batch.data_type());
                     match schema_result {
                         Ok(schema) => {
-                            *(schema_addr as *mut FFI_ArrowSchema) = schema;
+                            (&schema as *const FFI_ArrowSchema).copy_to(schema_addr as *mut FFI_ArrowSchema, 1);
+                            std::mem::forget(schema);
                             call_i32_result_callback(callback, rows, std::ptr::null());
                         }
                         Err(e) => {

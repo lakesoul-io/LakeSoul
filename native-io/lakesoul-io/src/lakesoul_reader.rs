@@ -65,6 +65,8 @@ impl LakeSoulReader {
             .fields()
             .iter()
             .filter_map(|field| match file_schema.field_with_name(None, field.name()) {
+                // datafusion's select is case sensitive, but col will transform field name to lower case
+                // so we use Column::new_unqualified instead
                 Ok(file_field) => Some(Column(datafusion::common::Column::new_unqualified(file_field.name()))),
                 _ => None,
             })
@@ -77,7 +79,8 @@ impl LakeSoulReader {
             // row filtering
             let arrow_schema = Arc::new(Schema::from(file_schema));
             let df = filter_str.iter().try_fold(df, |df, f| {
-                df.filter(FilterParser::parse(f.clone(), arrow_schema.clone()))
+                let filter = FilterParser::parse(f.clone(), arrow_schema.clone());
+                df.filter(filter)
             })?;
             df.execute_stream().await
         }

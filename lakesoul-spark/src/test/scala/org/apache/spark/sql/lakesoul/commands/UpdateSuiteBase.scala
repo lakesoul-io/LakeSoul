@@ -172,7 +172,6 @@ abstract class UpdateSuiteBase
         expectedResults =
           Row("a", 1) :: Row(null, 2) :: Row(null, 3) :: Row("d", 4) :: Nil,
         Seq("value", "key")
-        //          Seq(("a", 1), (null, 2), (null, 3), ("d", 4)).toDF("key", "value")
       )
 
       checkUpdate(condition = Some("value = 'a'"),
