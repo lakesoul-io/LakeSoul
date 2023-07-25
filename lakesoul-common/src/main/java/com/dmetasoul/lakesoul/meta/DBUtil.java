@@ -32,14 +32,15 @@ public class DBUtil {
 
     private static final String driverNameKey = "lakesoul.pg.driver";
     private static final String urlKey = "lakesoul.pg.url";
-    private static final String usernameKey = "lakesoul.pg.username";
-    private static final String passwordKey = "lakesoul.pg.password";
+    public static final String usernameKey = "lakesoul.pg.username";
+    public static final String passwordKey = "lakesoul.pg.password";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
     private static final String usernameEnv = "LAKESOUL_PG_USERNAME";
     private static final String passwordEnv = "LAKESOUL_PG_PASSWORD";
     private static final String domainENV = "LAKESOUL_CURRENT_DOMAIN";
+    public static final String domainKey = "lakesoul.current.domain";
 
     private static final String lakeSoulHomeEnv = "LAKESOUL_HOME";
 
@@ -98,8 +99,7 @@ public class DBUtil {
     }
 
     public static String getDomain() {
-        String domain = System.getenv(domainENV);
-        return domain == null ? "public" : domain;
+        return getConfigValue(domainENV, domainKey, "public");
     }
 
     public static void cleanAllTable() {

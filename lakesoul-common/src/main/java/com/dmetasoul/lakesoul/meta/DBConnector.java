@@ -58,6 +58,7 @@ public class DBConnector {
     public static synchronized void closeAllConnections()  {
         if (instance != null) {
             instance.ds.close();
+            instance = null;
         }
     }
 

@@ -19,15 +19,15 @@ $$
                                   WHERE pg_has_role(current_user, oid, 'member')));
 
             -- only admin role in workspace is allowed to create/drop namespace
-            CREATE POLICY update_policy ON namespace AS RESTRICTIVE FOR UPDATE
+            CREATE POLICY update_policy ON namespace AS PERMISSIVE FOR UPDATE
                 USING (concat(domain, '_admins') IN (SELECT rolname
                                                      FROM pg_roles
                                                      WHERE pg_has_role(current_user, oid, 'member')));
-            CREATE POLICY insert_policy ON namespace AS RESTRICTIVE FOR INSERT
+            CREATE POLICY insert_policy ON namespace AS PERMISSIVE FOR INSERT
                 WITH CHECK (concat(domain, '_admins') IN (SELECT rolname
                                                      FROM pg_roles
                                                      WHERE pg_has_role(current_user, oid, 'member')));
-            CREATE POLICY delete_policy ON namespace AS RESTRICTIVE FOR DELETE
+            CREATE POLICY delete_policy ON namespace AS PERMISSIVE FOR DELETE
                 USING (concat(domain, '_admins') IN (SELECT rolname
                                                      FROM pg_roles
                                                      WHERE pg_has_role(current_user, oid, 'member')));
@@ -125,6 +125,20 @@ $$
     END
 $$;
 
+
+
+-- create table if not exists casbin_rule
+-- (
+--     id    integer default nextval('casbin_sequence'::regclass) not null
+--     primary key,
+--     ptype varchar(100)                                         not null,
+--     v0    varchar(100),
+--     v1    varchar(100),
+--     v2    varchar(100),
+--     v3    varchar(100),
+--     v4    varchar(100),
+--     v5    varchar(100)
+-- );
 DO
 $$
     BEGIN
@@ -188,22 +202,11 @@ $$
     END
 $$;
 
-create table if not exists casbin_rule
-(
-    id    integer default nextval('casbin_sequence'::regclass) not null
-    primary key,
-    ptype varchar(100)                                         not null,
-    v0    varchar(100),
-    v1    varchar(100),
-    v2    varchar(100),
-    v3    varchar(100),
-    v4    varchar(100),
-    v5    varchar(100)
-);
-
 CREATE INDEX CONCURRENTLY IF NOT EXISTS casbin_rule_ptype_index ON casbin_rule (ptype);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS casbin_rule_v0_index ON casbin_rule (v0);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS casbin_rule_v1_index ON casbin_rule (v1);
+
+
 
 INSERT INTO global_config
 VALUES ('lakesoul.authz.enabled', 'true')

@@ -772,18 +772,21 @@ public class DBManager {
             return "public";
         }
         TableInfo tableInfo = this.getTableInfoByTableId(tableId);
-        return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
-                AuthZ.Object.DATABASE.value, tableInfo.getTableNamespace()
-        ));
+        if(tableInfo == null){
+            throw new IllegalStateException("target tableinfo does not exists");
+        }
+        return getNameSpaceDomain(tableInfo.getTableNamespace());
     }
 
     private String getNameSpaceDomain(String namespace){
         if(!AuthZEnforcer.authZEnabled()){
             return "public";
         }
-        return AuthZAspect.getDomainByObject(AuthZAspect.getObjectFullName(
-                AuthZ.Object.DATABASE.value, namespace
-        ));
+        Namespace namespaceInfo = getNamespaceByNamespace(namespace);
+        if(namespaceInfo == null) {
+            throw new IllegalStateException("target namespace does not exists");
+        }
+        return namespaceInfo.getDomain();
     }
 
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
