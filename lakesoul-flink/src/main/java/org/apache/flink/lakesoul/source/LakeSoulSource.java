@@ -20,6 +20,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
 
+import javax.annotation.Nullable;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -38,8 +39,10 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
 
     Map<String, String> optionParams;
 
+    @Nullable
     List<Map<String, String>> remainingPartitions;
 
+    @Nullable
     FilterPredicate filter;
 
     public LakeSoulSource(TableId tableId,
@@ -48,8 +51,8 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
                           boolean isStreaming,
                           List<String> pkColumns,
                           Map<String, String> optionParams,
-                          List<Map<String, String>> remainingPartitions,
-                          FilterPredicate filter) {
+                          @Nullable List<Map<String, String>> remainingPartitions,
+                          @Nullable FilterPredicate filter) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.rowTypeWithPk = rowTypeWithPk;
@@ -98,7 +101,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         if (this.isStreaming) {
             String partDesc = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
             if (partDesc.isEmpty()) {
-                if (!remainingPartitions.isEmpty()) {
+                if (remainingPartitions != null && !remainingPartitions.isEmpty()) {
                     // use remaining partition
                     if (remainingPartitions.size() > 1) {
                         throw new RuntimeException("Streaming read allows only one specified partition," +
@@ -136,7 +139,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
             dfinfos = new ArrayList<>();
             List<String> partDescs = new ArrayList<>();
             String partitionDescOpt = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
-            if (partitionDescOpt.isEmpty()) {
+            if (partitionDescOpt.isEmpty() && remainingPartitions != null) {
                 for (Map<String, String> part : remainingPartitions) {
                     String desc = DBUtil.formatPartitionDesc(part);
                     partDescs.add(desc);
