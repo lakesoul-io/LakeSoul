@@ -28,7 +28,7 @@ import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
-import java.util.Locale
+import java.util.{Date, Locale}
 import scala.language.implicitConversions
 
 trait TableCreationTests
@@ -1237,6 +1237,24 @@ trait TableCreationTests
       })
     }
   }
+
+  test("create table sql with date range partition") {
+    withTempPath { dir =>
+      val tableName = "test_table"
+      withTable(s"$tableName") {
+        val df = spark.sql("select current_date() as `date`, 'data1' as data")
+        df.write.mode("overwrite")
+          .format("lakesoul")
+          .partitionBy("date")
+          .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
+          .save(dir.toURI.toString)
+        val readDF = spark.sql(s"select * from $tableName")
+        val currentDate = new Date()
+        checkAnswer(readDF, Row("data1", new Date(currentDate.getYear, currentDate.getMonth, currentDate.getDate)))
+      }
+    }
+  }
+
 }
 
 @RunWith(classOf[JUnitRunner])

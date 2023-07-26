@@ -285,6 +285,7 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list)
             throws CatalogException {
+        // TODO: optimize this when filter is an exact match of one partition
         List<CatalogPartitionSpec> partitions = listPartitions(tablePath);
         List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
         for (Expression exp : list) {

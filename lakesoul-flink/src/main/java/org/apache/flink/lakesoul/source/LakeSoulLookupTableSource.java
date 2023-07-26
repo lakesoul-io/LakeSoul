@@ -48,9 +48,17 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     private Duration lakeSoulTableReloadInterval;
 
 
-    public LakeSoulLookupTableSource(TableId tableId, RowType rowType, boolean isStreaming, List<String> pkColumns,
-                                     ResolvedCatalogTable catalogTable, Map<String, String> optionParams) {
-        super(tableId, rowType, isStreaming, pkColumns, optionParams);
+    public LakeSoulLookupTableSource(TableId tableId,
+                                     RowType rowType,
+                                     boolean isStreaming,
+                                     List<String> pkColumns,
+                                     ResolvedCatalogTable catalogTable,
+                                     Map<String, String> optionParams) {
+        super(tableId,
+                rowType,
+                isStreaming,
+                pkColumns,
+                optionParams);
         this.catalogTable = catalogTable;
         this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
         this.configuration = new Configuration();
@@ -64,7 +72,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         if (!isStreamingSource()) {
             Preconditions.checkArgument("all".equals(partitionInclude),
                     String.format("The only supported %s for lookup is '%s' in batch source," + " but actual is '%s'",
-                            STREAMING_SOURCE_PARTITION_INCLUDE.key(), "all", partitionInclude));
+                            STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                            "all",
+                            partitionInclude));
 
         }
 
@@ -91,7 +101,8 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
     private TableFunction<RowData> getLookupFunction(int[] keys) {
         PartitionFetcher.Context<LakeSoulPartition> fetcherContext =
-                new LakeSoulTablePartitionFetcherContext(tableId, catalogTable.getPartitionKeys(),
+                new LakeSoulTablePartitionFetcherContext(tableId,
+                        catalogTable.getPartitionKeys(),
                         configuration.get(PARTITION_ORDER_KEYS));
         int latestPartitionNumber = getLatestPartitionNumber(); // the number of latest partitions to fetch
         final PartitionFetcher<LakeSoulPartition> partitionFetcher;
@@ -149,7 +160,9 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                     throw new IllegalArgumentException(String.format(
                             "At least one partition is required when set '%s' to 'latest' in temporal join," +
                                     " but actual partition number is '%s' for lakesoul table %s",
-                            STREAMING_SOURCE_PARTITION_INCLUDE.key(), comparablePartitionValues.size(), ""));
+                            STREAMING_SOURCE_PARTITION_INCLUDE.key(),
+                            comparablePartitionValues.size(),
+                            ""));
                 }
 
                 return partValueList;
@@ -170,10 +183,16 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
         }
 
         PartitionReader<LakeSoulPartition, RowData> partitionReader =
-                new LakeSoulPartitionReader(this.configuration, readFields(), this.pkColumns);
+                new LakeSoulPartitionReader(this.configuration,
+                        readFields(),
+                        this.pkColumns);
 
-        return new LakeSoulTableLookupFunction<>(partitionFetcher, fetcherContext, partitionReader, readFields(),
-                keys, lakeSoulTableReloadInterval);
+        return new LakeSoulTableLookupFunction<>(partitionFetcher,
+                fetcherContext,
+                partitionReader,
+                readFields(),
+                keys,
+                lakeSoulTableReloadInterval);
     }
 
     protected List<String> getPartitionKeys() {
@@ -186,7 +205,8 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
     protected boolean isStreamingSource() {
         return Boolean.parseBoolean(catalogTable.getOptions()
-                .getOrDefault(STREAMING_SOURCE_ENABLE.key(), STREAMING_SOURCE_ENABLE.defaultValue().toString()));
+                .getOrDefault(STREAMING_SOURCE_ENABLE.key(),
+                        STREAMING_SOURCE_ENABLE.defaultValue().toString()));
     }
 
     protected int getLatestPartitionNumber() {
@@ -206,10 +226,15 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
     @Override
     public DynamicTableSource copy() {
         LakeSoulLookupTableSource lsts =
-                new LakeSoulLookupTableSource(this.tableId, this.rowType, this.isStreaming, this.pkColumns,
-                        this.catalogTable, this.optionParams);
+                new LakeSoulLookupTableSource(this.tableId,
+                        this.rowType,
+                        this.isStreaming,
+                        this.pkColumns,
+                        this.catalogTable,
+                        this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
+        lsts.filter = this.filter;
         return lsts;
     }
 
@@ -228,40 +253,55 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
 
         private static final long serialVersionUID = 1L;
 
-        public LakeSoulTablePartitionFetcherContext(TableId tableId, List<String> partitionKeys,
+        public LakeSoulTablePartitionFetcherContext(TableId tableId,
+                                                    List<String> partitionKeys,
                                                     String partitionOrderKeys) {
-            super(tableId, partitionKeys, partitionOrderKeys);
+            super(tableId,
+                    partitionKeys,
+                    partitionOrderKeys);
         }
 
         @Override
         public Optional<LakeSoulPartition> getPartition(List<String> partValues) throws Exception {
-            Preconditions.checkArgument(partitionKeys.size() == partValues.size(), String.format(
-                    "The partition keys length should equal to partition values length, " +
-                            "but partition keys length is %s and partition values length is %s", partitionKeys.size(),
-                    partValues.size()));
+            Preconditions.checkArgument(partitionKeys.size() == partValues.size(),
+                    String.format(
+                            "The partition keys length should equal to partition values length, " +
+                                    "but partition keys length is %s and partition values length is %s",
+                            partitionKeys.size(),
+                            partValues.size()));
             TableInfo tableInfo =
-                    DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+                    DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(),
+                            tableId.schema());
             if (partValues.isEmpty()) {
                 List<PartitionInfo> partitionInfos =
                         DataOperation.dbManager().getAllPartitionInfo(tableInfo.getTableId());
                 if (partitionInfos.isEmpty()) return Optional.empty();
 
-                DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo, null);
+                DataFileInfo[] dataFileInfos = FlinkUtil.getTargetDataFileInfo(tableInfo,
+                        null);
                 List<Path> paths = new ArrayList<>();
                 for (DataFileInfo dfi : dataFileInfos) paths.add(new Path(dfi.path()));
 
-                return Optional.of(new LakeSoulPartition(paths, partitionKeys, partValues));
+                return Optional.of(new LakeSoulPartition(paths,
+                        partitionKeys,
+                        partValues));
             } else {
                 List<String> kvPairs = new ArrayList<>();
                 for (int i = 0; i < partitionKeys.size(); i++) {
-                    kvPairs.add(String.join("=", partitionKeys.get(i), partValues.get(i)));
+                    kvPairs.add(String.join("=",
+                            partitionKeys.get(i),
+                            partValues.get(i)));
                 }
-                String partitionDesc = String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, kvPairs);
-                DataFileInfo[] dataFileInfos = FlinkUtil.getSinglePartitionDataFileInfo(tableInfo, partitionDesc);
+                String partitionDesc = String.join(LAKESOUL_RANGE_PARTITION_SPLITTER,
+                        kvPairs);
+                DataFileInfo[] dataFileInfos = FlinkUtil.getSinglePartitionDataFileInfo(tableInfo,
+                        partitionDesc);
                 List<Path> paths = new ArrayList<>();
                 for (DataFileInfo dif : dataFileInfos) paths.add(new Path(dif.path()));
 
-                return Optional.of(new LakeSoulPartition(paths, partitionKeys, partValues));
+                return Optional.of(new LakeSoulPartition(paths,
+                        partitionKeys,
+                        partValues));
             }
         }
     }

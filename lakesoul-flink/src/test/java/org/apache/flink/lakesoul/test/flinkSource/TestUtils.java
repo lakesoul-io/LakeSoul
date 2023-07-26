@@ -112,12 +112,13 @@ public class TestUtils {
         tEnvs.executeSql("DROP TABLE if exists user_multi");
         tEnvs.executeSql(createSql);
         tEnvs.executeSql(
-                        "INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', " +
-                                "80, TO_DATE('1995-10-10'), 'China'), " +
-                                "(3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China'), (3, 'Amy', 95,  TO_DATE" +
-                                "('1995-10-10'),'UK'), " +
-                                "(5, 'Tom', 75,  TO_DATE('1995-10-01'), 'UK'), (4, 'Mike', 70, TO_DATE('1995-10-15')," +
-                                " 'UK')")
+                        "INSERT INTO user_multi VALUES" +
+                                "(1, 'Bob', 90, TO_DATE('1995-10-01'), 'China')," +
+                                "(2, 'Alice', 80, TO_DATE('1995-10-10'), 'China'), " +
+                                "(3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China')," +
+                                "(3, 'Amy', 95,  TO_DATE('1995-10-10'),'UK'), " +
+                                "(5, 'Tom', 75,  TO_DATE('1995-10-01'), 'UK')," +
+                                "(4, 'Mike', 70, TO_DATE('1995-10-15'), 'UK')")
                 .await();
     }
 
