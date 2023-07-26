@@ -704,6 +704,10 @@ public class DBManager {
                     .setVersion(-1)
                     .setDomain(getTableDomain(tableId))
                     .build();
+        }else{
+            curPartitionInfo = curPartitionInfo.toBuilder()
+                    .setDomain(getTableDomain(tableId))
+                    .build();
         }
         return curPartitionInfo;
     }
@@ -815,6 +819,7 @@ public class DBManager {
                 .setTableId(tableId)
                 .setPartitionDesc(partitionDesc)
                 .setCommitOp(commitOp)
+                .setDomain(getTableDomain(tableId))
                 .addAllSnapshot(snapshot);
         partitionInfoList.add(p.build());
 

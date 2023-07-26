@@ -6,6 +6,9 @@ package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, UnresolvedTableOrView}
+import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
+import org.apache.spark.sql.functions.{expr, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.LakeSoulUtils
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -14,6 +17,7 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.junit.runner.RunWith
+import org.postgresql.util.PSQLException
 import org.scalatestplus.junit.JUnitRunner
 
 import java.util.Locale
@@ -71,11 +75,77 @@ class RBACOperatinSuite extends QueryTest
     val df5 = spark.sql("select * from table1").toDF()
     assert(df5.count() == 2)
 
+    // update data
+     spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
+    val df6 = spark.sql("select (id, foo, bar) from table1 where id = 2").toDF()
+    val row = df6.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
+    assert(row.getString(1).equals("foo3"))
+    assert(row.getString(2).equals("bar3"))
+
     // delete data
     spark.sql("delete from table1")
-    val df6 = spark.sql("select * from table1").toDF()
-    assert(df6.count() == 0)
+    val df7 = spark.sql("select * from table1").toDF()
+    assert(df7.count() == 0)
 
+
+
+   // create & drop database
+    spark.sql("insert into table1 values(3, 'foo3', 'bar3')")
+    login(ADMIN2, ADMIN2_PASS, DOMAIN1)
+    val err0 = intercept[Exception] {
+      spark.sql("use database1;")
+    }
+    assert(err0.isInstanceOf[NoSuchNamespaceException])
+    val err1  = intercept[Exception] {
+      spark.sql("create database if not exists database2")
+    }
+    println(err1.getMessage)
+    assert(err1.getMessage.contains("new row violates row-level security policy for table \"namespace\""))
+
+    // drop: coming soon
+//    intercept[AnalysisException] {
+//      spark.sql("drop database database1").collect()
+//    }
+
+    // create table & drop table
+    val err2 = intercept[Exception] {
+      spark.sql("create table if not exists database1.table3 ( id int, foo string, bar string ) using lakesoul ")
+    }
+    println(err2.getMessage)
+    assert(err2.isInstanceOf[NoSuchNamespaceException])
+    val err3 = intercept[Exception] {
+      spark.sql("drop table database1.table1")
+    }
+    println(err3.getMessage)
+    assert(err3.getMessage.contains("Table or view not found"))
+
+    // CRUD data
+    val err4 = intercept[Exception] {
+      spark.sql("insert into database1.table1 values(4, 'foo4', 'bar4')")
+    }
+    println(err4.getMessage)
+    assert(err4.getMessage.contains("Table not found"))
+    val err5 = intercept[Exception] {
+      spark.sql("update database1.table1 set foo='foo4', bar='bar44' where id = 3")
+    }
+    println(err5.getMessage)
+    assert(err5.getMessage.contains("Table or view not found"))
+
+    val err6 = intercept[Exception] {
+      spark.sql("select * from database1.table1")
+    }
+    println(err6.getMessage)
+    assert(err6.getMessage.contains("Table or view not found"))
+
+    val err7 = intercept[Exception] {
+      spark.sql("delete from database1.table1 where id = 3")
+    }
+    println(err7.getMessage)
+    assert(err7.getMessage.contains("Table or view not found"))
+
+    // clear test
+    login(ADMIN1, ADMIN1_PASS, DOMAIN1)
+    spark.sql("drop table table1")
   }
 
   test("testDifferentRole") {
