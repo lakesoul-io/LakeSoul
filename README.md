@@ -75,7 +75,7 @@ Please find usage documentations in doc site:
     - [ ] Incremental MV Build
     - [ ] Auto query rewrite
 * Data Science
-  -[ ] Native Python Reader (without PySpark)
+  - [ ] Native Python Reader (without PySpark)
 * Spark Integration
   - [x] Table/Dataframe API
   - [x] SQL support with catalog except upsert
@@ -106,8 +106,6 @@ Please find usage documentations in doc site:
   - [x] Automatic global compaction service
   - [ ] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
     - [ ] Presto/Trino
-* Data Science Integration
-  - [ ] Native Python Reader
 * Cloud and Native IO ([#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Object storage IO optimization
   - [x] Native merge on read
