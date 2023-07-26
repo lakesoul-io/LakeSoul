@@ -246,7 +246,7 @@ impl MultiPartAsyncWriter {
 #[async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let batch = uniform_record_batch(batch);
+        let batch = uniform_record_batch(batch)?;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 

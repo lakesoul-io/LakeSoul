@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.source;
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
@@ -78,8 +79,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
                         this.rowTypeWithPk,
                         this.pkColumns,
                         this.isStreaming,
-                        this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN,
-                                ""),
+                        this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""),
                         this.filter),
                 new LakeSoulRecordEmitter(),
                 readerContext.getConfiguration(),
@@ -92,24 +92,28 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         TableInfo tif = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(),
                 tableId.schema());
         List<String> readStartTimestampWithTimeZone =
-                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_START_TIME(),
-                                ""),
-                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(),
-                                ""));
-        String readType = optionParams.getOrDefault(LakeSoulOptions.READ_TYPE(),
-                "");
+                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_START_TIME(), ""),
+                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+        String readType = optionParams.getOrDefault(LakeSoulOptions.READ_TYPE(), "");
         if (this.isStreaming) {
+            String partDesc = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
+            if (partDesc.isEmpty()) {
+                if (!remainingPartitions.isEmpty()) {
+                    // use remaining partition
+                    if (remainingPartitions.size() > 1) {
+                        throw new RuntimeException("Streaming read allows only one specified partition," +
+                                " or no specified partition to incrementally read entire table");
+                    }
+                    partDesc = DBUtil.formatPartitionDesc(remainingPartitions.get(0));
+                }
+            }
             return new LakeSoulDynamicSplitEnumerator(enumContext,
-                    new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(),
-                            "-1")),
-                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(),
-                            "30000")),
+                    new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")),
+                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "30000")),
                     convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
                     tif.getTableId(),
-                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(),
-                            ""),
-                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(),
-                            "-1"));
+                    partDesc,
+                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1"));
         } else {
             return staticSplitEnumerator(enumContext,
                     tif,
@@ -123,20 +127,30 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
                                                                 List<String> readStartTimestampWithTimeZone,
                                                                 String readType) {
         List<String> readEndTimestampWithTimeZone =
-                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(),
-                                ""),
-                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(),
-                                ""));
-        DataFileInfo[] dfinfos;
+                Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
+                        optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
+        List<DataFileInfo> dfinfos;
         if (readType.equals("") || readType.equals("fullread")) {
-            dfinfos = getTargetDataFileInfo(tif);
+            dfinfos = Arrays.asList(getTargetDataFileInfo(tif));
         } else {
-            dfinfos = DataOperation.getIncrementalPartitionDataInfo(tif.getTableId(),
-                    optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(),
-                            ""),
-                    convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
-                    convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
-                    readType);
+            dfinfos = new ArrayList<>();
+            List<String> partDescs = new ArrayList<>();
+            String partitionDescOpt = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
+            if (partitionDescOpt.isEmpty()) {
+                for (Map<String, String> part : remainingPartitions) {
+                    String desc = DBUtil.formatPartitionDesc(part);
+                    partDescs.add(desc);
+                }
+            } else {
+                partDescs.add(partitionDescOpt);
+            }
+            for (String desc : partDescs) {
+                dfinfos.addAll(Arrays.asList(DataOperation.getIncrementalPartitionDataInfo(tif.getTableId(),
+                        desc,
+                        convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
+                        convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
+                        readType)));
+            }
         }
         int capacity = 100;
         ArrayList<LakeSoulSplit> splits = new ArrayList<>(capacity);
@@ -151,7 +165,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         } else {
             Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tif.getTableId(),
-                            dfinfos);
+                            dfinfos.toArray(new DataFileInfo[0]));
             for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulSplit(String.valueOf(split.hashCode()),

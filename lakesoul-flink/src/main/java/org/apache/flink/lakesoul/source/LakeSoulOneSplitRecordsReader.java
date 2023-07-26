@@ -133,7 +133,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
 
         LOG.info("Initializing reader for split {}, pk={}, partitions={}," +
-                        "non partition cols={}, cdc column={}, filter={}",
+                        " non partition cols={}, cdc column={}, filter={}",
                 split,
                 pkColumns,
                 partitions,

@@ -104,7 +104,7 @@ impl Stream for DefaultColumnStream {
                         self.use_default,
                         self.default_column_value.clone(),
                     );
-                    Poll::Ready(Some(Ok(batch)))
+                    Poll::Ready(Some(batch))
                 }
             };
         }

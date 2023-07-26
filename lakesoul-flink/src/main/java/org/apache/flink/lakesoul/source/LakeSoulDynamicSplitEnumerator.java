@@ -49,7 +49,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public void start() {
-        context.callAsync(() -> this.enumerateSplits(tid, parDesc), this::processDiscoveredSplits, discoveryInterval,
+        context.callAsync(() -> this.enumerateSplits(tid), this::processDiscoveredSplits, discoveryInterval,
                 discoveryInterval);
     }
 
@@ -111,7 +111,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
         }
     }
 
-    public Collection<LakeSoulSplit> enumerateSplits(String tid, String parDesc) {
+    public Collection<LakeSoulSplit> enumerateSplits(String tid) {
         this.nextStartTime = MetaVersion.getLastedTimestamp(tid, parDesc) + 1;
         DataFileInfo[] dfinfos =
                 DataOperation.getIncrementalPartitionDataInfo(tid, parDesc, this.startTime, this.nextStartTime,

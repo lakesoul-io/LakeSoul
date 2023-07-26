@@ -91,6 +91,7 @@ public class LakeSoulTableSource
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
         // first we filter out partition filter conditions
+        LOG.info("Applying filters to native io: {}", filters);
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
         List<ResolvedExpression> nonPartitionFilters = new ArrayList<>();
         DBManager dbManager = new DBManager();
@@ -109,7 +110,9 @@ public class LakeSoulTableSource
         Tuple2<Result, FilterPredicate> filterPushDownResult = ParquetFilters.toParquetFilter(nonPartitionFilters,
                 remainingFilters);
         this.filter = filterPushDownResult.f1;
-        LOG.info("Applied filters to native io: {}", this.filter);
+        LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
+                filterPushDownResult.f0.getAcceptedFilters(),
+                filterPushDownResult.f0.getRemainingFilters());
         return filterPushDownResult.f0;
     }
 
