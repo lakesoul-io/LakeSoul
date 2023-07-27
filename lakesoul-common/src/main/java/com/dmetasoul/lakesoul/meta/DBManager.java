@@ -873,7 +873,9 @@ public class DBManager {
     public void cleanMeta() {
 
         namespaceDao.clean();
-        namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
+        if(!AuthZEnforcer.authZEnabled()){
+            namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
+        }
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();
@@ -881,3 +883,4 @@ public class DBManager {
         partitionInfoDao.clean();
     }
 }
+
