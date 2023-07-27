@@ -482,16 +482,14 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
                             <include>com.thoughtworks.paranamer:paranamer</include>
                             <include>com.thoughtworks.paranamer:paranamer</include>
+
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>
                             <include>org.aspectj:aspectjrt</include>
                             <include>org.aspectj:aspectjweaver</include>
                             <include>org.apache.commons:commons-collections4</include>
                             <include>org.casbin:jcasbin</include>
-                            <include>org.casbin:aviator</include>
-                            <include>commons-beanutils:commons-beanutils</include>
-                            <include>commons-logging:commons-logging</include>
-                            <include>commons-collections:commons-collections</include>
+                            <include>com.googlecode.aviator:aviator</include>
                             <include>com.github.seancfoley:ipaddress</include>
                             <include>commons-io:commons-io</include>
                             <include>org.apache.commons:commons-csv</include>
