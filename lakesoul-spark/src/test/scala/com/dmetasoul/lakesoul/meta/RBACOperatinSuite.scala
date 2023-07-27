@@ -102,10 +102,11 @@ class RBACOperatinSuite extends QueryTest
     println(err1.getMessage)
     assert(err1.getMessage.contains("new row violates row-level security policy for table \"namespace\""))
 
-    // drop: coming soon
-//    intercept[AnalysisException] {
-//      spark.sql("drop database database1").collect()
-//    }
+    val err11 = intercept[Exception] {
+      spark.sql("drop database database1").collect()
+    }
+    println(err11.getMessage)
+    assert(err11.isInstanceOf[NoSuchNamespaceException])
 
     // create table & drop table
     val err2 = intercept[Exception] {
@@ -149,11 +150,51 @@ class RBACOperatinSuite extends QueryTest
   }
 
   test("testDifferentRole") {
-//    login(ADMIN1, ADMIN1_PASS, DOMAIN1)
-//    spark.sql("create database database1")
-//    val df = spark.sql("show databases").toDF()
-//    df.show()
-//    df.show()
+    login(ADMIN1, ADMIN1_PASS, DOMAIN1)
+    // create
+    spark.sql("create database if not exists database1")
 
+
+    login(USER1, USER1_PASS, DOMAIN1)
+    // create table & drop table
+    spark.sql("use database1;")
+    val err1 = intercept[Exception] {
+      spark.sql("create database if not exists database3")
+    }
+    println(err1.getMessage)
+    assert(err1.getMessage.contains("permission denied for table namespace"))
+
+    val err2 = intercept[Exception] {
+      spark.sql("drop database database1").collect()
+    }
+    println(err2.getMessage)
+    assert(err2.getMessage.contains("permission denied for table namespace"))
+
+    assert(spark.sql("show databases").toDF().count() == 2)
+
+    // create & drop table
+    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql("create table if not exists table2 ( id int, foo string, bar string ) using lakesoul ")
+    assert(spark.sql("show tables").toDF().count() == 2)
+    spark.sql("drop table table1")
+    spark.sql("drop table table2")
+    assert(spark.sql("show tables").toDF().count() == 0)
+
+    // CRUD data
+    spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
+    spark.sql("insert into table1 values(1, 'foo1', 'bar1')")
+    spark.sql("insert into table1 values(2, 'foo2', 'bar2')")
+    assert(spark.sql("select * from table1").toDF().count() == 2)
+    spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
+    val df1 = spark.sql("select (id, foo, bar) from table1 where id = 2").toDF()
+    val row = df1.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
+    assert(row.getString(1).equals("foo3"))
+    assert(row.getString(2).equals("bar3"))
+    spark.sql("delete from table1")
+    val df7 = spark.sql("select * from table1").toDF()
+    assert(df7.count() == 0)
+
+    // clear test
+    spark.sql("drop table table1")
   }
 }
