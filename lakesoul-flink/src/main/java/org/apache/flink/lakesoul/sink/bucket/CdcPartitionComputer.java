@@ -4,10 +4,10 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import org.apache.flink.connector.file.table.PartitionComputer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.PartitionComputer;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;

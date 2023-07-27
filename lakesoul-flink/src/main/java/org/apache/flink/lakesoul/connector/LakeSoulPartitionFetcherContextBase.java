@@ -10,16 +10,15 @@ import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.flink.connector.file.table.PartitionFetcher;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
-import org.apache.flink.table.filesystem.PartitionFetcher;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_DESC_KV_DELIM;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
 
@@ -28,12 +27,10 @@ import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLI
  */
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
 
-
     protected final List<String> partitionKeys;
     protected final String partitionOrderKeys;
     protected TableId tableId;
     protected transient DBManager dbManager;
-    List<Map<String, String>> remainingPartitions;
 
     public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys) {
         this.tableId = tableId;

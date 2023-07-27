@@ -21,7 +21,7 @@ package org.apache.flink.table.runtime.arrow.vectors;
 import org.apache.arrow.vector.*;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.TimestampData;
-import org.apache.flink.table.data.vector.TimestampColumnVector;
+import org.apache.flink.table.data.columnar.vector.TimestampColumnVector;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.arrow.vector.types.pojo.ArrowType;

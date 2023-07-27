@@ -50,21 +50,21 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
 
     public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(
             List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittables =
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
                 new HashMap<>();
         globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommitables().forEach(
-                (key, value) -> groupedCommittables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommittables);
+                (key, value) -> groupedCommitables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
     }
 
     public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkCommittable(
             List<LakeSoulMultiTableSinkCommittable> committables) {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittables =
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
                 new HashMap<>();
-        committables.forEach(committable -> groupedCommittables.computeIfAbsent(
+        committables.forEach(committable -> groupedCommitables.computeIfAbsent(
                         Tuple2.of(committable.getIdentity(), committable.getBucketId()), tuple2 -> new ArrayList<>())
                 .add(committable));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommittables);
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
     }
 
 
@@ -72,4 +72,8 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
         return groupedCommitables;
     }
 
+    @Override
+    public String toString() {
+        return "LakeSoulMultiTableSinkGlobalCommittable{" + "groupedCommitables=" + groupedCommitables + '}';
+    }
 }
