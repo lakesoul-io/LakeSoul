@@ -93,7 +93,6 @@ object Benchmark {
       .config("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .config(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .config("spark.default.parallelism", "16")
-      .config("spark.dmetasoul.lakesoul.native.io.enable", "true")
       .config("spark.sql.parquet.binaryAsString", "true")
 
     val spark = builder.getOrCreate()

@@ -80,6 +80,8 @@ services:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
       - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
+      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
 
   taskmanager:
     image: flink:1.17.1-scala_2.12-java8
@@ -110,6 +112,8 @@ services:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
       - "$HADOOP_HOME:/opt/hadoop"
       - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
+      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
 
 networks:
   default:
