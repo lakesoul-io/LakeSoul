@@ -34,8 +34,7 @@ import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
-import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStageId;
-import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStreamNodeId;
+import static org.apache.flink.table.planner.utils.TableTestUtil.*;
 import static org.junit.Assert.assertEquals;
 
 
@@ -89,15 +88,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values[1]\",\n" +
+                        "    \"type\" : \"Source: Values[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"[1]:Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"contents\" : \"[]:Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc[2]\",\n" +
+                        "    \"type\" : \"Calc[]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"[2]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -168,15 +167,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values[1]\",\n" +
+                        "    \"type\" : \"Source: Values[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"[1]:Values(tuples=[[{ 0 }]])\",\n" +
+                        "    \"contents\" : \"[]:Values(tuples=[[{ 0 }]])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc[2]\",\n" +
+                        "    \"type\" : \"Calc[]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"[2]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -250,7 +249,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final String actual =
                 tEnv.explainSql(
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
-        String plan = replaceStreamNodeId(replaceStageId(actual));
+        String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
         System.out.println(plan);
 
         assertEquals(expected, plan);
