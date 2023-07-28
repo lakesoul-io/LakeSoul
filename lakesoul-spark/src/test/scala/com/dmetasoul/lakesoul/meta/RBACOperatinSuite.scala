@@ -156,7 +156,7 @@ class RBACOperatinSuite extends QueryTest
 
 
     login(USER1, USER1_PASS, DOMAIN1)
-    // create table & drop table
+    // create table & drop database
     spark.sql("use database1;")
     val err1 = intercept[Exception] {
       spark.sql("create database if not exists database3")
