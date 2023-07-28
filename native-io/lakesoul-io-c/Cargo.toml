@@ -16,3 +16,6 @@ arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-r
 tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
+
+[build-dependencies]
+cbindgen = "0.24.0"
