@@ -132,10 +132,11 @@ public class NamespaceDao {
     }
 
     public static Namespace namespaceFromResultSet(ResultSet rs) throws SQLException {
+        String comment = rs.getString("comment");
         return Namespace.newBuilder()
                 .setNamespace(rs.getString("namespace"))
                 .setProperties(rs.getString("properties"))
-                .setComment(rs.getString("comment"))
+                .setComment(comment == null ? "" : comment )
                 .setDomain(rs.getString("domain"))
                 .build();
     }
