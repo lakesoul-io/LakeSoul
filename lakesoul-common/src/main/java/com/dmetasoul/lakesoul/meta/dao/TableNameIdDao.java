@@ -160,12 +160,13 @@ public class TableNameIdDao {
                 .build();
     }
 
-    public static TableNameId newTableNameId(String tableName, String tableId, String namespace) {
+    public static TableNameId newTableNameId(String tableName, String tableId, String namespace, String domain) {
         return TableNameId
                 .newBuilder()
                 .setTableName(tableName)
                 .setTableId(tableId)
                 .setTableNamespace(namespace)
+                .setDomain(domain)
                 .build();
     }
 }

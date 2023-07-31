@@ -217,12 +217,13 @@ public class TablePathIdDao {
                 .build();
     }
 
-    public static TablePathId newTablePathId(String tablePath, String tableId, String namespace) {
+    public static TablePathId newTablePathId(String tablePath, String tableId, String namespace, String domain) {
         return TablePathId
                 .newBuilder()
                 .setTablePath(tablePath)
                 .setTableId(tableId)
                 .setTableNamespace(namespace)
+                .setDomain(domain)
                 .build();
     }
 }

@@ -8,8 +8,6 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZ;
-import com.dmetasoul.lakesoul.meta.rbac.AuthZAspect;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
