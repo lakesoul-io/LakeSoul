@@ -14,21 +14,22 @@
  * limitations under the License.
  *
  */
+package com.dmetasoul.lakesoul.meta.rbac;
 
-package com.dmetasoul.lakesoul.meta.rbac.fetcher;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.AuthZFetcher;
+import com.dmetasoul.lakesoul.meta.rbac.fetcher.AuthZNullFetcher;
 
-import org.aspectj.lang.JoinPoint;
+import java.lang.annotation.*;
 
-import java.util.LinkedList;
-import java.util.List;
+@Documented
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface AuthZBefore {
+    int index() default 0;
+    String name() default "";
 
-public class AuthZNullFetcher implements AuthZFetcher<JoinPoint> {
-    @Override
-    public List<String> getObject(JoinPoint point) {
-        return new LinkedList<>();
-    }
+    Class<? extends AuthZFetcher> fetcher() default AuthZNullFetcher.class;
 }
-
 
 
 

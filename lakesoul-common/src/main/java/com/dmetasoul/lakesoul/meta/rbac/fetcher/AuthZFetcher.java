@@ -24,7 +24,8 @@ import java.util.List;
 /**
  * Fetch a object from cut point
  */
-public interface AuthZFetcher {
-    List<String> getObject(JoinPoint point);
+public interface AuthZFetcher<T> {
+    List<String> getObject(T object);
 }
+
 
