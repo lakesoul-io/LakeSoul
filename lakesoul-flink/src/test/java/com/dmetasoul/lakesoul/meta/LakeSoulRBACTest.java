@@ -110,7 +110,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
             throw new RuntimeException("test state was unexcepted");
         }catch (Exception e){
             System.out.println(e.getMessage());
-            assert(e.getMessage().contains("Sink `lakesoul`.`database1`.`table1` does not exists"));
+            assert(e.getMessage().contains("Cannot find table '`lakesoul`.`database1`.`table1`' in any of the catalogs"));
         }
 
         try {

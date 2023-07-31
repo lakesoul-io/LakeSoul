@@ -17,7 +17,6 @@ import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.apache.spark.sql.{AnalysisException, QueryTest, SparkSession}
 import org.junit.runner.RunWith
-import org.postgresql.util.PSQLException
 import org.scalatestplus.junit.JUnitRunner
 
 import java.util.Locale
