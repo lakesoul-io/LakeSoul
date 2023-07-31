@@ -31,7 +31,10 @@ public class DBConnector {
         } catch (Throwable t) {
             System.err.println("Failed to connect to PostgreSQL Server with configs: " +
                     "driver=" + dataBaseProperty.getDriver() +
-                    "; url=" + dataBaseProperty.getUrl());
+                    "; url=" + dataBaseProperty.getUrl() +
+                    " ; user=" + config.getUsername());
+            System.err.println("Please verify your meta connection configs according to doc: " +
+                    "https://lakesoul-io.github.io/docs/Usage%20Docs/setup-meta-env");
             t.printStackTrace();
             throw t;
         }
