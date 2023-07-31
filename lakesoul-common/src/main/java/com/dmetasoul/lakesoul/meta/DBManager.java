@@ -8,6 +8,8 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,13 +108,15 @@ public class DBManager {
         tableInfo.setPartitions(partitions);
         tableInfo.setProperties(properties.toJSONString());
 
+        String domain = getNameSpaceDomain(namespace);
+
         if (StringUtils.isNotBlank(tableName)) {
-            tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, namespace));
+            tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, namespace, domain));
         }
         if (StringUtils.isNotBlank(tablePath)) {
             boolean ex = false;
             try {
-                tablePathIdDao.insert(TablePathIdDao.newTablePathId(tablePath, tableId, namespace));
+                tablePathIdDao.insert(TablePathIdDao.newTablePathId(tablePath, tableId, namespace, domain));
             } catch (Exception e) {
                 ex = true;
                 throw e;
@@ -124,6 +128,7 @@ public class DBManager {
         }
         boolean ex = false;
         try {
+            tableInfo.setDomain(domain);
             tableInfoDao.insert(tableInfo.build());
         } catch (Exception e) {
             ex = true;
@@ -320,16 +325,6 @@ public class DBManager {
         tableNameIdDao.delete(tableName, tableNamespace);
     }
 
-    public void addShortTableName(String tableName, String tablePath) {
-        TableInfo tableInfo = getTableInfoByPath(tablePath);
-
-        tableNameIdDao.insert(
-                TableNameId.newBuilder()
-                        .setTableId(tableInfo.getTableId())
-                        .setTableName(tableName)
-                        .build());
-    }
-
     public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
@@ -354,11 +349,16 @@ public class DBManager {
         }
         tableInfoDao.updateByTableId(tableId, tableName, tablePath, "");
 
-        tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, tableNamespace));
+        tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, tableNamespace, tableInfo.getDomain()));
     }
 
     public boolean batchCommitDataCommitInfo(List<DataCommitInfo> listData) {
-        return dataCommitInfoDao.batchInsert(listData);
+        List<DataCommitInfo> mappedListData = listData.stream().map(item -> {
+            return item.toBuilder()
+                    .setDomain(getTableDomain(item.getTableId()))
+                    .build();
+        }).collect(Collectors.toList());
+        return dataCommitInfoDao.batchInsert(mappedListData);
     }
 
     public boolean commitData(MetaInfo metaInfo, boolean changeSchema, CommitOp commitOp) {
@@ -700,6 +700,11 @@ public class DBManager {
                     .setTableId(tableId)
                     .setPartitionDesc(partitionDesc)
                     .setVersion(-1)
+                    .setDomain(getTableDomain(tableId))
+                    .build();
+        }else{
+            curPartitionInfo = curPartitionInfo.toBuilder()
+                    .setDomain(getTableDomain(tableId))
                     .build();
         }
         return curPartitionInfo;
@@ -764,6 +769,28 @@ public class DBManager {
                         .build());
     }
 
+    private String getTableDomain(String tableId){
+        if(!AuthZEnforcer.authZEnabled()){
+            return "public";
+        }
+        TableInfo tableInfo = this.getTableInfoByTableId(tableId);
+        if(tableInfo == null){
+            throw new IllegalStateException("target tableinfo does not exists");
+        }
+        return getNameSpaceDomain(tableInfo.getTableNamespace());
+    }
+
+    private String getNameSpaceDomain(String namespace){
+        if(!AuthZEnforcer.authZEnabled()){
+            return "public";
+        }
+        Namespace namespaceInfo = getNamespaceByNamespace(namespace);
+        if(namespaceInfo == null) {
+            throw new IllegalStateException("target namespace does not exists");
+        }
+        return namespaceInfo.getDomain();
+    }
+
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
@@ -774,6 +801,9 @@ public class DBManager {
             LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
             return;
         } else if (metaCommitInfo == null) {
+            dataCommitInfo = dataCommitInfo.toBuilder()
+                    .setDomain(getTableDomain(tableId))
+                    .build();
             dataCommitInfoDao.insert(dataCommitInfo);
         }
         MetaInfo.Builder metaInfo = MetaInfo.newBuilder();
@@ -787,6 +817,7 @@ public class DBManager {
                 .setTableId(tableId)
                 .setPartitionDesc(partitionDesc)
                 .setCommitOp(commitOp)
+                .setDomain(getTableDomain(tableId))
                 .addAllSnapshot(snapshot);
         partitionInfoList.add(p.build());
 
@@ -809,7 +840,11 @@ public class DBManager {
                 .setProperties(properties)
                 .setComment(comment == null ? "" : comment);
 
+        namespace.setDomain(AuthZEnforcer.authZEnabled()
+                ? AuthZContext.getInstance().getDomain()
+                : "public");
         namespaceDao.insert(namespace.build());
+
     }
 
     public Namespace getNamespaceByNamespace(String namespace) {
@@ -836,12 +871,14 @@ public class DBManager {
     public void cleanMeta() {
 
         namespaceDao.clean();
-        namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
+        if(!AuthZEnforcer.authZEnabled()){
+            namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
+        }
         dataCommitInfoDao.clean();
         tableInfoDao.clean();
         tablePathIdDao.clean();
         tableNameIdDao.clean();
         partitionInfoDao.clean();
     }
-
 }
+

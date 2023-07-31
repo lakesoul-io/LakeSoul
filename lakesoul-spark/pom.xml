@@ -404,7 +404,21 @@ SPDX-License-Identifier: Apache-2.0
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
                             <include>mysql:mysql-connector-java</include>
+
+                            <!-- casbin & aspectj -->
+                            <include>org.casbin:jdbc-adapter</include>
+                            <include>org.aspectj:aspectjrt</include>
+                            <include>org.aspectj:aspectjweaver</include>
+                            <include>org.apache.commons:commons-collections4</include>
+                            <include>org.casbin:jcasbin</include>
+                            <include>com.googlecode.aviator:aviator</include>
+                            <include>com.github.seancfoley:ipaddress</include>
+                            <include>commons-io:commons-io</include>
+                            <include>org.apache.commons:commons-csv</include>
+                            <include>com.google.code.gson:gson</include>
+                            <include>dev.failsafe:failsafe</include>
                             <include>com.google.protobuf:protobuf-java</include>
+
                         </includes>
                     </artifactSet>
                     <filters>
