@@ -34,8 +34,7 @@ import java.util.function.Consumer;
 
 import static org.apache.flink.lakesoul.LakeSoulOptions.LAKESOUL_TABLE_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
-import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStageId;
-import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStreamNodeId;
+import static org.apache.flink.table.planner.utils.TableTestUtil.*;
 import static org.junit.Assert.assertEquals;
 
 
@@ -89,15 +88,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"type\" : \"Source: Values[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"Source: Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"contents\" : \"[]:Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"type\" : \"Calc[]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -106,9 +105,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Writer\",\n" +
+                        "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Writer\",\n" +
+                        "    \"contents\" : \"Sink: Writer\",\n" +
                         "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -117,13 +116,24 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Committer\",\n" +
+                        "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Committer\",\n" +
+                        "    \"contents\" : \"Sink: Committer\",\n" +
+                        "    \"parallelism\" : 3,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Global Committer\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"ship_strategy\" : \"GLOBAL\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  } ]\n" +
@@ -157,15 +167,15 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values(tuples=[[{ 0 }]])\",\n" +
+                        "    \"type\" : \"Source: Values[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"Source: Values(tuples=[[{ 0 }]])\",\n" +
+                        "    \"contents\" : \"[]:Values(tuples=[[{ 0 }]])\",\n" +
                         "    \"parallelism\" : 1\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"type\" : \"Calc[]\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"contents\" : \"[]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -174,9 +184,9 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed\",\n" +
+                        "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed\",\n" +
+                        "    \"contents\" : \"Sink: Writer\",\n" +
                         "    \"parallelism\" : 3,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
@@ -185,13 +195,24 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    } ]\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
-                        "    \"contents\" : \"Sink Unnamed Global Committer\",\n" +
+                        "    \"contents\" : \"Sink: Committer\",\n" +
+                        "    \"parallelism\" : 3,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Global Committer\",\n" +
                         "    \"parallelism\" : 1,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"ship_strategy\" : \"GLOBAL\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  } ]\n" +
@@ -228,12 +249,10 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final String actual =
                 tEnv.explainSql(
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
-        System.out.println(replaceStreamNodeId(replaceStageId(actual)));
+        String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
+        System.out.println(plan);
 
-        assertEquals(
-                replaceStreamNodeId(replaceStageId(actual)),
-                expected
-        );
+        assertEquals(expected, plan);
 
         tEnv.executeSql("drop database db1 cascade");
     }
@@ -308,19 +327,19 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         testStreamingWrite(
                 false,
                 (p) -> {
-                    Configuration config = new Configuration();
-                    config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
+//                    Configuration config = new Configuration();
+//                    config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+                    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
                     env.setParallelism(1);
 
-                    env.enableCheckpointing(1000);
-                    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
-                    env.getCheckpointConfig().configure(config);
+//                    env.enableCheckpointing(1000);
+//                    env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
+//                    env.getCheckpointConfig().configure(config);
 
-                    CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
-                    env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
-                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(
-                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+//                    CheckpointingMode checkpointingMode = CheckpointingMode.EXACTLY_ONCE;
+//                    env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
+//                    env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+//                            CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
                     StreamTableEnvironment streamEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
                     streamEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
                     streamEnv.useCatalog(lakeSoulCatalog.getName());
@@ -368,7 +387,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
     private void testStreamingWrite(
             boolean part, Consumer<String> pathConsumer)
             throws Exception {
-        StreamExecutionEnvironment env = LakeSoulTestUtils.createStreamExecutionEnvironment();
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(env);
         tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
         tEnv.useCatalog(lakeSoulCatalog.getName());

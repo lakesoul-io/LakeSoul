@@ -9,7 +9,6 @@ package org.apache.flink.lakesoul.entry.sql.flink;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.table.operations.CatalogSinkModifyOperation;
 import org.apache.flink.table.operations.ModifyOperation;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.command.SetOperation;
@@ -81,8 +80,8 @@ public class ExecuteSql {
                     break;
                 }
                 // insert
-                case "CatalogSinkModifyOperation":
-                    modifyOperationList.add((CatalogSinkModifyOperation) operation);
+                case "ModifyOperation":
+                    modifyOperationList.add((ModifyOperation) operation);
                     break;
                 default:
                     throw new RuntimeException("not support sql=" + stmt);

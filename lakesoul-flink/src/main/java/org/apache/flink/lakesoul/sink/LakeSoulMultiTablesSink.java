@@ -14,9 +14,9 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultOneTableBulkFormatBuilder;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
@@ -30,12 +30,25 @@ import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState, LakeSoulMultiTableSinkGlobalCommittable> {
+public class LakeSoulMultiTablesSink<IN> implements
+                                         Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
+                                                 LakeSoulMultiTableSinkGlobalCommittable> {
 
     private final BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder;
 
     public LakeSoulMultiTablesSink(BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder) {
         this.bucketsBuilder = checkNotNull(bucketsBuilder);
+    }
+
+    public static DefaultOneTableBulkFormatBuilder forOneTableBulkFormat(final Path basePath,
+                                                                         TableSchemaIdentity identity,
+                                                                         Configuration conf) {
+        return new DefaultOneTableBulkFormatBuilder(identity, basePath, conf);
+    }
+
+    public static DefaultMultiTablesBulkFormatBuilder forMultiTablesBulkFormat(Configuration conf) {
+        return new DefaultMultiTablesBulkFormatBuilder(new Path(conf.getString(LakeSoulSinkOptions.WAREHOUSE_PATH)),
+                conf);
     }
 
     @Override
@@ -59,9 +72,21 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
         }
     }
 
+    // committer must not be null since flink requires it to enable
+    // StatefulGlobalTwoPhaseCommittingSinkAdapter
     @Override
     public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
-        return Optional.ofNullable(bucketsBuilder.createCommitter());
+        return Optional.of(new Committer<LakeSoulMultiTableSinkCommittable>() {
+            @Override
+            public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
+                    throws IOException, InterruptedException {
+                return Collections.emptyList();
+            }
+
+            @Override
+            public void close() throws Exception {
+            }
+        });
     }
 
     @Override
@@ -77,7 +102,8 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
     }
 
     @Override
-    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter() throws IOException {
+    public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter()
+            throws IOException {
         return Optional.ofNullable(bucketsBuilder.createGlobalCommitter());
     }
 
@@ -97,16 +123,5 @@ public class LakeSoulMultiTablesSink<IN> implements Sink<IN, LakeSoulMultiTableS
     public Collection<String> getCompatibleStateNames() {
         // StreamingFileSink
         return Collections.singleton("lakesoul-cdc-multitable-bucket-states");
-    }
-
-    public static DefaultOneTableBulkFormatBuilder forOneTableBulkFormat(
-            final Path basePath, TableSchemaIdentity identity, Configuration conf) {
-        return new DefaultOneTableBulkFormatBuilder(
-                identity, basePath, conf);
-    }
-
-    public static DefaultMultiTablesBulkFormatBuilder forMultiTablesBulkFormat(Configuration conf) {
-        return new DefaultMultiTablesBulkFormatBuilder(
-                new Path(conf.getString(LakeSoulSinkOptions.WAREHOUSE_PATH)), conf);
     }
 }

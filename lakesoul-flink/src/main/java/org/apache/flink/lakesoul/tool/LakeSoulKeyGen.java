@@ -4,11 +4,7 @@
 
 package org.apache.flink.lakesoul.tool;
 
-import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.planner.codegen.sort.SortCodeGenerator;
-import org.apache.flink.table.planner.plan.nodes.exec.spec.SortSpec;
-import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction;
@@ -17,14 +13,11 @@ import org.apache.spark.unsafe.types.UTF8String;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.IntStream;
 
 import static org.apache.spark.sql.types.DataTypes.*;
 
 public class LakeSoulKeyGen implements Serializable {
 
-  public static final String DEFAULT_PARTITION_PATH = "default";
-  private final GeneratedRecordComparator comparator;
   private boolean simpleRecordKey = false;
   private final int[] hashKeyIndex;
   private final LogicalType[] hashKeyType;
@@ -35,20 +28,12 @@ public class LakeSoulKeyGen implements Serializable {
     if (recordKeyFields.length == 1) {
       this.simpleRecordKey = true;
     }
-    this.comparator = createSortComparator(getFieldPositions(recordKeyFields, fieldNames), rowType);
     this.hashKeyIndex = getFieldPositions(recordKeyFields, fieldNames);
     this.hashKeyType = Arrays.stream(hashKeyIndex).mapToObj(fieldTypes::get).toArray(LogicalType[]::new);
   }
 
   private static int[] getFieldPositions(String[] fields, List<String> allFields) {
     return Arrays.stream(fields).mapToInt(allFields::indexOf).toArray();
-  }
-
-  private GeneratedRecordComparator createSortComparator(int[] sortIndices, RowType rowType) {
-    SortSpec.SortSpecBuilder builder = SortSpec.builder();
-    TableConfig tableConfig = new TableConfig();
-    IntStream.range(0, sortIndices.length).forEach(i -> builder.addField(i, true, true));
-    return new SortCodeGenerator(tableConfig, rowType, builder.build()).generateRecordComparator("comparator");
   }
 
   public long getRePartitionHash(RowData rowData) {
@@ -104,9 +89,4 @@ public class LakeSoulKeyGen implements Serializable {
     }
     return seed;
   }
-
-  public GeneratedRecordComparator getComparator() {
-    return comparator;
-  }
-
 }

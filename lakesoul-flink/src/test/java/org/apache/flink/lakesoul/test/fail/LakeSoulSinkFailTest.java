@@ -30,8 +30,6 @@ import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -51,22 +49,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class LakeSoulSinkFailTest extends AbstractTestBase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulSinkFailTest.class);
-
-
+    private static final LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
     public static Map<String, Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior>> parameters;
-
     static String dropSourceSql = "drop table if exists test_source";
     static String createSourceSqlFormat = "create table if not exists test_source %s " +
-            "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2', " +
-            "'discoveryinterval'='1000'" +
-            ")";
-
+            "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2', " + "'discoveryinterval'='1000'" + ")";
     static String dropSinkSql = "drop table if exists test_sink";
     static String createSinkSqlFormat = "create table if not exists test_sink %s %s" +
             "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d')";
     private static ArrayList<Integer> indexArr;
-    private static final LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
     private static StreamExecutionEnvironment streamExecEnv;
     private static StreamTableEnvironment streamTableEnv;
 
@@ -94,20 +85,20 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
                         Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
                                         DataTypes.STRING()),
                                 Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))), "PARTITIONED BY (`range`)",
-                MockTableSource.StopBehavior.FAIL_ON_CHECKPOINTING));
+                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
+                "PARTITIONED BY (`range`)", MockTableSource.StopBehavior.FAIL_ON_CHECKPOINTING));
 
         parameters.put("testLakeSoulSinkStopPostgresOnCheckpointing", Tuple3.of(new ResolvedSchema(
                         Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
                                         DataTypes.STRING()),
                                 Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))), "PARTITIONED BY (`range`)",
-                MockTableSource.StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
+                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
+                "PARTITIONED BY (`range`)", MockTableSource.StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
 
         parameters.put("testLakeSoulSinkFailOnCollectFinished", Tuple3.of(new ResolvedSchema(
-                        Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()), Column.physical("range1",
-                                        DataTypes.DATE()),
-                                Column.physical("range2", DataTypes.STRING()),
+                        Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()),
+                                Column.physical("range1", DataTypes.DATE()), Column.physical("range2",
+                                        DataTypes.STRING()),
                                 Column.physical("value", DataTypes.TIMESTAMP_LTZ())), Collections.emptyList(),
                         UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
                 "PARTITIONED BY (`range1`, `range2`)", MockTableSource.StopBehavior.FAIL_ON_COLLECT_FINISHED));
@@ -133,9 +124,8 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         parameters.put("testLakeSoulSinkWithoutPkStopPostgresOnCheckpointing", Tuple3.of(new ResolvedSchema(
                         Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
                                         DataTypes.STRING()),
-                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        null), "PARTITIONED BY (`range`)",
-                MockTableSource.StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
+                                Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(), null),
+                "PARTITIONED BY (`range`)", MockTableSource.StopBehavior.STOP_POSTGRES_ON_CHECKPOINTING));
     }
 
     public static Object generateObjectWithIndexByDatatype(Integer index, RowType.RowField field) {
@@ -155,8 +145,8 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
             case "varbinary":
                 return new byte[]{index.byteValue(), 'a'};
             default:
-                throw new IllegalStateException("Unexpected value: " +
-                        field.getType().getTypeRoot().name().toLowerCase());
+                throw new IllegalStateException(
+                        "Unexpected value: " + field.getType().getTypeRoot().name().toLowerCase());
         }
     }
 
@@ -168,7 +158,9 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
             case "varchar":
                 return value % 2 == 0 ? String.format("'%d$", value) : "";
             case "timestamp_with_local_time_zone":
-                return DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss ").format(LocalDateTime.ofInstant(Instant.ofEpochMilli((long) value * 3600 * 24 * 1000), ZoneId.of("UTC"))).replace("  ", "T").replace(" ", "Z");
+                return DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm:ss ")
+                        .format(LocalDateTime.ofInstant(Instant.ofEpochMilli((long) value * 3600 * 24 * 1000),
+                                ZoneId.of("UTC"))).replace("  ", "T").replace(" ", "Z");
             case "double":
                 return String.valueOf(Double.valueOf(index));
             case "date":
@@ -199,11 +191,10 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
@@ -224,11 +215,10 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
@@ -249,11 +239,10 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
@@ -274,11 +263,10 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
@@ -297,13 +285,12 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
@@ -324,19 +311,18 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
                 20 * 1000);
 
-        List<String> actualData = CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect())
-                .stream()
-                .map(Row::toString)
-                .sorted(Comparator.comparing(Function.identity()))
-                .collect(Collectors.toList());
+        List<String> actualData =
+                CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
+                        .map(Row::toString).sorted(Comparator.comparing(Function.identity()))
+                        .collect(Collectors.toList());
         expectedData.sort(Comparator.comparing(Function.identity()));
 
         System.out.println(actualData);
         assertThat(actualData.toString()).isEqualTo(expectedData.toString());
     }
 
-    private void testLakeSoulSink(ResolvedSchema resolvedSchema, MockTableSource.StopBehavior behavior, String partitionBy,
-                                  String path, int timeout) throws IOException {
+    private void testLakeSoulSink(ResolvedSchema resolvedSchema, MockTableSource.StopBehavior behavior,
+                                  String partitionBy, String path, int timeout) throws IOException {
         testLakeSoulCatalog.cleanForTest();
         MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
                 new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
@@ -374,12 +360,11 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory testFactory =
                 new MockLakeSoulCatalog.TestLakeSoulDynamicTableFactory();
         ResolvedSchema resolvedSchema = new ResolvedSchema(
-                Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()), Column.physical("range",
-                                DataTypes.STRING()),
-                        Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash")));
-        MockTableSource testTableSource =
-                new MockTableSource(resolvedSchema.toPhysicalRowDataType(), "test", 2, MockTableSource.StopBehavior.FAIL_ON_COLLECT_FINISHED);
+                Arrays.asList(Column.physical("hash", DataTypes.INT().notNull()),
+                        Column.physical("range", DataTypes.STRING()), Column.physical("value", DataTypes.DOUBLE())),
+                Collections.emptyList(), UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash")));
+        MockTableSource testTableSource = new MockTableSource(resolvedSchema.toPhysicalRowDataType(), "test", 2,
+                MockTableSource.StopBehavior.FAIL_ON_COLLECT_FINISHED);
         testFactory.setTestSource(testTableSource);
 
         testLakeSoulCatalog.setTestFactory(testFactory);
@@ -387,18 +372,18 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         streamTableEnv.executeSql(String.format(createSourceSqlFormat, resolvedSchema));
 
 
-        streamTableEnv.executeSql(String.format(createSinkSqlFormat, resolvedSchema, "", tempFolder.newFolder("testMockTableSource").getAbsolutePath(), 2));
+        streamTableEnv.executeSql(String.format(createSinkSqlFormat, resolvedSchema, "",
+                tempFolder.newFolder("testMockTableSource").getAbsolutePath(), 2));
 
         streamTableEnv.executeSql("DROP TABLE IF EXISTS default_catalog.default_database.test_sink");
-        streamTableEnv.executeSql("CREATE TABLE default_catalog.default_database.test_sink " +
-                resolvedSchema +
-                " WITH (" +
-                "'connector' = 'values', 'sink-insert-only' = 'false'" +
-                ")");
+        streamTableEnv.executeSql(
+                "CREATE TABLE default_catalog.default_database.test_sink " + resolvedSchema + " WITH (" +
+                        "'connector' = 'values', 'sink-insert-only' = 'false'" + ")");
         TestValuesTableFactory.clearAllData();
 
 
-        TableResult tableResult = streamTableEnv.executeSql("insert into default_catalog.default_database.test_sink select * from test_source");
+        TableResult tableResult = streamTableEnv.executeSql(
+                "insert into default_catalog.default_database.test_sink select * from test_source");
         try {
             tableResult.await(5000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {

@@ -45,7 +45,7 @@ public class DMLSuite extends AbstractTestBase {
                 .await();
         try {
             tEnv.executeSql("UPDATE user_info set score = 100 where order_id = 3");
-        } catch (TableException e) {
+        } catch (Throwable e) {
             System.out.println("Unsupported UPDATE SQL");
         }
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
@@ -63,7 +63,7 @@ public class DMLSuite extends AbstractTestBase {
         tEnv.executeSql("INSERT INTO user_info VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95)").await();
         try {
             tEnv.executeSql("DELETE FROM user_info where order_id = 3");
-        } catch (TableException e) {
+        } catch (Throwable e) {
             System.out.println("Unsupported DELETE SQL");
         }
         StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);

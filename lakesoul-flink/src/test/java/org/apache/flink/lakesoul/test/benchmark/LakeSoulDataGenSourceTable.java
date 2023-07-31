@@ -4,29 +4,24 @@
 
 package org.apache.flink.lakesoul.test.benchmark;
 
-import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.commons.collections.IteratorUtils;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
-import org.apache.flink.streaming.api.CheckpointingMode;
-import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.*;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.types.Row;
 
 import java.math.BigDecimal;
 import java.sql.Date;
-import java.sql.Timestamp;
 import java.util.List;
-import java.util.TimeZone;
 
 import static org.apache.flink.lakesoul.tool.JobOptions.FLINK_CHECKPOINT;
 import static org.apache.flink.lakesoul.tool.JobOptions.JOB_CHECKPOINT_INTERVAL;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
+import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 
 /**
  * this is used to create random data sinking to a LakeSoul table without primary key
@@ -62,15 +57,8 @@ public class LakeSoulDataGenSourceTable {
         Configuration configuration = new Configuration();
         configuration.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
 
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(configuration);
-        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        env.enableCheckpointing(checkpointInterval, CheckpointingMode.EXACTLY_ONCE);
-        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(4023);
-        env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
-        env.getCheckpointConfig().setCheckpointStorage(checkpointPath);
-        env.setParallelism(sinkParallel);
-        StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
-        tEnvs.getConfig().setLocalTimeZone(TimeZone.getTimeZone(timeZone).toZoneId());
+        TableEnvironment tEnvs = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        tEnvs.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
 
         final Schema schema = Schema.newBuilder()
                 .column("col_1", DataTypes.INT())
@@ -110,7 +98,7 @@ public class LakeSoulDataGenSourceTable {
 
         Table data_gen_table = tEnvs.from(
                 TableDescriptor.forConnector("datagen")
-                        .option("number-of-rows", "200") // make the source bounded
+                        .option("number-of-rows", String.valueOf(dataSize)) // make the source bounded
                         .option("fields.col_1.kind", "sequence")
                         .option("fields.col_1.start", "1")
                         .option("fields.col_1.end", String.valueOf(dataSize))
@@ -120,13 +108,10 @@ public class LakeSoulDataGenSourceTable {
                         .schema(schema)
                         .build());
 
-        DataStream<DataExample> dataExampleDataStream = tEnvs.toDataStream(data_gen_table, structured);
-
         tEnvs.createTemporaryTable("csv_table", TableDescriptor.forConnector("filesystem")
                 .schema(schema)
                 .option("path", warehousePath + "csv/")
-                .format(FormatDescriptor.forFormat("csv")
-                        .option("field-delimiter", ",")
+                .format(FormatDescriptor.forFormat("parquet")
                         .build())
                 .build());
 
@@ -141,20 +126,16 @@ public class LakeSoulDataGenSourceTable {
                 .build());
 
         while (writeTime > 0) {
-            writeData(env, tEnvs, dataExampleDataStream, sinkTableName, dataSize);
+            writeData(tEnvs, data_gen_table, sinkTableName);
             writeTime--;
         }
     }
 
-    public static void writeData(StreamExecutionEnvironment env, StreamTableEnvironment tEnvs, DataStream<DataExample> dataStream, String sinkTableName, int dataSize) throws Exception {
-        List<DataExample> list = dataStream.executeAndCollect(dataSize);
-        // test data show
-        // list.forEach(System.out::println);
+    public static void writeData(TableEnvironment tEnvs, Table sourceTable, String sinkTableName) throws Exception {
+        List<Row> rows = IteratorUtils.toList(sourceTable.execute().collect());
+        Table table = tEnvs.fromValues(rows);
 
-        DataStream<DataExample> dataExampleDataStreamSource = env.fromCollection(list);
-        Table table = tEnvs.fromDataStream(dataExampleDataStreamSource);
-
-        table.executeInsert("default_catalog.default_database.csv_table");
-        table.executeInsert(sinkTableName);
+        table.executeInsert("default_catalog.default_database.csv_table").await();
+        table.executeInsert(sinkTableName).await();
     }
 }

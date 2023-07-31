@@ -4,14 +4,16 @@
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import org.apache.flink.connector.file.table.PartitionComputer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.PartitionComputer;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -108,12 +110,18 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
     for (int i = 0; i < partitionIndexes.length; i++) {
       Object field = partitionFieldGetters[i].getFieldOrNull(in);
-      String partitionValue = field != null ? field.toString() : null;
-      if (partitionValue == null) {
+      String partitionValue;
+      if (field == null) {
         partitionValue = LAKESOUL_NULL_STRING;
-      }
-      if ("".equals(partitionValue)) {
-        partitionValue = LAKESOUL_EMPTY_STRING;
+      } else if (partitionTypes[i].getTypeRoot() == LogicalTypeRoot.DATE) {
+        // convert date to readable date string
+        LocalDate d = LocalDate.ofEpochDay((Integer) field);
+        partitionValue = d.toString();
+      } else {
+        partitionValue = field.toString();
+        if ("".equals(partitionValue)) {
+          partitionValue = LAKESOUL_EMPTY_STRING;
+        }
       }
       partSpec.put(partitionColumns[i], partitionValue);
     }

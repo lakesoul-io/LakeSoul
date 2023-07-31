@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ops::Not;
 use arrow_schema::{DataType, Field, SchemaRef};
-use datafusion::logical_expr::{col, Expr};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::ident;
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {}
@@ -28,38 +30,38 @@ impl Parser {
                 None => Expr::Literal(ScalarValue::Boolean(Some(true))),
                 Some((_, field)) => {
                     if matches!(field.data_type(), DataType::Struct(_)) {
-                        col(column).is_not_null()
+                        ident(column).is_not_null()
                     } else if right == "null" {
                         match op.as_str() {
-                            "eq" => col(column).is_null(),
-                            "noteq" => col(column).is_not_null(),
+                            "eq" => ident(column).is_null(),
+                            "noteq" => ident(column).is_not_null(),
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     } else {
                         match op.as_str() {
                             "eq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).eq(value)
+                                ident(column).eq(value)
                             }
                             "noteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).not_eq(value)
+                                ident(column).not_eq(value)
                             }
                             "gt" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).gt(value)
+                                ident(column).gt(value)
                             }
                             "gteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).gt_eq(value)
+                                ident(column).gt_eq(value)
                             }
                             "lt" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).lt(value)
+                                ident(column).lt(value)
                             }
                             "lteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).lt_eq(value)
+                                ident(column).lt_eq(value)
                             }
 
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),

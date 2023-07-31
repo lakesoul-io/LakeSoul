@@ -20,3 +20,4 @@ dependency-reduced-pom.xml
 lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/entity/
 /script/benchmark/work-dir/*.jar
 *.DS_Store
+native-io/lakesoul-io-c/lakesoul_c_bindings.h

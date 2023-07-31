@@ -45,8 +45,6 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     }
 
     public void setDefaultColumnValue(String column, String value) {
-        Pointer colPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
-        Pointer valPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_default_column_value(ioConfigBuilder, column, value);
     }
 

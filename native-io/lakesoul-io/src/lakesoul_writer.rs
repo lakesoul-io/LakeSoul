@@ -3,12 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig};
-use crate::lakesoul_reader::ArrowResult;
 use crate::transform::{uniform_record_batch, uniform_schema};
 
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -18,7 +17,7 @@ use datafusion::physical_expr::expressions::{col, Column};
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics};
 use datafusion::prelude::SessionContext;
 use datafusion_common::DataFusionError;
@@ -31,6 +30,7 @@ use parquet::file::properties::WriterProperties;
 use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
+use std::fmt::{Debug, Formatter};
 use std::io::ErrorKind::ResourceBusy;
 use std::io::Write;
 use std::sync::Arc;
@@ -74,7 +74,7 @@ pub struct MultiPartAsyncWriter {
 /// Wrap the above async writer with a SortExec to
 /// sort the batches before write to async writer
 pub struct SortAsyncWriter {
-    sorter_sender: Sender<ArrowResult<RecordBatch>>,
+    sorter_sender: Sender<Result<RecordBatch>>,
     _sort_exec: Arc<dyn ExecutionPlan>,
     join_handle: JoinHandle<Result<()>>,
 }
@@ -110,24 +110,23 @@ impl Write for InMemBuf {
     }
 }
 
-#[derive(Debug)]
 pub struct ReceiverStreamExec {
-    stream: AtomicRefCell<Option<tokio::sync::mpsc::Receiver<ArrowResult<RecordBatch>>>>,
-    join_handle: AtomicRefCell<Option<JoinHandle<()>>>,
+    receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,
 }
 
 impl ReceiverStreamExec {
-    pub fn new(
-        receiver: tokio::sync::mpsc::Receiver<ArrowResult<RecordBatch>>,
-        join_handle: JoinHandle<()>,
-        schema: SchemaRef,
-    ) -> Self {
+    pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
         Self {
-            stream: AtomicRefCell::new(Some(receiver)),
-            join_handle: AtomicRefCell::new(Some(join_handle)),
+            receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
             schema,
         }
+    }
+}
+
+impl Debug for ReceiverStreamExec {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
+        todo!()
     }
 }
 
@@ -157,10 +156,8 @@ impl ExecutionPlan for ReceiverStreamExec {
     }
 
     fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        let receiver_stream = self.stream.borrow_mut().take().unwrap();
-        let join_handle = self.join_handle.borrow_mut().take().unwrap();
-        let stream = RecordBatchReceiverStream::create(&self.schema, receiver_stream, join_handle);
-        Ok(stream)
+        let builder = self.receiver_stream_builder.borrow_mut().take().unwrap();
+        Ok(builder.build())
     }
 
     fn statistics(&self) -> Statistics {
@@ -249,7 +246,7 @@ impl MultiPartAsyncWriter {
 #[async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let batch = uniform_record_batch(batch);
+        let batch = uniform_record_batch(batch)?;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
@@ -288,8 +285,10 @@ impl SortAsyncWriter {
         runtime: Arc<Runtime>,
     ) -> Result<Self> {
         let _ = runtime.enter();
-        let (tx, rx) = tokio::sync::mpsc::channel(2);
-        let recv_exec = ReceiverStreamExec::new(rx, tokio::task::spawn(async move {}), config.schema.0.clone());
+        let schema = config.schema.0.clone();
+        let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
+        let tx = receiver_stream_builder.tx();
+        let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema);
 
         let sort_exprs: Vec<PhysicalSortExpr> = config
             .primary_keys
@@ -304,7 +303,7 @@ impl SortAsyncWriter {
                 })
             })
             .collect::<Result<Vec<PhysicalSortExpr>>>()?;
-        let sort_exec = Arc::new(SortExec::try_new(sort_exprs, Arc::new(recv_exec), None)?);
+        let sort_exec = Arc::new(SortExec::new(sort_exprs, Arc::new(recv_exec)));
 
         // see if we need to prune aux sort cols
         let exec_plan: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
@@ -373,7 +372,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         let sender = self.sorter_sender;
         // send abort signal to the task
         sender
-            .send(Err(ArrowError::IoError("abort".to_string())))
+            .send(Err(Internal("abort".to_string())))
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
         drop(sender);
@@ -403,11 +402,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     .fields
                     .iter()
                     .filter(|f| !config.aux_sort_cols.contains(f.name()))
-                    .map(|f| {
-                        schema
-                            .index_of(f.name().as_str())
-                            .map_err(DataFusionError::ArrowError)
-                    })
+                    .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
                     .collect::<Result<Vec<usize>>>()?;
                 Arc::new(schema.project(proj_indices.borrow())?)
             } else {
@@ -488,6 +483,7 @@ mod tests {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs::File;
     use std::sync::Arc;
+    use arrow_array::Array;
     use tokio::runtime::Builder;
 
     #[test]
@@ -526,8 +522,8 @@ mod tests {
             assert_eq!(to_write.num_columns(), actual_batch.num_columns());
             assert_eq!(to_write.num_rows(), actual_batch.num_rows());
             for i in 0..to_write.num_columns() {
-                let expected_data = to_write.column(i).data();
-                let actual_data = actual_batch.column(i).data();
+                let expected_data = to_write.column(i).to_data();
+                let actual_data = actual_batch.column(i).to_data();
 
                 assert_eq!(expected_data, actual_data);
             }
@@ -560,8 +556,8 @@ mod tests {
             assert_eq!(to_read.num_columns(), actual_batch.num_columns());
             assert_eq!(to_read.num_rows(), actual_batch.num_rows());
             for i in 0..to_read.num_columns() {
-                let expected_data = to_read.column(i).data();
-                let actual_data = actual_batch.column(i).data();
+                let expected_data = to_read.column(i).to_data();
+                let actual_data = actual_batch.column(i).to_data();
 
                 assert_eq!(expected_data, actual_data);
             }
@@ -612,8 +608,8 @@ mod tests {
         assert_eq!(to_read.num_columns(), actual_batch.num_columns());
         assert_eq!(to_read.num_rows(), actual_batch.num_rows());
         for i in 0..to_read.num_columns() {
-            let expected_data = to_read.column(i).data();
-            let actual_data = actual_batch.column(i).data();
+            let expected_data = to_read.column(i).to_data();
+            let actual_data = actual_batch.column(i).to_data();
 
             assert_eq!(expected_data, actual_data);
         }

@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
-import org.apache.commons.lang.NotImplementedException;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
@@ -13,7 +12,6 @@ import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -21,7 +19,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -42,6 +39,14 @@ public class LakeSoulSinkGlobalCommittableSerializer
         this.committableSerializer = checkNotNull(committableSerializer);
     }
 
+    private static void validateMagicNumber(DataInputView in) throws IOException {
+        int magicNumber = in.readInt();
+        if (magicNumber != MAGIC_NUMBER) {
+            throw new IOException(
+                    String.format("Corrupt data: Unexpected magic number %08X", magicNumber));
+        }
+    }
+
     @Override
     public int getVersion() {
         return 1;
@@ -56,7 +61,8 @@ public class LakeSoulSinkGlobalCommittableSerializer
     }
 
     @Override
-    public LakeSoulMultiTableSinkGlobalCommittable deserialize(int version, byte[] serialized) throws IOException {
+    public LakeSoulMultiTableSinkGlobalCommittable deserialize(int version,
+                                                               byte[] serialized) throws IOException {
         DataInputDeserializer in = new DataInputDeserializer(serialized);
 
         if (version == 1) {
@@ -66,11 +72,14 @@ public class LakeSoulSinkGlobalCommittableSerializer
         throw new IOException("Unrecognized version or corrupt state: " + version);
     }
 
-    private void serializeV1(LakeSoulMultiTableSinkGlobalCommittable globalCommittable, DataOutputView dataOutputView)
+    private void serializeV1(LakeSoulMultiTableSinkGlobalCommittable globalCommittable,
+                             DataOutputView dataOutputView)
             throws IOException {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables = globalCommittable.getGroupedCommitables();
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
+                globalCommittable.getGroupedCommitables();
         assert groupedCommitables != null;
-        List<LakeSoulMultiTableSinkCommittable> commitables = groupedCommitables.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+        List<LakeSoulMultiTableSinkCommittable> commitables =
+                groupedCommitables.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
         dataOutputView.writeInt(commitables.size());
         for (LakeSoulMultiTableSinkCommittable committable : commitables) {
             SimpleVersionedSerialization.writeVersionAndSerialize(committableSerializer, committable, dataOutputView);
@@ -88,13 +97,5 @@ public class LakeSoulSinkGlobalCommittableSerializer
             }
         }
         return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables);
-    }
-
-    private static void validateMagicNumber(DataInputView in) throws IOException {
-        int magicNumber = in.readInt();
-        if (magicNumber != MAGIC_NUMBER) {
-            throw new IOException(
-                    String.format("Corrupt data: Unexpected magic number %08X", magicNumber));
-        }
     }
 }

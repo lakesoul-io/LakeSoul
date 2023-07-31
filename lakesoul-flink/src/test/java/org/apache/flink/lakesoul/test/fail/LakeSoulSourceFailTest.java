@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
-
 package org.apache.flink.lakesoul.test.fail;
 
 import org.apache.flink.api.common.functions.util.PrintSinkOutputWriter;
@@ -12,7 +11,7 @@ import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.MockLakeSoulCatalog;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
@@ -25,7 +24,6 @@ import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.SqlDialect;
-import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Column;
@@ -34,16 +32,17 @@ import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkFunctionProvider;
+import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.factories.TableFactoryHarness;
 import org.apache.flink.table.types.DataType;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.*;
 import org.junit.rules.TemporaryFolder;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -59,6 +58,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class LakeSoulSourceFailTest extends AbstractTestBase {
 
     public static Map<String, Tuple3<ResolvedSchema, String, StopBehavior>> parameters;
+    static String dropNonLakeSoulSourceSqlFormat =
+            "drop table if exists `default_catalog`.`default_database`" + ".`test_source`";
+    static String createNonLakeSoulSourceSqlFormat =
+            "create table if not exists `default_catalog`.`default_database`" + ".`test_source` %s" +
+                    " with ('connector'='filesystem', 'format'='json', " +
+                    "'source.monitor-interval'='5s', " +
+                    "'path'='"
+                    + AbstractTestBase.getTempDirUri("/failtest") +
+                    "')";
     static String createSourceSqlFormat = "create table if not exists test_source %s %s" +
             "with ('connector'='lakesoul', 'path'='%s', 'hashBucketNum'='%d', " +
             "'discoveryinterval'='1000'" +
@@ -66,12 +74,23 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
     static String createSinkSqlFormat = "create table if not exists test_sink %s" +
             "with ('connector'='lakesoul', 'path'='/', 'hashBucketNum'='2')";
     private static ArrayList<Integer> indexArr;
-    private static final LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
     private static StreamExecutionEnvironment streamExecEnv;
     private static StreamTableEnvironment streamTableEnv;
     private static MockLakeSoulCatalog.TestLakeSoulCatalog testLakeSoulCatalog;
     @Rule
     public TemporaryFolder tempFolder = new TemporaryFolder();
+
+    @Before
+    public void createDir() throws URISyntaxException, IOException {
+        Path path = new Path(new URI(AbstractTestBase.getTempDirUri("/failtest/")));
+        path.getFileSystem().mkdirs(path);
+    }
+
+    @After
+    public void cleanDir() throws URISyntaxException, IOException {
+        Path path = new Path(new URI(AbstractTestBase.getTempDirUri("/failtest/")));
+        path.getFileSystem().delete(path, true);
+    }
 
     @BeforeClass
     public static void setup() {
@@ -89,8 +108,8 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
                         Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range",
                                         DataTypes.STRING()),
                                 Column.physical("value", DataTypes.DOUBLE())), Collections.emptyList(),
-                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))), "PARTITIONED BY (`range`)",
-                StopBehavior.FAIL_ON_INVOKE_FINISHED));
+                        UniqueConstraint.primaryKey("primary key", Collections.singletonList("hash"))),
+                "PARTITIONED BY (`range`)", StopBehavior.FAIL_ON_INVOKE_FINISHED));
 
         parameters.put("testLakeSoulSourceFailOnSinkCheckPointing", Tuple3.of(new ResolvedSchema(
                         Arrays.asList(Column.physical("hash", DataTypes.INT()), Column.physical("range1",
@@ -271,6 +290,8 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         testLakeSoulCatalog.setTestFactory(testFactory);
 
 
+        streamTableEnv.executeSql(String.format(dropNonLakeSoulSourceSqlFormat));
+        streamTableEnv.executeSql(String.format(createNonLakeSoulSourceSqlFormat, resolvedSchema));
         streamTableEnv.executeSql(String.format(createSourceSqlFormat, resolvedSchema, partitionBy, path, 2));
 
 
@@ -280,8 +301,10 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         streamTableEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("UTC").toZoneId());
 
         ExactlyOnceRowDataPrintFunction.cleanStatus();
-        final TableResult execute = streamTableEnv.executeSql(
-                "insert into test_sink select * from test_source");
+        streamTableEnv.executeSql(
+                "insert into test_source select * from `default_catalog`.`default_database`.`test_source`");
+        testFactory.setTestSink(testTableSink);
+        final TableResult execute = streamTableEnv.executeSql("insert into test_sink select * from test_source");
         Thread thread = new Thread(() -> {
             try {
 
@@ -295,17 +318,13 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
             }
         });
         thread.start();
-        TableEnvironment batchTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
-        LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
+//        TableEnvironment batchTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
+//        LakeSoulTestUtils.registerLakeSoulCatalog(batchTableEnv, lakeSoulCatalog);
+//        streamExecEnv.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        testFactory.setTestSink(null);
         for (String value : testData) {
-            System.out.println("batch insert value: " + value);
-            batchTableEnv.executeSql(String.format("insert into test_source VALUES %s", value));
-            try {
-                int tps = 4;
-                Thread.sleep(1000 / tps);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
+            streamTableEnv.executeSql(
+                    String.format("insert into `default_catalog`.`default_database`.`test_source` VALUES %s", value));
         }
 
         try {
@@ -321,7 +340,7 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         FAIL_ON_INVOKE_FINISHED, FAIL_ON_INVOKE_STARTING,
     }
 
-    public static class TestTableSink implements DynamicTableSink {
+    public static class TestTableSink implements DynamicTableSink, SupportsPartitioning {
         private final DataType type;
         private final String printIdentifier;
         private final boolean stdErr;
@@ -357,6 +376,11 @@ public class LakeSoulSourceFailTest extends AbstractTestBase {
         @Override
         public String asSummaryString() {
             return "Print to " + (stdErr ? "System.err" : "System.out");
+        }
+
+        @Override
+        public void applyStaticPartition(Map<String, String> partition) {
+
         }
     }
 

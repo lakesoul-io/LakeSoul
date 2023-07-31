@@ -15,7 +15,7 @@ use futures::TryStreamExt;
 use hdrs::Client;
 use object_store::path::Path;
 use object_store::Error::Generic;
-use object_store::{GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
 use parquet::data_type::AsBytes;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
@@ -160,6 +160,10 @@ impl ObjectStore for HDFS {
         }))))
     }
 
+    async fn get_opts(&self, location: &Path, _options: GetOptions) -> object_store::Result<GetResult> {
+        self.get(location).await
+    }
+
     async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
         let location = add_leading_slash(location);
         let client = self.client.clone();
@@ -212,6 +216,7 @@ impl ObjectStore for HDFS {
                 })?,
                 last_modified: meta.modified().into(),
                 size: meta.len() as usize,
+                e_tag: None,
             })
         })
         .await

@@ -1,10 +1,10 @@
+# LakeSoul CDC Ingestion via Spark Streaming
+
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
-
-# LakeSoul CDC Ingestion via Spark Streaming
 
 ## 1. LakeSoul CDC Pipeline
 LakeSoul supports ingesting any source of CDC by transforming CDC markups to LakeSoul's own field.

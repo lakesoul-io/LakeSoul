@@ -186,20 +186,25 @@ macro_rules! sum_with_primitive_type_and_append_value {
             let array = range.array();
             let arr = as_primitive_array::<$primitive_type_name>(array.as_ref());
             let values = arr.values();
-            let null_buffer = arr.data_ref().null_buffer();
-            let offset = arr.data_ref().offset();
             if is_none {
+                let null_buffer = arr.nulls();
                 match null_buffer {
                     Some(buffer) => {
-                        is_none &= (buffer.count_set_bits_offset(offset + range.begin_row, range.end_row - range.begin_row)
-                                == range.end_row - range.begin_row);
+                        let offset = arr.offset();
+                        let null_buf_range = buffer.slice(offset + range.begin_row, range.end_row - range.begin_row);
+                        // the entire range is null
+                        is_none &=
+                            null_buf_range.null_count() == (range.end_row - range.begin_row);
                     }
                     None => is_none = false,
                 }
             }
-            res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
+            if !is_none {
+                res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
+            }
         }
         match is_none {
+            // only when all ranges are null values, the result is also null
             true => MergeResult::AppendNull,
             false => {
                 $builder
@@ -213,24 +218,18 @@ macro_rules! sum_with_primitive_type_and_append_value {
     }};
 }
 
-
 #[cfg(test)]
 mod tests {
-    use arrow::array::{TimestampMillisecondArray, PrimitiveArray};
+    use arrow::array::{PrimitiveArray, TimestampMillisecondArray};
     use arrow::datatypes::TimestampMillisecondType;
     #[test]
     fn test_timestamp_with_fixed_offset_tz_fmt_debug() {
         let arr: PrimitiveArray<TimestampMillisecondType> =
-            TimestampMillisecondArray::from(vec![
-                1546214400000,
-                1546214400000,
-                -1546214400000,
-            ])
-            .with_timezone("America/Denver".to_string());
+            TimestampMillisecondArray::from(vec![1546214400000, 1546214400000, -1546214400000])
+                .with_timezone("America/Denver".to_string());
         assert_eq!(
             "PrimitiveArray<Timestamp(Millisecond, Some(\"+08:00\"))>\n[\n  2018-12-31T08:00:00+08:00,\n  2018-12-31T08:00:00+08:00,\n  1921-01-02T08:00:00+08:00,\n]",
             format!("{arr:?}")
         );
     }
-
 }

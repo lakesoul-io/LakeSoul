@@ -2,20 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-/*
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- */
-
 package org.apache.flink.lakesoul.test.flinkSource;
 
 import org.apache.flink.lakesoul.test.AbstractTestBase;
@@ -79,15 +65,39 @@ public class BatchReadSuite extends AbstractTestBase {
     public void testLakesoulSourceSelectMultiRangeAndHash() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         TestUtils.createLakeSoulSourceMultiPartitionTable(createTableEnv);
-        String testMultiRangeSelect = "select * from user_multi where `region`='UK' and score > 80";
-        String testMultiHashSelect = "select name,`date`,region from user_multi where score > 80";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
-        TableImpl flinkTable1 = (TableImpl) tEnvs.sqlQuery(testMultiRangeSelect);
+
+        String test1 = "select * from user_multi";
+        TableImpl flinkTable1 = (TableImpl) tEnvs.sqlQuery(test1);
         List<Row> results1 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results1, new String[]{"+I[3, Amy, 95, 1995-10-10, UK]"});
-        TableImpl flinkTable2 = (TableImpl) tEnvs.sqlQuery(testMultiHashSelect);
+        TestUtils.checkEqualInAnyOrder(results1, new String[]{
+                "+I[3, Amy, 95, 1995-10-10, UK]",
+                "+I[5, Tom, 75, 1995-10-01, UK]",
+                "+I[4, Mike, 70, 1995-10-15, UK]",
+                "+I[1, Bob, 90, 1995-10-01, China]",
+                "+I[2, Alice, 80, 1995-10-10, China]",
+                "+I[3, Jack, 75, 1995-10-15, China]"});
+
+        String test2 = "select * from user_multi where `region`='UK' and score > 80";
+        TableImpl flinkTable2 = (TableImpl) tEnvs.sqlQuery(test2);
         List<Row> results2 = CollectionUtil.iteratorToList(flinkTable2.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results2, new String[]{"+I[Amy, 1995-10-10, UK]", "+I[Bob, 1995-10-01, China]"});
+        TestUtils.checkEqualInAnyOrder(results2, new String[]{"+I[3, Amy, 95, 1995-10-10, UK]"});
+
+        String test3 = "select name,`date`,region from user_multi where score > 80";
+        TableImpl flinkTable3 = (TableImpl) tEnvs.sqlQuery(test3);
+        List<Row> results3 = CollectionUtil.iteratorToList(flinkTable3.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results3, new String[]{"+I[Amy, 1995-10-10, UK]", "+I[Bob, 1995-10-01, China]"});
+
+        String test4 = "select name,`date`,region from user_multi where `region`='UK' and `date`=TO_DATE('1995-10-01')";
+        TableImpl flinkTable4 = (TableImpl) tEnvs.sqlQuery(test4);
+        List<Row> results4 = CollectionUtil.iteratorToList(flinkTable4.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results4, new String[]{"+I[Tom, 1995-10-01, UK]"});
+
+        String test5 = "select name,`date`,region from user_multi where (`region`='China' and `date`=TO_DATE('1995-10-01'))" +
+                " OR (`region`='UK' and `date`=TO_DATE('1995-10-15'))";
+        TableImpl flinkTable5 = (TableImpl) tEnvs.sqlQuery(test5);
+        List<Row> results5 = CollectionUtil.iteratorToList(flinkTable5.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results5, new String[]{"+I[Mike, 1995-10-15, UK]", "+I[Bob, 1995-10-01, China]"});
     }
 
     @Test

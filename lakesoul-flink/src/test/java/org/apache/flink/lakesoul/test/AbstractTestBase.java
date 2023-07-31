@@ -44,7 +44,7 @@ public abstract class AbstractTestBase {
         config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
         config.set(ExecutionCheckpointingOptions.TOLERABLE_FAILURE_NUMBER, 5);
         config.set(ExecutionCheckpointingOptions.CHECKPOINTING_INTERVAL, Duration.ofSeconds(3));
-        config.setString("state.backend", "hashmap");
+        config.setString("state.backend.type", "hashmap");
         config.setString("state.checkpoint.dir", getTempDirUri("/flinkchk"));
         return config;
     }
