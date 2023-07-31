@@ -217,7 +217,7 @@ jobs:
         run: sudo apt-get install -y postgresql-client-14
       - name: Init PG
         run: |
-          ./script/meta_init_for_local_test.sh -j 2
+          ./script/meta_init_for_local_test.sh -j 1
       - name: Init PG RBAC
         run: |
           ./script/meta_rbac_init_for_local_test.sh -j 1
@@ -231,7 +231,7 @@ jobs:
           path: ./native-io/target/release/
       - name: Build with Maven
         run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
+          mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
