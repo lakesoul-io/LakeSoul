@@ -8,6 +8,8 @@ import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBConnector;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
+import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import dev.failsafe.internal.util.Lists;
 
 import java.sql.Connection;
@@ -130,10 +132,11 @@ public class NamespaceDao {
     }
 
     public static Namespace namespaceFromResultSet(ResultSet rs) throws SQLException {
+        String comment = rs.getString("comment");
         return Namespace.newBuilder()
                 .setNamespace(rs.getString("namespace"))
                 .setProperties(rs.getString("properties"))
-                .setComment(rs.getString("comment"))
+                .setComment(comment == null ? "" : comment )
                 .setDomain(rs.getString("domain"))
                 .build();
     }
@@ -143,6 +146,8 @@ public class NamespaceDao {
                     .setNamespace(DBConfig.LAKESOUL_DEFAULT_NAMESPACE)
                     .setProperties("{}")
                     .setComment("")
+                    .setDomain(AuthZContext.getInstance().getDomain())
                     .build();
 
 }
+

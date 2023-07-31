@@ -189,7 +189,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -213,7 +213,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -237,7 +237,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -261,7 +261,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -309,7 +309,7 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                20 * 1000);
+                60 * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()

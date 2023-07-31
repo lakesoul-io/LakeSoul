@@ -165,7 +165,73 @@ jobs:
           path: ./native-io/target/release/
       - name: Build with Maven
         run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase' -Dsurefire.failIfNoSpecifiedTests=false
+          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase, !RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Generate Report Site
+        if: always()
+        run: |
+          mvn surefire-report:report-only -pl lakesoul-spark -am
+      - name: Upload Test Report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: maven-test-report-artifact-spark-2
+          path: lakesoul-spark/target/site
+          retention-days: 5
+          if-no-files-found: error
+
+  spark-test-rbac:
+    runs-on: ubuntu-latest
+    needs: [ build-linux-x86_64 ]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-14
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 1
+      - name: Init PG RBAC
+        run: |
+          ./script/meta_rbac_init_for_local_test.sh -j 1
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-io/target/release/
+      - name: Build with Maven
+        run: |
+          mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
@@ -228,7 +294,81 @@ jobs:
           path: ./native-io/target/release/
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Generate Report Site
+        if: always()
+        run: |
+          mvn surefire-report:report-only -pl lakesoul-flink -am
+      - name: Upload Test Report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: maven-test-report-artifact-flink-1
+          path: lakesoul-flink/target/site
+          retention-days: 5
+          if-no-files-found: error
+
+  flink-test-rbac:
+    runs-on: ubuntu-latest
+    needs: [ build-linux-x86_64 ]
+
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-14
+      - name: Init PG
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+
+      - name: Init PG RBAC ROW POLICY
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
+      - name: Init PG RBAC DOMAINS
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains.sql lakesoul_test
+      - name: Init PG RBAC USERS
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users.sql lakesoul_test
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-io/target/release/
+      - name: Build with Maven
+        run: |
+          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |

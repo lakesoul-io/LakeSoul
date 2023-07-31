@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.tables
 
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hive.ql.exec.spark.session.SparkSession
 
 import java.util.Locale
 import org.apache.spark.sql.lakesoul.LakeSoulUtils

@@ -105,6 +105,7 @@ public class LakeSoulCatalog implements Catalog {
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
+            throw e;
         }
 
     }
