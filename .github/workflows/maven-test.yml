@@ -294,7 +294,7 @@ jobs:
           path: ./native-io/target/release/
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
@@ -347,6 +347,10 @@ jobs:
       - name: Init PG
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+
+      - name: Init PG RBAC ROW POLICY
+        run: |
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
       - name: Init PG RBAC DOMAINS
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains.sql lakesoul_test
