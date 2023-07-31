@@ -294,7 +294,7 @@ jobs:
           path: ./native-io/target/release/
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='!LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
