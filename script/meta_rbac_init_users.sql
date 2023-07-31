@@ -14,7 +14,7 @@ BEGIN
         -- create user if not exists
         user_name := current_setting('_user.name');
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = user_name) THEN
-            passwd := 'admin1');
+            passwd := 'admin1';
 EXECUTE format('CREATE USER %s WITH PASSWORD ''%s''', user_name, passwd);
 RAISE NOTICE 'Created user % with password: %', user_name, passwd;
 END IF;
@@ -45,7 +45,7 @@ BEGIN
         -- create user if not exists
         user_name := current_setting('_user.name');
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = user_name) THEN
-            passwd := 'user1');
+            passwd := 'user1';
 EXECUTE format('CREATE USER %s WITH PASSWORD ''%s''', user_name, passwd);
 RAISE NOTICE 'Created user % with password: %', user_name, passwd;
 END IF;
@@ -76,7 +76,7 @@ BEGIN
         -- create user if not exists
         user_name := current_setting('_user.name');
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = user_name) THEN
-            passwd := 'admin2');
+            passwd := 'admin2';
 EXECUTE format('CREATE USER %s WITH PASSWORD ''%s''', user_name, passwd);
 RAISE NOTICE 'Created user % with password: %', user_name, passwd;
 END IF;
