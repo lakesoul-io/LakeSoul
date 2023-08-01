@@ -5,7 +5,10 @@
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TablePathId;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
@@ -13,11 +16,19 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class TablePathIdDao {
 
     public TablePathId findByTablePath(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(NativeUtils.CodedDaoType.SelectTablePathIdByTablePath, Collections.singletonList(tablePath));
+            if (jniWrapper == null) return null;
+            List<TablePathId> tablePathIdList = jniWrapper.getTablePathIdList();
+            return tablePathIdList.isEmpty() ? null : tablePathIdList.get(0);
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -59,11 +70,11 @@ public class TablePathIdDao {
         return list;
     }
 
-    public List<TablePathId> listAllByNamespace(String table_namespace) {
+    public List<TablePathId> listAllByNamespace(String tableNamespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from table_path_id where table_namespace = '%s'", table_namespace);
+        String sql = String.format("select * from table_path_id where table_namespace = '%s'", tableNamespace);
         List<TablePathId> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -81,6 +92,12 @@ public class TablePathIdDao {
     }
 
     public List<String> listAllPath() {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListAllTablePath,
+                    Collections.emptyList());
+            return jniWrapper.getTablePathIdList().stream().map(TablePathId::getTablePath).collect(Collectors.toList());
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -102,11 +119,17 @@ public class TablePathIdDao {
         return list;
     }
 
-    public List<String> listAllPathByNamespace(String table_namespace) {
+    public List<String> listAllPathByNamespace(String tableNamespace) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListAllPathTablePathByNamespace,
+                    Collections.singletonList(tableNamespace));
+            return jniWrapper.getTablePathIdList().stream().map(TablePathId::getTablePath).collect(Collectors.toList());
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", table_namespace);
+        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", tableNamespace);
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -125,6 +148,10 @@ public class TablePathIdDao {
     }
 
     public void insert(TablePathId tablePathId) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            Integer count = NativeMetadataJavaClient.insert(NativeUtils.CodedDaoType.InsertTablePathId, JniWrapper.newBuilder().addTablePathId(tablePathId).build());
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
@@ -143,6 +170,10 @@ public class TablePathIdDao {
     }
 
     public void delete(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteTablePathIdByTablePath, Collections.singletonList(tablePath));
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql = String.format("delete from table_path_id where table_path = '%s' ", tablePath);
@@ -158,6 +189,12 @@ public class TablePathIdDao {
     }
 
     public void deleteByTableId(String tableId) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteTablePathIdByTableId,
+                    Collections.singletonList(tableId));
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql = String.format("delete from table_path_id where table_id = '%s' ", tableId);

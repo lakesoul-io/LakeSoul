@@ -9,6 +9,7 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.FileOp;
+import com.dmetasoul.lakesoul.meta.entity.Uuid;
 import com.zaxxer.hikari.HikariConfig;
 import org.apache.commons.lang3.StringUtils;
 
@@ -304,5 +305,24 @@ public class DBUtil {
             if (rangeKeys.isEmpty()) return "";
             return String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangeKeys);
         }
+    }
+
+    public static UUID toJavaUUID(Uuid uuid) {
+        return new UUID(uuid.getHigh(), uuid.getLow());
+    }
+
+    public static Uuid toProtoUuid(UUID uuid) {
+        return Uuid.newBuilder().setHigh(uuid.getMostSignificantBits()).setLow(uuid.getLeastSignificantBits()).build();
+    }
+
+    public static String protoUuidToJniString(Uuid uuid) {
+        StringBuilder sb = new StringBuilder();
+        String high = Long.toUnsignedString(uuid.getHigh(), 16);
+        sb.append(new String(new char[16 - high.length()]).replace("\0", "0"));
+        sb.append(high);
+        String low = Long.toUnsignedString(uuid.getLow(), 16);
+        sb.append(new String(new char[16 - low.length()]).replace("\0", "0"));
+        sb.append(low);
+        return sb.toString();
     }
 }

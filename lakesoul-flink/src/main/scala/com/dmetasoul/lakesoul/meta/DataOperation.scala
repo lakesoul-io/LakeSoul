@@ -199,7 +199,7 @@ object DataOperation {
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dataCommitInfoList = dbManager
-        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(uuid => uuid.toString).asJava)).asScala.toArray
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
       fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }

@@ -8,9 +8,29 @@ import jnr.ffi.Pointer;
 import jnr.ffi.annotations.Delegate;
 import jnr.ffi.annotations.LongLong;
 
+import java.awt.*;
+
 public interface LibLakeSoulMetaData {
 
-    void execute_query(IntegerCallback integerCallback, Pointer client, String type, String texts, String delim, @LongLong long addr);
+    Pointer create_tokio_runtime();
+
+    void free_tokio_runtime(Pointer runtime);
+
+    Pointer create_prepared_statement();
+
+    void free_prepared_statement(Pointer prepared);
+
+    Pointer create_tokio_postgres_client(BooleanCallback booleanCallback, String config, Pointer runtime);
+
+    void free_tokio_postgres_client(Pointer client);
+
+    void execute_query(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts, @LongLong long addr);
+
+    void execute_update(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+
+    void execute_query_scalar(StringCallback stringCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+
+    void execute_insert(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, @LongLong long addr, int length);
 
     void hello_world(Callback<byte[]> bytesCallback);
 
@@ -40,9 +60,9 @@ public interface LibLakeSoulMetaData {
         void invoke(Integer status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
     }
 
-    interface BytesCallback { // type representing callback
+    interface StringCallback { // type representing callback
         @Delegate
-        void invoke(byte[] status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
+        void invoke(String status, String err); // function name doesn't matter, it just needs to be the only function and have @Delegate
     }
 
 

@@ -6,15 +6,11 @@ package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBConnector;
-import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
-import dev.failsafe.internal.util.Lists;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 
-import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -23,9 +19,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class NamespaceDao {
     public void insert(Namespace namespace) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.InsertNamespace,
+                    JniWrapper.newBuilder().addNamespace(namespace).build());
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
@@ -45,14 +48,41 @@ public class NamespaceDao {
     }
 
     public Namespace findByNamespace(String name) {
-        JniWrapper jniWrapper = NativeMetadataJavaClient.executeQuery("findByNamespace", Collections.singletonList(name));
-        if (jniWrapper == null) return null;
-        List<Namespace> namespaceList = jniWrapper.getNamespaceList();
-        return namespaceList.isEmpty() ? null : namespaceList.get(0);
-
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectNamespaceByNamespace,
+                    Collections.singletonList(name));
+            if (jniWrapper == null) return null;
+            List<Namespace> namespaceList = jniWrapper.getNamespaceList();
+            return namespaceList.isEmpty() ? null : namespaceList.get(0);
+        }
+        Connection conn = null;
+        PreparedStatement pstmt = null;
+        ResultSet rs = null;
+        String sql = String.format("select * from namespace where namespace = '%s'", name);
+        Namespace namespace = null;
+        try {
+            conn = DBConnector.getConn();
+            pstmt = conn.prepareStatement(sql);
+            rs = pstmt.executeQuery();
+            while (rs.next()) {
+                namespace = namespaceFromResultSet(rs);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DBConnector.closeConn(rs, pstmt, conn);
+        }
+        return namespace;
     }
 
     public void deleteByNamespace(String namespace) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteNamespaceByNamespace,
+                    Collections.singletonList(namespace));
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql = String.format("delete from namespace where namespace = '%s' ", namespace);
@@ -68,6 +98,14 @@ public class NamespaceDao {
     }
 
     public List<String> listNamespaces() {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListNamespaces,
+                    Collections.emptyList());
+            if (jniWrapper == null) return null;
+            List<Namespace> namespaceList = jniWrapper.getNamespaceList();
+            return namespaceList.stream().map(Namespace::getNamespace).collect(Collectors.toList());
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -90,6 +128,11 @@ public class NamespaceDao {
     }
 
     public int updatePropertiesByNamespace(String namespace, String properties) {
+        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+            return NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.UpdateNamespacePropertiesByNamespace,
+                    Arrays.asList(namespace, properties));
+        }
         int result = 0;
         Connection conn = null;
         PreparedStatement pstmt = null;

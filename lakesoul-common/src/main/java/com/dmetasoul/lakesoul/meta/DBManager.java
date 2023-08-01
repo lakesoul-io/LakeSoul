@@ -175,7 +175,7 @@ public class DBManager {
     }
 
     public long getLastedTimestamp(String tableId, String partitionDesc) {
-        return partitionInfoDao.getLastedTimestamp(tableId, partitionDesc);
+        return partitionInfoDao.getLatestTimestamp(tableId, partitionDesc);
     }
 
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
@@ -203,7 +203,7 @@ public class DBManager {
     public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc, long utcMills,
                                               List<DataFileOp> fileOps, List<String> deleteFilePathList) {
         List<PartitionInfo> filterPartitionInfo = getFilterPartitionInfo(tableId, partitionDesc, utcMills);
-        List<String> snapshotList = new ArrayList<>();
+        List<Uuid> snapshotList = new ArrayList<>();
         filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshotList()));
         List<DataCommitInfo> filterDataCommitInfo =
                 dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
@@ -384,7 +384,7 @@ public class DBManager {
             String partitionDesc = partitionInfo.getPartitionDesc();
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
-            snapshotList.addAll(partitionInfo.getSnapshotList());
+            snapshotList.addAll(partitionInfo.getSnapshotList().stream().map(uuid -> DBUtil.toJavaUUID(uuid).toString()).collect(Collectors.toList()));
         }
 
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -681,8 +681,8 @@ public class DBManager {
 
     private PartitionInfo.Builder updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo.Builder curPartitionInfo,
                                                                 PartitionInfo readPartition) {
-        List<String> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
-        List<String> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
+        List<Uuid> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
+        List<Uuid> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
         if (readPartition != null) {
             curSnapshot.removeAll(readPartition.getSnapshotList());
         }
@@ -723,14 +723,14 @@ public class DBManager {
     public List<DataCommitInfo> getTableSinglePartitionDataInfo(PartitionInfo partitionInfo) {
         String tableId = partitionInfo.getTableId();
         String partitionDesc = partitionInfo.getPartitionDesc();
-        List<String> snapshotList = partitionInfo.getSnapshotList();
+        List<Uuid> snapshotList = partitionInfo.getSnapshotList();
 
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
     public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        List<String> commitList = partitionInfo.getSnapshotList();
+        List<Uuid> commitList = partitionInfo.getSnapshotList();
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
     }
 
@@ -753,7 +753,7 @@ public class DBManager {
     }
 
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc,
-                                                            List<String> dataCommitUUIDs) {
+                                                            List<Uuid> dataCommitUUIDs) {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
@@ -794,9 +794,9 @@ public class DBManager {
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
-        String commitId = dataCommitInfo.getCommitId();
+        Uuid commitId = dataCommitInfo.getCommitId();
         CommitOp commitOp = dataCommitInfo.getCommitOp();
-        DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);
+        DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, DBUtil.toJavaUUID(commitId).toString());
         if (metaCommitInfo != null && metaCommitInfo.getCommitted()) {
             LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
             return;
@@ -809,7 +809,7 @@ public class DBManager {
         MetaInfo.Builder metaInfo = MetaInfo.newBuilder();
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
 
-        List<String> snapshot = new ArrayList<>();
+        List<Uuid> snapshot = new ArrayList<>();
         snapshot.add(commitId);
 
         List<PartitionInfo> partitionInfoList = new ArrayList<>();
