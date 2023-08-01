@@ -32,14 +32,17 @@ trait LakeSoulTestUtils extends Logging {
   }
 
   override def withTable(tableNames: String*)(f: => Unit): Unit = {
+    println("debug] LakeSoulTestUtils::withTable before with table " + tableNames)
     Utils.tryWithSafeFinally(f) {
       tableNames.foreach { name =>
+        println("debug] LakeSoulTestUtils::withTable droptable " + name)
         spark.sql(s"DROP TABLE IF EXISTS $name")
         if (name.split("\\.").length == 1) {
-          val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
+          val databaseName = if (name.startsWith(testDatabase + ".")) name else s"$testDatabase.$name"
           spark.sql(s"DROP TABLE IF EXISTS $databaseName")
         }
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -55,11 +58,14 @@ trait LakeSoulTestUtils extends Logging {
       } catch {
         case e: Exception =>
       }
+      finally {
+        waitForTasksToFinish()
+      }
     }
   }
 
   def createDF(seq: Seq[Product], names: Seq[String],
-                                  types: Seq[String], nullables: Option[Seq[Boolean]] = None): DataFrame = {
+               types: Seq[String], nullables: Option[Seq[Boolean]] = None): DataFrame = {
     val fields = nullables match {
       case None =>
         names.zip(types).map(nt => StructField(nt._1, CatalystSqlParser.parseDataType(nt._2), nullable = false))

@@ -55,14 +55,15 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 
 
   private def getCurrentSnapshot: Snapshot = {
-
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
+      logError("createSnapshot for " + table_path)
       createSnapshot
     } else {
       //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
       if (LakeSoulUtils.isLakeSoulTable(table_path)) {
         throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
       }
+      logError("initSnapshot for " + table_path)
       initSnapshot
     }
   }
@@ -97,13 +98,13 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-   * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
-   * be recorded for this table, and all other tables will be read
-   * at a snapshot that is pinned on the first access.
-   *
-   * @note This uses thread-local variable to make the active transaction visible. So do not use
-   *       multi-threaded code in the provided thunk.
-   */
+    * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
+    * be recorded for this table, and all other tables will be read
+    * at a snapshot that is pinned on the first access.
+    *
+    * @note This uses thread-local variable to make the active transaction visible. So do not use
+    *       multi-threaded code in the provided thunk.
+    */
   def withNewTransaction[T](thunk: TransactionCommit => T): T = {
     try {
       val tc = startTransaction()
@@ -115,9 +116,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-   * Checks whether this table only accepts appends. If so it will throw an error in operations that
-   * can remove data such as DELETE/UPDATE/MERGE.
-   */
+    * Checks whether this table only accepts appends. If so it will throw an error in operations that
+    * can remove data such as DELETE/UPDATE/MERGE.
+    */
   def assertRemovable(): Unit = {
     if (LakeSoulConfig.IS_APPEND_ONLY.fromTableInfo(snapshot.getTableInfo)) {
       throw LakeSoulErrors.modifyAppendOnlyTableException
@@ -138,9 +139,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 object SnapshotManagement {
 
   /**
-   * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
-   * in reconstructing.
-   */
+    * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
+    * in reconstructing.
+    */
   private val snapshotManagementCache = {
     val expireMin = if (SparkSession.getActiveSession.isDefined) {
       SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)

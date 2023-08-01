@@ -8,6 +8,8 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
@@ -47,9 +49,11 @@ public class DBManager {
     public boolean isTableExists(String tablePath) {
         TablePathId tablePathId = tablePathIdDao.findByTablePath(tablePath);
         if (tablePathId == null) {
+            System.out.println("[debug] isTableExists not found: " + tablePath);
             return false;
         }
         TableInfo tableInfo = tableInfoDao.selectByTableId(tablePathId.getTableId());
+        System.out.println("[debug] isTableExists found: " + tableInfo);
         return tableInfo != null;
     }
 
@@ -110,6 +114,7 @@ public class DBManager {
 
         String domain = getNameSpaceDomain(namespace);
 
+        System.out.println("[debug]createNewTable " + tableInfo);
         if (StringUtils.isNotBlank(tableName)) {
             tableNameIdDao.insert(TableNameIdDao.newTableNameId(tableName, tableId, namespace, domain));
         }
@@ -137,6 +142,8 @@ public class DBManager {
             if (ex) {
                 tableNameIdDao.deleteByTableId(tableId);
                 tablePathIdDao.deleteByTableId(tableId);
+            } else {
+                System.out.println("[debug]createNewTable success " + tableInfo);
             }
         }
     }
@@ -145,12 +152,12 @@ public class DBManager {
         return tablePathIdDao.listAllPath();
     }
 
-    public List<String> listTableNamesByNamespace(String table_namespace) {
-        return tableNameIdDao.listAllNameByNamespace(table_namespace);
+    public List<String> listTableNamesByNamespace(String tableNamespace) {
+        return tableNameIdDao.listAllNameByNamespace(tableNamespace);
     }
 
-    public List<String> listTablePathsByNamespace(String table_namespace) {
-        return tablePathIdDao.listAllPathByNamespace(table_namespace);
+    public List<String> listTablePathsByNamespace(String tableNamespace) {
+        return tablePathIdDao.listAllPathByNamespace(tableNamespace);
     }
 
     public TableInfo getTableInfoByPath(String tablePath) {
@@ -327,12 +334,13 @@ public class DBManager {
 
     public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
         JSONObject newProperties = JSONObject.parseObject(properties);
-
-        if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
-            // do not modify domain in properties for this table
-            newProperties.put("domain", originProperties.get("domain"));
+        if (tableInfo != null) {
+            JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
+            if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
+                // do not modify domain in properties for this table
+                newProperties.put("domain", originProperties.get("domain"));
+            }
         }
         tableInfoDao.updatePropertiesById(tableId, newProperties.toJSONString());
     }
@@ -759,7 +767,7 @@ public class DBManager {
 
     public void rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        if (partitionInfo.getTableId() == null) {
+        if (partitionInfo == null) {
             return;
         }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
@@ -869,7 +877,10 @@ public class DBManager {
 
     // just for test
     public void cleanMeta() {
-
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            NativeMetadataJavaClient.cleanMeta();
+            return;
+        }
         namespaceDao.clean();
         if(!AuthZEnforcer.authZEnabled()){
             namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);

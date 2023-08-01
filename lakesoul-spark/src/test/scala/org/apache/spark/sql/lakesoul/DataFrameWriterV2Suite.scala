@@ -40,7 +40,8 @@ trait DataFrameWriterV2Tests
     val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
     catalog
       .listTables(Array("default"))
-      .foreach { ti => catalog.dropTable(ti)}
+      .foreach { ti => catalog.dropTable(ti) }
+    waitForTasksToFinish()
   }
 
   def catalog: TableCatalog = {

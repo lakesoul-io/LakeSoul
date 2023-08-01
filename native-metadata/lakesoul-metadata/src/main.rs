@@ -20,13 +20,15 @@ async fn main() -> Result<(), Error> {
 
     // Now we can execute a simple statement that just returns its parameter.
     
+    let text_array:Vec<&str> = vec!["range=__L@KE$OUL_EMPTY_STRING__"];
+    println!("{:?}", text_array);
     let rows = client
-        .query("SELECT $1::TEXT, $2::TEXT", &[&Some("hello world"), &Some("2")])
+        .query("SELECT $1::TEXT, $2::TEXT[] where '2' in ($3::TEXT[])", &[&Some("hello world"), &text_array, &text_array])
         .await?;
 
     // And then check that we got back the same string we sent over.
     let value: &str = rows[0].get(0);
-    println!("{:?} \n {:?}", rows, rows[0].get::<usize, String>(1));
+    println!("{:?} \n{:?}", rows, rows[0].get::<usize, Vec<String>>(1));
     assert_eq!(value, "hello world");
 
     Ok(())

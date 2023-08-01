@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 public class DataCommitInfoDao {
 
     public void insert(DataCommitInfo dataCommitInfo) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.insert(
                     NativeUtils.CodedDaoType.InsertDataCommitInfo,
                     JniWrapper.newBuilder().addDataCommitInfo(dataCommitInfo).build());
@@ -43,8 +43,10 @@ public class DataCommitInfoDao {
     }
 
     public void deleteByPrimaryKey(String tableId, String partitionDesc, UUID commitId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId, Arrays.asList(tableId, partitionDesc, commitId.toString()));
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
+                    Arrays.asList(tableId, partitionDesc, commitId.toString()));
             return;
         }
         Connection conn = null;
@@ -65,7 +67,7 @@ public class DataCommitInfoDao {
     }
 
     public void deleteByTableIdPartitionDescCommitList(String tableId, String partitionDesc, List<Uuid> commitIdList) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList,
                     Arrays.asList(tableId, partitionDesc,
@@ -99,8 +101,10 @@ public class DataCommitInfoDao {
     }
 
     public void deleteByTableIdAndPartitionDesc(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDesc, Arrays.asList(tableId, partitionDesc));
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableIdAndPartitionDesc,
+                    Arrays.asList(tableId, partitionDesc));
             return;
         }
         Connection conn = null;
@@ -120,8 +124,10 @@ public class DataCommitInfoDao {
     }
 
     public void deleteByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableId, Collections.singletonList(tableId));
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteDataCommitInfoByTableId,
+                    Collections.singletonList(tableId));
             return;
         }
         Connection conn = null;
@@ -140,7 +146,7 @@ public class DataCommitInfoDao {
     }
 
     public DataCommitInfo selectByPrimaryKey(String tableId, String partitionDesc, String commitId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId,
                     Arrays.asList(tableId, partitionDesc, commitId));
@@ -173,7 +179,7 @@ public class DataCommitInfoDao {
     }
 
     public DataCommitInfo selectByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectOneDataCommitInfoByTableId,
                     Collections.singletonList(tableId));
@@ -205,7 +211,7 @@ public class DataCommitInfoDao {
 
     public List<DataCommitInfo> selectByTableIdPartitionDescCommitList(String tableId, String partitionDesc,
                                                                        List<Uuid> commitIdList) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             if (commitIdList.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -268,9 +274,11 @@ public class DataCommitInfoDao {
     }
 
     public boolean batchInsert(List<DataCommitInfo> listData) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             if (listData.isEmpty()) return true;
-            Integer count = NativeMetadataJavaClient.insert(NativeUtils.CodedDaoType.TransactionInsertDataCommitInfo, JniWrapper.newBuilder().addAllDataCommitInfo(listData).build());
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.TransactionInsertDataCommitInfo,
+                    JniWrapper.newBuilder().addAllDataCommitInfo(listData).build());
             return count > 0;
         }
         Connection conn = null;

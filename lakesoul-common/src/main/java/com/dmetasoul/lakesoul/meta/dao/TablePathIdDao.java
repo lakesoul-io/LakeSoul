@@ -23,8 +23,10 @@ import java.util.stream.Collectors;
 public class TablePathIdDao {
 
     public TablePathId findByTablePath(String tablePath) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(NativeUtils.CodedDaoType.SelectTablePathIdByTablePath, Collections.singletonList(tablePath));
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTablePathIdByTablePath,
+                    Collections.singletonList(tablePath));
             if (jniWrapper == null) return null;
             List<TablePathId> tablePathIdList = jniWrapper.getTablePathIdList();
             return tablePathIdList.isEmpty() ? null : tablePathIdList.get(0);
@@ -92,7 +94,7 @@ public class TablePathIdDao {
     }
 
     public List<String> listAllPath() {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListAllTablePath,
                     Collections.emptyList());
@@ -120,7 +122,7 @@ public class TablePathIdDao {
     }
 
     public List<String> listAllPathByNamespace(String tableNamespace) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListAllPathTablePathByNamespace,
                     Collections.singletonList(tableNamespace));
@@ -148,8 +150,10 @@ public class TablePathIdDao {
     }
 
     public void insert(TablePathId tablePathId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            Integer count = NativeMetadataJavaClient.insert(NativeUtils.CodedDaoType.InsertTablePathId, JniWrapper.newBuilder().addTablePathId(tablePathId).build());
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.InsertTablePathId,
+                    JniWrapper.newBuilder().addTablePathId(tablePathId).build());
             return;
         }
         Connection conn = null;
@@ -170,8 +174,11 @@ public class TablePathIdDao {
     }
 
     public void delete(String tablePath) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeleteTablePathIdByTablePath, Collections.singletonList(tablePath));
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteTablePathIdByTablePath,
+                    Collections.singletonList(tablePath));
+            System.out.println("DeleteTablePathIdByTablePath " + tablePath + " result = " + count);
             return;
         }
         Connection conn = null;
@@ -189,7 +196,7 @@ public class TablePathIdDao {
     }
 
     public void deleteByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeleteTablePathIdByTableId,
                     Collections.singletonList(tableId));

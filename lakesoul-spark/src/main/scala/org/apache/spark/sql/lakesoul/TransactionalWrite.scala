@@ -108,6 +108,7 @@ trait TransactionalWrite {
     val spark = data.sparkSession
     spark.sessionState.conf.setConfString(SQLConf.UNSUPPORTED_OPERATION_CHECK_ENABLED.key, "false")
 
+    logError("[debug] isFirstCommit = " + isFirstCommit + " " + snapshot.toString)
     //If this is the first time to commit, you need to check if there is data in the path where the table is located.
     //If there has data, you cannot create a new table
     if (isFirstCommit) {

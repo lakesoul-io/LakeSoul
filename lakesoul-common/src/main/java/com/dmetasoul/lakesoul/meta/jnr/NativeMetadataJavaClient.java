@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
@@ -57,8 +58,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     private static NativeMetadataJavaClient instance = null;
 
+    private final ReentrantReadWriteLock lock;
+
     public NativeMetadataJavaClient() {
-        this(5000L, 1 << 10, 1 << 16);
+        this(5000L, 1 << 12, 1 << 16);
     }
 
     public NativeMetadataJavaClient(long timeout, int bufferSize, int largeBufferSize) {
@@ -71,6 +74,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         this.largeBufferSize = largeBufferSize;
         sharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
         largeSharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(largeBufferSize);
+        lock = new ReentrantReadWriteLock();
         initialize();
     }
 
@@ -178,12 +182,18 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         }
     }
 
-
     private void initialize() {
         DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
         tokioRuntime = libLakeSoulMetaData.create_tokio_runtime();
         System.out.println("create_tokio_runtime success");
-        String config = "host=127.0.0.1 port=5433 dbname=test_lakesoul_meta user=yugabyte password=yugabyte";
+
+        String config = String.format(
+                "host=%s port=%s dbname=%s user=%s password=%s",
+                dataBaseProperty.getHost(),
+                dataBaseProperty.getPort(),
+                dataBaseProperty.getDbName(),
+                dataBaseProperty.getUsername(),
+                dataBaseProperty.getPassword());
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
         tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
                 new ReferencedBooleanCallback((bool, msg) -> {
@@ -211,27 +221,24 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
 
     public JniWrapper executeQuery(Integer queryType, List<String> params) {
+        getReadLock();
         final CompletableFuture<Integer> future = new CompletableFuture<>();
-
-        getLibLakeSoulMetaData().execute_query(
-                new ReferencedIntegerCallback((result, msg) -> {
-                    if (msg.isEmpty()) {
-                        future.complete(result);
-                    } else {
-                        if (msg.equals("entity not found")) {
-                            future.complete(-1);
-                        }
-                        future.completeExceptionally(new SQLException(msg));
-                    }
-                }, getIntegerCallbackObjectReferenceManager()),
-                tokioRuntime,
-                tokioPostgresClient,
-                preparedStatement,
-                queryType,
-                String.join(PARAM_DELIM, params),
-                queryType < DAO_TYPE_QUERY_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address()
-        );
         try {
+            getLibLakeSoulMetaData().execute_query(
+                    new ReferencedIntegerCallback((result, msg) -> {
+                        if (msg.isEmpty()) {
+                            future.complete(result);
+                        } else {
+                            future.completeExceptionally(new SQLException(msg));
+                        }
+                    }, getIntegerCallbackObjectReferenceManager()),
+                    tokioRuntime,
+                    tokioPostgresClient,
+                    preparedStatement,
+                    queryType,
+                    String.join(PARAM_DELIM, params),
+                    queryType < DAO_TYPE_QUERY_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address()
+            );
             Integer len = future.get(timeout, TimeUnit.MILLISECONDS);
             if (len < 0) return null;
             byte[] bytes = new byte[len];
@@ -249,99 +256,114 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         } catch (TimeoutException e) {
             LOG.error("Execute Query {} with {} timeout", queryType, params);
             throw new RuntimeException(e);
+        } finally {
+            unlockReadLock();
         }
+    }
+
+    private void getReadLock() {
+        lock.readLock().lock();
+    }
+
+    private void unlockReadLock() {
+        lock.readLock().unlock();
+    }
+
+    private void getWriteLock() {
+        lock.writeLock().lock();
+    }
+
+    private void unlockWriteLock() {
+        lock.writeLock().unlock();
     }
 
 
     public Integer executeInsert(Integer insertType, JniWrapper jniWrapper) {
-
-        final CompletableFuture<Integer> future = new CompletableFuture<>();
-
-        byte[] bytes = jniWrapper.toByteArray();
-        if (insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET)
-            sharedBuffer.put(0, bytes, 0, bytes.length);
-        else
-            largeSharedBuffer.put(0, bytes, 0, bytes.length);
-
-        getLibLakeSoulMetaData().execute_insert(
-                new ReferencedIntegerCallback((result, msg) -> {
-                    if (msg.isEmpty()) {
-                        future.complete(result);
-                    } else {
-                        if (msg.equals("entity not found")) {
-                            future.complete(-1);
-                        }
-                        future.completeExceptionally(new SQLException(msg));
-                    }
-                }, getIntegerCallbackObjectReferenceManager()),
-                tokioRuntime,
-                tokioPostgresClient,
-                preparedStatement,
-                insertType,
-                insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address(),
-                bytes.length
-        );
+        getWriteLock();
         try {
+            final CompletableFuture<Integer> future = new CompletableFuture<>();
+
+            byte[] bytes = jniWrapper.toByteArray();
+            if (insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET)
+                sharedBuffer.put(0, bytes, 0, bytes.length);
+            else
+                largeSharedBuffer.put(0, bytes, 0, bytes.length);
+
+            getLibLakeSoulMetaData().execute_insert(
+                    new ReferencedIntegerCallback((result, msg) -> {
+                        if (msg.isEmpty()) {
+                            future.complete(result);
+                        } else {
+                            future.completeExceptionally(new SQLException(msg));
+                        }
+                    }, getIntegerCallbackObjectReferenceManager()),
+                    tokioRuntime,
+                    tokioPostgresClient,
+                    preparedStatement,
+                    insertType,
+                    insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address(),
+                    bytes.length
+            );
             return future.get(timeout, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         } catch (TimeoutException e) {
             LOG.error("Execute Insert {} with {} timeout", insertType, jniWrapper);
             throw new RuntimeException(e);
+        } finally {
+            unlockWriteLock();
         }
     }
 
     public Integer executeUpdate(Integer updateType, List<String> params) {
-        final CompletableFuture<Integer> future = new CompletableFuture<>();
-
-        getLibLakeSoulMetaData().execute_update(
-                new ReferencedIntegerCallback((result, msg) -> {
-                    if (msg.isEmpty()) {
-                        future.complete(result);
-                    } else {
-                        if (msg.equals("entity not found")) {
-                            future.complete(-1);
-                        }
-                        future.completeExceptionally(new SQLException(msg));
-                    }
-                }, getIntegerCallbackObjectReferenceManager()),
-                tokioRuntime,
-                tokioPostgresClient,
-                preparedStatement,
-                updateType,
-                String.join(PARAM_DELIM, params)
-        );
+        getWriteLock();
         try {
+            final CompletableFuture<Integer> future = new CompletableFuture<>();
+
+            getLibLakeSoulMetaData().execute_update(
+                    new ReferencedIntegerCallback((result, msg) -> {
+                        if (msg.isEmpty()) {
+                            future.complete(result);
+                        } else {
+                            future.completeExceptionally(new SQLException(msg));
+                        }
+                    }, getIntegerCallbackObjectReferenceManager()),
+                    tokioRuntime,
+                    tokioPostgresClient,
+                    preparedStatement,
+                    updateType,
+                    String.join(PARAM_DELIM, params)
+            );
             return future.get(timeout, TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         } catch (TimeoutException e) {
             LOG.error("Execute Update {} with {} timeout", updateType, params);
             throw new RuntimeException(e);
+        } finally {
+            unlockWriteLock();
         }
     }
 
     public List<String> executeQueryScalar(Integer updateType, List<String> params) {
-        final CompletableFuture<String> future = new CompletableFuture<>();
-
-        getLibLakeSoulMetaData().execute_query_scalar(
-                new ReferencedStringCallback((result, msg) -> {
-                    if (msg.isEmpty()) {
-                        future.complete(result);
-                    } else {
-                        if (msg.equals("entity not found")) {
-                            future.complete("");
-                        }
-                        future.completeExceptionally(new SQLException(msg));
-                    }
-                }, getStringCallbackObjectReferenceManager()),
-                tokioRuntime,
-                tokioPostgresClient,
-                preparedStatement,
-                updateType,
-                String.join(PARAM_DELIM, params)
-        );
+        getReadLock();
         try {
+            final CompletableFuture<String> future = new CompletableFuture<>();
+
+            getLibLakeSoulMetaData().execute_query_scalar(
+                    new ReferencedStringCallback((result, msg) -> {
+                        if (msg.isEmpty()) {
+                            future.complete(result);
+                        } else {
+                            future.completeExceptionally(new SQLException(msg));
+                        }
+                    }, getStringCallbackObjectReferenceManager()),
+                    tokioRuntime,
+                    tokioPostgresClient,
+                    preparedStatement,
+                    updateType,
+                    String.join(PARAM_DELIM, params)
+            );
             String result = future.get(timeout, TimeUnit.MILLISECONDS);
             if (result.isEmpty()) return Collections.emptyList();
             return Arrays.stream(result.split(PARAM_DELIM)).collect(Collectors.toList());
@@ -350,6 +372,8 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         } catch (TimeoutException e) {
             LOG.error("Execute Update {} with {} timeout", updateType, params);
             throw new RuntimeException(e);
+        } finally {
+            unlockReadLock();
         }
     }
 
@@ -376,6 +400,34 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             throw new RuntimeException("Params Num mismatch for " + queryScalarType.name() + ", params=" + params + " paramsNum=" + params.size());
         }
         return getInstance().executeQueryScalar(queryScalarType.getCode(), params);
+    }
+
+    public static int cleanMeta() {
+        final CompletableFuture<Integer> future = new CompletableFuture<>();
+
+        NativeMetadataJavaClient instance = getInstance();
+        instance.getWriteLock();
+        try {
+            instance.getLibLakeSoulMetaData().clean_meta_for_test(
+                    new ReferencedIntegerCallback((result, msg) -> {
+                        if (msg.isEmpty()) {
+                            future.complete(result);
+                        } else {
+                            future.completeExceptionally(new SQLException(msg));
+                        }
+                    }, instance.getIntegerCallbackObjectReferenceManager()),
+                    instance.tokioRuntime,
+                    instance.tokioPostgresClient
+            );
+            return future.get(instance.timeout, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
+        } catch (TimeoutException e) {
+            LOG.error("Clean Meta timeout");
+            throw new RuntimeException(e);
+        } finally {
+            instance.unlockWriteLock();
+        }
     }
 
     @Override

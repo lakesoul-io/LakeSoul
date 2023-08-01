@@ -19,6 +19,7 @@ object DropTableCommand {
   val WAIT_TIME: Int = MetaUtils.DROP_TABLE_WAIT_SECONDS
 
   def run(snapshot: Snapshot): Unit = {
+    println("debug] executeDropTable: " + snapshot)
     dropTable(snapshot)
   }
 

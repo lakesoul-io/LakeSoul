@@ -30,11 +30,17 @@ public class DBUtil {
     private static final String urlDefault = "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified";
     private static final String usernameDefault = "lakesoul_test";
     private static final String passwordDefault = "lakesoul_test";
+    private static final String hostDefault = "127.0.0.1";
+    private static final String portDefault = "5432";
+    private static final String dbNameDefault = "lakesoul_test";
 
     private static final String driverNameKey = "lakesoul.pg.driver";
     private static final String urlKey = "lakesoul.pg.url";
-    public static final String usernameKey = "lakesoul.pg.username";
-    public static final String passwordKey = "lakesoul.pg.password";
+    private static final String usernameKey = "lakesoul.pg.username";
+    private static final String passwordKey = "lakesoul.pg.password";
+    private static final String hostKey = "lakesoul.pg.host";
+    private static final String portKey = "lakesoul.pg.port";
+    private static final String dbNameKey = "lakesoul.pg.dbName";
 
     private static final String driverNameEnv = "LAKESOUL_PG_DRIVER";
     private static final String urlEnv = "LAKESOUL_PG_URL";
@@ -90,12 +96,16 @@ public class DBUtil {
             properties.setProperty(urlKey, getConfigValue(urlEnv, urlKey, urlDefault));
             properties.setProperty(usernameKey, getConfigValue(usernameEnv, usernameKey, usernameDefault));
             properties.setProperty(passwordKey, getConfigValue(passwordEnv, passwordKey, passwordDefault));
+            properties.setProperty(dbNameKey, getConfigValue(dbNameKey, dbNameKey, dbNameDefault));
         }
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver(properties.getProperty(driverNameKey, driverNameDefault));
         dataBaseProperty.setUrl(properties.getProperty(urlKey, urlDefault));
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
+        dataBaseProperty.setDbName(properties.getProperty(dbNameKey, dbNameDefault));
+        dataBaseProperty.setHost(properties.getProperty(hostKey, hostDefault));
+        dataBaseProperty.setPort(properties.getProperty(portKey, portDefault));
         return dataBaseProperty;
     }
 

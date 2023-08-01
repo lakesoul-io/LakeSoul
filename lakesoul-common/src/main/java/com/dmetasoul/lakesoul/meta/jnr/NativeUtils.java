@@ -2,7 +2,9 @@ package com.dmetasoul.lakesoul.meta.jnr;
 
 public class NativeUtils {
 
-    public static boolean NATIVE_METADATA_ENABLED = true;
+    public static boolean NATIVE_METADATA_QUERY_ENABLED = true;
+
+    public static boolean NATIVE_METADATA_UPDATE_ENABLED = true;
 
     public static int DAO_TYPE_QUERY_ONE_OFFSET = 0;
     public static int DAO_TYPE_QUERY_LIST_OFFSET = 100;
@@ -11,9 +13,9 @@ public class NativeUtils {
     public static int DAO_TYPE_QUERY_SCALAR_OFFSET = 400;
     public static int DAO_TYPE_UPDATE_OFFSET = 500;
 
-    public static final String PARAM_DELIM = "____";
+    public static final String PARAM_DELIM = "__DELIM__";
 
-    public static final String PARTITION_DESC_DELIM = "___";
+    public static final String PARTITION_DESC_DELIM = "_DELIM_";
 
     public enum CodedDaoType {
         // ==== Query One ====

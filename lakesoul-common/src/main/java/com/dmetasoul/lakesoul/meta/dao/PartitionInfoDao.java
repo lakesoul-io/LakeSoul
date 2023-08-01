@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 public class PartitionInfoDao {
 
     public void insert(PartitionInfo partitionInfo) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.insert(
                     NativeUtils.CodedDaoType.InsertPartitionInfo,
                     JniWrapper.newBuilder().addPartitionInfo(partitionInfo).build());
@@ -38,9 +38,11 @@ public class PartitionInfoDao {
     }
 
     public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<String> snapshotList) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             if (partitionInfoList.isEmpty()) return true;
-            Integer count = NativeMetadataJavaClient.insert(NativeUtils.CodedDaoType.TransactionInsertPartitionInfo, JniWrapper.newBuilder().addAllPartitionInfo(partitionInfoList).build());
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.TransactionInsertPartitionInfo,
+                    JniWrapper.newBuilder().addAllPartitionInfo(partitionInfoList).build());
             return count > 0;
         }
         boolean flag = true;
@@ -96,7 +98,7 @@ public class PartitionInfoDao {
     }
 
     public void deleteByTableIdAndPartitionDesc(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeletePartitionInfoByTableIdAndPartitionDesc,
                     Arrays.asList(tableId, partitionDesc));
@@ -119,7 +121,7 @@ public class PartitionInfoDao {
     }
 
     public void deleteByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(NativeUtils.CodedDaoType.DeletePartitionInfoByTableId, Collections.singletonList(tableId));
             return;
         }
@@ -139,7 +141,7 @@ public class PartitionInfoDao {
     }
 
     public void deletePreviousVersionPartition(String tableId, String partitionDesc, long utcMills) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeletePreviousVersionPartition,
                     Arrays.asList(tableId, partitionDesc, Long.toString(utcMills)));
@@ -163,7 +165,7 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> findByTableIdAndParList(String tableId, List<String> partitionDescList) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             if (partitionDescList.isEmpty()) return Collections.emptyList();
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionDescByTableIdAndParList,
@@ -200,6 +202,7 @@ public class PartitionInfoDao {
                 }
             }
             rs = pstmt.executeQuery();
+            System.out.println(pstmt);
             while (rs.next()) {
                 rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }
@@ -212,7 +215,7 @@ public class PartitionInfoDao {
     }
 
     public PartitionInfo selectLatestPartitionInfo(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectOnePartitionVersionByTableIdAndDesc,
                     Arrays.asList(tableId, partitionDesc));
@@ -231,7 +234,7 @@ public class PartitionInfoDao {
     }
 
     public long getLatestTimestamp(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             if (null == partitionDesc || "".equals(partitionDesc)) {
                 List<String> result = NativeMetadataJavaClient.queryScalar(
                         NativeUtils.CodedDaoType.GetLatestTimestampFromPartitionInfoWithoutPartitionDesc,
@@ -276,11 +279,10 @@ public class PartitionInfoDao {
     }
 
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             List<String> result = NativeMetadataJavaClient.queryScalar(
                     NativeUtils.CodedDaoType.GetLatestVersionUpToTimeFromPartitionInfo,
                     Arrays.asList(tableId, partitionDesc, Long.toString(utcMills)));
-            System.out.println(result);
             if (result == null || result.isEmpty()) return -1;
             return Integer.parseInt(result.get(0));
         }
@@ -314,11 +316,10 @@ public class PartitionInfoDao {
     }
 
     public long getLastedVersionTimestampUptoTime(String tableId, String partitionDesc, long utcMills) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             List<String> result = NativeMetadataJavaClient.queryScalar(
                     NativeUtils.CodedDaoType.GetLatestVersionTimestampUpToTimeFromPartitionInfo,
                     Arrays.asList(tableId, partitionDesc, Long.toString(utcMills)));
-            System.out.println(result);
             if (result == null || result.isEmpty()) return 0;
             return Long.parseLong(result.get(0));
         }
@@ -352,7 +353,7 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> getPartitionVersions(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionByTableIdAndDesc,
                     Arrays.asList(tableId, partitionDesc));
@@ -382,8 +383,10 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> getPartitionDescByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
-            JniWrapper jniWrapper = NativeMetadataJavaClient.query(NativeUtils.CodedDaoType.ListPartitionByTableId, Collections.singletonList(tableId));
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListPartitionByTableId,
+                    Collections.singletonList(tableId));
             if (jniWrapper == null) return null;
             return jniWrapper.getPartitionInfoList();
         }
@@ -414,7 +417,7 @@ public class PartitionInfoDao {
     }
 
     public PartitionInfo findByKey(String tableId, String partitionDesc, int version) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectPartitionVersionByTableIdAndDescAndVersion,
                     Arrays.asList(tableId, partitionDesc, Integer.toString(version)));
@@ -430,7 +433,7 @@ public class PartitionInfoDao {
 
     public List<PartitionInfo> getPartitionsFromVersion(String tableId, String partitionDesc, int startVersion,
                                                         int endVersion) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionVersionByTableIdAndPartitionDescAndVersionRange,
                     Arrays.asList(tableId, partitionDesc, Integer.toString(startVersion), Integer.toString(endVersion)));
@@ -445,7 +448,7 @@ public class PartitionInfoDao {
     }
 
     public List<PartitionInfo> getOnePartition(String tableId, String partitionDesc) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectOnePartitionVersionByTableIdAndDesc,
                     Arrays.asList(tableId, partitionDesc));
@@ -460,7 +463,7 @@ public class PartitionInfoDao {
 
     public List<PartitionInfo> getPartitionsFromTimestamp(String tableId, String partitionDesc, long startTimestamp,
                                                           long endTimestamp) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange,
                     Arrays.asList(tableId, partitionDesc, Long.toString(startTimestamp), Long.toString(endTimestamp)));
@@ -475,7 +478,7 @@ public class PartitionInfoDao {
     }
 
     public List<String> getAllPartitionDescByTableId(String tableId) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListPartitionByTableId,
                     Collections.singletonList(tableId));
@@ -504,7 +507,7 @@ public class PartitionInfoDao {
 
     public Set<CommitOp> getCommitOpsBetweenVersions(String tableId, String partitionDesc, int firstVersion,
                                                      int secondVersion) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListCommitOpsBetweenVersions,
                     Arrays.asList(tableId, partitionDesc, Integer.toString(firstVersion), Long.toString(secondVersion)));

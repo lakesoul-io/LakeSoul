@@ -18,8 +18,8 @@ pub const DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET : i32 = 300;
 pub const DAO_TYPE_QUERY_SCALAR_OFFSET : i32 = 400;
 pub const DAO_TYPE_UPDATE_OFFSET : i32 = 500;
 
-pub const PARAM_DELIM: &str = "____";
-pub const PARTITION_DESC_DELIM: &str = "___";
+pub const PARAM_DELIM: &str = "__DELIM__";
+pub const PARTITION_DESC_DELIM: &str = "_DELIM_";
 
 
 
@@ -249,9 +249,9 @@ fn get_prepared_statement(
 
                 // Select DataCommitInfo
                 DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
-                "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain 
-                from data_commit_info 
-                where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::TEXT",
+                    "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain 
+                    from data_commit_info 
+                    where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
             
 
                 // Insert
@@ -321,11 +321,11 @@ fn get_prepared_statement(
                     from partition_info 
                     where table_id = $1::TEXT",
                 DaoType::GetLatestVersionUpToTimeFromPartitionInfo =>
-                    "select count(*) as total, max(version) as version 
+                    "select max(version) as version 
                     from partition_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
                 DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo =>
-                    "select count(*) as total, max(timestamp) as timestamp 
+                    "select max(timestamp) as timestamp 
                     from partition_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and timestamp < $3::BIGINT",
 
@@ -431,7 +431,7 @@ pub fn execute_query(
 
     let rows = match query_type {
         DaoType::ListNamespaces | 
-        DaoType::ListAllTablePath if params.is_empty() => {
+        DaoType::ListAllTablePath if params.len() == 1 && params[0].is_empty() => {
             let result = runtime.block_on(async{
                 client.query(&statement, &[]).await
             });
@@ -496,7 +496,7 @@ pub fn execute_query(
         }
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId if params.len() == 3 => {
             let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1], &params[2]]).await
+                client.query_opt(&statement, &[&params[0], &params[1], &uuid::Uuid::from_str(&params[2]).unwrap()]).await
             });
             match result {
                 Ok(Some(row)) => vec![row],
@@ -525,6 +525,7 @@ pub fn execute_query(
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
             let partitions = "'".to_owned() + &params[1]
+                .replace('\'', "''")
                 .split(PARTITION_DESC_DELIM)
                 .collect::<Vec<&str>>()
                 .join("','") + "'";
@@ -1108,7 +1109,7 @@ pub fn execute_update(
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     let update_type = DaoType::try_from(update_type).unwrap();
-    println!("query: {:?} params={:?}", update_type, joined_string);
+    println!("update: {:?} params={:?}", update_type, joined_string);
     let statement = match get_prepared_statement(runtime, client, prepared, &update_type) {
         Ok(statement) => statement,
         Err(err) => return Err(convert_to_io_error(err))
@@ -1260,9 +1261,15 @@ pub fn execute_query_scalar(
                 client.query_opt(&statement, &[&params[0]]).await
             });
             match result {
-                Ok(Some(row)) => Ok(Some(format!("{}",row.get::<_, i64>(0)))),
+                Ok(Some(row)) => {
+                    let ts = row.get::<_, Option<i64>>(0);
+                    match ts {
+                        Some(ts) => Ok(Some(format!("{}", ts))),
+                        None => Ok(None)
+                    }
+                }
+                Err(e) =>  Err(convert_to_io_error(e)),
                 Ok(None) => Ok(None),
-                Err(e) =>  Err(convert_to_io_error(e))
             }
         }
         DaoType::GetLatestTimestampFromPartitionInfo if params.len() == 2 => {
@@ -1281,15 +1288,14 @@ pub fn execute_query_scalar(
             });
             match result {
                 Ok(Some(row)) => {
-                    if row.get::<_, i64>(0) > 0 {
-                        Ok(Some(format!("{}",row.get::<_, i32>(1))))
-                    } else {
-                        Ok(Some(String::from("0")))
+                    let ts = row.get::<_, Option<i64>>(0);
+                    match ts {
+                        Some(ts) => Ok(Some(format!("{}", ts))),
+                        None => Ok(None)
                     }
                 }
-                Ok(None) => Ok(None),
                 Err(e) =>  Err(convert_to_io_error(e)),
-                
+                Ok(None) => Ok(None),
             }
         }
         DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo if params.len() == 3 => {
@@ -1298,15 +1304,14 @@ pub fn execute_query_scalar(
             });
             match result {
                 Ok(Some(row)) => {
-                    if row.get::<_, i64>(0) > 0 {
-                        Ok(Some(format!("{}",row.get::<_, i64>(1))))
-                    } else {
-                        Ok(Some(String::from("0")))
+                    let ts = row.get::<_, Option<i64>>(0);
+                    match ts {
+                        Some(ts) => Ok(Some(format!("{}", ts))),
+                        None => Ok(None)
                     }
                 }
-                Ok(None) => Ok(None),
                 Err(e) =>  Err(convert_to_io_error(e)),
-                
+                Ok(None) => Ok(None),
             }
         }
         
@@ -1314,6 +1319,25 @@ pub fn execute_query_scalar(
             eprintln!("InvalidInput of type={:?}: {:?}", query_type, params);
             Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
         }
+    }
+}
+
+pub fn clean_meta_for_test(
+    runtime: &Runtime,
+    client: &Client
+) ->Result<i32, std::io::Error> {
+    let result = runtime.block_on(async{
+        let _ = client.batch_execute("delete from namespace;
+            delete from data_commit_info;
+            delete from table_info;
+            delete from table_path_id;
+            delete from table_name_id;
+            delete from partition_info;").await;
+        client.execute("insert into namespace(namespace, properties, comment) values ('default', '{}', '');", &[]).await
+    });
+    match result {
+        Ok(count) => Ok(count as i32),
+        Err(e) => Err(convert_to_io_error(e)),
     }
 }
 

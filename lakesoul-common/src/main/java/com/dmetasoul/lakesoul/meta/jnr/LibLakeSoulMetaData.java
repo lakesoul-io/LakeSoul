@@ -32,6 +32,8 @@ public interface LibLakeSoulMetaData {
 
     void execute_insert(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, @LongLong long addr, int length);
 
+    void clean_meta_for_test(IntegerCallback integerCallback, Pointer runtime, Pointer client);
+
     void hello_world(Callback<byte[]> bytesCallback);
 
     void namespace(byte[] bytes, Integer len);

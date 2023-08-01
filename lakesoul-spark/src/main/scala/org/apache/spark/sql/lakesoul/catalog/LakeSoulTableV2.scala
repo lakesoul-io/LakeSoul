@@ -46,13 +46,16 @@ case class LakeSoulTableV2(spark: SparkSession,
     }
 
 
-  private lazy val (rootPath, partitionFilters) =
+  private lazy val (rootPath, partitionFilters) = {
     if (catalogTable.isDefined) {
+      println("debug] LakeSoulTableV2: catalogTable=" + catalogTable.get)
       // Fast path for reducing path munging overhead
       (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
+      println("debug] LakeSoulTableV2: " + path.toString)
       LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
     }
+  }
 
   // The loading of the SnapshotManagement is lazy in order to reduce the amount of FileSystem calls,
   // in cases where we will fallback to the V1 behavior.
@@ -99,7 +102,7 @@ case class LakeSoulTableV2(spark: SparkSession,
   override def capabilities(): java.util.Set[TableCapability] = {
     var caps = Set(
       BATCH_READ, V1_BATCH_WRITE, OVERWRITE_DYNAMIC,
-      OVERWRITE_BY_FILTER, TRUNCATE ,MICRO_BATCH_READ
+      OVERWRITE_BY_FILTER, TRUNCATE, MICRO_BATCH_READ
     )
     if (spark.conf.get(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE)) {
       caps += ACCEPT_ANY_SCHEMA
@@ -131,9 +134,9 @@ case class LakeSoulTableV2(spark: SparkSession,
   }
 
   /**
-   * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
-   * paths.
-   */
+    * Creates a V1 BaseRelation from this Table to allow read APIs to go through V1 DataSource code
+    * paths.
+    */
   def toBaseRelation: BaseRelation = {
     val partitionPredicates = LakeSoulDataSource.verifyAndCreatePartitionFilters(
       path.toString, snapshotManagement.snapshot, partitionFilters)

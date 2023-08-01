@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 
 public class NamespaceDao {
     public void insert(Namespace namespace) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.insert(
                     NativeUtils.CodedDaoType.InsertNamespace,
                     JniWrapper.newBuilder().addNamespace(namespace).build());
@@ -48,7 +48,7 @@ public class NamespaceDao {
     }
 
     public Namespace findByNamespace(String name) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.SelectNamespaceByNamespace,
                     Collections.singletonList(name));
@@ -77,7 +77,7 @@ public class NamespaceDao {
     }
 
     public void deleteByNamespace(String namespace) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeleteNamespaceByNamespace,
                     Collections.singletonList(namespace));
@@ -98,7 +98,7 @@ public class NamespaceDao {
     }
 
     public List<String> listNamespaces() {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
             JniWrapper jniWrapper = NativeMetadataJavaClient.query(
                     NativeUtils.CodedDaoType.ListNamespaces,
                     Collections.emptyList());
@@ -128,7 +128,7 @@ public class NamespaceDao {
     }
 
     public int updatePropertiesByNamespace(String namespace, String properties) {
-        if (NativeUtils.NATIVE_METADATA_ENABLED) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
             return NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.UpdateNamespacePropertiesByNamespace,
                     Arrays.asList(namespace, properties));

@@ -89,6 +89,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
             .write.format("lakesoul").mode("append").save(location.get)
         }
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -113,6 +114,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val msg = "`NOT NULL in ALTER TABLE ADD COLUMNS` is not supported for LakeSoul tables"
         assert(e.getMessage.contains(msg))
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -138,6 +140,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         }
         verifyNullabilityFailure(e)
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -174,6 +177,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           sql("SELECT * FROM lakesoul_test"),
           Seq(Row(1L, "a"), Row(null, "b")))
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -202,6 +206,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           verifyInvariantViolationException(e)
         }
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -245,6 +250,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         }
         verifyInvariantViolationException(e)
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -271,6 +277,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           "`NOT NULL in ALTER TABLE ADD COLUMNS` is not supported for LakeSoul tables"
         assert(e.getMessage.contains(msg))
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -299,6 +306,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
           .add("z", IntegerType)
         assert(spark.table("lakesoul_test").schema === expectedSchema2)
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -333,6 +341,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         }
         verifyNullabilityFailure(e2)
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -380,6 +389,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
               Row(Row(2L, null), null),
               Row(null, 3)))
         }
+        waitForTasksToFinish()
       }
     }
   }
@@ -411,6 +421,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
       }
       assert(e.getMessage.contains("LakeSoul currently doesn't support rename table"))
     }
+    waitForTasksToFinish()
   }
 
   test("DESCRIBE TABLE for partitioned table") {
@@ -429,6 +440,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         verifyDescribeTable("lakesoul_test")
         verifyDescribeTable(s"lakesoul.`$path`")
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -472,6 +484,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(spark.table("lakesoul_test").schema === updatedExpectedSchema)
         assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row("1", "a"))
       }
+      waitForTasksToFinish()
     }
   }
 }

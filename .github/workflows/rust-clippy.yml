@@ -37,5 +37,7 @@ jobs:
         with:
           workspaces: "./native-io -> target"
           key: "ubuntu-latest-clippy"
-      - name: Run Clippy
+      - name: Run Clippy Native-io
         run: cd native-io && cargo clippy --all-features --package lakesoul-io-c
+      - name: Run Clippy Native-metadata
+        run: cd native-metadata && cargo clippy --all-features --package lakesoul-metadata-c

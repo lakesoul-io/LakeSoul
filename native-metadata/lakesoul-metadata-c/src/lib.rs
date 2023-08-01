@@ -222,6 +222,23 @@ pub extern "C" fn execute_query(
 }
 
 #[no_mangle]
+pub extern "C" fn clean_meta_for_test(
+    callback: extern "C" fn(i32, *const c_char),
+    runtime: NonNull<Result<TokioRuntime>>,
+    client: NonNull<Result<TokioPostgresClient>>,
+) {
+    let runtime = unsafe {NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()};
+    let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref()};
+    let result = lakesoul_metadata::clean_meta_for_test(
+        runtime,
+        client);
+    match result {
+        Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
+        Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw())
+    }    
+}
+
+#[no_mangle]
 pub extern "C" fn create_tokio_runtime() -> NonNull<Result<TokioRuntime>> {
     let runtime =  Builder::new_multi_thread()
         .enable_all()
