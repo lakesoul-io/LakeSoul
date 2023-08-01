@@ -1,12 +1,10 @@
-/*
- * // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
- * //
- * // SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.facebook.presto.lakesoul;
 
-import com.facebook.presto.spi.SystemTable;
+import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.*;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.session.PropertyMetadata;
@@ -15,7 +13,24 @@ import com.facebook.presto.spi.transaction.IsolationLevel;
 import java.util.List;
 import java.util.Set;
 
+import static java.util.Objects.requireNonNull;
+
 public class LakeSoulConnector implements Connector {
+
+    private LakeSoulMetadata metadata;
+    private LakeSoulSplitManager splitManager;
+    private LakeSoulRecordSetProvider recordSetProvider;
+
+    public LakeSoulConnector(
+            LakeSoulMetadata metadata,
+            LakeSoulSplitManager splitManager,
+            LakeSoulRecordSetProvider recordSetProvider
+    ){
+        this.metadata = requireNonNull(metadata, "metadata should not be null");
+        this.splitManager = requireNonNull(splitManager, "splitManager should not be null");
+        this.recordSetProvider = requireNonNull(recordSetProvider, "recordSetProvider should not be null");
+    }
+
     @Override
     public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly) {
         return null;
@@ -23,22 +38,22 @@ public class LakeSoulConnector implements Connector {
 
     @Override
     public ConnectorMetadata getMetadata(ConnectorTransactionHandle transactionHandle) {
-        return null;
+        return metadata;
     }
 
     @Override
     public ConnectorSplitManager getSplitManager() {
-        return null;
+        return splitManager;
+    }
+
+    @Override
+    public ConnectorRecordSetProvider getRecordSetProvider() {
+        return recordSetProvider;
     }
 
     @Override
     public ConnectorPageSourceProvider getPageSourceProvider() {
         return Connector.super.getPageSourceProvider();
-    }
-
-    @Override
-    public ConnectorRecordSetProvider getRecordSetProvider() {
-        return Connector.super.getRecordSetProvider();
     }
 
     @Override
@@ -130,6 +145,8 @@ public class LakeSoulConnector implements Connector {
     public void shutdown() {
         Connector.super.shutdown();
     }
+
+
 
     @Override
     public Set<ConnectorCapabilities> getCapabilities() {
