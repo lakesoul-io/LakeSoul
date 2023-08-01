@@ -36,9 +36,9 @@ class RBACOperatinSuite extends QueryTest
   final val DOMAIN2: String = "domain2"
 
   def login(username: String, password: String, domain: String): Unit = {
-    println("TEST: LOGIN USEERNAME " + username)
-    println("TEST: LOGIN USEERNAME " + password)
-    println("TEST: LOGIN USEERNAME " + domain)
+    println("TEST: LOGIN USERNAME " + username)
+    println("TEST: LOGIN PASSWORD " + password)
+    println("TEST: LOGIN DOMAIN " + domain)
     System.setProperty(DBUtil.usernameKey, username)
     System.setProperty(DBUtil.passwordKey, password)
     System.setProperty(DBUtil.domainKey, domain)
