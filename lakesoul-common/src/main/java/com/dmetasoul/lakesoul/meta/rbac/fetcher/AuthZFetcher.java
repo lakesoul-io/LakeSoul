@@ -15,10 +15,17 @@
  *
  */
 
-package com.dmetasoul.lakesoul.meta.rbac;
+package com.dmetasoul.lakesoul.meta.rbac.fetcher;
 
-public class AuthZException extends RuntimeException {
-    public AuthZException(){
-        super("lakesoul access denied!");
-    }
+import org.aspectj.lang.JoinPoint;
+
+import java.util.List;
+
+/**
+ * Fetch a object from cut point
+ */
+public interface AuthZFetcher<T> {
+    List<String> getObject(T object);
 }
+
+

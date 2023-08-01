@@ -15,10 +15,20 @@
  *
  */
 
-package com.dmetasoul.lakesoul.meta.rbac;
+package com.dmetasoul.lakesoul.meta.rbac.fetcher;
 
-public class AuthZException extends RuntimeException {
-    public AuthZException(){
-        super("lakesoul access denied!");
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+
+import java.util.LinkedList;
+import java.util.List;
+
+public class TableReadFetcher implements AuthZFetcher<TableInfo>{
+    @Override
+    public List<String> getObject(TableInfo object) {
+        List<String> list = new LinkedList<>();
+        list.add(object.getTableNamespace());
+        return list;
     }
 }
+
+

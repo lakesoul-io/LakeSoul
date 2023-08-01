@@ -110,7 +110,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.casbin</groupId>
             <artifactId>jdbc-adapter</artifactId>
-            <version>LATEST</version>
+            <version>2.4.1</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.postgresql</groupId>
@@ -127,6 +127,12 @@ SPDX-License-Identifier: Apache-2.0
             </exclusions>
         </dependency>
         <!-- aspectJ -->
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjrt</artifactId>
+            <version>1.9.19</version>
+            <scope>compile</scope>
+        </dependency>
         <dependency>
             <groupId>org.aspectj</groupId>
             <artifactId>aspectjweaver</artifactId>
