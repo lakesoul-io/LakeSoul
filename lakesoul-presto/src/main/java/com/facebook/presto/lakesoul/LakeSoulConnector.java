@@ -4,6 +4,7 @@
 
 package com.facebook.presto.lakesoul;
 
+import com.facebook.presto.lakesoul.handle.LakeSoulTransactionHandle;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.*;
 import com.facebook.presto.spi.procedure.Procedure;
@@ -33,7 +34,7 @@ public class LakeSoulConnector implements Connector {
 
     @Override
     public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly) {
-        return null;
+        return new LakeSoulTransactionHandle();
     }
 
     @Override

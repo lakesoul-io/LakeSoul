@@ -32,4 +32,6 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
     public void setNames(SchemaTableName names) {
         this.names = names;
     }
+
+
 }

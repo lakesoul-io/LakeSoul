@@ -12,8 +12,7 @@ import java.util.Map;
 
 public class LakeSoulConnectorFactory implements ConnectorFactory {
 
-    private final String CONNECTOR_NAME = "lakesoul";
-
+    public static final String CONNECTOR_NAME = "lakesoul";
     private final LakeSoulMetadata metadata = new LakeSoulMetadata();
     private final LakeSoulSplitManager manager = new LakeSoulSplitManager();
     private final LakeSoulRecordSetProvider provider = new LakeSoulRecordSetProvider();
