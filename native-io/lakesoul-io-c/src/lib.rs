@@ -427,7 +427,7 @@ pub extern "C" fn next_record_batch(
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
         let f = move |rb: Option<Result<RecordBatch>>| match rb {
             None => {
-                call_i32_result_callback(callback, -1, std::ptr::null());
+                call_i32_result_callback(callback, 0, std::ptr::null());
             }
             Some(rb_result) => match rb_result {
                 Err(e) => {
@@ -486,7 +486,7 @@ pub extern "C" fn next_record_batch_with_data(
         let data = CVOID{data};
         let f = move |rb: Option<Result<RecordBatch>>| match rb {
             None => {
-                call_i32_data_result_callback(callback, -1, std::ptr::null(), data);
+                call_i32_data_result_callback(callback, 0, std::ptr::null(), data);
             }
             Some(rb_result) => match rb_result {
                 Err(e) => {
