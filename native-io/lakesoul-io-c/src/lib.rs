@@ -323,9 +323,26 @@ pub extern "C" fn check_reader_created(reader: NonNull<CResult<Reader>>) -> *con
 }
 
 pub type ResultCallback = extern "C" fn(bool, *const c_char);
+pub type DataResultCallback = extern "C" fn(bool, *const c_char, *const c_void);
 
 fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
     callback(status, err);
+    // release error string
+    if !err.is_null() {
+        unsafe {
+            let _ = CString::from_raw(err as *mut c_char);
+        }
+    }
+}
+
+fn call_data_result_callback(
+    callback: DataResultCallback,
+    status: bool,
+    err: *const c_char,
+    data: CVOID,
+) {
+    // release error string
+    callback(status, err, data.data);
     if !err.is_null() {
         unsafe {
             let _ = CString::from_raw(err as *mut c_char);
@@ -372,6 +389,28 @@ pub extern "C" fn start_reader(reader: NonNull<CResult<Reader>>, callback: Resul
                 callback,
                 false,
                 CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            ),
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn start_reader_with_data(
+    reader: NonNull<CResult<Reader>>,
+    data: *const c_void,
+    callback: DataResultCallback,
+) {
+    unsafe {
+        let mut reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
+        let data = CVOID{data};
+        let result = reader.as_mut().start_blocked();
+        match result {
+            Ok(_) => call_data_result_callback(callback, true, std::ptr::null(), data),
+            Err(e) => call_data_result_callback(
+                callback,
+                false,
+                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                data,
             ),
         }
     }
