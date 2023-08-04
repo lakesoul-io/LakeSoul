@@ -47,6 +47,10 @@ object CompactionTask {
 
     new Listener().start()
 
+    import java.util.concurrent.CountDownLatch
+    val countDownLatch = new CountDownLatch(1)
+    countDownLatch.await()
+
   }
 
   class Listener extends Thread {
