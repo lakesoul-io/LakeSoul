@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![feature(io_error_other)]
 #![feature(split_array)]
 use std::collections::HashMap;
@@ -416,7 +420,6 @@ pub fn execute_query(
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    println!("query: {:?} params={:?}", query_type, joined_string);
     let statement = match get_prepared_statement(runtime, client, prepared, &query_type) {
         Ok(statement) => statement,
         Err(err) => return Err(convert_to_io_error(err))
@@ -832,7 +835,6 @@ pub fn execute_insert(
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     let insert_type = DaoType::try_from(insert_type).unwrap();
-    println!("execute {:?} {:?}", insert_type, wrapper);
     let statement = match get_prepared_statement(runtime, client, prepared, &insert_type) {
         Ok(statement) => statement,
         Err(err) => return Err(convert_to_io_error(err))
@@ -1109,7 +1111,6 @@ pub fn execute_update(
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     let update_type = DaoType::try_from(update_type).unwrap();
-    println!("update: {:?} params={:?}", update_type, joined_string);
     let statement = match get_prepared_statement(runtime, client, prepared, &update_type) {
         Ok(statement) => statement,
         Err(err) => return Err(convert_to_io_error(err))
@@ -1182,7 +1183,6 @@ pub fn execute_update(
                 filter_params.push(params[3].clone());
             }
             statement += " where table_id = $1::TEXT";
-            println!("UpdateTableInfoById sql={} params={:?}", statement, filter_params);
             runtime.block_on(async{
                 match idx {
                     3 => client.execute(&statement, &[&params[0], &filter_params[0]]).await,
@@ -1242,7 +1242,6 @@ pub fn execute_query_scalar(
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    println!("query: {:?} params={:?}", query_type, joined_string);
     let statement = match get_prepared_statement(runtime, client, prepared, &query_type) {
         Ok(statement) => statement,
         Err(err) => return Err(convert_to_io_error(err))
@@ -1327,16 +1326,15 @@ pub fn clean_meta_for_test(
     client: &Client
 ) ->Result<i32, std::io::Error> {
     let result = runtime.block_on(async{
-        let _ = client.batch_execute("delete from namespace;
+        client.batch_execute("delete from namespace;
             delete from data_commit_info;
             delete from table_info;
             delete from table_path_id;
             delete from table_name_id;
-            delete from partition_info;").await;
-        client.execute("insert into namespace(namespace, properties, comment) values ('default', '{}', '');", &[]).await
+            delete from partition_info;").await
     });
     match result {
-        Ok(count) => Ok(count as i32),
+        Ok(_) => Ok(0i32),
         Err(e) => Err(convert_to_io_error(e)),
     }
 }
@@ -1353,7 +1351,6 @@ pub fn create_connection(
     runtime: &Runtime,
     config: String
 ) -> Result<Client, std::io::Error> {    
-    println!("{}", config);
     let (client, connection) = match runtime.block_on(async {
         tokio_postgres::connect(config.as_str(), NoTls).await
     }) {
@@ -1363,7 +1360,6 @@ pub fn create_connection(
             return Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
         }
     };
-    println!("create_connection done");
 
     runtime.spawn(async move {
         if let Err(e) = connection.await {

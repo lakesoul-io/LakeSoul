@@ -88,16 +88,6 @@ fn string_from_ptr(ptr: *const c_char) -> String {
 pub type ResultCallback<T> = extern "C" fn(T, *const c_char);
 
 #[no_mangle]
-pub extern "C" fn namespace(
-    bytes: *const c_uchar,
-    len: i32,
-) {
-    println!("rust::namespace");
-    let a = unsafe {std::slice::from_raw_parts(bytes, len as usize)};
-    println!("{:?}", entity::Namespace::decode(prost::bytes::Bytes::from(a)).unwrap());
-}
-
-#[no_mangle]
 pub extern "C" fn execute_insert(
     callback: extern "C" fn(i32, *const c_char),
     runtime: NonNull<Result<TokioRuntime>>,

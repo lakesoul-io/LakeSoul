@@ -56,14 +56,12 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 
   private def getCurrentSnapshot: Snapshot = {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
-      logError("createSnapshot for " + table_path)
       createSnapshot
     } else {
       //table_name in SnapshotManagement must be a root path, and its parent path shouldn't be lakesoul table
       if (LakeSoulUtils.isLakeSoulTable(table_path)) {
         throw new AnalysisException("table_name is expected as root path in SnapshotManagement")
       }
-      logError("initSnapshot for " + table_path)
       initSnapshot
     }
   }

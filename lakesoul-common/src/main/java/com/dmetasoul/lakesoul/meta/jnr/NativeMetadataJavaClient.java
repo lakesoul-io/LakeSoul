@@ -60,6 +60,12 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
     private final ReentrantReadWriteLock lock;
 
+    private static DataBaseProperty dataBaseProperty = null;
+
+    public static void setDataBaseProperty(DataBaseProperty dataBaseProperty) {
+        NativeMetadataJavaClient.dataBaseProperty = dataBaseProperty;
+    }
+
     public NativeMetadataJavaClient() {
         this(5000L, 1 << 12, 1 << 16);
     }
@@ -84,6 +90,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         }
         return instance;
     }
+
 
     public Pointer getTokioPostgresClient() {
         return tokioPostgresClient;
@@ -183,9 +190,11 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     private void initialize() {
-        DataBaseProperty dataBaseProperty = DBUtil.getDBInfo();
+        DataBaseProperty dataBaseProperty = NativeMetadataJavaClient.dataBaseProperty;
+        if (dataBaseProperty == null) {
+            dataBaseProperty = DBUtil.getDBInfo();
+        }
         tokioRuntime = libLakeSoulMetaData.create_tokio_runtime();
-        System.out.println("create_tokio_runtime success");
 
         String config = String.format(
                 "host=%s port=%s dbname=%s user=%s password=%s",
@@ -200,14 +209,13 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     if (msg.isEmpty()) {
                         future.complete(bool);
                     } else {
-                        System.out.println(msg);
+                        System.err.println(msg);
                         future.completeExceptionally(new IOException(msg));
                     }
                 }, getbooleanCallbackObjectReferenceManager()),
                 config,
                 tokioRuntime
         );
-        System.out.println("create_tokio_postgres_client success");
         preparedStatement = libLakeSoulMetaData.create_prepared_statement();
         try {
             future.get(timeout, TimeUnit.MILLISECONDS);
@@ -431,7 +439,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() {
         if (tokioRuntime != null) {
             libLakeSoulMetaData.free_tokio_runtime(tokioRuntime);
             tokioRuntime = null;
@@ -443,6 +451,13 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         if (preparedStatement != null) {
             libLakeSoulMetaData.free_prepared_statement(preparedStatement);
             preparedStatement = null;
+        }
+    }
+
+    public static void closeAll() {
+        if (instance != null) {
+            instance.close();
+            instance = null;
         }
     }
 }

@@ -41,16 +41,12 @@ jobs:
           profile: minimal
           toolchain: nightly-2023-05-20
           default: true
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-metadata -> target"
       - uses: actions-rs/cargo@v1
         with:
-          #          use-cross: true
+          use-cross: true
           command: build
           args: '--manifest-path native-metadata/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - uses: actions/upload-artifact@master
@@ -222,7 +218,7 @@ jobs:
 
   spark-test-rbac:
     runs-on: ubuntu-latest
-    needs: [ build-linux-x86_64 ]
+    needs: [ build-native-io-linux-x86_64, build-native-metadata-linux-x86_64 ]
 
     services:
       # Label used to access the service container
@@ -265,6 +261,10 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-metadata/target/release/
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test
@@ -355,7 +355,7 @@ jobs:
 
   flink-test-rbac:
     runs-on: ubuntu-latest
-    needs: [ build-linux-x86_64 ]
+    needs: [ build-native-io-linux-x86_64, build-native-metadata-linux-x86_64 ]
 
     services:
       # Label used to access the service container
@@ -406,6 +406,10 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+      - uses: actions/download-artifact@v3
+        with:
+          name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
+          path: ./native-metadata/target/release/
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu-maven-test

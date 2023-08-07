@@ -25,7 +25,6 @@ public class JnrLoader {
 
     public static LibLakeSoulMetaData get() {
         JnrLoader.tryLoad();
-        System.out.println(INSTANCE.libLakeSoulMetaData);
         return INSTANCE.libLakeSoulMetaData;
     }
 
@@ -59,7 +58,6 @@ public class JnrLoader {
             libraryOptions.put(LibraryOption.LoadNow, true);
             libraryOptions.put(LibraryOption.IgnoreError, true);
 
-            System.out.println(finalPath);
             JnrLoader.INSTANCE.libLakeSoulMetaData = LibraryLoader.loadLibrary(
                     LibLakeSoulMetaData.class,
                     libraryOptions,

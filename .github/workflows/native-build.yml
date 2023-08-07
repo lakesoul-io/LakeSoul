@@ -117,10 +117,6 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
           cache: maven
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -131,7 +127,7 @@ jobs:
           workspaces: "./native-metadata -> target"
       - uses: actions-rs/cargo@v1
         with:
-          #          use-cross: true
+          use-cross: true
           command: build
           args: '--manifest-path native-metadata/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - uses: actions/upload-artifact@master
