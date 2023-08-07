@@ -298,7 +298,6 @@ class CompactionSuite extends QueryTest
         Seq(Row("date=2021-01-01")))
       checkAnswer(spark.sql("select * from spark_catalog.default.external_table order by id"),
         Seq(Row(1, "rice", "2021-01-01"), Row(2, "bread", "2021-01-01")))
-      logError("Compaction and add partition to external catalog end")
     }
   }
 

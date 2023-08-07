@@ -98,10 +98,6 @@ trait TableCreationTests
     LakeSoulCatalog.cleanMeta()
   }
 
-  after {
-    waitForTasksToFinish()
-  }
-
   Seq("partitioned" -> Seq("v2"), "non-partitioned" -> Nil).foreach { case (isPartitioned, cols) =>
     SaveMode.values().foreach { saveMode =>
       test(s"saveAsTable to a new table (managed) - $isPartitioned, saveMode: $saveMode") {

@@ -49,11 +49,9 @@ public class DBManager {
     public boolean isTableExists(String tablePath) {
         TablePathId tablePathId = tablePathIdDao.findByTablePath(tablePath);
         if (tablePathId == null) {
-            System.out.println("[debug] isTableExists not found: " + tablePath);
             return false;
         }
         TableInfo tableInfo = tableInfoDao.selectByTableId(tablePathId.getTableId());
-        System.out.println("[debug] isTableExists found: " + tableInfo);
         return tableInfo != null;
     }
 
@@ -142,8 +140,6 @@ public class DBManager {
             if (ex) {
                 tableNameIdDao.deleteByTableId(tableId);
                 tablePathIdDao.deleteByTableId(tableId);
-            } else {
-                System.out.println("[debug]createNewTable success " + tableInfo);
             }
         }
     }

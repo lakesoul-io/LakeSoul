@@ -48,11 +48,9 @@ case class LakeSoulTableV2(spark: SparkSession,
 
   private lazy val (rootPath, partitionFilters) = {
     if (catalogTable.isDefined) {
-      println("debug] LakeSoulTableV2: catalogTable=" + catalogTable.get)
       // Fast path for reducing path munging overhead
       (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
-      println("debug] LakeSoulTableV2: " + path.toString)
       LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
     }
   }

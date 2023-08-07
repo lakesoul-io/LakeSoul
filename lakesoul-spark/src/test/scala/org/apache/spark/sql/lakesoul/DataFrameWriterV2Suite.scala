@@ -41,7 +41,6 @@ trait DataFrameWriterV2Tests
     catalog
       .listTables(Array("default"))
       .foreach { ti => catalog.dropTable(ti) }
-    waitForTasksToFinish()
   }
 
   def catalog: TableCatalog = {

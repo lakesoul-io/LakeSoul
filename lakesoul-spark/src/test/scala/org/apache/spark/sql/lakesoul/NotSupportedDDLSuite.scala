@@ -82,7 +82,6 @@ abstract class NotSupportedDDLBase extends QueryTest
       })
 
     } finally {
-      waitForTasksToFinish()
       super.afterEach()
     }
   }

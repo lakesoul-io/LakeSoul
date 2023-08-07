@@ -32,17 +32,14 @@ trait LakeSoulTestUtils extends Logging {
   }
 
   override def withTable(tableNames: String*)(f: => Unit): Unit = {
-    println("debug] LakeSoulTestUtils::withTable before with table " + tableNames)
     Utils.tryWithSafeFinally(f) {
       tableNames.foreach { name =>
-        println("debug] LakeSoulTestUtils::withTable droptable " + name)
         spark.sql(s"DROP TABLE IF EXISTS $name")
         if (name.split("\\.").length == 1) {
           val databaseName = if (name.startsWith(testDatabase + ".")) name else s"$testDatabase.$name"
           spark.sql(s"DROP TABLE IF EXISTS $databaseName")
         }
       }
-      waitForTasksToFinish()
     }
   }
 
@@ -57,9 +54,6 @@ trait LakeSoulTestUtils extends Logging {
         LakeSoulTable.forPath(dir.getCanonicalPath).dropTable()
       } catch {
         case e: Exception =>
-      }
-      finally {
-        waitForTasksToFinish()
       }
     }
   }

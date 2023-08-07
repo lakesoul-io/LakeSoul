@@ -324,7 +324,6 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         }
 
         def check(expectedResult: ((Long, Long), Long)*): Unit = {
-          println("debug]" + outputDir.getCanonicalPath)
           val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
             .selectExpr(
               "CAST(start as BIGINT) AS start",
