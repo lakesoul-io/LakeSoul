@@ -6,17 +6,24 @@ package com.facebook.presto.lakesoul.handle;
 
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.SchemaTableName;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /** table handle */
 public class LakeSoulTableHandle implements ConnectorTableHandle {
+
     private String id;
     private SchemaTableName names;
 
-    public LakeSoulTableHandle(String id, SchemaTableName names) {
+    @JsonCreator
+    public LakeSoulTableHandle(
+            @JsonProperty("id")  String id,
+            @JsonProperty("names") SchemaTableName names) {
         this.id = id;
         this.names = names;
     }
 
+    @JsonProperty
     public String getId() {
         return id;
     }
@@ -25,6 +32,7 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
         this.id = id;
     }
 
+    @JsonProperty
     public SchemaTableName getNames() {
         return names;
     }

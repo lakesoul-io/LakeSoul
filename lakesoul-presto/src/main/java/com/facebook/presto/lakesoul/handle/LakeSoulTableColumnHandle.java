@@ -6,19 +6,23 @@ package com.facebook.presto.lakesoul.handle;
 
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 public class LakeSoulTableColumnHandle implements ColumnHandle {
     private LakeSoulTableHandle tableHandle;
     private String columnName;
 
-    private ColumnMetadata columnMetadata;
-
-    public LakeSoulTableColumnHandle(LakeSoulTableHandle tableHandle, String columnName, ColumnMetadata columnMetadata) {
+    @JsonCreator
+    public LakeSoulTableColumnHandle(
+            @JsonProperty("tableHandle") LakeSoulTableHandle tableHandle,
+            @JsonProperty("columnName") String columnName) {
         this.tableHandle = tableHandle;
         this.columnName = columnName;
-        this.columnMetadata = columnMetadata;
     }
 
+    @JsonProperty
     public LakeSoulTableHandle getTableHandle() {
         return tableHandle;
     }
@@ -27,6 +31,7 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
         this.tableHandle = tableHandle;
     }
 
+    @JsonProperty
     public String getColumnName() {
         return columnName;
     }
@@ -35,12 +40,6 @@ public class LakeSoulTableColumnHandle implements ColumnHandle {
         this.columnName = columnName;
     }
 
-    public ColumnMetadata getColumnMetadata() {
-        return columnMetadata;
-    }
 
-    public void setColumnMetadata(ColumnMetadata columnMetadata) {
-        this.columnMetadata = columnMetadata;
-    }
 }
 

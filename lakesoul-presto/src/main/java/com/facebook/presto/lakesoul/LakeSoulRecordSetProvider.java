@@ -16,6 +16,8 @@ import java.util.List;
 public class LakeSoulRecordSetProvider implements ConnectorRecordSetProvider {
     @Override
     public RecordSet getRecordSet(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorSplit split, List<? extends ColumnHandle> columns) {
+        // split to record set
+
         return new LakeSoulRecordSet();
     }
 }

@@ -6,29 +6,15 @@
 
 package com.facebook.presto.lakesoul;
 
+import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
+import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
 
 import java.util.concurrent.CompletableFuture;
 
-public class LakeSoulSplitSource implements ConnectorSplitSource {
-    @Override
-    public CompletableFuture<ConnectorSplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, int maxSize) {
-        return null;
-    }
-
-    @Override
-    public void rewind(ConnectorPartitionHandle partitionHandle) {
-        ConnectorSplitSource.super.rewind(partitionHandle);
-    }
-
-    @Override
-    public void close() {
-
-    }
-
-    @Override
-    public boolean isFinished() {
-        return false;
+public class LakeSoulSplitSource extends FixedSplitSource implements ConnectorSplitSource {
+    public LakeSoulSplitSource(Iterable<? extends ConnectorSplit> splits) {
+        super(splits);
     }
 }

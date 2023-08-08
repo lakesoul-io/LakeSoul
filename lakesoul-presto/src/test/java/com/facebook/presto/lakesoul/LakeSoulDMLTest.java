@@ -14,8 +14,11 @@ public class LakeSoulDMLTest extends LakeSoulSmokeTest{
 
     @Test
     public void test(){
-        List<MaterializedRow> showColumnsInTable1 = sql("show columns in table1");
-        assert sql("select * from table1").size() == 0;
+        List<MaterializedRow> showColumnsInTable1 = sql("show schemas");
+        List<MaterializedRow> showColumnsInTable2 = sql("show tables");
+        List<MaterializedRow> showColumnsInTable3 = sql("show columns in table1");
+        int count = sql("select * from table1").size();
+        assert count == 2;
     }
 
 

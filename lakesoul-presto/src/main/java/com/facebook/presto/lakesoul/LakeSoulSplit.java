@@ -11,23 +11,33 @@ import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.NodeProvider;
 import com.facebook.presto.spi.SplitWeight;
 import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
 public class LakeSoulSplit implements ConnectorSplit {
+
+    @JsonCreator
+    public LakeSoulSplit(){
+
+    }
+
     @Override
     public NodeSelectionStrategy getNodeSelectionStrategy() {
-        return null;
+        return NodeSelectionStrategy.HARD_AFFINITY;
     }
 
     @Override
     public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider) {
-        return null;
+        return nodeProvider.get("*", 1);
     }
 
     @Override
+    @JsonProperty
     public Object getInfo() {
         return null;
     }

@@ -117,18 +117,8 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         TableSchema schema = JsonUtil.parse(tableInfo.getTableSchema(), TableSchema.class);
         HashMap<String, ColumnHandle> map = new HashMap<>();
         for(TableSchema.Field field : schema.getFields()){
-            ColumnMetadata columnMetadata = new ColumnMetadata(
-                    field.getName(),
-                    converType(field.getType()),
-                    field.isNullable(),
-                    "",
-                    "",
-                    false,
-                    field.getMetadata()
-            );
-
             LakeSoulTableColumnHandle columnHandle =
-                    new LakeSoulTableColumnHandle(table, field.getName(), columnMetadata);
+                    new LakeSoulTableColumnHandle(table, field.getName());
             map.put(field.getName(), columnHandle);
         }
         return map;
@@ -137,7 +127,26 @@ public class LakeSoulMetadata implements ConnectorMetadata {
     @Override
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle) {
         LakeSoulTableColumnHandle handle = (LakeSoulTableColumnHandle) columnHandle;
-        return handle.getColumnMetadata();
+        TableInfo tableInfo = dbManager.getTableInfoByTableId(handle.getTableHandle().getId());
+        if(tableInfo == null){
+            throw new RuntimeException("no such table: " + handle.getTableHandle().getNames());
+        }
+        TableSchema schema = JsonUtil.parse(tableInfo.getTableSchema(), TableSchema.class);
+        for(TableSchema.Field field : schema.getFields()){
+            if(field.getName().equals(handle.getColumnName())){
+                return new ColumnMetadata(
+                        field.getName(),
+                        converType(field.getType()),
+                        field.isNullable(),
+                        "",
+                        "",
+                        false,
+                        field.getMetadata()
+                );
+            }
+        }
+
+        throw new RuntimeException("no such column: " + handle.getColumnName());
     }
 
     @Override
