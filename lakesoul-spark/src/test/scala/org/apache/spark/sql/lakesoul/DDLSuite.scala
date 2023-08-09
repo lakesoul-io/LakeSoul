@@ -89,6 +89,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
             .write.format("lakesoul").mode("append").save(location.get)
         }
       }
+      waitForTasksToFinish()
     }
   }
 

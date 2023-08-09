@@ -4,7 +4,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.meta.entity.{DataFileOp, FileOp}
+import com.dmetasoul.lakesoul.meta.entity.{DataFileOp, FileOp, Uuid}
 import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
@@ -40,7 +40,7 @@ object DataOperation extends Logging {
     val metaPartitionInfo = entity.PartitionInfo.newBuilder
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
-    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => DBUtil.toProtoUuid(uuid)).toBuffer))
     val dataCommitInfoList = MetaVersion.dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo.build).asScala.toArray
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
@@ -146,16 +146,16 @@ object DataOperation extends Logging {
           loop.break()
         }
         if (startVersionTimestamp == dataItem.getTimestamp) {
-          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(id => UUID.fromString(id))
+          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id))
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            val compactShotList = dataItem.getSnapshotList.asScala.map(id => UUID.fromString(id)).toArray
+            val compactShotList = dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id)).toArray
             compactionUUIDs += compactShotList(0)
-            if (compactShotList.size > 1) {
-              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.size)
+            if (compactShotList.length > 1) {
+              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
-            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(id => UUID.fromString(id))
+            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id))
           }
         }
       }
@@ -169,7 +169,7 @@ object DataOperation extends Logging {
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dupCheck = new mutable.HashSet[String]()
-      val dataCommitInfoList = MetaVersion.dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(uuid => uuid.toString).asJava)).asScala.toArray
+      val dataCommitInfoList = MetaVersion.dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
       dataCommitInfoList.foreach(data_commit_info => {
         val fileOps = data_commit_info.getFileOpsList.asScala.toArray
         fileOps.foreach(file => {
@@ -224,7 +224,7 @@ object DataOperation extends Logging {
     metaDataCommitInfo.setTableId(table_id)
     metaDataCommitInfo.setPartitionDesc(range_value)
     metaDataCommitInfo.setCommitOp(entity.CommitOp.valueOf(commit_type))
-    metaDataCommitInfo.setCommitId(commit_id.toString)
+    metaDataCommitInfo.setCommitId(DBUtil.toProtoUuid(commit_id))
     metaDataCommitInfo.addAllFileOps(JavaConverters.bufferAsJavaList(file_arr_buf))
     metaDataCommitInfo.setTimestamp(modification_time)
     metaDataCommitInfoList.add(metaDataCommitInfo.build)

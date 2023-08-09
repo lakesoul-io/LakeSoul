@@ -325,6 +325,9 @@ SPDX-License-Identifier: Apache-2.0
                                 <lakesoul.pg.url>
                                     jdbc:postgresql://127.0.0.1:5432/lakesoul_test_${surefire.forkNumber}?stringtype=unspecified
                                 </lakesoul.pg.url>
+                                <lakesoul.pg.dbName>
+                                    lakesoul_test_${surefire.forkNumber}
+                                </lakesoul.pg.dbName>
                             </systemPropertyVariables>
                             <workingDirectory>.test_workdir_${surefire.forkNumber}</workingDirectory>
                             <includes>

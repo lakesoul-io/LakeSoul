@@ -4,6 +4,7 @@
 
 package com.dmetasoul.lakesoul.meta;
 
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import org.apache.flink.lakesoul.test.LakeSoulFlinkTestBase;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
@@ -14,7 +15,7 @@ import org.junit.Test;
 import java.util.List;
 
 public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
-    final String ADMIN1  = "admin1";
+    final String ADMIN1 = "admin1";
     final String ADMIN1_PASS = "admin1";
     final String ADMIN2 = "admin2";
     final String ADMIN2_PASS = "admin2";
@@ -23,21 +24,22 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     final String DOMAIN1 = "domain1";
     final String DOMAIN2 = "domain2";
 
-    private void login(String username , String password, String domain)  {
+    private void login(String username, String password, String domain) {
         System.setProperty(DBUtil.usernameKey, username);
         System.setProperty(DBUtil.passwordKey, password);
         System.setProperty(DBUtil.domainKey, domain);
         DBConnector.closeAllConnections();
+        NativeMetadataJavaClient.closeAll();
     }
 
     @Test
-    public void testDifferentDomain(){
+    public void testDifferentDomain() {
         getTableEnv().useCatalog("lakesoul");
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
 
         // create
         sql("create database if not exists database1");
-        assert(sql("show databases").size() == 2);
+        assert (sql("show databases").size() == 2);
         // drop: coming soon
 //    spark.sql("drop database database1").collect()
 //    val df2 = spark.sql("show databases").toDF()
@@ -53,12 +55,12 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
                 + " with ('format' = 'lakesoul', 'path' = '"
                 + getTempDirUri("/lakeSource/table2")
                 + "')");
-        assert( sql("show tables").size() == 2);
+        assert (sql("show tables").size() == 2);
 
         // drop table
         sql("drop table table1");
         sql("drop table table2");
-        assert(sql("show tables").size() == 0);
+        assert (sql("show tables").size() == 0);
 
         // write and read data
         sql("create table if not exists table1 ( id int, foo string, bar string )"
@@ -67,7 +69,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
                 + "')");
         sql("insert into table1 values(1, 'foo1', 'bar1')");
         sql("insert into table1 values(2, 'foo2', 'bar2')");
-        assert(sql("select * from table1").size() == 2);
+        assert (sql("select * from table1").size() == 2);
 
         // create & drop database
         sql("insert into table1 values(3, 'foo3', 'bar3')");
@@ -75,13 +77,13 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         try {
             sql("use database1");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e){
-            assert(e instanceof CatalogException);
+        } catch (Exception e) {
+            assert (e instanceof CatalogException);
         }
-        try{
+        try {
             sql("create database if not exists database2");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e) {
+        } catch (Exception e) {
             System.out.println(e.getMessage());
             assert e.getMessage().contains("Could not execute CREATE DATABASE");
         }
@@ -96,14 +98,14 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
                     + getTempDirUri("/lakeSource/table3")
                     + "')");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e){
+        } catch (Exception e) {
             System.out.println(e.getMessage());
             assert e.getCause() instanceof DatabaseNotExistException;
         }
         try {
             sql("drop table database1.table1");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e){
+        } catch (Exception e) {
             System.out.println(e.getMessage());
             assert e.getMessage().contains("Table with identifier 'lakesoul.database1.table1' does not exist.");
         }
@@ -112,17 +114,17 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         try {
             sql("insert into database1.table1 values(4, 'foo4', 'bar4')");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e){
+        } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert(e.getMessage().contains("Cannot find table '`lakesoul`.`database1`.`table1`' in any of the catalogs"));
+            assert (e.getMessage().contains("Cannot find table '`lakesoul`.`database1`.`table1`' in any of the catalogs"));
         }
 
         try {
             sql("select * from database1.table1");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e){
+        } catch (Exception e) {
             System.out.println(e.getMessage());
-            assert(e.getMessage().contains("Object 'database1' not found within 'lakesoul'"));
+            assert (e.getMessage().contains("Object 'database1' not found within 'lakesoul'"));
         }
 
         // clear test
@@ -132,7 +134,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     }
 
     @Test
-    public void testDifferentRole(){
+    public void testDifferentRole() {
         getTableEnv().useCatalog("lakesoul");
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
         // create
@@ -142,17 +144,17 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         login(USER1, USER1_PASS, DOMAIN1);
         // create table & drop database
         sql("use database1");
-        try{
+        try {
             sql("create database if not exists database3");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e) {
+        } catch (Exception e) {
             System.out.println(e.getMessage());
             assert e.getMessage().contains("Could not execute CREATE DATABASE");
         }
-        try{
+        try {
             sql("drop database database1");
             throw new RuntimeException("test state was unexcepted");
-        }catch (Exception e) {
+        } catch (Exception e) {
             System.out.println(e.getMessage());
             assert e.getMessage().contains("Could not execute DROP DATABASE lakesoul.database1 RESTRICT");
         }
@@ -166,10 +168,10 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
                 + " with ('format' = 'lakesoul', 'path' = '"
                 + getTempDirUri("/lakeSource/table2")
                 + "')");
-        assert(sql("show tables").size() == 2);
+        assert (sql("show tables").size() == 2);
         sql("drop table table1");
         sql("drop table table2");
-        assert(sql("show tables").size() == 0);
+        assert (sql("show tables").size() == 0);
 
         // CRUD data
         sql("create table if not exists table1 ( id int, foo string, bar string )"
@@ -178,7 +180,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
                 + "')");
         sql("insert into table1 values(1, 'foo1', 'bar1')");
         sql("insert into table1 values(2, 'foo2', 'bar2')");
-        assert(sql("select * from table1").size() == 2);
+        assert (sql("select * from table1").size() == 2);
 
         // clear test
         sql("drop table table1");

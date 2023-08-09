@@ -42,9 +42,9 @@ trait TableCreationTests
   val format = "lakesoul"
 
   protected def createTableByPath(path: File,
-                                df: DataFrame,
-                                tableName: String,
-                                partitionedBy: Seq[String] = Nil): Unit = {
+                                  df: DataFrame,
+                                  tableName: String,
+                                  partitionedBy: Seq[String] = Nil): Unit = {
     df.write
       .partitionBy(partitionedBy: _*)
       .mode(SaveMode.Append)
@@ -673,7 +673,7 @@ trait TableCreationTests
       assert(location.isDefined)
       assert(location.get == path.get)
       val partDir = new File(new File(location.get), "a=1")
-//      assert(partDir.listFiles().nonEmpty)
+      //      assert(partDir.listFiles().nonEmpty)
 
       checkDatasetUnorderly(
         sql("SELECT a,b FROM lakesoul_test").as[(Long, String)],
@@ -1217,7 +1217,7 @@ trait TableCreationTests
           .create()
 
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
-        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+        tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
   }
@@ -1233,7 +1233,7 @@ trait TableCreationTests
           .option("lakesoul_cdc_change_column", "change_kind")
           .save(path)
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
-        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+        tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
   }

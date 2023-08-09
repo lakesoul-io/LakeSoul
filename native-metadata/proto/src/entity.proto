@@ -11,24 +11,24 @@ option java_package = "com.dmetasoul.lakesoul.meta.entity";
 
 //  A collection of PartitionInfo of one TableInfo
 message MetaInfo {
-  repeated PartitionInfo listPartition = 1;
-  TableInfo tableInfo = 2;
-  repeated PartitionInfo readPartitionInfo = 3;
+  repeated PartitionInfo list_partition = 1;
+  TableInfo table_info = 2;
+  repeated PartitionInfo read_partition_info = 3;
 }
 
 
 //  Meta Information for LakeSoul Table
 message TableInfo {
   //  Global unique identifier of table
-  string tableId = 1;
+  string table_id = 1;
   //  Namespace of table. A string of 'tableNamespace.tablePath' or 'tableNamespace.tableName'  maps one unique table globally
-  string tableNamespace = 2;
+  string table_namespace = 2;
   //  Name of table, optional
-  string tableName = 3;
+  string table_name = 3;
   //  Physical qualified path of table
-  string tablePath = 4;
+  string table_path = 4;
   //  Spark-formatted schema of table
-  string tableSchema = 5;
+  string table_schema = 5;
   //  Properties of table, used to tag table with information not tracked by SQL
   string properties = 7;
   //  Partition columns of table. Format of partitions is 'comma_separated_range_column;hash_column'
@@ -41,18 +41,18 @@ message TableInfo {
 //  Version information for specific table range partitions
 message PartitionInfo {
   //  TableId of PartitionInfo
-  string tableId = 1;
+  string table_id = 1;
   //  Range partition description, which defines a specific range partition of the table, in the formatted of comma-separated range_colum=range_value
   //  Especially, a table without range partitions use LAKESOUL_NON_PARTITION_TABLE_PART_DESC as partitionDesc
-  string partitionDesc = 2;
+  string partition_desc = 2;
   //  A version is defined as a number monotonically increasing by 1
   int32 version = 3;
   //  Specific operation of the version information
-  CommitOp commitOp = 4;
+  CommitOp commit_op = 4;
   //  Timestamp of the PartitionInfo successfully committed
   int64 timestamp = 5;
   //  Collection of commitId of DataCommitInfo included with PartitionInfo
-  repeated string snapshot = 7;
+  repeated Uuid snapshot = 7;
   //  Expression used to calculate or filter data, will be launched in the future. Now it's just a meaningless empty string.
   string expression = 8;
   //  Domain this entry belongs to.
@@ -99,26 +99,26 @@ message DataFileOp {
   //  Physical qualified path of a parquet file
   string path = 1;
   //  Specific operation of this file
-  FileOp fileOp = 2;
+  FileOp file_op = 2;
   //  File size of byte-unit
   int64 size = 3;
   //  Columns included with this parquet file, which should be equivalent of the meta of parquet file
-  string fileExistCols = 4;
+  string file_exist_cols = 4;
 }
 
 // Data Files Commit information for specific table range partitions
 message DataCommitInfo {
   //  TableId of DataCommit
-  string tableId = 1;
+  string table_id = 1;
   //  Range partition description, which defines a specific range partition of the table, in the formatted of comma-separated range_colum=range_value
   //  Especially, a table without range partitions use LAKESOUL_NON_PARTITION_TABLE_PART_DESC as partitionDesc
-  string partitionDesc = 2;
+  string partition_desc = 2;
   // Global unique identifier of DataCommit
-  string commitId = 3;
+  Uuid commit_id = 3;
   // Collection of DataFileOps included with DataCommit
-  repeated DataFileOp fileOps = 4;
+  repeated DataFileOp file_ops = 4;
   // Specific operation of this DataCommit
-  CommitOp commitOp = 5;
+  CommitOp commit_op = 5;
   //  Creation timestamp of the files of the DataCommit
   int64 timestamp = 6;
   //   mark define if this DataCommit has already committed as PartitionInfo of table
@@ -129,11 +129,11 @@ message DataCommitInfo {
 //  Relationship between 'TableNamespace.TableName' and TableId
 message TableNameId {
   //  Name of table
-  string tableName = 1;
+  string table_name = 1;
   //  Global unique identifier of table
   string tableId = 2;
   //  Namespace of table
-  string tableNamespace = 3;
+  string table_namespace = 3;
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 4;
@@ -142,12 +142,26 @@ message TableNameId {
 //  Relationship between 'TableNamespace.TablePath' and TableId
 message TablePathId {
   //  Physical qualified path of table
-  string tablePath = 1;
+  string table_path = 1;
   //  Global unique identifier of table
-  string tableId = 2;
+  string table_id = 2;
   //  Namespace of table
-  string tableNamespace = 3;
+  string table_namespace = 3;
   //  Domain this entry belongs to.
   //  Only when rbac feature enabled will have contents different to 'public'
   string domain = 4;
+}
+
+message Uuid{
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+message JniWrapper {
+  repeated Namespace namespace = 1;
+  repeated TableInfo table_info = 2;
+  repeated TablePathId table_path_id = 3;
+  repeated TableNameId table_name_id = 4;
+  repeated PartitionInfo partition_info = 5;
+  repeated DataCommitInfo data_commit_info = 6;
 }

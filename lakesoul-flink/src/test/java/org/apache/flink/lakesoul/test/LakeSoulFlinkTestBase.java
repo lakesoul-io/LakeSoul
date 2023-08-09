@@ -32,7 +32,6 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
     @BeforeClass
     public static void startDBManager() {
-        System.out.println("Initializing DBManager");
         LakeSoulFlinkTestBase.dbManager = new DBManager();
         dbManager.cleanMeta();
         LakeSoulFlinkTestBase.catalog = new LakeSoulCatalog();
@@ -52,7 +51,7 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
                     TableEnvironment env = TableEnvironment.create(settings);
                     env.getConfig()
-                       .getConfiguration()
+                            .getConfiguration()
                     ;
                     env.registerCatalog("lakesoul", catalog);
 
@@ -87,9 +86,9 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
     protected void assertSameElements(String message, Iterable<Row> expected, Iterable<Row> actual) {
         Assertions.assertThat(actual)
-                  .isNotNull()
-                  .as(message)
-                  .containsExactlyInAnyOrderElementsOf(expected);
+                .isNotNull()
+                .as(message)
+                .containsExactlyInAnyOrderElementsOf(expected);
     }
 
 }

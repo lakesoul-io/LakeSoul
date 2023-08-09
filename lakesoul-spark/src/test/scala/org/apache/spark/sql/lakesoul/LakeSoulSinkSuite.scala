@@ -52,24 +52,24 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           checkDatasetUnorderly(outputDf.as[Int], 1)
 
           val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-//          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
-//          var info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 0L)
+          //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
+          //          var info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
 
           inputData.addData(2)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Int], 1, 2)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 1L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 1L)
 
           inputData.addData(3)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Int], 1, 2, 3)
 
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 2L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 2L)
         } finally {
           query.stop()
         }
@@ -97,23 +97,23 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           checkDatasetUnorderly(outputDf.as[Long], 1L)
 
           val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-//          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
-//          var info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 0L)
+          //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
+          //          var info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
 
           inputData.addData(2)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Long], 2L)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 1L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 1L)
 
           inputData.addData(3)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Long], 3L)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 2L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 2L)
         } finally {
           query.stop()
         }
