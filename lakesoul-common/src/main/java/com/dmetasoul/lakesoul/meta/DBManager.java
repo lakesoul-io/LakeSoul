@@ -8,6 +8,8 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZContext;
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer;
 import org.apache.commons.lang3.StringUtils;
@@ -145,12 +147,12 @@ public class DBManager {
         return tablePathIdDao.listAllPath();
     }
 
-    public List<String> listTableNamesByNamespace(String table_namespace) {
-        return tableNameIdDao.listAllNameByNamespace(table_namespace);
+    public List<String> listTableNamesByNamespace(String tableNamespace) {
+        return tableNameIdDao.listAllNameByNamespace(tableNamespace);
     }
 
-    public List<String> listTablePathsByNamespace(String table_namespace) {
-        return tablePathIdDao.listAllPathByNamespace(table_namespace);
+    public List<String> listTablePathsByNamespace(String tableNamespace) {
+        return tablePathIdDao.listAllPathByNamespace(tableNamespace);
     }
 
     public TableInfo getTableInfoByPath(String tablePath) {
@@ -175,7 +177,7 @@ public class DBManager {
     }
 
     public long getLastedTimestamp(String tableId, String partitionDesc) {
-        return partitionInfoDao.getLastedTimestamp(tableId, partitionDesc);
+        return partitionInfoDao.getLatestTimestamp(tableId, partitionDesc);
     }
 
     public int getLastedVersionUptoTime(String tableId, String partitionDesc, long utcMills) {
@@ -203,7 +205,7 @@ public class DBManager {
     public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc, long utcMills,
                                               List<DataFileOp> fileOps, List<String> deleteFilePathList) {
         List<PartitionInfo> filterPartitionInfo = getFilterPartitionInfo(tableId, partitionDesc, utcMills);
-        List<String> snapshotList = new ArrayList<>();
+        List<Uuid> snapshotList = new ArrayList<>();
         filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshotList()));
         List<DataCommitInfo> filterDataCommitInfo =
                 dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
@@ -327,12 +329,13 @@ public class DBManager {
 
     public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
         JSONObject newProperties = JSONObject.parseObject(properties);
-
-        if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
-            // do not modify domain in properties for this table
-            newProperties.put("domain", originProperties.get("domain"));
+        if (tableInfo != null) {
+            JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
+            if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
+                // do not modify domain in properties for this table
+                newProperties.put("domain", originProperties.get("domain"));
+            }
         }
         tableInfoDao.updatePropertiesById(tableId, newProperties.toJSONString());
     }
@@ -384,7 +387,7 @@ public class DBManager {
             String partitionDesc = partitionInfo.getPartitionDesc();
             rawMap.put(partitionDesc, partitionInfo);
             partitionDescList.add(partitionDesc);
-            snapshotList.addAll(partitionInfo.getSnapshotList());
+            snapshotList.addAll(partitionInfo.getSnapshotList().stream().map(uuid -> DBUtil.toJavaUUID(uuid).toString()).collect(Collectors.toList()));
         }
 
         Map<String, PartitionInfo> curMap = getCurPartitionMap(tableId, partitionDescList);
@@ -681,8 +684,8 @@ public class DBManager {
 
     private PartitionInfo.Builder updateSubmitPartitionSnapshot(PartitionInfo rawPartitionInfo, PartitionInfo.Builder curPartitionInfo,
                                                                 PartitionInfo readPartition) {
-        List<String> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
-        List<String> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
+        List<Uuid> snapshot = new ArrayList<>(rawPartitionInfo.getSnapshotList());
+        List<Uuid> curSnapshot = new ArrayList<>(curPartitionInfo.getSnapshotList());
         if (readPartition != null) {
             curSnapshot.removeAll(readPartition.getSnapshotList());
         }
@@ -702,7 +705,7 @@ public class DBManager {
                     .setVersion(-1)
                     .setDomain(getTableDomain(tableId))
                     .build();
-        }else{
+        } else {
             curPartitionInfo = curPartitionInfo.toBuilder()
                     .setDomain(getTableDomain(tableId))
                     .build();
@@ -723,14 +726,14 @@ public class DBManager {
     public List<DataCommitInfo> getTableSinglePartitionDataInfo(PartitionInfo partitionInfo) {
         String tableId = partitionInfo.getTableId();
         String partitionDesc = partitionInfo.getPartitionDesc();
-        List<String> snapshotList = partitionInfo.getSnapshotList();
+        List<Uuid> snapshotList = partitionInfo.getSnapshotList();
 
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
     public List<DataCommitInfo> getPartitionSnapshot(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        List<String> commitList = partitionInfo.getSnapshotList();
+        List<Uuid> commitList = partitionInfo.getSnapshotList();
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, commitList);
     }
 
@@ -753,13 +756,13 @@ public class DBManager {
     }
 
     public List<DataCommitInfo> getDataCommitInfosFromUUIDs(String tableId, String partitionDesc,
-                                                            List<String> dataCommitUUIDs) {
+                                                            List<Uuid> dataCommitUUIDs) {
         return dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, dataCommitUUIDs);
     }
 
     public void rollbackPartitionByVersion(String tableId, String partitionDesc, int version) {
         PartitionInfo partitionInfo = partitionInfoDao.findByKey(tableId, partitionDesc, version);
-        if (partitionInfo.getTableId() == null) {
+        if (partitionInfo == null) {
             return;
         }
         PartitionInfo curPartitionInfo = partitionInfoDao.selectLatestPartitionInfo(tableId, partitionDesc);
@@ -769,23 +772,23 @@ public class DBManager {
                         .build());
     }
 
-    private String getTableDomain(String tableId){
-        if(!AuthZEnforcer.authZEnabled()){
+    private String getTableDomain(String tableId) {
+        if (!AuthZEnforcer.authZEnabled()) {
             return "public";
         }
         TableInfo tableInfo = this.getTableInfoByTableId(tableId);
-        if(tableInfo == null){
+        if (tableInfo == null) {
             throw new IllegalStateException("target tableinfo does not exists");
         }
         return getNameSpaceDomain(tableInfo.getTableNamespace());
     }
 
-    private String getNameSpaceDomain(String namespace){
-        if(!AuthZEnforcer.authZEnabled()){
+    private String getNameSpaceDomain(String namespace) {
+        if (!AuthZEnforcer.authZEnabled()) {
             return "public";
         }
         Namespace namespaceInfo = getNamespaceByNamespace(namespace);
-        if(namespaceInfo == null) {
+        if (namespaceInfo == null) {
             throw new IllegalStateException("target namespace does not exists");
         }
         return namespaceInfo.getDomain();
@@ -794,9 +797,9 @@ public class DBManager {
     public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
-        String commitId = dataCommitInfo.getCommitId();
+        Uuid commitId = dataCommitInfo.getCommitId();
         CommitOp commitOp = dataCommitInfo.getCommitOp();
-        DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, commitId);
+        DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, DBUtil.toJavaUUID(commitId).toString());
         if (metaCommitInfo != null && metaCommitInfo.getCommitted()) {
             LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
             return;
@@ -809,7 +812,7 @@ public class DBManager {
         MetaInfo.Builder metaInfo = MetaInfo.newBuilder();
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
 
-        List<String> snapshot = new ArrayList<>();
+        List<Uuid> snapshot = new ArrayList<>();
         snapshot.add(commitId);
 
         List<PartitionInfo> partitionInfoList = new ArrayList<>();
@@ -869,9 +872,15 @@ public class DBManager {
 
     // just for test
     public void cleanMeta() {
-
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            NativeMetadataJavaClient.cleanMeta();
+            if (!AuthZEnforcer.authZEnabled()) {
+                namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
+            }
+            return;
+        }
         namespaceDao.clean();
-        if(!AuthZEnforcer.authZEnabled()){
+        if (!AuthZEnforcer.authZEnabled()) {
             namespaceDao.insert(NamespaceDao.DEFAULT_NAMESPACE);
         }
         dataCommitInfoDao.clean();

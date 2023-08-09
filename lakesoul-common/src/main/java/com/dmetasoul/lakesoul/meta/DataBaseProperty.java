@@ -11,6 +11,9 @@ public class DataBaseProperty implements Serializable {
     private String url;
     private String username;
     private String password;
+    private String dbName;
+    private String host;
+    private String port;
     private int maxCommitAttempt;
 
     public String getDriver() {
@@ -64,5 +67,29 @@ public class DataBaseProperty implements Serializable {
                 "\nlakesoul.pg.password" +
                 password +
                 "\n";
+    }
+
+    public String getHost() {
+        return host;
+    }
+
+    public void setHost(String host) {
+        this.host = host;
+    }
+
+    public String getPort() {
+        return port;
+    }
+
+    public void setPort(String port) {
+        this.port = port;
+    }
+
+    public String getDbName() {
+        return dbName;
+    }
+
+    public void setDbName(String dbName) {
+        this.dbName = dbName;
     }
 }

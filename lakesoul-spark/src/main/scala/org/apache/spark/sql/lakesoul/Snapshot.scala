@@ -55,4 +55,5 @@ class Snapshot(table_info: TableInfo,
 
   def getPartitionInfoArray: Array[PartitionInfo] = partition_info_arr
 
+  override def toString: String = table_info + partition_info_arr.mkString(",")
 }

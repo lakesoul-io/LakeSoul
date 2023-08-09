@@ -9,10 +9,13 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.FileOp;
+import com.dmetasoul.lakesoul.meta.entity.Uuid;
 import com.zaxxer.hikari.HikariConfig;
 import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.sql.Connection;
@@ -95,6 +98,14 @@ public class DBUtil {
         dataBaseProperty.setUrl(properties.getProperty(urlKey, urlDefault));
         dataBaseProperty.setUsername(properties.getProperty(usernameKey, usernameDefault));
         dataBaseProperty.setPassword(properties.getProperty(passwordKey, passwordDefault));
+        try {
+            URL url = new URL(properties.getProperty(urlKey, urlDefault).replaceFirst("jdbc:postgresql", "http"));
+            dataBaseProperty.setDbName(url.getPath().substring(1));
+            dataBaseProperty.setHost(url.getHost());
+            dataBaseProperty.setPort(String.valueOf(url.getPort()));
+        } catch (MalformedURLException e) {
+            throw new RuntimeException(e);
+        }
         return dataBaseProperty;
     }
 
@@ -304,5 +315,24 @@ public class DBUtil {
             if (rangeKeys.isEmpty()) return "";
             return String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, rangeKeys);
         }
+    }
+
+    public static UUID toJavaUUID(Uuid uuid) {
+        return new UUID(uuid.getHigh(), uuid.getLow());
+    }
+
+    public static Uuid toProtoUuid(UUID uuid) {
+        return Uuid.newBuilder().setHigh(uuid.getMostSignificantBits()).setLow(uuid.getLeastSignificantBits()).build();
+    }
+
+    public static String protoUuidToJniString(Uuid uuid) {
+        StringBuilder sb = new StringBuilder();
+        String high = Long.toUnsignedString(uuid.getHigh(), 16);
+        sb.append(new String(new char[16 - high.length()]).replace("\0", "0"));
+        sb.append(high);
+        String low = Long.toUnsignedString(uuid.getLow(), 16);
+        sb.append(new String(new char[16 - low.length()]).replace("\0", "0"));
+        sb.append(low);
+        return sb.toString();
     }
 }

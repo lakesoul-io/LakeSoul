@@ -4,6 +4,7 @@
 
 package com.dmetasoul.lakesoul.meta
 
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
 import com.dmetasoul.lakesoul.meta.rbac.AuthZEnforcer
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.analysis.{NoSuchNamespaceException, UnresolvedTableOrView}
@@ -42,8 +43,8 @@ class RBACOperatinSuite extends QueryTest
     System.setProperty(DBUtil.usernameKey, username)
     System.setProperty(DBUtil.passwordKey, password)
     System.setProperty(DBUtil.domainKey, domain)
-    DBConnector.closeAllConnections()
-
+    DBConnector.closeAllConnections
+    NativeMetadataJavaClient.closeAll
   }
 
   test("testDifferentDomain") {
@@ -53,10 +54,10 @@ class RBACOperatinSuite extends QueryTest
     val df = spark.sql("show databases").toDF()
     assert(df.count() == 2)
     // drop: coming soon
-//    spark.sql("drop database database1").collect()
-//    val df2 = spark.sql("show databases").toDF()
-//    assert(df2.count() == 1)
-//    assert(df2.collectAsList().get(0).getString(1).equals("default"))
+    //    spark.sql("drop database database1").collect()
+    //    val df2 = spark.sql("show databases").toDF()
+    //    assert(df2.count() == 1)
+    //    assert(df2.collectAsList().get(0).getString(1).equals("default"))
     // create tables
     spark.sql("use database1;")
     spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
@@ -78,7 +79,7 @@ class RBACOperatinSuite extends QueryTest
     assert(df5.count() == 2)
 
     // update data
-     spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
+    spark.sql("update table1 set foo = 'foo3', bar = 'bar3'  where id = 2")
     val df6 = spark.sql("select (id, foo, bar) from table1 where id = 2").toDF()
     val row = df6.collectAsList().get(0).get(0).asInstanceOf[GenericRowWithSchema];
     assert(row.getString(1).equals("foo3"))
@@ -91,14 +92,14 @@ class RBACOperatinSuite extends QueryTest
 
 
 
-   // create & drop database
+    // create & drop database
     spark.sql("insert into table1 values(3, 'foo3', 'bar3')")
     login(ADMIN2, ADMIN2_PASS, DOMAIN1)
     val err0 = intercept[Exception] {
       spark.sql("use database1;")
     }
     assert(err0.isInstanceOf[NoSuchNamespaceException])
-    val err1  = intercept[Exception] {
+    val err1 = intercept[Exception] {
       spark.sql("create database if not exists database2")
     }
     println(err1.getMessage)

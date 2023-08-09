@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
-import com.dmetasoul.lakesoul.meta.entity.FileOp
+import com.dmetasoul.lakesoul.meta.entity.{FileOp, Uuid}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
@@ -47,7 +47,7 @@ object MetaCommit extends Logging {
       val partitionInfo = entity.PartitionInfo.newBuilder
       partitionInfo.setTableId(table_info.table_id)
       partitionInfo.setPartitionDesc(partition_info.range_value)
-      partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+      partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => DBUtil.toProtoUuid(uuid)).toBuffer))
       partitionInfo.setCommitOp(commit_type)
       javaPartitionInfoList.add(partitionInfo.build)
     }
@@ -60,7 +60,7 @@ object MetaCommit extends Logging {
         partitionInfo.setTableId(table_info.table_id)
         partitionInfo.setPartitionDesc(partition.range_value)
         partitionInfo.setVersion(partition.version)
-        partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.map(uuid => uuid.toString).toBuffer))
+        partitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition.read_files.map(uuid => Uuid.newBuilder.setHigh(uuid.getMostSignificantBits).setLow(uuid.getLeastSignificantBits).build).toBuffer))
         partitionInfo.setCommitOp(commit_type)
         readPartitionInfoList.add(partitionInfo.build)
       }
@@ -96,7 +96,8 @@ object MetaCommit extends Logging {
       metaDataCommitInfo.setTableId(table_id)
       metaDataCommitInfo.setPartitionDesc(dataCommitInfo.range_value)
       metaDataCommitInfo.setCommitOp(entity.CommitOp.valueOf(commitType))
-      metaDataCommitInfo.setCommitId(dataCommitInfo.commit_id.toString)
+      val uuid = dataCommitInfo.commit_id
+      metaDataCommitInfo.setCommitId(Uuid.newBuilder.setHigh(uuid.getMostSignificantBits).setLow(uuid.getLeastSignificantBits).build)
       val fileOps = new util.ArrayList[entity.DataFileOp]()
       for (file_info <- dataCommitInfo.file_ops) {
         val metaDataFileInfo = entity.DataFileOp.newBuilder

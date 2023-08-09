@@ -36,7 +36,7 @@ trait LakeSoulTestUtils extends Logging {
       tableNames.foreach { name =>
         spark.sql(s"DROP TABLE IF EXISTS $name")
         if (name.split("\\.").length == 1) {
-          val databaseName = if (name.startsWith(testDatabase+".")) name else s"$testDatabase.$name"
+          val databaseName = if (name.startsWith(testDatabase + ".")) name else s"$testDatabase.$name"
           spark.sql(s"DROP TABLE IF EXISTS $databaseName")
         }
       }
@@ -59,7 +59,7 @@ trait LakeSoulTestUtils extends Logging {
   }
 
   def createDF(seq: Seq[Product], names: Seq[String],
-                                  types: Seq[String], nullables: Option[Seq[Boolean]] = None): DataFrame = {
+               types: Seq[String], nullables: Option[Seq[Boolean]] = None): DataFrame = {
     val fields = nullables match {
       case None =>
         names.zip(types).map(nt => StructField(nt._1, CatalystSqlParser.parseDataType(nt._2), nullable = false))

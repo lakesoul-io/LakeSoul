@@ -4,37 +4,72 @@
 
 package com.dmetasoul.lakesoul.meta.dao;
 
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConnector;
-import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 public class TableInfoDao {
 
     public TableInfo selectByTableId(String tableId) {
-
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTableInfoByTableId,
+                    Collections.singletonList(tableId));
+            if (jniWrapper == null) return null;
+            List<TableInfo> tableInfoList = jniWrapper.getTableInfoList();
+            return tableInfoList.isEmpty() ? null : tableInfoList.get(0);
+        }
         String sql = String.format("select * from table_info where table_id = '%s'", tableId);
         return getTableInfo(sql);
     }
 
     public TableInfo selectByTableNameAndNameSpace(String tableName, String namespace) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTableInfoByTableNameAndNameSpace,
+                    Arrays.asList(tableName, namespace));
+            if (jniWrapper == null) return null;
+            List<TableInfo> tableInfoList = jniWrapper.getTableInfoList();
+            return tableInfoList.isEmpty() ? null : tableInfoList.get(0);
+        }
         String sql = String.format("select * from table_info where table_name = '%s'" +
                 " and table_namespace='%s'", tableName, namespace);
         return getTableInfo(sql);
     }
 
     public TableInfo selectByTablePath(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTableInfoByTablePath,
+                    Collections.singletonList(tablePath));
+            if (jniWrapper == null) return null;
+            List<TableInfo> tableInfoList = jniWrapper.getTableInfoList();
+            return tableInfoList.isEmpty() ? null : tableInfoList.get(0);
+        }
         String sql = String.format("select * from table_info where table_path = '%s'", tablePath);
         return getTableInfo(sql);
     }
 
     public TableInfo selectByIdAndTablePath(String tableId, String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTableInfoByIdAndTablePath,
+                    Arrays.asList(tableId, tablePath));
+            if (jniWrapper == null) return null;
+            List<TableInfo> tableInfoList = jniWrapper.getTableInfoList();
+            return tableInfoList.isEmpty() ? null : tableInfoList.get(0);
+        }
         String sql = String.format("select * from table_info where table_id = '%s' and table_path = '%s' ", tableId,
                 tablePath);
         return getTableInfo(sql);
@@ -67,6 +102,12 @@ public class TableInfoDao {
     }
 
     public void insert(TableInfo tableInfo) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.InsertTableInfo,
+                    JniWrapper.newBuilder().addTableInfo(tableInfo).build());
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         try {
@@ -90,22 +131,30 @@ public class TableInfoDao {
         }
     }
 
-    public void deleteByTableId(String tableId) {
-        Connection conn = null;
-        PreparedStatement pstmt = null;
-        String sql = String.format("delete from table_info where table_id = '%s' ", tableId);
-        try {
-            conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement(sql);
-            pstmt.execute();
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        } finally {
-            DBConnector.closeConn(pstmt, conn);
-        }
-    }
+//    public void deleteByTableId(String tableId) {
+//        Connection conn = null;
+//        PreparedStatement pstmt = null;
+//        String sql = String.format("delete from table_info where table_id = '%s' ", tableId);
+//        try {
+//            conn = DBConnector.getConn();
+//            pstmt = conn.prepareStatement(sql);
+//            pstmt.execute();
+//        } catch (SQLException e) {
+//            throw new RuntimeException(e);
+//        } finally {
+//            DBConnector.closeConn(pstmt, conn);
+//        }
+//    }
 
     public void deleteByIdAndPath(String tableId, String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteTableInfoByIdAndPath,
+                    Arrays.asList(tableId, tablePath));
+            System.out.println("DeleteTableInfoByIdAndPath " + tableId + " " + tablePath + " result = " + count);
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql =
@@ -122,6 +171,11 @@ public class TableInfoDao {
     }
 
     public int updatePropertiesById(String tableId, String properties) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            return NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.UpdateTableInfoPropertiesById,
+                    Arrays.asList(tableId, properties));
+        }
         int result = 0;
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -142,6 +196,11 @@ public class TableInfoDao {
     }
 
     public int updateByTableId(String tableId, String tableName, String tablePath, String tableSchema) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            return NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.UpdateTableInfoById,
+                    Arrays.asList(tableId, tableName, tablePath, tableSchema));
+        }
         int result = 0;
         if (StringUtils.isBlank(tableName) && StringUtils.isBlank(tablePath) && StringUtils.isBlank(tableSchema)) {
             return result;

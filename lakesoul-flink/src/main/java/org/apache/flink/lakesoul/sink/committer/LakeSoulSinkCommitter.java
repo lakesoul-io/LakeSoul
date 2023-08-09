@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.sink.committer;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import org.apache.flink.api.connector.sink.Committer;
 import org.apache.flink.core.fs.FileStatus;
@@ -107,7 +108,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
                 assert committable.getCommitId() != null;
-                dataCommitInfo.setCommitId(committable.getCommitId());
+                dataCommitInfo.setCommitId(DBUtil.toProtoUuid(UUID.fromString(committable.getCommitId())));
 
                 if (LOG.isInfoEnabled()) {
                     String fileOpStr = dataFileOpList.stream()

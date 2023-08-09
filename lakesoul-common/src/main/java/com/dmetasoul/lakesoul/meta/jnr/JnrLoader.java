@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
-
-package com.dmetasoul.lakesoul.lakesoul.io.jnr;
+package com.dmetasoul.lakesoul.meta.jnr;
 
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
@@ -18,15 +17,15 @@ import java.util.Map;
 
 public class JnrLoader {
 
-    private LibLakeSoulIO libLakeSoulIO = null;
+    private LibLakeSoulMetaData libLakeSoulMetaData = null;
 
     private boolean hasLoaded = false;
 
     public static final JnrLoader INSTANCE = new JnrLoader();
 
-    public static LibLakeSoulIO get() {
+    public static LibLakeSoulMetaData get() {
         JnrLoader.tryLoad();
-        return INSTANCE.libLakeSoulIO;
+        return INSTANCE.libLakeSoulMetaData;
     }
 
     public synchronized static void tryLoad() {
@@ -34,7 +33,7 @@ public class JnrLoader {
             return;
         }
 
-        String libName = System.mapLibraryName("lakesoul_io_c");
+        String libName = System.mapLibraryName("lakesoul_metadata_c");
 
         String finalPath = null;
 
@@ -59,17 +58,12 @@ public class JnrLoader {
             libraryOptions.put(LibraryOption.LoadNow, true);
             libraryOptions.put(LibraryOption.IgnoreError, true);
 
-            JnrLoader.INSTANCE.libLakeSoulIO = LibraryLoader.loadLibrary(
-                    LibLakeSoulIO.class,
+            JnrLoader.INSTANCE.libLakeSoulMetaData = LibraryLoader.loadLibrary(
+                    LibLakeSoulMetaData.class,
                     libraryOptions,
                     finalPath
             );
-            if (INSTANCE.libLakeSoulIO != null) {
-                // spark will do the bound checking and null checking
-                // so disable them
-                System.setProperty("arrow.enable_unsafe_memory_access", "true");
-                System.setProperty("arrow.enable_null_check_for_get", "false");
-            }
+
         }
 
         INSTANCE.hasLoaded = true;
