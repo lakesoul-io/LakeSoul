@@ -4,7 +4,10 @@
 
 package com.facebook.presto.lakesoul;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.common.type.IntegerType;
 import com.facebook.presto.common.type.VarcharType;
@@ -60,14 +63,16 @@ public class LakeSoulMetadata implements ConnectorMetadata {
 
     @Override
     public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns) {
-        //LakeSoulTableHandle tableHandle = (LakeSoulTableHandle) table;
-        ConnectorTableLayout layout = new ConnectorTableLayout(new LakeSoulTableLayoutHandle());
+        LakeSoulTableHandle tableHandle = (LakeSoulTableHandle) table;
+        TableInfo tableInfo = dbManager.getTableInfoByTableId(((LakeSoulTableHandle) table).getId());
+        DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
+        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ConnectorTableLayout layout = new ConnectorTableLayout(new LakeSoulTableLayoutHandle(tableHandle,desiredColumns,partitionKeys,properties));
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
     }
 
     @Override
     public ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle) {
-
         return new ConnectorTableLayout(handle);
     }
 
