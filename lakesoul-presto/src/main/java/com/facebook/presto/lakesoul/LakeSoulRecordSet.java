@@ -8,11 +8,20 @@ import com.facebook.presto.common.type.IntegerType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.*;
+import com.fasterxml.jackson.annotation.JsonCreator;
 
 import java.util.LinkedList;
 import java.util.List;
 
 public class LakeSoulRecordSet implements RecordSet {
+
+    private LakeSoulSplit split;
+    private List<? extends ColumnHandle> columnHandles;
+
+    public LakeSoulRecordSet(LakeSoulSplit split, List<? extends ColumnHandle> columnHandles){
+        this.split = split;
+        this.columnHandles = columnHandles;
+    }
 
     @Override
     public List<Type> getColumnTypes() {
@@ -26,6 +35,7 @@ public class LakeSoulRecordSet implements RecordSet {
     public RecordCursor cursor() {
         return new LakeSoulRecordCursor();
     }
+
 }
 
 

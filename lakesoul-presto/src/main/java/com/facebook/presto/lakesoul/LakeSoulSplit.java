@@ -6,6 +6,7 @@
 
 package com.facebook.presto.lakesoul;
 
+import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.NodeProvider;
@@ -19,11 +20,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
+import static java.util.Objects.requireNonNull;
+
 public class LakeSoulSplit implements ConnectorSplit {
 
-    @JsonCreator
-    public LakeSoulSplit(){
+    private String hash;
+    private List<Path> paths;
+    private Integer key;
 
+    @JsonCreator
+    public LakeSoulSplit(
+            @JsonProperty("hash") String hash,
+            @JsonProperty("paths")  List<Path> paths,
+            @JsonProperty("key") Integer key
+    ){
+        this.hash = requireNonNull(hash, "hash is not null") ;
+        this.paths = requireNonNull(paths, "paths is not null") ;
+        this.key = requireNonNull(key, "key is not null") ;
+    }
+
+    @JsonProperty
+    public String getHash() {
+        return hash;
+    }
+
+    @JsonProperty
+    public List<Path> getPaths() {
+        return paths;
+    }
+
+    @JsonProperty
+    public Integer getKey() {
+        return key;
     }
 
     @Override

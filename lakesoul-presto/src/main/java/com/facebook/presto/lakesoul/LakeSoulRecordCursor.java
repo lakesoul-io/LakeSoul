@@ -1,5 +1,6 @@
 package com.facebook.presto.lakesoul;
 
+import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
@@ -8,8 +9,14 @@ import io.airlift.slice.Slices;
 
 public class LakeSoulRecordCursor implements RecordCursor {
 
+    NativeIOReader reader = new NativeIOReader();
+
     int count = 2;
     int cur = 0;
+
+    public LakeSoulRecordCursor(){
+
+    }
 
     @Override
     public long getCompletedBytes() {

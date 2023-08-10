@@ -5,6 +5,7 @@
 package com.facebook.presto.lakesoul;
 
 
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.facebook.presto.testing.MaterializedRow;
 import org.testng.annotations.Test;
 
