@@ -48,7 +48,11 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
                 PrestoUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(String.valueOf(split.hashCode()), split.getValue(), split.getKey()));
+                splits.add(new LakeSoulSplit(
+                        tableLayout,
+                        String.valueOf(split.hashCode()),
+                        split.getValue(),
+                        split.getKey()));
             }
         }
         return new LakeSoulSplitSource(splits);

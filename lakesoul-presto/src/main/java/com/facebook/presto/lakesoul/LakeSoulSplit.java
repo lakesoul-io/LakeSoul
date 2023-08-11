@@ -6,6 +6,7 @@
 
 package com.facebook.presto.lakesoul;
 
+import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
@@ -15,28 +16,33 @@ import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.OptionalLong;
+import java.util.*;
 
 import static java.util.Objects.requireNonNull;
 
 public class LakeSoulSplit implements ConnectorSplit {
 
-    private String hash;
-    private List<Path> paths;
-    private Integer key;
+    private final LakeSoulTableLayoutHandle layout;
+    private final String hash;
+    private final List<Path> paths;
+    private final Integer key;
 
     @JsonCreator
     public LakeSoulSplit(
+            @JsonProperty("layout") LakeSoulTableLayoutHandle layout,
             @JsonProperty("hash") String hash,
             @JsonProperty("paths")  List<Path> paths,
             @JsonProperty("key") Integer key
     ){
+        this.layout = requireNonNull(layout, "layout is not null") ;
         this.hash = requireNonNull(hash, "hash is not null") ;
         this.paths = requireNonNull(paths, "paths is not null") ;
         this.key = requireNonNull(key, "key is not null") ;
+    }
+
+    @JsonProperty
+    public LakeSoulTableLayoutHandle getLayout() {
+        return layout;
     }
 
     @JsonProperty
@@ -56,12 +62,13 @@ public class LakeSoulSplit implements ConnectorSplit {
 
     @Override
     public NodeSelectionStrategy getNodeSelectionStrategy() {
-        return NodeSelectionStrategy.HARD_AFFINITY;
+        return NodeSelectionStrategy.NO_PREFERENCE;
     }
 
     @Override
     public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider) {
-        return nodeProvider.get("*", 1);
+        //return nodeProvider.get("*", 1);
+        return Collections.emptyList();
     }
 
     @Override

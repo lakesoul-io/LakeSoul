@@ -9,6 +9,8 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import static java.util.Objects.requireNonNull;
+
 /** table handle */
 public class LakeSoulTableHandle implements ConnectorTableHandle {
 
@@ -19,8 +21,8 @@ public class LakeSoulTableHandle implements ConnectorTableHandle {
     public LakeSoulTableHandle(
             @JsonProperty("id")  String id,
             @JsonProperty("names") SchemaTableName names) {
-        this.id = id;
-        this.names = names;
+        this.id = requireNonNull(id, "id should not be null");
+        this.names = requireNonNull(names, "names should not be null");
     }
 
     @JsonProperty

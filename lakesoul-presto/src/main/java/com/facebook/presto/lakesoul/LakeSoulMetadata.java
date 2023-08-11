@@ -16,6 +16,7 @@ import com.facebook.presto.lakesoul.handle.LakeSoulTableHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.TableSchema;
 import com.facebook.presto.lakesoul.util.JsonUtil;
+import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
@@ -70,7 +71,13 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         TableInfo tableInfo = dbManager.getTableInfoByTableId(((LakeSoulTableHandle) table).getId());
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
-        ConnectorTableLayout layout = new ConnectorTableLayout(new LakeSoulTableLayoutHandle(tableHandle,desiredColumns,partitionKeys,properties));
+        ConnectorTableLayout layout = new ConnectorTableLayout(
+                new LakeSoulTableLayoutHandle(
+                        tableHandle,
+                        desiredColumns,
+                        partitionKeys.primaryKeys,
+                        partitionKeys.rangeKeys,
+                        properties));
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
     }
 
@@ -96,7 +103,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         for(TableSchema.Field field : schema.getFields()) {
             ColumnMetadata columnMetadata = new ColumnMetadata(
                     field.getName(),
-                    converType(field.getType()),
+                    PrestoUtil.convertToPrestoType(field.getType()),
                     field.isNullable(),
                     "",
                     "",
@@ -126,7 +133,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         HashMap<String, ColumnHandle> map = new HashMap<>();
         for(TableSchema.Field field : schema.getFields()){
             LakeSoulTableColumnHandle columnHandle =
-                    new LakeSoulTableColumnHandle(table, field.getName());
+                    new LakeSoulTableColumnHandle(table, field.getName(), PrestoUtil.convertToPrestoType(field.getType()));
             map.put(field.getName(), columnHandle);
         }
         return map;
@@ -144,7 +151,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             if(field.getName().equals(handle.getColumnName())){
                 return new ColumnMetadata(
                         field.getName(),
-                        converType(field.getType()),
+                        PrestoUtil.convertToPrestoType(field.getType()),
                         field.isNullable(),
                         "",
                         "",
@@ -176,15 +183,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
     }
 
 
-    private Type converType(String type){
-        if(type.equals("integer")){
-            return IntegerType.INTEGER;
-        }else if (type.equals("string")){
-            return VarcharType.VARCHAR;
-        }else{
-            return VarcharType.VARCHAR;
-        }
-    }
+
 }
 
 

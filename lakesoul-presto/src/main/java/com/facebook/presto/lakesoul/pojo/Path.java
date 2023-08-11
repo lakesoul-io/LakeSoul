@@ -7,27 +7,25 @@ package com.facebook.presto.lakesoul.pojo;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.io.File;
-
-public class Path {
+public class Path extends org.apache.hadoop.fs.Path {
     private String filename;
 
     @JsonCreator
     public Path(@JsonProperty("filename") String filename) {
+        super(filename);
         this.filename = filename;
     }
 
-//    public Path( Path path){
-//        this.filename = path.toString();
-//    }
 
     @JsonProperty
     public String getFilename(){
         return this.filename;
     }
 
-    public String getName(){
-        String[] frags = this.filename.split(File.separator);
-        return frags[frags.length - 1];
-    }
+
+//    public String getName(){
+//
+//        String[] frags = this.filename.split(File.separator);
+//        return frags[frags.length - 1];
+//    }
 }

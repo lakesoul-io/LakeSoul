@@ -1,5 +1,8 @@
-package com.facebook.presto.lakesoul.util;
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
+package com.facebook.presto.lakesoul.util;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -7,8 +10,12 @@ import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.lakesoul.pojo.Path;
-
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.ArrowType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,4 +48,16 @@ public class PrestoUtil {
         }
         return splitByRangeAndHashPartition;
     }
+
+    public static Type convertToPrestoType(String type){
+        if(type.equals("integer")){
+            return IntegerType.INTEGER;
+        }else if (type.equals("string")){
+            return VarcharType.VARCHAR;
+        }else{
+            return VarcharType.VARCHAR;
+        }
+    }
+
+
 }
