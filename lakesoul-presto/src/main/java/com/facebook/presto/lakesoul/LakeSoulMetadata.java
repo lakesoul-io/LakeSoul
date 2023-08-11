@@ -21,7 +21,9 @@ import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
 import com.facebook.presto.common.type.Type;
+import org.apache.spark.sql.types.StructType;
 
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -97,10 +99,16 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if(tableInfo == null){
             throw new RuntimeException("no such table: " + handle.getNames());
         }
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
+                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
 
-        TableSchema schema = JsonUtil.parse(tableInfo.getTableSchema(), TableSchema.class);
         List<ColumnMetadata> columns = new LinkedList<>();
-        for(TableSchema.Field field : schema.getFields()) {
+        for( org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
+            Map<String, Object> properties = new HashMap<>();
+            for(Map.Entry<String, String> entry : field.getMetadata().entrySet()){
+                properties.put(entry.getKey(), entry.getValue());
+            }
             ColumnMetadata columnMetadata = new ColumnMetadata(
                     field.getName(),
                     PrestoUtil.convertToPrestoType(field.getType()),
@@ -108,7 +116,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                     "",
                     "",
                     false,
-                    field.getMetadata()
+                    properties
             );
             columns.add(columnMetadata);
         }
@@ -129,9 +137,11 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if(tableInfo == null){
             throw new RuntimeException("no such table: " + table.getNames());
         }
-        TableSchema schema = JsonUtil.parse(tableInfo.getTableSchema(), TableSchema.class);
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
+                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         HashMap<String, ColumnHandle> map = new HashMap<>();
-        for(TableSchema.Field field : schema.getFields()){
+        for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(table, field.getName(), PrestoUtil.convertToPrestoType(field.getType()));
             map.put(field.getName(), columnHandle);
@@ -146,8 +156,15 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if(tableInfo == null){
             throw new RuntimeException("no such table: " + handle.getTableHandle().getNames());
         }
-        TableSchema schema = JsonUtil.parse(tableInfo.getTableSchema(), TableSchema.class);
-        for(TableSchema.Field field : schema.getFields()){
+
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
+                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
+            Map<String, Object> properties = new HashMap<>();
+            for(Map.Entry<String, String> entry : field.getMetadata().entrySet()){
+                properties.put(entry.getKey(), entry.getValue());
+            }
             if(field.getName().equals(handle.getColumnName())){
                 return new ColumnMetadata(
                         field.getName(),
@@ -156,7 +173,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                         "",
                         "",
                         false,
-                        field.getMetadata()
+                        properties
                 );
             }
         }

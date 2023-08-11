@@ -33,7 +33,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
 
         LakeSoulTableLayoutHandle tableLayout = (LakeSoulTableLayoutHandle)layout;
         String tid = tableLayout.getTableHandle().getId();
-        Long nextStartTime = MetaVersion.getLastedTimestamp(tid ,"") + 1;
+        long nextStartTime = MetaVersion.getLastedTimestamp(tid ,"") + 1;
 
         DataFileInfo[] dfinfos =
                 DataOperation.getIncrementalPartitionDataInfo(

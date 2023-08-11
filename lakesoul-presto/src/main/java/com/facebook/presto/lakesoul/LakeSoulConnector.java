@@ -18,9 +18,9 @@ import static java.util.Objects.requireNonNull;
 
 public class LakeSoulConnector implements Connector {
 
-    private LakeSoulMetadata metadata;
-    private LakeSoulSplitManager splitManager;
-    private LakeSoulRecordSetProvider recordSetProvider;
+    private final LakeSoulMetadata metadata;
+    private final LakeSoulSplitManager splitManager;
+    private final LakeSoulRecordSetProvider recordSetProvider;
 
     public LakeSoulConnector(
             LakeSoulMetadata metadata,

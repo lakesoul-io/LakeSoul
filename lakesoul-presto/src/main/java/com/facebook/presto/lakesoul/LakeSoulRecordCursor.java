@@ -4,10 +4,9 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
-import com.facebook.presto.lakesoul.util.ArrowUtils;
+import com.facebook.presto.lakesoul.util.ArrowUtil;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
-import io.airlift.slice.SliceUtf8;
 import io.airlift.slice.Slices;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -35,7 +34,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         this.reader.setSchema(new Schema(
                 split.getLayout().getDataColumns().get().stream().map(item -> {
                         LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-                        return Field.nullable(columnHandle.getColumnName(), ArrowUtils.convertToArrayType(columnHandle.getColumnType()));
+                        return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
                 }).collect(Collectors.toList())
         ));
         split.getLayout().getDataColumns().get().forEach(item -> {

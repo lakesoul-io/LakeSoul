@@ -18,51 +18,27 @@
 
 package com.facebook.presto.lakesoul.util;
 
-import com.facebook.presto.common.type.IntegerType;
-import com.facebook.presto.common.type.Type;
-import com.facebook.presto.common.type.VarcharType;
-import org.apache.arrow.flatbuf.MessageHeader;
-import org.apache.arrow.memory.BufferAllocator;
+import com.facebook.presto.common.type.*;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.*;
-import org.apache.arrow.vector.complex.ListVector;
-import org.apache.arrow.vector.complex.MapVector;
-import org.apache.arrow.vector.complex.StructVector;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
-import org.apache.arrow.vector.ipc.ReadChannel;
-import org.apache.arrow.vector.ipc.WriteChannel;
-import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
-import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.types.BinaryType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.ReadableByteChannel;
 import java.time.ZoneId;
-import java.util.*;
-import java.util.stream.Collectors;
-
-import static org.apache.arrow.vector.types.TimeUnit.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Utilities for Arrow.
  */
 
-public final class ArrowUtils {
+public final class ArrowUtil {
 
-    private static final Logger LOG = LoggerFactory.getLogger(ArrowUtils.class);
+    private static final Logger LOG = LoggerFactory.getLogger(ArrowUtil.class);
 
     private static RootAllocator rootAllocator;
 
@@ -93,23 +69,27 @@ public final class ArrowUtils {
         LocalTimeZone = localTimeZone;
     }
 
-    public static ArrowType convertToArrayType(String type) {
-        if(type.equals("integer")){
-            return new ArrowType.Int(32, true) ;
-        }else if (type.equals("string")){
-            return new ArrowType.Utf8() ;
-        }else{
-            return new ArrowType.Utf8() ;
+
+    public static ArrowType convertToArrowType(Type type) {
+        if(type instanceof  IntegerType) {
+            return new ArrowType.Int(32, true);
+        } else if (type instanceof DoubleType) {
+            return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+        } else if (type instanceof  VarcharType){
+            return new ArrowType.Utf8();
+        } else if (type instanceof BinaryType){
+            return new ArrowType.Binary();
+        } else if(type instanceof BooleanType){
+            return new ArrowType.Bool();
+        } else if(type instanceof DateType){
+            return new ArrowType.Date(DateUnit.DAY);
+        } else if(type instanceof TimeType){
+            return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
+        } else if(type instanceof TimestampType){
+            return new ArrowType.Timestamp(TimeUnit.MILLISECOND, "utc");
+        } else {
+            return new ArrowType.Null();
         }
     }
 
-    public static ArrowType convertToArrayType(Type type) {
-        if(type.equals(IntegerType.INTEGER)){
-            return new ArrowType.Int(32, true) ;
-        }else if (type.equals(VarcharType.VARCHAR)){
-            return new ArrowType.Utf8() ;
-        }else{
-            return new ArrowType.Utf8() ;
-        }
-    }
 }
