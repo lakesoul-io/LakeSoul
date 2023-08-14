@@ -86,7 +86,7 @@ public final class ArrowUtil {
         } else if(type instanceof TimeType){
             return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
         } else if(type instanceof TimestampType){
-            return new ArrowType.Timestamp(TimeUnit.MILLISECOND, "utc");
+            return new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString());
         } else {
             return new ArrowType.Null();
         }

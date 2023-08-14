@@ -12,6 +12,7 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.stream.Collectors;
 
 public class LakeSoulRecordCursor implements RecordCursor {
@@ -41,8 +42,11 @@ public class LakeSoulRecordCursor implements RecordCursor {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
             this.reader.addColumn(columnHandle.getColumnName());
         });
+        List<String> filters = this.split.getLayout().getFilters().stream().map(Object::toString).collect(Collectors.toList());
+        filters.forEach(this.reader::addFilter);
         // init reader
         this.reader.initializeReader();
+
     }
 
     @Override

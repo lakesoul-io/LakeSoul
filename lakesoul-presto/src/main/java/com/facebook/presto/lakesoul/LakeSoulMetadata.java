@@ -79,12 +79,16 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                         desiredColumns,
                         partitionKeys.primaryKeys,
                         partitionKeys.rangeKeys,
-                        properties));
+                        properties,
+                        constraint.getSummary()
+                )
+        );
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
     }
 
     @Override
     public ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle) {
+
         return new ConnectorTableLayout(handle);
     }
 
