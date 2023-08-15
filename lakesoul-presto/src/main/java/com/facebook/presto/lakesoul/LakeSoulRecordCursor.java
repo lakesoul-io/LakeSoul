@@ -1,5 +1,6 @@
 package com.facebook.presto.lakesoul;
 
+import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
@@ -8,6 +9,7 @@ import com.facebook.presto.lakesoul.util.ArrowUtil;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -15,38 +17,41 @@ import java.io.IOException;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import static java.util.Objects.requireNonNull;
+
 public class LakeSoulRecordCursor implements RecordCursor {
 
-    private final  LakeSoulSplit split;
-    private final NativeIOReader reader;
-
-    int count = 2;
-    int cur = 0;
-
+    private final LakeSoulSplit split;
+    private final LakeSoulArrowReader reader;
+    private int curRecordIdx = 0;
+    private VectorSchemaRoot currentVCR;
+    private List<Type> desiredTypes;
     public LakeSoulRecordCursor(LakeSoulSplit split) throws IOException {
         this.split = split;
-        this.reader = new NativeIOReader();
-
+        NativeIOReader reader = new NativeIOReader();
         // set paths, schema, pks
-        for(Path path : split.getPaths()){
-            this.reader.addFile(path.getFilename());
+        for (Path path : split.getPaths()) {
+            reader.addFile(path.getFilename());
         }
-        this.reader.setPrimaryKeys(split.getLayout().getPrimaryKeys());
-        this.reader.setSchema(new Schema(
+        reader.setPrimaryKeys(split.getLayout().getPrimaryKeys());
+        reader.setSchema(new Schema(
                 split.getLayout().getDataColumns().get().stream().map(item -> {
-                        LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-                        return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
+                    LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
+                    return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
                 }).collect(Collectors.toList())
         ));
-        split.getLayout().getDataColumns().get().forEach(item -> {
-            LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-            this.reader.addColumn(columnHandle.getColumnName());
-        });
-        List<String> filters = this.split.getLayout().getFilters().stream().map(Object::toString).collect(Collectors.toList());
-        filters.forEach(this.reader::addFilter);
+        desiredTypes = split.getLayout().getDataColumns().get().stream().map(item -> ((LakeSoulTableColumnHandle)item).getColumnType()).collect(Collectors.toList());
         // init reader
-        this.reader.initializeReader();
-
+        reader.initializeReader();
+        this.reader = new LakeSoulArrowReader(reader,
+                10000);
+        if (this.reader.hasNext()) {
+            this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+            curRecordIdx = 0;
+        } else {
+            close();
+            return;
+        }
     }
 
     @Override
@@ -61,46 +66,81 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public Type getType(int field) {
-        return null;
+        return desiredTypes.get(field);
     }
 
     @Override
     public boolean advanceNextPosition() {
-        return cur++ < count;
+        if (curRecordIdx >= currentVCR.getRowCount()) {
+            if (this.reader.hasNext()) {
+                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+                makeCurrentArrowReader();
+                curRecordIdx = 0;
+            } else {
+                this.reader.close();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public void makeCurrentArrowReader() {
+
     }
 
     @Override
     public boolean getBoolean(int field) {
-        return false;
+        return ((BitVector) this.currentVCR.getVector(field)).get(curRecordIdx) != 0;
     }
 
     @Override
     public long getLong(int field) {
-        return 0;
+        FieldVector fv = this.currentVCR.getVector(field);
+        if(fv instanceof BigIntVector){
+            return ((BigIntVector)fv).get(curRecordIdx);
+        }
+        if(fv instanceof IntVector){
+            return ((IntVector)fv).get(curRecordIdx);
+        }
+        throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
 
     @Override
     public double getDouble(int field) {
-        return 0;
+       return ((Float8Vector) this.currentVCR.getVector(field)).get(curRecordIdx);
     }
 
     @Override
     public Slice getSlice(int field) {
-        return Slices.utf8Slice("hello");
+        Object value = getObject(field);
+        requireNonNull(value, "value is null");
+        if (value instanceof byte[]) {
+            return Slices.wrappedBuffer((byte[]) value);
+        }
+        if (value instanceof String) {
+            return Slices.utf8Slice((String) value);
+        }
+        if (value instanceof Slice) {
+            return (Slice) value;
+        }
+        throw new IllegalArgumentException("Field " + field + " is not a String, but is a " + value.getClass().getName());
     }
 
     @Override
     public Object getObject(int field) {
-        return null;
+        return this.currentVCR.getVector(field).getObject(curRecordIdx);
     }
 
     @Override
     public boolean isNull(int field) {
-        return false;
+        return this.currentVCR.getVector(field) == null;
     }
 
     @Override
     public void close() {
-
+        if (this.currentVCR != null) {
+            this.currentVCR.close();
+            this.currentVCR = null;
+        }
     }
 }
