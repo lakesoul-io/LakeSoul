@@ -18,6 +18,7 @@ package com.dmetasoul.lakesoul.tables.execution
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{setCompactionExpiredDays,setTableDateExpiredDays}
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteFromTable, LakeSoulUpsert, UpdateTable}
@@ -182,14 +183,26 @@ trait LakeSoulTableOperations extends AnalysisHelper {
                                   force: Boolean = true,
                                   mergeOperatorInfo: Map[String, String],
                                   hiveTableName: String = "",
-                                  hivePartitionName: String = ""): Unit = {
+                                  hivePartitionName: String = "",
+                                  cleanOldCompaction: Boolean): Unit = {
     toDataset(sparkSession, CompactionCommand(
       snapshotManagement,
       condition,
       force,
       mergeOperatorInfo,
       hiveTableName,
-      hivePartitionName))
+      hivePartitionName,
+      cleanOldCompaction))
+  }
+
+  protected def executeSetCompactionTtl(snapshotManagement: SnapshotManagement,days: Int): Unit = {
+    val tablePath = snapshotManagement.table_path
+    setCompactionExpiredDays(tablePath,days)
+  }
+
+  protected def executeSetPartitionTtl(snapshotManagement: SnapshotManagement,days: Int): Unit = {
+    val tablePath = snapshotManagement.table_path
+    setTableDateExpiredDays(tablePath,days)
   }
 
   protected def executeDropTable(snapshotManagement: SnapshotManagement): Unit = {
