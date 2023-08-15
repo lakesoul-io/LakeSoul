@@ -1,16 +1,14 @@
 package com.dmetasoul.lakesoul.spark.clean
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
+import sun.java2d.marlin.MarlinUtils.logInfo
 
 import scala.collection.mutable.Set
 
 object CleanOldCompaction {
-  val spark: SparkSession = SparkSession.builder.master("local[8]")
-    .getOrCreate()
 
-  def cleanOldCommitOpDiskData(tablePath: String): Unit = {
+  def cleanOldCommitOpDiskData(tablePath: String, spark: SparkSession): Unit = {
     val sql =
       s"""
          |SELECT DISTINCT table_id,
@@ -26,12 +24,12 @@ object CleanOldCompaction {
     partitionRows.foreach(p => {
       val table_id = p.get(0).toString
       val partition_desc = p.get(1).toString
-      cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc)
+      cleanSinglePartitionCompactionDataInDisk(table_id, partition_desc, spark)
     })
 
   }
 
-  def cleanSinglePartitionCompactionDataInDisk(tableId: String, partitionDesc: String): Unit = {
+  def cleanSinglePartitionCompactionDataInDisk(tableId: String, partitionDesc: String, spark: SparkSession): Unit = {
     val pathSet = Set.empty[String]
     val sql =
       s"""

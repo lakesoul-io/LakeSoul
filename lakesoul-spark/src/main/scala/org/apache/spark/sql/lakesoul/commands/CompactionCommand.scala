@@ -193,7 +193,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     }
     if (cleanOldCompaction) {
       val tablePath = snapshotManagement.table_path
-      cleanOldCommitOpDiskData(tablePath)
+      cleanOldCommitOpDiskData(tablePath,sparkSession)
     }
     Seq.empty
   }

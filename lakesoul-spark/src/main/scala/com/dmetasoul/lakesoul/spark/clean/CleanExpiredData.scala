@@ -1,6 +1,7 @@
 package com.dmetasoul.lakesoul.spark.clean
 
 import com.dmetasoul.lakesoul.meta.DBConnector
+import com.dmetasoul.lakesoul.spark.ParametersTool
 import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
 import org.apache.hadoop.fs.Path
@@ -8,11 +9,22 @@ import org.apache.hadoop.fs.Path
 import java.time.{LocalDateTime, Period, ZoneOffset}
 object CleanExpiredData {
 
-  private val conn = DBConnector.getConn
-  val spark: SparkSession = SparkSession.builder.master("local[8]")
-    .getOrCreate()
+  val CLEAN_CORES = "clean.cores"
+  def main(args: Array[String]): Unit = {
 
-  def cleanAllPartitionExpiredData(): Unit = {
+    val parameter = ParametersTool.fromArgs(args)
+    val cores = parameter.getInt(CLEAN_CORES, 4)
+    val spark: SparkSession = SparkSession.builder.master(s"local[$cores]")
+      .getOrCreate()
+
+    cleanAllPartitionExpiredData(spark)
+
+  }
+
+  private val conn = DBConnector.getConn
+
+
+  def cleanAllPartitionExpiredData(spark: SparkSession): Unit = {
     val sql =
       """
         |SELECT DISTINCT
@@ -31,14 +43,14 @@ object CleanExpiredData {
     partitionRows.foreach(p => {
       val tableId = p.get(0).toString
       val partitionDesc = p.get(1).toString
-      val latestCompactionTimestamp = getLatestCompactionTimestamp(tableId, partitionDesc, p.get(3))
-      val latestCommitTimestamp = getLatestCommitTimestamp(tableId, partitionDesc)
+      val latestCompactionTimestamp = getLatestCompactionTimestamp(tableId, partitionDesc, p.get(3),spark)
+      val latestCommitTimestamp = getLatestCommitTimestamp(tableId, partitionDesc,spark)
       //no compaction action
       if (latestCompactionTimestamp == 0L) {
         if (p.get(2) != null) {
           val partitionTtlMils = getExpiredDateZeroTimeStamp(p.get(2).toString.toInt)
           if (partitionTtlMils > latestCommitTimestamp) {
-            cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils)
+            cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils,spark)
             cleanSingleDataCommitInfo(tableId, partitionDesc, partitionTtlMils)
             cleanSinglePartitionInfo(tableId, partitionDesc, partitionTtlMils)
           }
@@ -47,7 +59,7 @@ object CleanExpiredData {
       else if (p.get(2) == null && p.get(3) != null) {
         val compactionTtlMils = getExpiredDateZeroTimeStamp(p.get(3).toString.toInt)
         if (compactionTtlMils > latestCompactionTimestamp) {
-          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, latestCompactionTimestamp)
+          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, latestCompactionTimestamp,spark)
           cleanSingleDataCommitInfo(tableId, partitionDesc, latestCompactionTimestamp)
           cleanSinglePartitionInfo(tableId, partitionDesc, latestCompactionTimestamp)
         }
@@ -55,7 +67,7 @@ object CleanExpiredData {
       else if (p.get(2) != null && p.get(3) == null) {
         val partitionTtlMils = getExpiredDateZeroTimeStamp(p.get(2).toString.toInt)
         if (partitionTtlMils > latestCommitTimestamp) {
-          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils)
+          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils,spark)
           cleanSingleDataCommitInfo(tableId, partitionDesc, partitionTtlMils)
           cleanSinglePartitionInfo(tableId, partitionDesc, partitionTtlMils)
         }
@@ -64,12 +76,12 @@ object CleanExpiredData {
         val compactionTtlMils = getExpiredDateZeroTimeStamp(p.get(3).toString.toInt)
         val partitionTtlMils = getExpiredDateZeroTimeStamp(p.get(2).toString.toInt)
         if (partitionTtlMils > latestCommitTimestamp) {
-          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils)
+          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, partitionTtlMils,spark)
           cleanSingleDataCommitInfo(tableId, partitionDesc, partitionTtlMils)
           cleanSingleDataCommitInfo(tableId, partitionDesc, partitionTtlMils)
         }
         else if (partitionTtlMils <= latestCommitTimestamp && compactionTtlMils > latestCompactionTimestamp) {
-          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, latestCompactionTimestamp)
+          cleanSinglePartitionExpiredDiskData(tableId, partitionDesc, latestCompactionTimestamp,spark)
           cleanSingleDataCommitInfo(tableId, partitionDesc, latestCompactionTimestamp)
           cleanSinglePartitionInfo(tableId, partitionDesc, latestCompactionTimestamp)
         }
@@ -77,7 +89,7 @@ object CleanExpiredData {
     })
   }
 
-  def cleanSinglePartitionExpiredDiskData(tableId: String, partitionDesc: String, deadTimestamp: Long): Unit = {
+  def cleanSinglePartitionExpiredDiskData(tableId: String, partitionDesc: String, deadTimestamp: Long,spark: SparkSession): Unit = {
     val sql =
       s"""
          |SELECT file_op.path AS path
@@ -158,7 +170,7 @@ object CleanExpiredData {
     stmt.execute()
   }
 
-  def getLatestCommitTimestamp(table_id: String, partitionDesc: String): Long = {
+  def getLatestCommitTimestamp(table_id: String, partitionDesc: String, spark: SparkSession): Long = {
     val sql =
       s"""
          |SELECT
@@ -173,7 +185,7 @@ object CleanExpiredData {
     sqlToDataframe(sql, spark).select("max_time").first().getLong(0)
   }
 
-  def getLatestCompactionTimestamp(table_id: String, partitionDesc: String, expiredDaysField: Any): Long = {
+  def getLatestCompactionTimestamp(table_id: String, partitionDesc: String, expiredDaysField: Any,spark: SparkSession): Long = {
     var latestTimestampMils = 0L
     if (expiredDaysField != null) {
       val expiredDateZeroTimeMils = getExpiredDateZeroTimeStamp(expiredDaysField.toString.toInt)
