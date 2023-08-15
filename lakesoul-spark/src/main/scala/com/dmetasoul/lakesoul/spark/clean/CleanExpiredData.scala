@@ -9,20 +9,15 @@ import org.apache.hadoop.fs.Path
 import java.time.{LocalDateTime, Period, ZoneOffset}
 object CleanExpiredData {
 
-  val CLEAN_CORES = "clean.cores"
+  private val conn = DBConnector.getConn
+
   def main(args: Array[String]): Unit = {
 
-    val parameter = ParametersTool.fromArgs(args)
-    val cores = parameter.getInt(CLEAN_CORES, 4)
-    val spark: SparkSession = SparkSession.builder.master(s"local[$cores]")
+    val spark: SparkSession = SparkSession.builder
       .getOrCreate()
-
     cleanAllPartitionExpiredData(spark)
 
   }
-
-  private val conn = DBConnector.getConn
-
 
   def cleanAllPartitionExpiredData(spark: SparkSession): Unit = {
     val sql =
