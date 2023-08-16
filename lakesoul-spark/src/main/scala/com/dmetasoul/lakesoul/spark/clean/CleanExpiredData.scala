@@ -111,7 +111,7 @@ object CleanExpiredData {
          |    FROM unnest(file_ops) AS file_op_data
          |) AS file_op
          |""".stripMargin
-    sqlToDataframe(sql, spark).rdd.foreach(p => {
+    sqlToDataframe(sql, spark).rdd.collect().foreach(p => {
       val path = new Path(p.get(0).toString)
       val sessionHadoopConf = spark.sessionState.newHadoopConf()
       val fs = path.getFileSystem(sessionHadoopConf)
@@ -196,7 +196,7 @@ object CleanExpiredData {
            |        commit_op in ('CompactionCommit','UpdateCommit')
            |        AND partition_desc = '$partitionDesc'
            |        AND table_id = '$table_id'
-           |        AND timestamp = '$expiredDateZeroTimeMils'
+           |        AND timestamp < '$expiredDateZeroTimeMils'
            |    ORDER BY
            |        table_id,
            |        timestamp DESC
