@@ -12,6 +12,7 @@ import io.airlift.slice.Slices;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.arrow.vector.util.Text;
 
 import java.io.IOException;
 import java.util.List;
@@ -107,6 +108,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if(fv instanceof IntVector){
             return ((IntVector)fv).get(curRecordIdx);
         }
+        if(fv instanceof DateDayVector){
+            return ((DateDayVector)fv).get(curRecordIdx);
+        }
         throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
 
@@ -128,6 +132,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (value instanceof Slice) {
             return (Slice) value;
         }
+        if (value instanceof Text){
+            return Slices.wrappedBuffer(((Text) value).getBytes());
+        }
         throw new IllegalArgumentException("Field " + field + " is not a String, but is a " + value.getClass().getName());
     }
 
@@ -138,7 +145,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean isNull(int field) {
-        return this.currentVCR.getVector(field).isNull(field);
+        return false;
     }
 
     @Override
