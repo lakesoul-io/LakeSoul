@@ -37,10 +37,18 @@ public class LakeSoulRecordSet implements RecordSet {
         return types;
     }
 
+    public LakeSoulSplit getSplit() {
+        return split;
+    }
+
+    public List<? extends ColumnHandle> getColumnHandles() {
+        return columnHandles;
+    }
+
     @Override
     public RecordCursor cursor() {
         try {
-            return new LakeSoulRecordCursor(this.split);
+            return new LakeSoulRecordCursor(this);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

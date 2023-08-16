@@ -21,13 +21,16 @@ import static java.util.Objects.requireNonNull;
 
 public class LakeSoulRecordCursor implements RecordCursor {
 
-    private final LakeSoulSplit split;
+
+    private final LakeSoulRecordSet recordSet;
     private final LakeSoulArrowReader reader;
-    private int curRecordIdx = 0;
+    private int curRecordIdx = -1;
     private VectorSchemaRoot currentVCR;
     private List<Type> desiredTypes;
-    public LakeSoulRecordCursor(LakeSoulSplit split) throws IOException {
-        this.split = split;
+    public LakeSoulRecordCursor(LakeSoulRecordSet recordSet) throws IOException {
+
+        this.recordSet = recordSet;
+        LakeSoulSplit split = this.recordSet.getSplit();
         NativeIOReader reader = new NativeIOReader();
         // set paths, schema, pks
         for (Path path : split.getPaths()) {
@@ -35,19 +38,19 @@ public class LakeSoulRecordCursor implements RecordCursor {
         }
         reader.setPrimaryKeys(split.getLayout().getPrimaryKeys());
         reader.setSchema(new Schema(
-                split.getLayout().getDataColumns().get().stream().map(item -> {
+                recordSet.getColumnHandles().stream().map(item -> {
                     LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
                     return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
                 }).collect(Collectors.toList())
         ));
-        desiredTypes = split.getLayout().getDataColumns().get().stream().map(item -> ((LakeSoulTableColumnHandle)item).getColumnType()).collect(Collectors.toList());
+        desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle)item).getColumnType()).collect(Collectors.toList());
         // init reader
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader,
                 10000);
         if (this.reader.hasNext()) {
             this.currentVCR = this.reader.nextResultVectorSchemaRoot();
-            curRecordIdx = 0;
+            curRecordIdx = -1;
         } else {
             close();
             return;
@@ -71,16 +74,18 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean advanceNextPosition() {
-        if (curRecordIdx >= currentVCR.getRowCount()) {
+        if (curRecordIdx >= currentVCR.getRowCount() - 1) {
             if (this.reader.hasNext()) {
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 makeCurrentArrowReader();
                 curRecordIdx = 0;
+                return true;
             } else {
                 this.reader.close();
                 return false;
             }
         }
+        curRecordIdx ++;
         return true;
     }
 
@@ -133,7 +138,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean isNull(int field) {
-        return this.currentVCR.getVector(field) == null;
+        return this.currentVCR.getVector(field).isNull(field);
     }
 
     @Override
