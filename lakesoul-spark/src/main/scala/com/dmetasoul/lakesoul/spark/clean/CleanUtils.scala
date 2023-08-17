@@ -73,7 +73,7 @@ object CleanUtils {
     createResultSetToDF(resultSet, spark)
   }
 
-  def setTableDateExpiredDays(tablePath: String, expiredDays: Int): Unit = {
+  def setTableDataExpiredDays(tablePath: String, expiredDays: Int): Unit = {
     val sql =
       s"""
          |UPDATE table_info
@@ -94,4 +94,27 @@ object CleanUtils {
     val stmt = conn.prepareStatement(sql)
     stmt.execute()
   }
+
+  def cancelTableDataExpiredDays(tablePath: String): Unit = {
+    val sql =
+      s"""
+         |UPDATE table_info
+         |SET properties = properties::jsonb - 'partition.ttl'
+         |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
+         |""".stripMargin
+    val stmt = conn.prepareStatement(sql)
+    stmt.execute()
+  }
+
+  def cancelCompactionExpiredDays(tablePath: String): Unit = {
+    val sql =
+      s"""
+         |UPDATE table_info
+         |SET properties = properties::jsonb - 'compaction.ttl'
+         |WHERE table_id = (SELECT table_id from table_info where table_path='$tablePath');
+         |""".stripMargin
+    val stmt = conn.prepareStatement(sql)
+    stmt.execute()
+  }
+
 }

@@ -399,6 +399,16 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
     this
   }
 
+  def cancelCompactionTtl(): Boolean = {
+    executeCancelCompactionTtl(snapshotManagement)
+    true
+  }
+
+  def cancelPartitionTtl(): Boolean = {
+    executeCancelPartitionTtl(snapshotManagement)
+    true
+  }
+
   def dropTable(): Boolean = {
     executeDropTable(snapshotManagement)
     true
