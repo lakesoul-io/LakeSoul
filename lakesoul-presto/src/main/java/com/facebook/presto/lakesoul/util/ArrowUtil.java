@@ -19,12 +19,14 @@
 package com.facebook.presto.lakesoul.util;
 
 import com.facebook.presto.common.type.*;
+import com.facebook.presto.lakesoul.type.FloatType;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.spark.sql.types.BinaryType;
+import org.apache.spark.sql.types.LongType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,11 +73,19 @@ public final class ArrowUtil {
 
 
     public static ArrowType convertToArrowType(Type type) {
-        if(type instanceof  IntegerType) {
+        if(type instanceof LongType) {
+            return new ArrowType.Int(64, true);
+        }else if (type instanceof IntegerType) {
             return new ArrowType.Int(32, true);
+        }else if (type instanceof SmallintType) {
+            return new ArrowType.Int(16, true);
+        }else if (type instanceof TinyintType) {
+            return new ArrowType.Int(8, true);
         } else if (type instanceof DoubleType) {
             return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-        } else if (type instanceof  VarcharType){
+        } else if (type instanceof FloatType) {
+            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+        }else if (type instanceof  VarcharType){
             return new ArrowType.Utf8();
         } else if (type instanceof BinaryType){
             return new ArrowType.Binary();

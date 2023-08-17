@@ -52,9 +52,7 @@ public class LakeSoulDMLTest extends LakeSoulSmokeTest{
         // coming soon
     }
 
-    public void testAllDataTypes(){
-        // coming soon
-    }
+
 
     public void testGroupBy1(){
         // coming soon

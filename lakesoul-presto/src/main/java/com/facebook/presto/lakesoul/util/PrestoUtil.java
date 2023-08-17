@@ -12,6 +12,8 @@ import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.common.type.*;
 import com.facebook.presto.lakesoul.pojo.Path;
+import com.facebook.presto.lakesoul.type.FloatType;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -104,11 +106,27 @@ public class PrestoUtil {
 
         @Override
         public Type visit(ArrowType.Int type) {
-            return IntegerType.INTEGER;
+            if(type.getBitWidth() == 64){
+                return BigintType.BIGINT;
+            }else if(type.getBitWidth() == 32){
+                return IntegerType.INTEGER;
+            }else if(type.getBitWidth() == 16){
+                return SmallintType.SMALLINT;
+            }else if(type.getBitWidth() == 8){
+                return TinyintType.TINYINT;
+            }
+            return BigintType.BIGINT;
         }
 
         @Override
         public Type visit(ArrowType.FloatingPoint type) {
+            if(type.getPrecision() == FloatingPointPrecision.HALF){
+                return UnknownType.UNKNOWN;
+            }else if(type.getPrecision() == FloatingPointPrecision.SINGLE){
+                return FloatType.FLOAT;
+            }else if(type.getPrecision() == FloatingPointPrecision.DOUBLE) {
+                return DoubleType.DOUBLE;
+            }
             return DoubleType.DOUBLE;
         }
 

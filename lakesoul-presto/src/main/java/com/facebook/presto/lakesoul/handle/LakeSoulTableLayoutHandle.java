@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.IntegerType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
@@ -17,6 +18,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.parquet.filter2.compat.FilterCompat;
 import org.apache.parquet.filter2.predicate.FilterApi;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
+import org.apache.parquet.filter2.predicate.Operators;
+import org.apache.spark.sql.types.LongType;
 
 import java.util.*;
 
@@ -160,4 +163,13 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         return disjuncts.stream().reduce(FilterApi::or).get();
     }
 
+    private Operators.Column getColumn(Type type, String name){
+        if (type instanceof IntegerType) {
+            return FilterApi.intColumn(name);
+        } else if(type instanceof LongType){
+            return FilterApi.longColumn(name);
+        }
+
+        return null;
+    }
 }
