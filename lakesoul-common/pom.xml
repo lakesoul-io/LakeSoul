@@ -99,7 +99,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
             <version>3.3.2</version>
-            <scope>${local.scope}</scope>
+            <scope>compile</scope>
         </dependency>
         <dependency>
             <groupId>com.alibaba</groupId>

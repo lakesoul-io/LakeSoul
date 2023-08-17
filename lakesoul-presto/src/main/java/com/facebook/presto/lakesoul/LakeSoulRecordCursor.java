@@ -6,6 +6,7 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.ArrowUtil;
+import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -15,6 +16,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -28,6 +30,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
     private int curRecordIdx = -1;
     private VectorSchemaRoot currentVCR;
     private List<Type> desiredTypes;
+
     public LakeSoulRecordCursor(LakeSoulRecordSet recordSet) throws IOException {
 
         this.recordSet = recordSet;
@@ -37,14 +40,25 @@ public class LakeSoulRecordCursor implements RecordCursor {
         for (Path path : split.getPaths()) {
             reader.addFile(path.getFilename());
         }
-        reader.setPrimaryKeys(split.getLayout().getPrimaryKeys());
-        reader.setSchema(new Schema(
-                recordSet.getColumnHandles().stream().map(item -> {
-                    LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-                    return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
-                }).collect(Collectors.toList())
-        ));
-        desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle)item).getColumnType()).collect(Collectors.toList());
+        List<Field> fields = recordSet.getColumnHandles().stream().map(item -> {
+            LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
+            return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
+        }).collect(Collectors.toList());
+        HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
+        List<String> dataCols = recordSet.getColumnHandles().stream().map(item -> {
+            LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
+            return columnHandle.getColumnName();
+        }).collect(Collectors.toList());
+        List<String> prikeys = split.getLayout().getPrimaryKeys();
+        for (String item : prikeys) {
+            if (!dataCols.contains(item)) {
+                LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
+                fields.add(Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType())));
+            }
+        }
+        reader.setPrimaryKeys(prikeys);
+        reader.setSchema(new Schema(fields));
+        desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle) item).getColumnType()).collect(Collectors.toList());
         // init reader
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader,
@@ -86,7 +100,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
                 return false;
             }
         }
-        curRecordIdx ++;
+        curRecordIdx++;
         return true;
     }
 
@@ -102,21 +116,21 @@ public class LakeSoulRecordCursor implements RecordCursor {
     @Override
     public long getLong(int field) {
         FieldVector fv = this.currentVCR.getVector(field);
-        if(fv instanceof BigIntVector){
-            return ((BigIntVector)fv).get(curRecordIdx);
+        if (fv instanceof BigIntVector) {
+            return ((BigIntVector) fv).get(curRecordIdx);
         }
-        if(fv instanceof IntVector){
-            return ((IntVector)fv).get(curRecordIdx);
+        if (fv instanceof IntVector) {
+            return ((IntVector) fv).get(curRecordIdx);
         }
-        if(fv instanceof DateDayVector){
-            return ((DateDayVector)fv).get(curRecordIdx);
+        if (fv instanceof DateDayVector) {
+            return ((DateDayVector) fv).get(curRecordIdx);
         }
         throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
 
     @Override
     public double getDouble(int field) {
-       return ((Float8Vector) this.currentVCR.getVector(field)).get(curRecordIdx);
+        return ((Float8Vector) this.currentVCR.getVector(field)).get(curRecordIdx);
     }
 
     @Override
@@ -132,7 +146,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (value instanceof Slice) {
             return (Slice) value;
         }
-        if (value instanceof Text){
+        if (value instanceof Text) {
             return Slices.wrappedBuffer(((Text) value).getBytes());
         }
         throw new IllegalArgumentException("Field " + field + " is not a String, but is a " + value.getClass().getName());

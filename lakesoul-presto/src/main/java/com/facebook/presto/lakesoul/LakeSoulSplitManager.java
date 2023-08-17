@@ -50,9 +50,7 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                 splits.add(new LakeSoulSplit(
                         tableLayout,
-                        String.valueOf(split.hashCode()),
-                        split.getValue(),
-                        split.getKey()));
+                        split.getValue()));
             }
         }
         return new LakeSoulSplitSource(splits);

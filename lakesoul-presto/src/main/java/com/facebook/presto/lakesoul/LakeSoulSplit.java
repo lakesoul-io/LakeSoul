@@ -23,21 +23,15 @@ import static java.util.Objects.requireNonNull;
 public class LakeSoulSplit implements ConnectorSplit {
 
     private final LakeSoulTableLayoutHandle layout;
-    private final String hash;
     private final List<Path> paths;
-    private final Integer key;
 
     @JsonCreator
     public LakeSoulSplit(
             @JsonProperty("layout") LakeSoulTableLayoutHandle layout,
-            @JsonProperty("hash") String hash,
-            @JsonProperty("paths")  List<Path> paths,
-            @JsonProperty("key") Integer key
+            @JsonProperty("paths")  List<Path> paths
     ){
         this.layout = requireNonNull(layout, "layout is not null") ;
-        this.hash = requireNonNull(hash, "hash is not null") ;
         this.paths = requireNonNull(paths, "paths is not null") ;
-        this.key = requireNonNull(key, "key is not null") ;
     }
 
     @JsonProperty
@@ -45,19 +39,10 @@ public class LakeSoulSplit implements ConnectorSplit {
         return layout;
     }
 
-    @JsonProperty
-    public String getHash() {
-        return hash;
-    }
 
     @JsonProperty
     public List<Path> getPaths() {
         return paths;
-    }
-
-    @JsonProperty
-    public Integer getKey() {
-        return key;
     }
 
     @Override

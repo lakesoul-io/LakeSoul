@@ -31,8 +31,8 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final List<String> rangeKeys;
     private final JSONObject tableParameters;
 
+    private final HashMap<String, ColumnHandle> allColumns;
     private final List<FilterPredicate> filters;
-
     private final TupleDomain<ColumnHandle> tupleDomain;
     @JsonCreator
     public LakeSoulTableLayoutHandle(
@@ -41,14 +41,18 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             @JsonProperty("primaryKeys") List<String> primaryKeys,
             @JsonProperty("rangeKeys") List<String> rangeKeys,
             @JsonProperty("tableParameters") JSONObject tableParameters,
-            @JsonProperty("tupleDomain") TupleDomain<ColumnHandle> tupleDomain
-            ){
+            @JsonProperty("tupleDomain") TupleDomain<ColumnHandle> tupleDomain,
+            @JsonProperty("allColumns") HashMap<String, ColumnHandle> allColumns
+
+
+    ){
         this.tableHandle = requireNonNull(tableHandle, "tableHandle should not be null");
         this.dataColumns = requireNonNull(dataColumns, "dataColumns should not be null");
         this.primaryKeys = requireNonNull(primaryKeys, "primaryKeys should not be null");
         this.rangeKeys = requireNonNull(rangeKeys, "rangeKeys should not be null");
         this.tableParameters = requireNonNull(tableParameters, "tableParameters should not be null");
         this.tupleDomain = requireNonNull(tupleDomain, "tupleDomain should not be null");
+        this.allColumns = requireNonNull(allColumns, "allColumns should not be null");
         this.filters = buildFilters();
     }
 
@@ -81,7 +85,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     {
         return tupleDomain;
     }
-
+    @JsonProperty
+    public HashMap<String, ColumnHandle> getAllColumns() {
+        return allColumns;
+    }
 
     public List<FilterPredicate> getFilters() {
         return filters;
@@ -152,4 +159,5 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
 
         return disjuncts.stream().reduce(FilterApi::or).get();
     }
+
 }
