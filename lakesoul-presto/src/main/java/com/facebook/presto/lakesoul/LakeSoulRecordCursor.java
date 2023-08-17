@@ -45,6 +45,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
                 }).collect(Collectors.toList())
         ));
         desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle)item).getColumnType()).collect(Collectors.toList());
+        // 设置filter
+        this.recordSet.getSplit().getLayout().getFilters().forEach((filter) -> reader.addFilter(filter.toString()));
         // init reader
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader,
