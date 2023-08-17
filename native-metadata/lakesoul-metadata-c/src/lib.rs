@@ -202,8 +202,9 @@ pub extern "C" fn execute_query(
                     |(idx, byte)| 
                     unsafe{std::ptr::write::<c_uchar>(addr.wrapping_add(idx), *byte)})
                 .collect::<Vec<_>>();
-            let len = u8_vec.len() as i32;
-            callback( len, CString::new("").unwrap().into_raw());
+            let len = u8_vec.len();
+            unsafe{std::ptr::write::<c_uchar>(addr.wrapping_add(len), 0u8)}
+            callback( len as i32, CString::new("").unwrap().into_raw());
         }
         Err(e) => {
             callback(0, CString::new(e.to_string().as_str()).unwrap().into_raw());
