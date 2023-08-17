@@ -73,6 +73,15 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         TableInfo tableInfo = dbManager.getTableInfoByTableId(((LakeSoulTableHandle) table).getId());
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
+                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        HashMap<String, ColumnHandle> allColumns = new HashMap<>();
+        for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
+            LakeSoulTableColumnHandle columnHandle =
+                    new LakeSoulTableColumnHandle(tableHandle, field.getName(), PrestoUtil.convertToPrestoType(field.getType()));
+            allColumns.put(field.getName(), columnHandle);
+        }
         ConnectorTableLayout layout = new ConnectorTableLayout(
                 new LakeSoulTableLayoutHandle(
                         tableHandle,
@@ -80,7 +89,8 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                         partitionKeys.primaryKeys,
                         partitionKeys.rangeKeys,
                         properties,
-                        constraint.getSummary()
+                        constraint.getSummary(),
+                        allColumns
                 )
         );
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
