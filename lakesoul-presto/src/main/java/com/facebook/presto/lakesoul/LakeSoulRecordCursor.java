@@ -2,6 +2,8 @@ package com.facebook.presto.lakesoul;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
+import com.facebook.presto.common.type.DateTimeEncoding;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
@@ -16,6 +18,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
 
 import java.io.IOException;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -127,6 +130,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
         }
         if (fv instanceof DateDayVector) {
             return ((DateDayVector) fv).get(curRecordIdx);
+        }
+        if (fv instanceof TimeStampMicroTZVector) {
+            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx)/1000,ZoneId.of("Asia/Shanghai").toString());
         }
         throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
