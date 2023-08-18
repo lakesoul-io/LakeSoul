@@ -1,20 +1,6 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.facebook.presto.lakesoul.util;
 
@@ -73,24 +59,32 @@ public final class ArrowUtil {
 
 
     public static ArrowType convertToArrowType(Type type) {
-        if(type instanceof LongType) {
+        if(type instanceof BigintType) {
             return new ArrowType.Int(64, true);
         }else if (type instanceof IntegerType) {
             return new ArrowType.Int(32, true);
         }else if (type instanceof SmallintType) {
             return new ArrowType.Int(16, true);
         }else if (type instanceof TinyintType) {
-            return new ArrowType.Int(8, true);
+            return new ArrowType.Int(8, true); // eqauls to byte
         } else if (type instanceof DoubleType) {
             return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-        } else if (type instanceof FloatType) {
-            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-        }else if (type instanceof  VarcharType){
+        } else if(type instanceof BooleanType){
+            return new ArrowType.Bool();
+        } else if(type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            return new ArrowType.Decimal(
+                    decimalType.getPrecision(),
+                    decimalType.getScale(),
+                    decimalType.getFixedSize() * 8);
+        }
+//        else if (type instanceof FloatType) {
+//            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+//        }
+        else if (type instanceof  VarcharType){
             return new ArrowType.Utf8();
         } else if (type instanceof BinaryType){
             return new ArrowType.Binary();
-        } else if(type instanceof BooleanType){
-            return new ArrowType.Bool();
         } else if(type instanceof DateType){
             return new ArrowType.Date(DateUnit.DAY);
         } else if(type instanceof TimeType){

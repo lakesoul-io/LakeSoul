@@ -1,14 +1,20 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package com.facebook.presto.lakesoul.type;
 
 import com.facebook.presto.common.block.*;
 import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.common.type.*;
+import org.apache.spark.sql.types.ByteType;
 
 import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static java.lang.Float.floatToIntBits;
 import static java.lang.Float.intBitsToFloat;
 
-
+/** self defined type, used in this senario: "create table (foo float);" */
+@Deprecated
 public final class FloatType
         extends AbstractPrimitiveType
         implements FixedWidthType
@@ -17,7 +23,7 @@ public final class FloatType
 
     private FloatType()
     {
-        super(parseTypeSignature(StandardTypes.DOUBLE), double.class);
+        super(parseTypeSignature("float"), float.class);
     }
 
     @Override
@@ -68,9 +74,9 @@ public final class FloatType
     @Override
     public int compareTo(Block leftBlock, int leftPosition, Block rightBlock, int rightPosition)
     {
-        double leftValue = intBitsToFloat(leftBlock.getInt(leftPosition));
-        double rightValue = intBitsToFloat(rightBlock.getInt(rightPosition));
-        return Double.compare(leftValue, rightValue);
+        float leftValue = intBitsToFloat(leftBlock.getInt(leftPosition));
+        float rightValue = intBitsToFloat(rightBlock.getInt(rightPosition));
+        return Float.compare(leftValue, rightValue);
     }
 
     @Override
@@ -116,13 +122,13 @@ public final class FloatType
         }
         return new IntArrayBlockBuilder(
                 blockBuilderStatus,
-                Math.min(expectedEntries, maxBlockSizeInBytes / Double.BYTES));
+                Math.min(expectedEntries, maxBlockSizeInBytes / Float.BYTES));
     }
 
     @Override
     public final BlockBuilder createBlockBuilder(BlockBuilderStatus blockBuilderStatus, int expectedEntries)
     {
-        return createBlockBuilder(blockBuilderStatus, expectedEntries, Double.BYTES);
+        return createBlockBuilder(blockBuilderStatus, expectedEntries, Float.BYTES);
     }
 
     @Override
