@@ -178,7 +178,7 @@ public class PrestoUtil {
 
         @Override
         public Type visit(ArrowType.Timestamp type) {
-            return TimestampType.TIMESTAMP;
+            return TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
         }
 
         @Override

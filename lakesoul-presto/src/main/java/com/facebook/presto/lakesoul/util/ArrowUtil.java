@@ -90,8 +90,14 @@ public final class ArrowUtil {
         } else if(type instanceof TimeType){
             return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
         } else if(type instanceof TimestampType){
-            return new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString());
-        } else {
+            return new ArrowType.Timestamp(TimeUnit.MICROSECOND, ZoneId.of("UTC").toString());
+        }else if(type instanceof TimestampWithTimeZoneType){
+            return new ArrowType.Timestamp(TimeUnit.MICROSECOND, ZoneId.of("UTC").toString());
+        } else if(type instanceof DecimalType){
+            DecimalType dt = (DecimalType)  type;
+            return new ArrowType.Decimal(dt.getPrecision(),dt.getScale());
+        }
+        else {
             return new ArrowType.Null();
         }
     }
