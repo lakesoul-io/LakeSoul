@@ -1,4 +1,5 @@
 package com.dmetasoul.lakesoul.spark.clean
+
 import com.dmetasoul.lakesoul.meta.DBConnector
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types.{BooleanType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, StringType, StructField, StructType, TimestampType}
@@ -117,4 +118,35 @@ object CleanUtils {
     stmt.execute()
   }
 
+  def setPartitionInfoTimestamp(tableId:String,timestamp: Long, version: Int): Unit = {
+    val sql =
+      s"""
+        |UPDATE partition_info
+        |SET timestamp = $timestamp
+        |WHERE table_id = '$tableId'
+        |AND version = $version
+        |""".stripMargin
+    val stmt = conn.prepareStatement(sql)
+    stmt.execute()
+  }
+
+  def readPartitionInfo(tableId: String, spark: SparkSession): DataFrame = {
+    val sql =
+      s"""
+         |SELECT table_id,partition_desc,commit_op,version,timestamp
+         |FROM partition_info
+         |WHERE table_id = '$tableId'
+         |""".stripMargin
+    sqlToDataframe(sql, spark)
+  }
+
+  def readDataCommitInfo(tableId: String, spark: SparkSession): DataFrame = {
+    val sql =
+      s"""
+         |SELECT table_id,partition_desc,commit_op
+         |FROM data_commit_info
+         |WHERE table_id = '$tableId'
+         |""".stripMargin
+    sqlToDataframe(sql, spark)
+  }
 }
