@@ -130,6 +130,12 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (fv instanceof IntVector) {
             return ((IntVector) fv).get(curRecordIdx);
         }
+        if (fv instanceof TinyIntVector) {
+            return ((TinyIntVector) fv).get(curRecordIdx);
+        }
+        if (fv instanceof SmallIntVector) {
+            return ((SmallIntVector) fv).get(curRecordIdx);
+        }
         if (fv instanceof DateDayVector) {
             return ((DateDayVector) fv).get(curRecordIdx);
         }
@@ -145,7 +151,14 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public double getDouble(int field) {
-        return ((Float8Vector) this.currentVCR.getVector(field)).get(curRecordIdx);
+        FieldVector fv = this.currentVCR.getVector(field);
+        if(fv instanceof Float8Vector){
+            return ((Float8Vector) fv).get(curRecordIdx);
+        }
+        if(fv instanceof Float4Vector){
+            return ((Float4Vector) fv).get(curRecordIdx);
+        }
+        throw new IllegalArgumentException("Field " + field + " is not a float, but is a " + fv.getClass().getName());
     }
 
     @Override
