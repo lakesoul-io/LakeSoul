@@ -169,12 +169,12 @@
             <artifactId>avro</artifactId>
             <version>${avro.version}</version>
             <scope>${local.scope}</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.dataformat</groupId>
-            <artifactId>jackson-dataformat-yaml</artifactId>
-            <version>${jackson.yaml.version}</version>
-            <scope>${local.scope}</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-core</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!--hive-->
         <dependency>
