@@ -36,12 +36,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
             <version>${arrow.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
