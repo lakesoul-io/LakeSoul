@@ -2,7 +2,7 @@ from dao import *
 from utils import to_arrow_schema
 
 
-class DBManager():
+class DBManager:
     def __init__(self):
         pass
 
@@ -26,11 +26,22 @@ class DBManager():
     def split_data_info_list_to_range_and_hash_partition(self, table_id, data_file_info_list):
         pass
 
-    def get_data_files_by_table_name(self, table_name, namespace="default"):
+    def get_data_files_by_table_name(self, table_name, partitions={}, namespace="default"):
+        part_filter = []
+        for part_key, part_value in partitions.items():
+            part_filter.append("{}={}".format(part_key, part_value))
         table_info = self.get_table_info_by_name(table_name, namespace)
         partition_list = self.get_all_partition_info(table_info.table_id)
         data_files = []
         for partition in partition_list:
+            partition_desc = partition.partition_desc
+            filtered = False
+            for part in part_filter:
+                if part not in partition_desc:
+                    filtered = True
+                    break
+            if filtered:
+                continue
             data_commit_info_list = self.get_table_single_partition_data_info(partition)
             for data_commit_info in data_commit_info_list:
                 for file_op in data_commit_info.file_ops:
