@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -41,11 +29,11 @@ object TransactionCommit {
   def getActive: Option[TransactionCommit] = Option(active.get())
 
   /**
-   * Sets a transaction as the active transaction.
-   *
-   * @note This is not meant for being called directly, only from
-   *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
-   */
+    * Sets a transaction as the active transaction.
+    *
+    * @note This is not meant for being called directly, only from
+    *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
+    */
   private[lakesoul] def setActive(tc: TransactionCommit): Unit = {
     if (active.get != null) {
       throw new IllegalStateException("Cannot set a new TransactionCommit as active when one is already active")
@@ -54,10 +42,10 @@ object TransactionCommit {
   }
 
   /**
-   * Clears the active transaction as the active transaction.
-   *
-   * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
-   */
+    * Clears the active transaction as the active transaction.
+    *
+    * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
+    */
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
@@ -74,11 +62,11 @@ object PartMergeTransactionCommit {
   def getActive: Option[PartMergeTransactionCommit] = Option(active.get())
 
   /**
-   * Sets a transaction as the active transaction.
-   *
-   * @note This is not meant for being called directly, only from
-   *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
-   */
+    * Sets a transaction as the active transaction.
+    *
+    * @note This is not meant for being called directly, only from
+    *       `OptimisticTransaction.withNewTransaction`. Use that to create and set active tc.
+    */
   private[lakesoul] def setActive(tc: PartMergeTransactionCommit): Unit = {
     if (active.get != null) {
       throw new IllegalStateException("Cannot set a new TransactionCommit as active when one is already active")
@@ -87,10 +75,10 @@ object PartMergeTransactionCommit {
   }
 
   /**
-   * Clears the active transaction as the active transaction.
-   *
-   * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
-   */
+    * Clears the active transaction as the active transaction.
+    *
+    * @note This is not meant for being called directly, `OptimisticTransaction.withNewTransaction`.
+    */
   private[lakesoul] def clearActive(): Unit = {
     active.set(null)
   }
@@ -132,9 +120,9 @@ trait Transaction extends TransactionalWrite with Logging {
 
 
   /**
-   * Tracks the data that could have been seen by recording the partition
-   * predicates by which files have been queried by by this transaction.
-   */
+    * Tracks the data that could have been seen by recording the partition
+    * predicates by which files have been queried by by this transaction.
+    */
   protected val readPredicates = new ArrayBuffer[Expression]
 
   /** Tracks specific files that have been seen by this transaction. */
@@ -171,13 +159,13 @@ trait Transaction extends TransactionalWrite with Logging {
   }
 
   /**
-   * Records an update to the TableInfo that should be committed with this transaction.
-   * Note that this must be done before writing out any files so that file writing
-   * and checks happen with the final TableInfo for the table.
-   *
-   * IMPORTANT: It is the responsibility of the caller to ensure that files currently
-   * present in the table are still valid under the new TableInfo.
-   */
+    * Records an update to the TableInfo that should be committed with this transaction.
+    * Note that this must be done before writing out any files so that file writing
+    * and checks happen with the final TableInfo for the table.
+    *
+    * IMPORTANT: It is the responsibility of the caller to ensure that files currently
+    * present in the table are still valid under the new TableInfo.
+    */
   def updateTableInfo(table_info: TableInfo): Unit = {
     assert(!hasWritten,
       "Cannot update the metadata in a transaction that has already written data.")
@@ -235,9 +223,9 @@ trait Transaction extends TransactionalWrite with Logging {
   }
 
   /**
-   * update and compaction operation need read partition info to avoid lost data
-   * when upsert or append operation happened concurrently
-   */
+    * update and compaction operation need read partition info to avoid lost data
+    * when upsert or append operation happened concurrently
+    */
   def commit(addFiles: Seq[DataFileInfo],
              expireFiles: Seq[DataFileInfo],
              readPartitionInfo: Array[PartitionInfo]): Unit = {
@@ -368,9 +356,9 @@ trait Transaction extends TransactionalWrite with Logging {
   }
 
   def getCommitIdByBatchIdAndQueryId(batch_id: Long, query_id: String): UUID = {
-    if("".equals(query_id)) {
+    if ("".equals(query_id)) {
       UUID.randomUUID()
-    }else{
+    } else {
       val queryUUID = UUID.fromString(query_id)
       val highBits = queryUUID.getMostSignificantBits
       new UUID(highBits, batch_id)

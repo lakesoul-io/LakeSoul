@@ -1,5 +1,11 @@
 # 快照相关功能用法教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul 使用快照的方式来记录每一次更新的文件集合，并在元数据中生成一个新的版本号。历史的快照版本如果没有被清理，则也可以通过 LakeSoul API 进行读取、回滚和清理等操作。由于快照版本是内部的机制，为了使用方便，LakeSoul 提供了基于时间戳的快照管理 API。
 
 ## 快照读

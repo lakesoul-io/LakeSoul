@@ -1,14 +1,22 @@
 # 配置 LakeSoul 元数据库
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 ## 使用配置文件
-LakeSoul 使用 `lakesoul_home` (大小写均可) 环境变量或者 `lakesoul_home` JVM Property （只能全小写）来定位元数据库的配置文件，配置文件中主要包含 PostgreSQL DB 的连接信息。一个示例配置文件:
+LakeSoul 使用 `LAKESOUL_HOME` (大小写均可) 环境变量或者 `lakesoul_home` JVM Property （只能全小写）来定位元数据库的配置文件，配置文件中主要包含 PostgreSQL DB 的连接信息。一个示例配置文件:
 ```ini
 lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
 lakesoul.pg.url=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified
 lakesoul.pg.username=lakesoul_test
 lakesoul.pg.password=lakesoul_test
 ```
-可以根据数据库部署的实际情况来配置。
+以上配置值也是默认值。如果参考快速开始文档启动的元数据库，在本地测试中可以不用做以上配置，就能正常访问。
+
+生产环境可以根据数据库部署的实际情况来配置。
 
 如果找不到上述环境变量或 JVM Property，则会分别查找 `LAKESOUL_PG_DRIVER`、`LAKESOUL_PG_URL`、`LAKESOUL_PG_USERNAME`、`LAKESOUL_PG_PASSWORD` 这几个环境变量作为配置的值。
 

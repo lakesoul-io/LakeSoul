@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.metadata;
 
@@ -29,7 +15,6 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
@@ -43,14 +28,16 @@ import org.apache.flink.table.factories.Factory;
 import java.io.IOException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulCatalog implements Catalog {
 
     public static final String CATALOG_NAME = "lakesoul";
+    public static final String TABLE_ID_PREFIX = "table_";
     private static final String TABLE_PATH = "path";
-    private static final String TABLE_ID_PREFIX = "table_";
     private final DBManager dbManager;
 
 
@@ -92,7 +79,7 @@ public class LakeSoulCatalog implements Catalog {
             throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
         } else {
 
-            Map<String, String> properties = DBUtil.jsonToStringMap(namespaceEntity.getProperties());
+            Map<String, String> properties = DBUtil.jsonToStringMap(JSON.parseObject(namespaceEntity.getProperties()));
 
             return new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
         }
@@ -105,7 +92,8 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean ignoreIfExists) throws CatalogException {
+    public void createDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean ignoreIfExists)
+            throws CatalogException {
         if (databaseExists(databaseName)) {
             if (ignoreIfExists) {
                 return;
@@ -113,11 +101,11 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException(String.format("database %s already exists", databaseName));
         }
         try {
-            dbManager.createNewNamespace(databaseName,
-                    DBUtil.stringMapToJson(catalogDatabase.getProperties()),
+            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
+            throw e;
         }
 
     }
@@ -129,7 +117,7 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
-        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()));
+        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
     }
 
     @Override
@@ -147,43 +135,50 @@ public class LakeSoulCatalog implements Catalog {
         if (!tableExists(tablePath)) {
             throw new TableNotExistException(CATALOG_NAME, tablePath);
         }
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
-                tablePath.getObjectName(),
-                tablePath.getDatabaseName());
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
         return FlinkUtil.toFlinkCatalog(tableInfo);
     }
 
     @Override
     public boolean tableExists(ObjectPath tablePath) throws CatalogException {
         checkNotNull(tablePath);
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
-                tablePath.getObjectName(),
-                tablePath.getDatabaseName());
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
 
         return null != tableInfo;
     }
 
     @Override
-    public void dropTable(ObjectPath tablePath, boolean b) throws TableNotExistException, CatalogException {
+    public void dropTable(ObjectPath tablePath, boolean ignoreIfNotExists)
+            throws TableNotExistException, CatalogException {
         checkNotNull(tablePath);
         String tableName = tablePath.getObjectName();
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
-                tablePath.getObjectName(),
-                tablePath.getDatabaseName());
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
         if (tableInfo != null) {
             String tableId = tableInfo.getTableId();
             dbManager.deleteTableInfo(tableInfo.getTablePath(), tableId, tablePath.getDatabaseName());
             dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
             dbManager.deleteDataCommitInfo(tableId);
             dbManager.deletePartitionInfoByTableId(tableId);
+            Path path = new Path(tableInfo.getTablePath());
+            try {
+                path.getFileSystem().delete(path, true);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
         } else {
+            if (ignoreIfNotExists) {
+                return;
+            }
             throw new TableNotExistException(CATALOG_NAME, tablePath);
         }
     }
 
     @Override
     public void renameTable(ObjectPath tablePath, String s, boolean b) throws CatalogException {
-        throw new CatalogException("Rename lakesoul table not supported now");
+        throw new CatalogException("Rename LakeSoul table is not supported for now");
     }
 
     @Override
@@ -199,29 +194,34 @@ public class LakeSoulCatalog implements Catalog {
         if (tableExists(tablePath)) {
             if (!ignoreIfExists) {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
-            }
-            else return;
+            } else return;
         }
-        String primaryKeys = primaryKeyColumns.map(uniqueConstraint -> String.join(",", uniqueConstraint.getColumns())).orElse("");
+        String primaryKeys = primaryKeyColumns.map(
+                        uniqueConstraint -> String.join(LAKESOUL_HASH_PARTITION_SPLITTER,
+                                uniqueConstraint.getColumns()))
+                .orElse("");
         Map<String, String> tableOptions = table.getOptions();
 
         // adding cdc options
-        tableOptions.put(RECORD_KEY_NAME, primaryKeys);
-        boolean cdcMark;
+        if (!"".equals(primaryKeys)) {
+            tableOptions.put(HASH_PARTITIONS, primaryKeys);
+        }
+        Optional<String> cdcColumn;
         if ("true".equals(tableOptions.get(USE_CDC.key()))) {
             if (primaryKeys.isEmpty()) {
                 throw new CatalogException("CDC table must have primary key(s)");
             }
-            cdcMark = true;
-            tableOptions.put(CDC_CHANGE_COLUMN, "rowKinds");
+            cdcColumn = Optional.of(tableOptions.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
+            tableOptions.put(CDC_CHANGE_COLUMN, cdcColumn.get());
         } else {
-            cdcMark = false;
+            cdcColumn = Optional.empty();
         }
 
         // adding hash bucket options
         if (!primaryKeys.isEmpty()) {
             if (Integer.parseInt(tableOptions.getOrDefault(HASH_BUCKET_NUM.key(), "-1")) <= 0) {
-                throw new CatalogException("Valid integer value for hashBucketNum property must be set for table with primary key");
+                throw new CatalogException(
+                        "Valid integer value for hashBucketNum property must be set for table with primary key");
             }
         }
 
@@ -239,13 +239,13 @@ public class LakeSoulCatalog implements Catalog {
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
-        dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath,
-                FlinkUtil.toSparkSchema(schema, cdcMark).json(),
-                properties, String.join(";", String.join(",", partitionKeys), primaryKeys));
+        String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
+        dbManager.createNewTable(tableId, tablePath.getDatabaseName(), tableName, qualifiedPath, sparkSchema,
+                properties, DBUtil.formatTableInfoPartitionsField(primaryKeys, partitionKeys));
     }
 
     @Override
-    public void alterTable(ObjectPath tablePath, CatalogBaseTable catalogBaseTable, boolean b) throws TableNotExistException, CatalogException {
+    public void alterTable(ObjectPath tablePath, CatalogBaseTable catalogBaseTable, boolean b) throws CatalogException {
         throw new CatalogException("Alter lakesoul table not supported now");
     }
 
@@ -265,9 +265,8 @@ public class LakeSoulCatalog implements Catalog {
         if (!tableExists(tablePath)) {
             throw new CatalogException("table path not exist");
         }
-        TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(
-                tablePath.getObjectName(),
-                tablePath.getDatabaseName());
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
         List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
         HashSet<String> partitions = new HashSet<>(100);
         for (PartitionInfo pif : allPartitionInfo) {
@@ -278,29 +277,22 @@ public class LakeSoulCatalog implements Catalog {
             if (null == item || "".equals(item)) {
                 throw new CatalogException("partition not exist");
             } else {
-                LinkedHashMap<String, String> lhmap = new LinkedHashMap<>();
-                if ("-5".equals(item)) {
-                    lhmap.put("", "-5");
-                } else {
-                    List<String> partitionData = Splitter.on(",").splitToList(item);
-                    for (String kv : partitionData) {
-                        List<String> kvs = Splitter.on("=").splitToList(kv);
-                        lhmap.put(kvs.get(0), kvs.get(1));
-                    }
-                }
-                al.add(new CatalogPartitionSpec(lhmap));
+                al.add(new CatalogPartitionSpec(DBUtil.parsePartitionDesc(item)));
             }
         }
         return al;
     }
 
     @Override
-    public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list) throws CatalogException {
+    public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> list)
+            throws CatalogException {
+        // TODO: optimize this when filter is an exact match of one partition
         List<CatalogPartitionSpec> partitions = listPartitions(tablePath);
         List<CatalogPartitionSpec> catalogPartitionSpecs = new ArrayList<>();
         for (Expression exp : list) {
-            if(exp instanceof CallExpression){
-                if(!"equals".equals(((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get().toLowerCase())){
+            if (exp instanceof CallExpression) {
+                if (!"equals".equalsIgnoreCase(
+                        ((CallExpression) exp).getFunctionIdentifier().get().getSimpleName().get())) {
                     throw new CatalogException("just support equal;such as range=val and range=val2");
                 }
             }
@@ -334,35 +326,42 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public CatalogPartition getPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec) throws PartitionNotExistException, CatalogException {
-        if (!partitionExists(tablePath, catalogPartitionSpec)) {
-            throw new PartitionNotExistException(CATALOG_NAME, tablePath, catalogPartitionSpec);
-        }
-        return null;
+    public CatalogPartition getPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec)
+            throws PartitionNotExistException, CatalogException {
+        throw new CatalogException("not supported");
     }
 
     @Override
-    public boolean partitionExists(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
-        return false;
+    public boolean partitionExists(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec)
+            throws CatalogException {
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
+        if (tableInfo == null) {
+            throw new CatalogException(tablePath + " does not exist");
+        }
+        if (tableInfo.getPartitions().equals(LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH)) {
+            throw new CatalogException(tablePath + " is not partitioned");
+        }
+        List<PartitionInfo> partitionInfos = dbManager.getOnePartition(tableInfo.getTableId(),
+                DBUtil.formatPartitionDesc(catalogPartitionSpec.getPartitionSpec()));
+        return !partitionInfos.isEmpty();
     }
 
     @Override
     public void createPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
-                                CatalogPartition catalogPartition, boolean ignoreIfExists)
-            throws PartitionAlreadyExistsException, CatalogException {
+                                CatalogPartition catalogPartition, boolean ignoreIfExists) throws CatalogException {
         throw new CatalogException("not supported now");
     }
 
     @Override
-    public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
-                              boolean ignoreIfExists) throws PartitionNotExistException, CatalogException {
+    public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfExists)
+            throws CatalogException {
         throw new CatalogException("not supported now");
     }
 
     @Override
     public void alterPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec,
-                               CatalogPartition catalogPartition, boolean ignoreIfExists)
-            throws CatalogException {
+                               CatalogPartition catalogPartition, boolean ignoreIfExists) throws CatalogException {
         throw new CatalogException("not supported now");
     }
 
@@ -382,12 +381,14 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
-        return;
+    public void createFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b)
+            throws CatalogException {
+
     }
 
     @Override
-    public void alterFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b) throws CatalogException {
+    public void alterFunction(ObjectPath tablePath, CatalogFunction catalogFunction, boolean b)
+            throws CatalogException {
         throw new CatalogException("not supported now");
 
     }
@@ -410,18 +411,21 @@ public class LakeSoulCatalog implements Catalog {
 
     @Override
     public CatalogTableStatistics getPartitionStatistics(ObjectPath tablePath,
-                                                         CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
+                                                         CatalogPartitionSpec catalogPartitionSpec)
+            throws CatalogException {
         return null;
     }
 
     @Override
     public CatalogColumnStatistics getPartitionColumnStatistics(ObjectPath tablePath,
-                                                                CatalogPartitionSpec catalogPartitionSpec) throws CatalogException {
+                                                                CatalogPartitionSpec catalogPartitionSpec)
+            throws CatalogException {
         return null;
     }
 
     @Override
-    public void alterTableStatistics(ObjectPath tablePath, CatalogTableStatistics catalogTableStatistics, boolean b) throws CatalogException {
+    public void alterTableStatistics(ObjectPath tablePath, CatalogTableStatistics catalogTableStatistics, boolean b)
+            throws CatalogException {
         throw new CatalogException("not supported now");
 
     }

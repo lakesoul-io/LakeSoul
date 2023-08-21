@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -52,7 +40,7 @@ trait DataFrameWriterV2Tests
     val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
     catalog
       .listTables(Array("default"))
-      .foreach { ti => catalog.dropTable(ti)}
+      .foreach { ti => catalog.dropTable(ti) }
   }
 
   def catalog: TableCatalog = {
@@ -61,7 +49,9 @@ trait DataFrameWriterV2Tests
 
   protected def getProperties(table: Table): Map[String, String] = {
     table.properties().asScala.toMap.filterKeys(key =>
-      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(key) && !(key == "hashBucketNum"))
+      !CatalogV2Util.TABLE_RESERVED_PROPERTIES.contains(key) && !(key == "hashBucketNum")
+        && !(key == "domain")
+    )
   }
 
   test("Append: basic append") {

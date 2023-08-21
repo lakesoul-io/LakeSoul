@@ -1,21 +1,10 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.tables.execution
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import com.dmetasoul.lakesoul.meta.MetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{setCompactionExpiredDays,setTableDataExpiredDays,cancelTableDataExpiredDays,cancelCompactionExpiredDays}
@@ -112,11 +101,11 @@ trait LakeSoulTableOperations extends AnalysisHelper {
     val fieldNames = tableInfo.schema.fieldNames
     joinKey.foreach(key => if (!fieldNames.contains(key)) throw LakeSoulErrors.mismatchJoinKeyException(key))
     val selectedCols = joinKey ++ partitionCols
-    val filterCondition = partitionDesc.mkString(",").replace(",", " and ")
+    val filterCondition = partitionDesc.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER).replace(LAKESOUL_RANGE_PARTITION_SPLITTER, " and ")
     val deltaJoin = if (filterCondition == "")
-                      this.toDF.select(selectedCols.head, selectedCols.tail:_*).join(broadcast(deltaDF), joinKey, "inner")
-                    else
-                      this.toDF.select(selectedCols.head, selectedCols.tail:_*).filter(filterCondition).join(broadcast(deltaDF), joinKey, "inner")
+      this.toDF.select(selectedCols.head, selectedCols.tail: _*).join(broadcast(deltaDF), joinKey, "inner")
+    else
+      this.toDF.select(selectedCols.head, selectedCols.tail: _*).filter(filterCondition).join(broadcast(deltaDF), joinKey, "inner")
 
     executeUpsert(this, deltaJoin, condition)
   }
@@ -138,9 +127,9 @@ trait LakeSoulTableOperations extends AnalysisHelper {
         case o => throw LakeSoulErrors.notALakeSoulSourceException("Upsert", Some(o))
       }
       val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
-      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val filterCondition = processingTablePartitionDesc.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER).replace(LAKESOUL_RANGE_PARTITION_SPLITTER, " and ")
       val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
-                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
+      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
 
       executeUpsert(this, deltaJoin, condition)
     })
@@ -169,9 +158,9 @@ trait LakeSoulTableOperations extends AnalysisHelper {
       }
       val hashCols = snapshotManagement.snapshot.getTableInfo.hash_partition_columns
       hashCols.foreach(hashCol => if (!currentTableFieldNames.contains(hashCol)) throw LakeSoulErrors.mismatchJoinKeyException(hashCol))
-      val filterCondition = processingTablePartitionDesc.mkString(",").replace(",", " and ")
+      val filterCondition = processingTablePartitionDesc.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER).replace(LAKESOUL_RANGE_PARTITION_SPLITTER, " and ")
       val deltaJoin = if (filterCondition == "") broadcast(deltaLeftDF).join(processingTable.toDF, hashCols, "left_outer")
-                      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
+      else broadcast(deltaLeftDF).join(processingTable.toDF.filter(filterCondition), hashCols, "left_outer")
 
       executeUpsert(this, deltaJoin, condition)
     })
@@ -233,8 +222,8 @@ trait LakeSoulTableOperations extends AnalysisHelper {
   }
 
 
-  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement,partitionDesc:String,
-                                        endTime:Long): Unit = {
-    CleanupPartitionDataCommand.run(snapshotManagement.snapshot,partitionDesc, endTime);
+  protected def executeCleanupPartition(snapshotManagement: SnapshotManagement, partitionDesc: String,
+                                        endTime: Long): Unit = {
+    CleanupPartitionDataCommand.run(snapshotManagement.snapshot, partitionDesc, endTime);
   }
 }

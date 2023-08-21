@@ -1,21 +1,10 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul.schema
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.TransactionCommit
 import org.apache.spark.sql.lakesoul.exception.{LakeSoulErrors, MetadataMismatchErrorBuilder}
@@ -41,7 +30,7 @@ trait ImplicitMetadataOperation extends Logging {
     if (partitionColumns.equalsIgnoreCase("")) {
       Seq.empty[String]
     } else {
-      partitionColumns.split(",").toSeq
+      partitionColumns.split(LAKESOUL_RANGE_PARTITION_SPLITTER).toSeq
     }
   }
 
@@ -156,8 +145,8 @@ trait ImplicitMetadataOperation extends Logging {
           table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
           table_schema = dataSchema.json,
-          range_column = normalizedRangePartitionCols.mkString(","),
-          hash_column = normalizedHashPartitionCols.mkString(","),
+          range_column = normalizedRangePartitionCols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
+          hash_column = normalizedHashPartitionCols.mkString(LAKESOUL_HASH_PARTITION_SPLITTER),
           bucket_num = realHashBucketNum,
           configuration = configuration,
           short_table_name = table_info.short_table_name))

@@ -1,21 +1,6 @@
-/*
- *
- * Copyright [2022] [DMetaSoul Team]
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.table;
 
@@ -26,6 +11,7 @@ import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -47,7 +33,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
-        FlinkUtil.setLocalTimeZone(options, FlinkUtil.getLocalTimeZone((Configuration) context.getConfiguration()));
+        FlinkUtil.setLocalTimeZone(options,
+                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
 
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
@@ -85,7 +72,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
-        FlinkUtil.setLocalTimeZone(options, FlinkUtil.getLocalTimeZone((Configuration) context.getConfiguration()));
+        FlinkUtil.setLocalTimeZone(options,
+                FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();

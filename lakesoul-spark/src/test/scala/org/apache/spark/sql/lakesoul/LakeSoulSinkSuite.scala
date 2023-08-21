@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -64,24 +52,24 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           checkDatasetUnorderly(outputDf.as[Int], 1)
 
           val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-//          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
-//          var info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 0L)
+          //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
+          //          var info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
 
           inputData.addData(2)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Int], 1, 2)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 1L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 1L)
 
           inputData.addData(3)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Int], 1, 2, 3)
 
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 2L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 2L)
         } finally {
           query.stop()
         }
@@ -109,23 +97,23 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           checkDatasetUnorderly(outputDf.as[Long], 1L)
 
           val snapshotManagement = SnapshotManagement(outputDir.getCanonicalPath)
-//          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
-//          var info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 0L)
+          //          val tableId = snapshotManagement.snapshot.getTableInfo.table_id
+          //          var info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 0L)
 
           inputData.addData(2)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Long], 2L)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 1L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 1L)
 
           inputData.addData(3)
           query.processAllAvailable()
 
           checkDatasetUnorderly(outputDf.as[Long], 3L)
-//          info = StreamingRecord.getStreamingInfo(tableId)
-//          assert(info._1.equals(query.id.toString) && info._2 == 2L)
+          //          info = StreamingRecord.getStreamingInfo(tableId)
+          //          assert(info._1.equals(query.id.toString) && info._2 == 2L)
         } finally {
           query.stop()
         }

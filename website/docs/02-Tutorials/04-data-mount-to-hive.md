@@ -1,5 +1,11 @@
 # Mount LakeSoul Data to Hive Meta
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 Since version 2.0, LakeSoul supports two functions: attaching the directory path after Compaction to the specified Hive table, specifying the same partition name as LakeSoul, and customizing the partition name. This function can facilitate downstream systems that can only support Hive to read LakeSoul data. It is more recommended to support Hive JDBC through Kyuubi, so that you can directly use Hive JDBC to call the Spark engine to access the LakeSoul table, including Merge on Read.
 
 ## Keep the Same Partition Name as LakeSoul Range

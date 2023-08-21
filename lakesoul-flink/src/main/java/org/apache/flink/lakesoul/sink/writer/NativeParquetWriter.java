@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.writer;
 
@@ -24,7 +10,6 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
@@ -33,16 +18,15 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_FILE_INDEX;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BINLOG_POSITION;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
 
@@ -84,7 +68,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
-            nativeWriter.setAuxSortColumns(Arrays.asList(BINLOG_FILE_INDEX, BINLOG_POSITION));
+            nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
@@ -132,6 +116,22 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         public String toString() {
             return "PendingFile(" +
                     path + ", " + creationTime + ")";
+        }
+
+        @Nullable
+        @Override
+        public Path getPath() {
+            return new Path(path);
+        }
+
+        @Override
+        public long getSize() {
+            return 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(path, creationTime);
         }
     }
 

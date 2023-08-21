@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.state;
 
@@ -24,6 +10,7 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
+import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 
@@ -33,10 +20,13 @@ import java.util.List;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/** Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}. */
+/**
+ * Versioned serializer for {@link LakeSoulMultiTableSinkCommittable}.
+ */
 public class LakeSoulSinkCommittableSerializer
         implements SimpleVersionedSerializer<LakeSoulMultiTableSinkCommittable> {
 
+    public static final LakeSoulSinkCommittableSerializer INSTANCE = new LakeSoulSinkCommittableSerializer(NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
     private static final int MAGIC_NUMBER = 0x1e765c80;
 
     private final SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable>
@@ -85,7 +75,7 @@ public class LakeSoulSinkCommittableSerializer
             dataOutputView.writeBoolean(true);
             dataOutputView.writeInt(committable.getPendingFiles().size());
             for (InProgressFileWriter.PendingFileRecoverable pennding :
-                committable.getPendingFiles()) {
+                    committable.getPendingFiles()) {
                 SimpleVersionedSerialization.writeVersionAndSerialize(
                         pendingFileSerializer, pennding, dataOutputView);
             }

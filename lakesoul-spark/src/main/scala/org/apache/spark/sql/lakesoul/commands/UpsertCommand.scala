@@ -1,21 +1,10 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import org.apache.spark.sql.catalyst.expressions.And
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
@@ -84,7 +73,7 @@ case class UpsertCommand(source: LogicalPlan,
       if (!tableInfo.partition_cols.forall(sourceCols.contains)) {
         throw LakeSoulErrors
           .partitionColumnNotFoundException(
-            tableInfo.partition_cols.mkString(","),
+            tableInfo.partition_cols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
             sourceCols.mkString(","))
       }
 
@@ -126,7 +115,7 @@ case class UpsertCommand(source: LogicalPlan,
 
         val dataSkippedFiles = tc.filterFiles(targetOnlyPredicates)
 
-        val targetExistCols = dataSkippedFiles.flatMap(_.file_exist_cols.split(",")).distinct
+        val targetExistCols = dataSkippedFiles.flatMap(_.file_exist_cols.split(LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER)).distinct
         val needColumns = tableInfo.schema.fieldNames
         val repeatCols = sourceCols.intersect(targetExistCols)
         val allCols = sourceCols.union(targetExistCols).distinct
@@ -167,7 +156,7 @@ case class UpsertCommand(source: LogicalPlan,
                                        files: Seq[DataFileInfo],
                                        selectCols: Seq[String]): LogicalPlan = {
     val plan = SparkUtil
-      .createDataFrame(files, selectCols,tc.snapshotManagement)
+      .createDataFrame(files, selectCols, tc.snapshotManagement)
       .queryExecution.analyzed
 
     // For each plan output column, find the corresponding target output column (by name) and

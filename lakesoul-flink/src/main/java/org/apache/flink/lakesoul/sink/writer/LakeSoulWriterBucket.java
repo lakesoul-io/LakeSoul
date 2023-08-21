@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.writer;
 
@@ -206,12 +192,12 @@ public class LakeSoulWriterBucket {
 
     void onProcessingTime(long timestamp) throws IOException {
         if (inProgressPartWriter != null
-            && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
+                && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
                         "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
-                        "policy "
-                        + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
+                                "policy "
+                                + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
                         bucketId,
                         uniqueId,
                         inProgressPartWriter.getCreationTime(),
@@ -248,15 +234,15 @@ public class LakeSoulWriterBucket {
         return new Path(
                 bucketPath,
                 outputFileConfig.getPartPrefix()
-                + '-'
-                + subTask
-                + '-'
-                + uniqueId
-                + '_'
-                + subTask
-                + ".c"
-                + count
-                + outputFileConfig.getPartSuffix());
+                        + '-'
+                        + subTask
+                        + '-'
+                        + uniqueId
+                        + '_'
+                        + subTask
+                        + ".c"
+                        + count
+                        + outputFileConfig.getPartSuffix());
     }
 
     private void closePartFile() throws IOException {

@@ -1,21 +1,6 @@
-/*
- *
- * Copyright [2022] [DMetaSoul Team]
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.table;
 
@@ -34,6 +19,7 @@ import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.ProviderContext;
 import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
@@ -51,122 +37,112 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
 
-  private final String summaryName;
-  private final String tableName;
-  private boolean overwrite;
-  private final DataType dataType;
-  private final ResolvedSchema schema;
-  private final Configuration flinkConf;
-  private final List<String> primaryKeyList;
-  private final List<String> partitionKeyList;
+    private final String summaryName;
+    private final String tableName;
+    private final DataType dataType;
+    private final ResolvedSchema schema;
+    private final Configuration flinkConf;
+    private final List<String> primaryKeyList;
+    private final List<String> partitionKeyList;
+    private boolean overwrite;
 
-  private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
-    return new LakeSoulTableSink(lts);
-  }
-
-  public LakeSoulTableSink(
-          String summaryName,
-          String tableName,
-          DataType dataType,
-          List<String> primaryKeyList, List<String> partitionKeyList,
-          ReadableConfig flinkConf,
-          ResolvedSchema schema
-  ) {
-    this.summaryName = summaryName;
-    this.tableName = tableName;
-    this.primaryKeyList = primaryKeyList;
-    this.schema = schema;
-    this.partitionKeyList = partitionKeyList;
-    this.flinkConf = (Configuration) flinkConf;
-    this.dataType = dataType;
-  }
-
-  private LakeSoulTableSink(LakeSoulTableSink tableSink) {
-    this.summaryName = tableSink.summaryName;
-    this.tableName = tableSink.tableName;
-    this.overwrite = tableSink.overwrite;
-    this.dataType = tableSink.dataType;
-    this.schema = tableSink.schema;
-    this.flinkConf = tableSink.flinkConf;
-    this.primaryKeyList = tableSink.primaryKeyList;
-    this.partitionKeyList = tableSink.partitionKeyList;
-  }
-
-  @Override
-  public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-    return (DataStreamSinkProvider) (dataStream) -> {
-      try {
-        return createStreamingSink(dataStream, context);
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
-    };
-  }
-
-  @Override
-  public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
-    if (flinkConf.getBoolean(USE_CDC)) {
-      return ChangelogMode.upsert();
-    } else {
-      return ChangelogMode.insertOnly();
+    public LakeSoulTableSink(String summaryName, String tableName, DataType dataType, List<String> primaryKeyList,
+                             List<String> partitionKeyList, ReadableConfig flinkConf, ResolvedSchema schema) {
+        this.summaryName = summaryName;
+        this.tableName = tableName;
+        this.primaryKeyList = primaryKeyList;
+        this.schema = schema;
+        this.partitionKeyList = partitionKeyList;
+        this.flinkConf = (Configuration) flinkConf;
+        this.dataType = dataType;
     }
-  }
 
-  /**
-   * DataStream sink fileSystem and upload metadata
-   */
-  private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream,
-                                                Context sinkContext) throws IOException {
-    Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
-    int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
-    //rowData key tools
-    RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
-    LakeSoulKeyGen keyGen = new LakeSoulKeyGen(
-            rowType,
-            primaryKeyList.toArray(new String[0])
-            );
-    //bucket file name config
-    OutputFileConfig fileNameConfig = OutputFileConfig.builder()
-                                                      .withPartSuffix(".parquet")
-                                                      .build();
-    //file rolling rule
-    LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
-        flinkConf.getLong(FILE_ROLLING_SIZE), flinkConf.getLong(FILE_ROLLING_TIME));
-    //redistribution by partitionKey
-    dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
-    //rowData sink fileSystem Task
-    LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(
-               path,
-               new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)),
-                                       rowType,
-                                       path.toString(),
-                                       primaryKeyList,
-                                       partitionKeyList),
-               flinkConf)
-       .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL))
-       .withRollingPolicy(rollingPolicy)
-       .withOutputFileConfig(fileNameConfig)
-       .build();
-    return dataStream.sinkTo(sink).setParallelism(bucketParallelism);
-  }
+    private LakeSoulTableSink(LakeSoulTableSink tableSink) {
+        this.summaryName = tableSink.summaryName;
+        this.tableName = tableSink.tableName;
+        this.overwrite = tableSink.overwrite;
+        this.dataType = tableSink.dataType;
+        this.schema = tableSink.schema;
+        this.flinkConf = tableSink.flinkConf;
+        this.primaryKeyList = tableSink.primaryKeyList;
+        this.partitionKeyList = tableSink.partitionKeyList;
+    }
 
-  @Override
-  public DynamicTableSink copy() {
-    return createLakesoulTableSink(this);
-  }
+    private static LakeSoulTableSink createLakesoulTableSink(LakeSoulTableSink lts) {
+        return new LakeSoulTableSink(lts);
+    }
 
-  @Override
-  public String asSummaryString() {
-    return "lakeSoul table sink";
-  }
+    @Override
+    public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
+        return new DataStreamSinkProvider() {
+            @Override
+            public DataStreamSink<?> consumeDataStream(ProviderContext providerContext,
+                                                       DataStream<RowData> dataStream) {
+                try {
+                    return createStreamingSink(dataStream, context);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        };
+    }
 
-  @Override
-  public void applyOverwrite(boolean newOverwrite) {
-    this.overwrite = newOverwrite;
-  }
+    @Override
+    public ChangelogMode getChangelogMode(ChangelogMode changelogMode) {
+        if (flinkConf.getBoolean(USE_CDC)) {
+            return ChangelogMode.upsert();
+        } else if (this.primaryKeyList.isEmpty()) {
+            return ChangelogMode.insertOnly();
+        } else {
+            return ChangelogMode.newBuilder().addContainedKind(RowKind.INSERT).addContainedKind(RowKind.UPDATE_AFTER)
+                    .build();
+        }
+    }
 
-  @Override
-  public void applyStaticPartition(Map<String, String> map) {
-  }
+    /**
+     * DataStream sink fileSystem and upload metadata
+     */
+    private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream, Context sinkContext)
+            throws IOException {
+        Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
+        int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
+        //rowData key tools
+        RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
+        LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
+        //bucket file name config
+        OutputFileConfig fileNameConfig = OutputFileConfig.builder().withPartSuffix(".parquet").build();
+        //file rolling rule
+        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(flinkConf.getLong(FILE_ROLLING_SIZE),
+                flinkConf.getLong(FILE_ROLLING_TIME));
+        //redistribution by partitionKey
+        dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
+        //rowData sink fileSystem Task
+        LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(path,
+                        new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)), rowType,
+                                path.toString(), primaryKeyList, partitionKeyList,
+                                FlinkUtil.getPropertiesFromConfiguration(flinkConf)), flinkConf)
+                .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
+                .withOutputFileConfig(fileNameConfig).build();
+        return dataStream.sinkTo(sink).setParallelism(bucketParallelism);
+    }
+
+    @Override
+    public DynamicTableSink copy() {
+        return createLakesoulTableSink(this);
+    }
+
+    @Override
+    public String asSummaryString() {
+        return "lakeSoul table sink";
+    }
+
+    @Override
+    public void applyOverwrite(boolean newOverwrite) {
+        this.overwrite = newOverwrite;
+    }
+
+    @Override
+    public void applyStaticPartition(Map<String, String> map) {
+    }
 
 }

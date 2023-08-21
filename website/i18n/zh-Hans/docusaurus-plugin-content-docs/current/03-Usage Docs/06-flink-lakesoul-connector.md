@@ -1,23 +1,29 @@
 # LakeSoul Flink Connector
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 :::tip
 该功能于 2.3.0 版本起提供
 :::
 
-LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可以使用 Flink 的 DataStream API， Table API 或 SQL 来执行对 LakeSoul 数据的读写，读和写均支持流式和批式两种模式。
+LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可以使用 Flink 的 DataStream API， Table API 或 SQL 来执行对 LakeSoul 数据的读写，读和写均支持流式和批式两种模式。在 Flink 流式读、写时君支持 Flink Changelog Stream 语义。
 
 ## 1. 环境准备
 
 设置 LakeSoul 元数据，请参考 [设置 Spark/Flink 工程/作业](../03-Usage%20Docs/02-setup-spark.md)
 
-Flink引入 LakeSoul 依赖的方法：将 lakesoul-flink 文件夹打包编译后得到 lakesoul-flink-2.3.0-flink-1.14-SNAPSHOT.jar。
+Flink引入 LakeSoul 依赖的方法：将 lakesoul-flink 文件夹打包编译后得到 lakesoul-flink-2.3.0-flink-1.14.jar。
 
 为了使用 Flink 创建 LakeSoul 表，推荐使用 Flink SQL Client，支持直接使用 Flink SQL 命令操作 LakeSoul 表，本文档中 Flink SQL 是在 Flink SQL Client 界面直接输入语句；Table API 需要在 Java 项目中编写使用。
 
 切换到 Flink 文件夹下，执行命令开启 SQL Client 客户端。
 ```bash
 # 启动 Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14-SNAPSHOT.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14.jar
 ```
 
 ## 2. DDL
@@ -148,13 +154,13 @@ SET execution.runtime-mode = batch;
 
 其中 `/* OPTIONS() */` 为查询选项（hints），必须要直接跟在表名的后面（在 where 等其他子句的前面），LakeSoul 读取时的 hint 选项包括：
 
-| 参数              | 含义说明                                                             | 参数填写格式                          |
-| ----------------- | -------------------------------------------------------------------- | ------------------------------------- |
-| readtype          | 读类型，可以指定增量读incremental，快照读snapshot，不指定默认全量读  | 'readtype'='incremental'              |
-| discoveryinterval | 流式增量读的发现新数据时间间隔，单位毫秒，默认为 2000                | 'discoveryinterval'='10000'           |
-| readstarttime     | 起始读时间戳，如果未指定起始时间戳，则默认从起始版本号开始读取       | 'readstarttime'='2023-05-01 15:15:15' |
-| readendtime       | 结束读时间戳，如果未指定结束时间戳，则默认读取到当前最新版本号       | 'readendtime'='2023-05-01 15:20:15'   |
-| timezone          | 时间戳的时区信息，如果不指定时间戳的时区信息，则默认为按本机时区处理 | 'timezone'='Asia/Sahanghai'           |
+| 参数              | 含义说明                                        | 参数填写格式                          |
+| ----------------- |---------------------------------------------| ------------------------------------- |
+| readtype          | 读类型，可以指定增量读incremental，快照读snapshot，不指定默认全量读 | 'readtype'='incremental'              |
+| discoveryinterval | 流式增量读的发现新数据时间间隔，单位毫秒，默认为 30000              | 'discoveryinterval'='10000'           |
+| readstarttime     | 起始读时间戳，如果未指定起始时间戳，则默认从起始版本号开始读取             | 'readstarttime'='2023-05-01 15:15:15' |
+| readendtime       | 结束读时间戳，如果未指定结束时间戳，则默认读取到当前最新版本号             | 'readendtime'='2023-05-01 15:20:15'   |
+| timezone          | 时间戳的时区信息，如果不指定时间戳的时区信息，则默认为按本机时区处理          | 'timezone'='Asia/Sahanghai'           |
 
 ### 4.1 全量读
 支持按批式和流式读取 LakeSoul 表的全量数据。批式是读取指定表指定分区在当前时间下的最新版本的全量数据。流式读取则是先读取当前时间下的最新版本全量数据，并且一旦发生数据更新，可以自动识别并连续不间断读取增量数据。

@@ -1,12 +1,18 @@
 # LakeSoul 发布 2.2.0 版本，全面升级 Native IO，扩大云原生湖仓性能领先幅度
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 近日，经过数月研发，开源湖仓框架 LakeSoul 发布了 2.2.0 版本（[Github 发布日志](https://github.com/lakesoul-io/LakeSoul/releases/tag/v2.2.0)），这个版本最重要的升级是在 Spark、Flink 中默认启用了全新的 Native IO，性能再次获得显著提升，扩大了 LakeSoul 在云原生湖仓框架领域的性能领先优势。本文为您详细解读 LakeSoul 2.2.0 版本的更新以及 Native IO 的技术细节。
 
 ## LakeSoul 2.2.0 版本更新内容
 
 在 2.2.0 版本中，LakeSoul 实现了全新的 Native IO，将全量、增量的读写逻辑都迁移到了新的 IO 层实现，并做了大量性能和正确性测试，在 Spark 和 Flink 中都默认启用了新 IO 层。
 
-2.2.0 版本还发布了 Spark 中的[快照读取、回滚和清理](https://www.dmetasoul.com/docs/lakesoul/Tutorials/snapshot-manage/)、[增量批式读取、增量流式读取](https://www.dmetasoul.com/docs/lakesoul/Tutorials/incremental-query/)等多个新接口，从而更为完善地支持高性能的流式增量的 ETL 数据建模流程。以下我们详细讲解这几个新的改进和功能点。
+2.2.0 版本还发布了 Spark 中的[快照读取、回滚和清理](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/snapshot-manage)、[增量批式读取、增量流式读取](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/incremental-query)等多个新接口，从而更为完善地支持高性能的流式增量的 ETL 数据建模流程。以下我们详细讲解这几个新的改进和功能点。
 
 ### 1. Native IO 详细解读
 
@@ -74,11 +80,11 @@ LakeSoul 2.2.0 针对快照、增量场景，提供了一系列新的接口。La
 
 对于快照读、快照回滚、快照清理，使用者只需要提供快照的时间点，用时间戳字符串表示，例如`"2022-01-01 15:15:15"`，该时间戳不需要与实际写入时间严格对应，这个时间会作为写入版本的时间戳上界，LakeSoul 会自动找到小于等于该时间戳所对应的快照版本。
 
-快照相关的功能点可以参考[快照使用教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/snapshot-manage/)
+快照相关的功能点可以参考[快照使用教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/snapshot-manage)
 
-LakeSoul 还提供了增量读取功能。在流式 ETL 中，增量读取功能具有重要意义，增量读能够让整个 ETL 链路都转为增量计算，提高实时性的同时还能节约计算资源。LakeSoul 2.2.0 支持在 Spark 中的增量 batch 读取、增量流式读取。增量流式读取时，LakeSoul 会作为 Spark 的 Streaming 数据源，自动发现并读取表的增量数据。具体使用方法可以参考[增量查询教程](https://www.dmetasoul.com/docs/lakesoul/Tutorials/incremental-query/)。
+LakeSoul 还提供了增量读取功能。在流式 ETL 中，增量读取功能具有重要意义，增量读能够让整个 ETL 链路都转为增量计算，提高实时性的同时还能节约计算资源。LakeSoul 2.2.0 支持在 Spark 中的增量 batch 读取、增量流式读取。增量流式读取时，LakeSoul 会作为 Spark 的 Streaming 数据源，自动发现并读取表的增量数据。具体使用方法可以参考[增量查询教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/incremental-query)。
 
-值得一提的是，不同于 Hudi、Iceberg，LakeSoul 对于主键表、非主键表均可支持增量读，对于 LakeSoul CDC 表（[参考 LakeSoul CDC 表格式](https://www.dmetasoul.com/docs/lakesoul/Usage%20Doc/cdc-ingestion-table/)），也同样能够增量读取 CDC 流，这个流表示了 LakeSoul 表本身的增量修改，包括 insert、update 和 delete 操作，能够支持下游灵活的增量计算。在下一个版本，LakeSoul 将支持 LakeSoul 表的 CDC 增量流式读取为 Flink ChangeLog Stream，借助 Flink SQL 即可完成高效的流式增量 ETL 开发。
+值得一提的是，不同于 Hudi、Iceberg，LakeSoul 对于主键表、非主键表均可支持增量读，对于 LakeSoul CDC 表（[参考 LakeSoul CDC 表格式](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/flink-cdc-sink)），也同样能够增量读取 CDC 流，这个流表示了 LakeSoul 表本身的增量修改，包括 insert、update 和 delete 操作，能够支持下游灵活的增量计算。在下一个版本，LakeSoul 将支持 LakeSoul 表的 CDC 增量流式读取为 Flink ChangeLog Stream，借助 Flink SQL 即可完成高效的流式增量 ETL 开发。
 
 ## 总结
 

@@ -1,20 +1,6 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.bucket;
 
@@ -24,10 +10,8 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkCommitter;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
-import org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer;
-import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketStateSerializer;
+import org.apache.flink.lakesoul.sink.committer.LakeSoulSinkGlobalCommitter;
+import org.apache.flink.lakesoul.sink.state.*;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucketFactory;
@@ -111,7 +95,8 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
 
     @Override
     public LakeSoulSinkCommitter createCommitter() throws IOException {
-        return new LakeSoulSinkCommitter();
+        return null;
+//        return new LakeSoulSinkCommitter();
     }
 
     @Override
@@ -126,5 +111,15 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
             throws IOException {
         return new LakeSoulSinkCommittableSerializer(
                 NativeBucketWriter.NativePendingFileRecoverableSerializer.INSTANCE);
+    }
+
+    @Override
+    public LakeSoulSinkGlobalCommitter createGlobalCommitter() throws IOException {
+        return new LakeSoulSinkGlobalCommitter(conf);
+    }
+
+    @Override
+    public SimpleVersionedSerializer<LakeSoulMultiTableSinkGlobalCommittable> getGlobalCommittableSerializer() throws IOException {
+        return new LakeSoulSinkGlobalCommittableSerializer(LakeSoulSinkCommittableSerializer.INSTANCE);
     }
 }

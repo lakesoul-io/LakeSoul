@@ -1,12 +1,18 @@
 # What's new in version 2.2.0
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 Recently, after months of research and development, LakeSoul released version 2.2.0([Github Release Notes](https://github.com/lakesoul-io/LakeSoul/releases/tag/v2.2.0)). The most important upgrade in this version is that the new Native IO is enabled by default in both Spark and Flink, and LakeSoul's performance has once again significantly been improved and expanded its performance leadership advantage in the field of Cloud Native Data Lakehouse.This article provides you with a detailed explanation of the updates to LakeSoul version 2.2.0 and the technical details of Native IO.
 
 ## LakeSoul Version 2.2.0 Update Content
 
 In version 2.2.0, LakeSoul implemented a brand-new Native IO, migrating full and incremental read-write logic to the new IO layer, and conducting extensive performance and correctness testing. The new IO layer was enabled by default in Spark and Flink.
 
-Version 2.2.0 also released several new interfaces in Spark, such as [snapshot reading, rollback and cleaning](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/snapshot-manage/), [incremental batch reading, and incremental streaming reading](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/incremental-query/), which more perfectly supports the high-performance streaming incremental ETL data modeling process. Below, we will provide a detailed explanation of these new improvements and feature points.
+Version 2.2.0 also released several new interfaces in Spark, such as [snapshot reading, rollback and cleaning](https://lakesoul-io.github.io/docs/Tutorials/snapshot-manage), [incremental batch reading, and incremental streaming reading](https://lakesoul-io.github.io/docs/Tutorials/incremental-query), which more perfectly supports the high-performance streaming incremental ETL data modeling process. Below, we will provide a detailed explanation of these new improvements and feature points.
 
 ### 1. Native IO Detailed Explanation
 
@@ -74,11 +80,11 @@ LakeSoul 2.2.0 provides a series of new interfaces for snapshot, incremental sce
 
 For snapshot read, snapshot rollback and snapshot cleanup, users only need to provide the snapshot timestamp, expressed as a timestamp string, e.g. `"2022-01-01 15:15:15"`, the timestamp does not need to strictly correspond to the actual write time, this time will be used as the upper bound of the timestamp of the write version, and LakeSoul will automatically find the snapshot corresponding to a timestamp less than or equal to this version.
 
-Snapshot-related function points can be found in the [snapshot usage tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/snapshot-manage/).
+Snapshot-related function points can be found in the [snapshot usage tutorial](https://lakesoul-io.github.io/docs/Tutorials/snapshot-manage).
 
-LakeSoul also provides incremental reads. In streaming ETL, the incremental read function is of great significance. Incremental read can convert the entire ETL link to incremental computing, improve real-time performance, and save computing resources.LakeSoul 2.2.0 supports incremental batch reads and incremental streaming reads in Spark. When incremental streaming read, LakeSoul will act as Spark's Streaming data source and automatically discover and read incremental data of the table. For details, please refer to the [incremental query tutorial](https://www.dmetasoul.com/en/docs/lakesoul/Tutorials/incremental-query/).
+LakeSoul also provides incremental reads. In streaming ETL, the incremental read function is of great significance. Incremental read can convert the entire ETL link to incremental computing, improve real-time performance, and save computing resources.LakeSoul 2.2.0 supports incremental batch reads and incremental streaming reads in Spark. When incremental streaming read, LakeSoul will act as Spark's Streaming data source and automatically discover and read incremental data of the table. For details, please refer to the [incremental query tutorial](https://lakesoul-io.github.io/docs/Tutorials/incremental-query).
 
-It is worth mentioning that, unlike Hudi and Iceberg, LakeSoul can support incremental reads for both primary and non-primary key tables, and for LakeSoul CDC tables ([refer to LakeSoul CDC table format](https://www.dmetasoul.com/en/docs/lakesoul/Usage%20Docs/cdc-ingestion-table/)), it can also read incremental CDC streams, which represent incremental changes to the LakeSoul table itself, including insert, update and delete operations, enabling flexible downstream incremental computation. In the next release, LakeSoul will support incremental reading of LakeSoul table CDC as Flink ChangeLog Stream, which can be used for efficient incremental ETL development with Flink SQL.
+It is worth mentioning that, unlike Hudi and Iceberg, LakeSoul can support incremental reads for both primary and non-primary key tables, and for LakeSoul CDC tables ([refer to LakeSoul CDC table format](https://lakesoul-io.github.io/docs/Tutorials/flink-cdc-sink)), it can also read incremental CDC streams, which represent incremental changes to the LakeSoul table itself, including insert, update and delete operations, enabling flexible downstream incremental computation. In the next release, LakeSoul will support incremental reading of LakeSoul table CDC as Flink ChangeLog Stream, which can be used for efficient incremental ETL development with Flink SQL.
 
 
 

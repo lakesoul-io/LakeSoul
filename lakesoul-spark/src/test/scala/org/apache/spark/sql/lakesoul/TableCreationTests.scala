@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -40,7 +28,7 @@ import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
-import java.util.Locale
+import java.util.{Date, Locale}
 import scala.language.implicitConversions
 
 trait TableCreationTests
@@ -54,9 +42,9 @@ trait TableCreationTests
   val format = "lakesoul"
 
   protected def createTableByPath(path: File,
-                                df: DataFrame,
-                                tableName: String,
-                                partitionedBy: Seq[String] = Nil): Unit = {
+                                  df: DataFrame,
+                                  tableName: String,
+                                  partitionedBy: Seq[String] = Nil): Unit = {
     df.write
       .partitionBy(partitionedBy: _*)
       .mode(SaveMode.Append)
@@ -685,7 +673,7 @@ trait TableCreationTests
       assert(location.isDefined)
       assert(location.get == path.get)
       val partDir = new File(new File(location.get), "a=1")
-//      assert(partDir.listFiles().nonEmpty)
+      //      assert(partDir.listFiles().nonEmpty)
 
       checkDatasetUnorderly(
         sql("SELECT a,b FROM lakesoul_test").as[(Long, String)],
@@ -1229,7 +1217,7 @@ trait TableCreationTests
           .create()
 
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
-        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+        tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
   }
@@ -1245,10 +1233,28 @@ trait TableCreationTests
           .option("lakesoul_cdc_change_column", "change_kind")
           .save(path)
         val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
-        tableInfo.configuration should contain ("lakesoul_cdc_change_column" -> "change_kind")
+        tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
   }
+
+  test("create table sql with date range partition") {
+    withTempPath { dir =>
+      val tableName = "test_table"
+      withTable(s"$tableName") {
+        val df = spark.sql("select current_date() as `date`, 'data1' as data")
+        df.write.mode("overwrite")
+          .format("lakesoul")
+          .partitionBy("date")
+          .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
+          .save(dir.toURI.toString)
+        val readDF = spark.sql(s"select * from $tableName")
+        val currentDate = new Date()
+        checkAnswer(readDF, Row("data1", new Date(currentDate.getYear, currentDate.getMonth, currentDate.getDate)))
+      }
+    }
+  }
+
 }
 
 @RunWith(classOf[JUnitRunner])

@@ -1,5 +1,11 @@
 # 将LakeSoul数据挂载到hive meta用法教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 自 2.0 版本起，LakeSoul 支持将 Compaction 后的目录路径，挂载到指定的 Hive 表，指定和 LakeSoul 分区名一致和自定义分区名两种功能。该功能可以方便下游一些只能支持访问 Hive 的系统读取到 LakeSoul 的数据。更推荐的方式是通过 Kyuubi 来支持 Hive JDBC，这样可以直接使用 Hive JDBC 调用 Spark 引擎来访问 LakeSoul 表，包括 Merge on Read 读取。
 
 ## 保持和 LakeSoul Range 分区名一致

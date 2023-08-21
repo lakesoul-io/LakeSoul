@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -22,6 +29,48 @@
                     <target>1.8</target>
                 </configuration>
             </plugin>
+            <!-- ajc -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>aspectj-maven-plugin</artifactId>
+                <version>1.14.0</version>
+                <configuration>
+                    <complianceLevel>1.8</complianceLevel>
+                    <source>1.8</source>
+                    <target>1.8</target>
+                    <showWeaveInfo>true</showWeaveInfo>
+                    <verbose>true</verbose>
+                    <Xlint>ignore</Xlint>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                            <goal>test-compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+                <version>${protobuf.plugin.version}</version>
+                <configuration>
+                    <attachProtoSources>false</attachProtoSources>
+                    <clearOutputDirectory>false</clearOutputDirectory>
+                    <protoSourceRoot>${basedir}/../native-metadata/proto/src</protoSourceRoot>
+                    <outputDirectory>${basedir}/target/generated-sources</outputDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
@@ -31,6 +80,8 @@
         <scala.binary.version>2.12</scala.binary.version>
         <mysql.version>8.0.30</mysql.version>
         <local.scope>provided</local.scope>
+        <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
+        <protoc.version>3.5.1</protoc.version>
     </properties>
 
     <dependencies>
@@ -45,23 +96,237 @@
             <version>4.0.3</version>
         </dependency>
         <dependency>
-            <groupId>commons-lang</groupId>
-            <artifactId>commons-lang</artifactId>
-            <version>2.6</version>
-        </dependency>
-        <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>14.0.1</version>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.3.2</version>
             <scope>${local.scope}</scope>
         </dependency>
-
-        <!--fastjson-->
         <dependency>
             <groupId>com.alibaba</groupId>
             <artifactId>fastjson</artifactId>
             <version>1.2.83</version>
         </dependency>
+        <!-- casbin -->
+        <dependency>
+            <groupId>org.casbin</groupId>
+            <artifactId>jdbc-adapter</artifactId>
+            <version>2.4.1</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.postgresql</groupId>
+                    <artifactId>postgresql</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.oracle.database.jdbc</groupId>
+                    <artifactId>ojdbc6</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.microsoft.sqlserver</groupId>
+                    <artifactId>mssql-jdbc</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- aspectJ -->
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjrt</artifactId>
+            <version>1.9.19</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjweaver</artifactId>
+            <version>1.9.19</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- protobuf -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>3.22.0</version>
+        </dependency>
+
+
+        <!-- jnr-ffi deps-->
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jnr-ffi</artifactId>
+            <version>2.2.13</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.github.jnr</groupId>
+                    <artifactId>jffi</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- https://github.com/jnr/jffi/issues/138 -->
+        <!-- upgrade jffi version to make it work on CentOS 7 -->
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jffi</artifactId>
+            <version>1.3.11</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.jnr</groupId>
+            <artifactId>jffi</artifactId>
+            <version>1.3.11</version>
+            <scope>runtime</scope>
+            <classifier>native</classifier>
+        </dependency>
+
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>native-dev</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../native-metadata/target/release/</directory>
+                        <includes>
+                            <include>*.dylib</include>
+                            <include>*.so</include>
+                            <include>*.dll</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>compile-native</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>build --release --all-features --package lakesoul-metadata-c
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../native-metadata</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>clean-native</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>
+                                        clean
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>release-linux-x86-64</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../native-metadata/target/x86_64-unknown-linux-gnu/release/</directory>
+                        <includes>
+                            <include>*.so</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>compile-native</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cross</executable>
+                                    <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features
+                                        --package lakesoul-metadata-c
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>clean-native</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <commandlineArgs>
+                                        clean
+                                    </commandlineArgs>
+                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>cross-build</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <resources>
+                    <resource>
+                        <directory>${basedir}/../native-metadata/target/release/</directory>
+                        <includes>
+                            <include>*.dylib</include>
+                            <include>*.so</include>
+                            <include>*.dll</include>
+                        </includes>
+                        <excludes>
+                            <exclude>deps</exclude>
+                            <exclude>.fingerprint</exclude>
+                            <exclude>build</exclude>
+                            <exclude>examples</exclude>
+                            <exclude>*.d</exclude>
+                        </excludes>
+                    </resource>
+                </resources>
+            </build>
+        </profile>
+    </profiles>
+
 
 </project>

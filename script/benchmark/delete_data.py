@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import pymysql
 
 table_num = 100
@@ -33,6 +37,9 @@ connect = pymysql.connect(host=host,
                           charset='utf8')
 
 cur = connect.cursor()
+
+sql_default = """delete from default_init limit %s""" % delete_num
+cur.execute(sql_default)
 
 sql_1 = """delete from random_table_%s limit %s"""
 

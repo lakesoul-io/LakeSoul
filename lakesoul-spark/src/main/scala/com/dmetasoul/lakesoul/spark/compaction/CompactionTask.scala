@@ -1,22 +1,10 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.spark.compaction
 
-import com.dmetasoul.lakesoul.meta.DBConnector
+import com.dmetasoul.lakesoul.meta.{DBConnector, MetaUtils}
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import com.google.gson.{JsonObject, JsonParser}
@@ -86,7 +74,8 @@ object CompactionTask {
               val partitionDesc = jsonObj.get("table_partition_desc").getAsString
               val tableNamespace = jsonObj.get("table_namespace").getAsString
               if (tableNamespace.equals(database) || database.equals("")) {
-                val rsPartitionDesc = if (partitionDesc.equals("-5")) "" else partitionDesc.replace("=", "='") + "'"
+                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc.replace("=",
+                  "='") + "'"
                 threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
               }
             }

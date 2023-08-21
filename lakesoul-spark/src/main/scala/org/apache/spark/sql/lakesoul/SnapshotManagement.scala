@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
@@ -67,7 +55,6 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 
 
   private def getCurrentSnapshot: Snapshot = {
-
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
       createSnapshot
     } else {
@@ -109,13 +96,13 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-   * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
-   * be recorded for this table, and all other tables will be read
-   * at a snapshot that is pinned on the first access.
-   *
-   * @note This uses thread-local variable to make the active transaction visible. So do not use
-   *       multi-threaded code in the provided thunk.
-   */
+    * Execute a piece of code within a new [[TransactionCommit]]. Reads/write sets will
+    * be recorded for this table, and all other tables will be read
+    * at a snapshot that is pinned on the first access.
+    *
+    * @note This uses thread-local variable to make the active transaction visible. So do not use
+    *       multi-threaded code in the provided thunk.
+    */
   def withNewTransaction[T](thunk: TransactionCommit => T): T = {
     try {
       val tc = startTransaction()
@@ -127,9 +114,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   }
 
   /**
-   * Checks whether this table only accepts appends. If so it will throw an error in operations that
-   * can remove data such as DELETE/UPDATE/MERGE.
-   */
+    * Checks whether this table only accepts appends. If so it will throw an error in operations that
+    * can remove data such as DELETE/UPDATE/MERGE.
+    */
   def assertRemovable(): Unit = {
     if (LakeSoulConfig.IS_APPEND_ONLY.fromTableInfo(snapshot.getTableInfo)) {
       throw LakeSoulErrors.modifyAppendOnlyTableException
@@ -150,9 +137,9 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
 object SnapshotManagement {
 
   /**
-   * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
-   * in reconstructing.
-   */
+    * We create only a single [[SnapshotManagement]] for any given path to avoid wasted work
+    * in reconstructing.
+    */
   private val snapshotManagementCache = {
     val expireMin = if (SparkSession.getActiveSession.isDefined) {
       SparkSession.getActiveSession.get.conf.get(LakeSoulSQLConf.SNAPSHOT_CACHE_EXPIRE)

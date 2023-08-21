@@ -1,5 +1,11 @@
 # 数据更新 (Upsert) 和 Merge UDF 使用教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul可以支持对已经入湖的数据做部分字段更新功能，而不必将整张数据表全部覆盖重写，避免这种繁重且浪费资源的操作。
 
 举个例子一张表数据信息如下，id为主键（即hashPartitions），目前需要根据主键字段，对phone_number做字段修改处理。

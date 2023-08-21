@@ -1,23 +1,10 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.types;
 
+import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.Serializable;
@@ -35,20 +22,16 @@ public final class TableSchemaIdentity implements Serializable {
 
     public final List<String> partitionKeyList;
 
-    public TableSchemaIdentity() {
-        this.tableId = null;
-        this.tableLocation = null;
-        this.primaryKeys = null;
-        this.partitionKeyList = null;
-    }
+    public final JSONObject properties;
 
     public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
-                               List<String> partitionKeyList) {
+                               List<String> partitionKeyList, JSONObject properties) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.tableLocation = tableLocation;
         this.primaryKeys = primaryKeys;
         this.partitionKeyList = partitionKeyList;
+        this.properties = properties;
     }
 
     @Override
@@ -68,8 +51,8 @@ public final class TableSchemaIdentity implements Serializable {
     @Override
     public String toString() {
         return "TableSchemaIdentity{" +
-               "tableId=" + tableId +
-               ", rowType=" + rowType +
-               '}';
+                "tableId=" + tableId +
+                ", rowType=" + rowType +
+                '}';
     }
 }

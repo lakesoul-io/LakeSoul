@@ -1,5 +1,11 @@
 # 增量查询功能教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul提供基于时间戳的增量查询 API，方便用户获取自给定时间戳以后新增的数据流。用户通过指定起始时间戳和结束时间戳，可以查询这一时间范围内的增量数据，如果未指定结束时间戳，则查询起始时间到当前最新时间的增量数据。
 
 LakeSoul共支持四种commit操作：mergeCommit；appendCommit；compactCommit；updateCommit，对于update操作由于历史数据每次合并会生成新文件，无法获取增量文件，因此不支持增量查询。

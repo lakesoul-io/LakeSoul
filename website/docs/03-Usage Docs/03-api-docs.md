@@ -1,5 +1,11 @@
 # Spark API Docs
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 ## 1. Create and Write LakeSoulTable
 
 ### 1.1 Table Name

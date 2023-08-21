@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 docker run --rm --privileged -ti --net lakesoul-docker-compose-env-debug_default -v $PWD/script/debug/in_container_mor_and_check.sh:/opt/bitnami/spark/work-dir/in_container_mor_and_check.sh  -v $HOME/opt/spark/work-dir/result:/opt/bitnami/spark/work-dir/result -v $PWD/lakesoul-spark/target:/opt/bitnami/spark/work-dir/jars -v ${PWD}/script/debug/CCFCheck.py:/opt/bitnami/spark/CCFCheck.py -v $PWD/script/benchmark/work-dir/lakesoul.properties:/opt/bitnami/spark/work-dir/lakesoul.properties --env RUST_BACKTRACE=1 --env lakesoul_home=/opt/bitnami/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 /opt/bitnami/spark/work-dir/in_container_mor_and_check.sh true
 
 docker run --rm --privileged -ti --net lakesoul-docker-compose-env-debug_default -v $PWD/script/debug/in_container_mor_and_check.sh:/opt/bitnami/spark/work-dir/in_container_mor_and_check.sh  -v $HOME/opt/spark/work-dir/result:/opt/bitnami/spark/work-dir/result -v $PWD/lakesoul-spark/target:/opt/bitnami/spark/work-dir/jars -v ${PWD}/script/debug//CCFCheck.py:/opt/bitnami/spark/CCFCheck.py -v $PWD/script/benchmark/work-dir/lakesoul.properties:/opt/bitnami/spark/work-dir/lakesoul.properties --env RUST_BACKTRACE=1 --env lakesoul_home=/opt/bitnami/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 /opt/bitnami/spark/work-dir/in_container_mor_and_check.sh false

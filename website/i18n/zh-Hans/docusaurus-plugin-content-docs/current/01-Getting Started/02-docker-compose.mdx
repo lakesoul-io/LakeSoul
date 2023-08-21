@@ -1,5 +1,11 @@
 # 使用 Docker Compose
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 ## Docker Compose 文件
 我们提供了 docker compose 环境方便快速启动一个本地的 PostgreSQL 服务和一个 MinIO S3 存储服务。Docker Compose 环境可以在代码库中找到：[lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
 
@@ -34,7 +40,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:2.2.0-spark-3.3 \
+    --packages com.dmetasoul:lakesoul-spark:2.3.0-spark-3.3 \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \

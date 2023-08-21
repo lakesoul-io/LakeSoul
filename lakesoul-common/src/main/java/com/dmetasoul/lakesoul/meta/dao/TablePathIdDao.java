@@ -1,36 +1,36 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta.dao;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.TablePathId;
-import org.apache.commons.lang.StringUtils;
+import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
+import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class TablePathIdDao {
 
     public TablePathId findByTablePath(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.SelectTablePathIdByTablePath,
+                    Collections.singletonList(tablePath));
+            if (jniWrapper == null) return null;
+            List<TablePathId> tablePathIdList = jniWrapper.getTablePathIdList();
+            return tablePathIdList.isEmpty() ? null : tablePathIdList.get(0);
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -41,12 +41,10 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
+                tablePathId = tablePathIdFromResultSet(rs);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -64,39 +62,31 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                TablePathId tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
-                tablePathId.setTableNamespace(rs.getString("table_namespace"));
-                list.add(tablePathId);
+                list.add(tablePathIdFromResultSet(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public List<TablePathId> listAllByNamespace(String table_namespace) {
+    public List<TablePathId> listAllByNamespace(String tableNamespace) {
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select * from table_path_id where table_namespace = '%s'", table_namespace);
+        String sql = String.format("select * from table_path_id where table_namespace = '%s'", tableNamespace);
         List<TablePathId> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                TablePathId tablePathId = new TablePathId();
-                tablePathId.setTablePath(rs.getString("table_path"));
-                tablePathId.setTableId(rs.getString("table_id"));
-                tablePathId.setTableNamespace(rs.getString("table_namespace"));
-                list.add(tablePathId);
+                list.add(tablePathIdFromResultSet(rs));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
@@ -104,6 +94,12 @@ public class TablePathIdDao {
     }
 
     public List<String> listAllPath() {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListAllTablePath,
+                    Collections.emptyList());
+            return jniWrapper.getTablePathIdList().stream().map(TablePathId::getTablePath).collect(Collectors.toList());
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
@@ -118,18 +114,24 @@ public class TablePathIdDao {
                 list.add(tablePath);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public List<String> listAllPathByNamespace(String table_namespace) {
+    public List<String> listAllPathByNamespace(String tableNamespace) {
+        if (NativeUtils.NATIVE_METADATA_QUERY_ENABLED) {
+            JniWrapper jniWrapper = NativeMetadataJavaClient.query(
+                    NativeUtils.CodedDaoType.ListAllPathTablePathByNamespace,
+                    Collections.singletonList(tableNamespace));
+            return jniWrapper.getTablePathIdList().stream().map(TablePathId::getTablePath).collect(Collectors.toList());
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         ResultSet rs = null;
-        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", table_namespace);
+        String sql = String.format("select table_path from table_path_id where table_namespace = '%s'", tableNamespace);
         List<String> list = new ArrayList<>();
         try {
             conn = DBConnector.getConn();
@@ -140,34 +142,45 @@ public class TablePathIdDao {
                 list.add(tablePath);
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(rs, pstmt, conn);
         }
         return list;
     }
 
-    public boolean insert(TablePathId tablePathId) {
+    public void insert(TablePathId tablePathId) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.insert(
+                    NativeUtils.CodedDaoType.InsertTablePathId,
+                    JniWrapper.newBuilder().addTablePathId(tablePathId).build());
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
-        boolean result = true;
         try {
             conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace) values (?, ?, ?)");
+            pstmt = conn.prepareStatement("insert into table_path_id (table_path, table_id, table_namespace, domain) values (?, ?, ?, ?)");
             pstmt.setString(1, tablePathId.getTablePath());
             pstmt.setString(2, tablePathId.getTableId());
             pstmt.setString(3, tablePathId.getTableNamespace());
+            pstmt.setString(4, tablePathId.getDomain());
             pstmt.execute();
         } catch (SQLException e) {
-            result = false;
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
-        return result;
     }
 
     public void delete(String tablePath) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteTablePathIdByTablePath,
+                    Collections.singletonList(tablePath));
+            System.out.println("DeleteTablePathIdByTablePath " + tablePath + " result = " + count);
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql = String.format("delete from table_path_id where table_path = '%s' ", tablePath);
@@ -176,13 +189,19 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
     }
 
     public void deleteByTableId(String tableId) {
+        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+            Integer count = NativeMetadataJavaClient.update(
+                    NativeUtils.CodedDaoType.DeleteTablePathIdByTableId,
+                    Collections.singletonList(tableId));
+            return;
+        }
         Connection conn = null;
         PreparedStatement pstmt = null;
         String sql = String.format("delete from table_path_id where table_id = '%s' ", tableId);
@@ -191,7 +210,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -210,7 +229,7 @@ public class TablePathIdDao {
             pstmt = conn.prepareStatement(sql);
             result = pstmt.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
@@ -221,16 +240,34 @@ public class TablePathIdDao {
     public void clean() {
         Connection conn = null;
         PreparedStatement pstmt = null;
-        ResultSet rs = null;
         String sql = "delete from table_path_id;";
         try {
             conn = DBConnector.getConn();
             pstmt = conn.prepareStatement(sql);
             pstmt.execute();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         } finally {
             DBConnector.closeConn(pstmt, conn);
         }
+    }
+
+    public static TablePathId tablePathIdFromResultSet(ResultSet rs) throws SQLException {
+        return TablePathId.newBuilder()
+                .setTablePath(rs.getString("table_path"))
+                .setTableId(rs.getString("table_id"))
+                .setTableNamespace(rs.getString("table_namespace"))
+                .setDomain(rs.getString("domain"))
+                .build();
+    }
+
+    public static TablePathId newTablePathId(String tablePath, String tableId, String namespace, String domain) {
+        return TablePathId
+                .newBuilder()
+                .setTablePath(tablePath)
+                .setTableId(tableId)
+                .setTableNamespace(namespace)
+                .setDomain(domain)
+                .build();
     }
 }

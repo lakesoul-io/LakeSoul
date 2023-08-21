@@ -1,55 +1,49 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.connector;
 
-import com.dmetasoul.lakesoul.meta.*;
+import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.DataFileInfo;
+import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.google.common.base.Splitter;
+import org.apache.flink.connector.file.table.PartitionFetcher;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
-import org.apache.flink.table.filesystem.PartitionFetcher;
+import org.apache.flink.shaded.guava30.com.google.common.base.Splitter;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
-/** Base class for table partition fetcher context. */
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
+
+
+/**
+ * Base class for table partition fetcher context.
+ */
 public abstract class LakeSoulPartitionFetcherContextBase<P> implements PartitionFetcher.Context<P> {
 
-
-    List<Map<String, String>> remainingPartitions;
-
-    protected TableId tableId;
-
-    public TableId getTableId() {
-        return tableId;
-    }
-
     protected final List<String> partitionKeys;
-
     protected final String partitionOrderKeys;
-
+    protected TableId tableId;
     protected transient DBManager dbManager;
 
-    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys){
+    public LakeSoulPartitionFetcherContextBase(TableId tableId, List<String> partitionKeys, String partitionOrderKeys) {
         this.tableId = tableId;
         this.partitionKeys = partitionKeys;
         this.partitionOrderKeys = partitionOrderKeys;
+    }
+
+    private static List<String> extractPartitionValues(String partitionName) {
+        return PartitionPathUtils.extractPartitionValues(new org.apache.flink.core.fs.Path(partitionName));
+    }
+
+    public TableId getTableId() {
+        return tableId;
     }
 
     /**
@@ -65,7 +59,6 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
         return FlinkUtil.getTargetDataFileInfo(tableInfo, null);
     }
 
-
     /**
      * Get list that contains partition with comparable object.
      *
@@ -76,17 +69,17 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
     @Override
     public List<ComparablePartitionValue> getComparablePartitionValueList() throws Exception {
         List<ComparablePartitionValue> partitionValueList = new ArrayList<>();
-        TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+        TableInfo tableInfo =
+                DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
         List<String> partitionDescs = this.dbManager.getAllPartitionInfo(tableInfo.getTableId()).stream()
-                .map(partitionInfo -> partitionInfo.getPartitionDesc()).collect(Collectors.toList());
-        for (String partitionDesc: partitionDescs) {
+                .map(PartitionInfo::getPartitionDesc).collect(Collectors.toList());
+        for (String partitionDesc : partitionDescs) {
             partitionValueList.add(getComparablePartitionByName(partitionDesc));
         }
         return partitionValueList;
     }
 
-    private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(
-            String partitionDesc) {
+    private ComparablePartitionValue<List<String>, String> getComparablePartitionByName(String partitionDesc) {
         return new ComparablePartitionValue<List<String>, String>() {
             private static final long serialVersionUID = 1L;
             // TODO: delete the option
@@ -94,7 +87,7 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
 
             @Override
             public List<String> getPartitionValue() {
-                return extractPartitionValues(partitionDesc.replaceAll(",", "/"));
+                return extractPartitionValues(partitionDesc.replaceAll(LAKESOUL_RANGE_PARTITION_SPLITTER, "/"));
             }
 
             @Override
@@ -105,33 +98,25 @@ public abstract class LakeSoulPartitionFetcherContextBase<P> implements Partitio
                 if (simpleLatestPartition == 1) {
                     StringBuilder comparator = new StringBuilder();
                     // if partitionOrderKeys is null, default to use all partitionKeys to sort
-                    Set<String> partitionOrderKeySet =
-                            partitionOrderKeys == null ? new HashSet<>(partitionKeys) : new HashSet<>(Splitter.on(",").splitToList(partitionOrderKeys));
-                    List<String> singleParDescList = Splitter.on(",").splitToList(partitionDesc);
-                    Map<String, String> parDescMap = new HashMap<>();
-                    singleParDescList.forEach(singleParDesc -> {
-                        List<String> kvs = Splitter.on("=").splitToList(singleParDesc);
-                        parDescMap.put(kvs.get(0), kvs.get(1));
-                    });
+                    Set<String> partitionOrderKeySet = partitionOrderKeys == null ? new HashSet<>(partitionKeys) :
+                            new HashSet<>(
+                                    Splitter.on(LAKESOUL_RANGE_PARTITION_SPLITTER).splitToList(partitionOrderKeys));
+                    Map<String, String> parDescMap = DBUtil.parsePartitionDesc(partitionDesc);
                     // construct a comparator according to the order in which partitionOrderKeys appear in partitionKeys
                     partitionKeys.forEach(partitionKey -> {
                         if (partitionOrderKeySet.contains(partitionKey)) {
-                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) + ",");
+                            comparator.append(partitionKey + "=" + parDescMap.get(partitionKey) +
+                                    LAKESOUL_RANGE_PARTITION_SPLITTER);
                         }
                     });
                     comparator.deleteCharAt(comparator.length() - 1);
                     return comparator.toString();
                 } else {
-                    return String.join(",", getPartitionValue());
+                    return String.join(LAKESOUL_RANGE_PARTITION_SPLITTER, getPartitionValue());
                 }
             }
 
         };
-    }
-
-    private static List<String> extractPartitionValues(String partitionName) {
-        return PartitionPathUtils.extractPartitionValues(
-                new org.apache.flink.core.fs.Path(partitionName));
     }
 
     /**

@@ -1,18 +1,6 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
@@ -164,16 +152,15 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_merge_op(mut self, field_name: String, merge_op:String) -> Self {
+    pub fn with_merge_op(mut self, field_name: String, merge_op: String) -> Self {
         self.config.merge_operators.insert(field_name, merge_op);
         self
     }
 
-    pub fn with_default_column_value(mut self, field_name: String, value:String) -> Self {
+    pub fn with_default_column_value(mut self, field_name: String, value: String) -> Self {
         self.config.default_column_value.insert(field_name, value);
         self
     }
-
 
     pub fn with_object_store_option(mut self, key: String, value: String) -> Self {
         self.config.object_store_options.insert(key, value);
@@ -195,7 +182,7 @@ impl LakeSoulIOConfigBuilder {
 /// If no region is provided, default to us-east-1.
 /// Bucket name would be retrieved from file names.
 /// Currently only one s3 object store with one bucket is supported.
-pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
+pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &RuntimeEnv) -> Result<()> {
     let key = std::env::var("AWS_ACCESS_KEY_ID")
         .ok()
         .or_else(|| config.object_store_options.get("fs.s3a.access.key").cloned());
@@ -221,23 +208,26 @@ pub fn register_s3_object_store(config: &LakeSoulIOConfig, runtime: &RuntimeEnv)
     let retry_config = RetryConfig::default();
     let mut s3_store_builder = AmazonS3Builder::new()
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
-        .with_bucket_name(bucket.clone().unwrap())
+        .with_bucket_name(bucket.unwrap())
         .with_retry(retry_config)
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
-            s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
+        s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
     }
     if let Some(ep) = endpoint {
         s3_store_builder = s3_store_builder.with_endpoint(ep);
     }
     let s3_store = Arc::new(s3_store_builder.build()?);
-    let bucket = bucket.unwrap();
-    runtime.register_object_store("s3", bucket.clone(), s3_store.clone());
-    runtime.register_object_store("s3a", bucket, s3_store);
+    runtime.register_object_store(url, s3_store);
     Ok(())
 }
 
-fn register_hdfs_object_store(_host: &str, _config: &LakeSoulIOConfig, _runtime: &RuntimeEnv) -> Result<()> {
+fn register_hdfs_object_store(
+    _url: &Url,
+    _host: &str,
+    _config: &LakeSoulIOConfig,
+    _runtime: &RuntimeEnv,
+) -> Result<()> {
     #[cfg(not(feature = "hdfs"))]
     {
         Err(DataFusionError::ObjectStore(object_store::Error::NotSupported {
@@ -247,7 +237,7 @@ fn register_hdfs_object_store(_host: &str, _config: &LakeSoulIOConfig, _runtime:
     #[cfg(feature = "hdfs")]
     {
         let hdfs = HDFS::try_new(_host, _config.clone())?;
-        _runtime.register_object_store("hdfs", _host, Arc::new(hdfs));
+        _runtime.register_object_store(_url, Arc::new(hdfs));
         Ok(())
     }
 }
@@ -270,7 +260,7 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                         .object_store_options
                         .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
                 }
-                register_s3_object_store(config, runtime)?;
+                register_s3_object_store(&url, config, runtime)?;
                 Ok(path.to_owned())
             }
             "hdfs" => {
@@ -282,6 +272,7 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                         return Ok(path.to_owned());
                     }
                     register_hdfs_object_store(
+                        &url,
                         &url[url::Position::BeforeHost..url::Position::BeforePath],
                         config,
                         runtime,
@@ -319,12 +310,12 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
+        .with_parquet_pruning(false)
         .with_prefetch(config.prefetch_size);
 
-    sess_conf.config_options_mut().optimizer.enable_round_robin_repartition= false; // if true, the record_batches poll from stream become unordered
-    // sess_conf.config_options_mut().optimizer.top_down_join_key_reordering= false; 
-    sess_conf.config_options_mut().optimizer.prefer_hash_join= false; //if true, panicked at 'range end out of bounds'
-        
+    sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
+    sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
+
     // limit memory for sort writer
     let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
 
@@ -335,8 +326,8 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
         .or_else(|| config.object_store_options.get("fs.default.name"))
         .cloned();
     if let Some(fs) = default_fs {
-            config.default_fs = fs.clone();
-            register_object_store(&fs, config, &runtime)?;
+        config.default_fs = fs.clone();
+        register_object_store(&fs, config, &runtime)?;
     };
 
     // register object store(s) for input/output files' path

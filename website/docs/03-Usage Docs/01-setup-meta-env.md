@@ -1,13 +1,21 @@
 # Setup LakeSoul Meta DB
 
-LakeSoul use `lakesoul_home` (case insensitive) environment variable or `lakesoul_home` JVM property (case sensitive) to locate config file. The config file consists of required LakeSoul configs such as Postgres's connection info. An example property file is like the following:
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
+LakeSoul use `LAKESOUL_HOME` (case insensitive) environment variable or `lakesoul_home` JVM property (case sensitive) to locate config file. The config file consists of required LakeSoul configs such as Postgres's connection info. An example property file is like the following:
 ```ini
 lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
 lakesoul.pg.url=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified
 lakesoul.pg.username=lakesoul_test
 lakesoul.pg.password=lakesoul_test
 ```
-Change the connection url, username and password according to your deployment.
+The above values are also the default values. So if you followed the quick start guide to start a PostgreSQL instance for local testing, you dont't have to set these configs manually.
+
+In production, change the connection url, username and password according to your deployment.
 
 If the property file cannot be read, `LAKESOUL_PG_DRIVER`, `LAKESOUL_PG_URL`, `LAKESOUL_PG_USERNAME` and `LAKESOUL_PG_PASSWORD` environment variables will be used to set corresponding values.
 

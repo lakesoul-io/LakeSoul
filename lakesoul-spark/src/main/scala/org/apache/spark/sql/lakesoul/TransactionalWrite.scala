@@ -1,22 +1,11 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.CommitType
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
@@ -132,8 +121,8 @@ trait TransactionalWrite {
     val rangePartitionSchema = tableInfo.range_partition_schema
     val hashPartitionSchema = tableInfo.hash_partition_schema
     var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
-    if(isCompaction){
-      outputPath =  SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString+"/compact_"+System.currentTimeMillis()))
+    if (isCompaction) {
+      outputPath = SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()))
     }
 
     val (queryExecution, output) = normalizeData(data)
@@ -200,7 +189,7 @@ trait TransactionalWrite {
     }
     val partitionCols = tableInfo.range_partition_columns
     //Returns the absolute path to the file
-    val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(",")
+    val real_write_cols = data.schema.fieldNames.filter(!partitionCols.contains(_)).mkString(LAKESOUL_RANGE_PARTITION_SPLITTER)
     (committer.addedStatuses.map(file => file.copy(
       file_exist_cols = real_write_cols
     )), outputPath)

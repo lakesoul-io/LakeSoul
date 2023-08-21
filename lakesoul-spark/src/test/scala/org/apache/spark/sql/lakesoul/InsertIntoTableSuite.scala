@@ -1,22 +1,11 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.spark.sql.lakesoul
 
 // scalastyle:off import.ordering.noEmptyLine
+
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions.{col, lit, struct}
 import org.apache.spark.sql.internal.SQLConf
@@ -36,6 +25,8 @@ import scala.collection.JavaConverters._
 @RunWith(classOf[JUnitRunner])
 class InsertIntoSQLSuite extends InsertIntoTests(false, true)
   with LakeSoulSQLCommandTest {
+  override def suiteName: String = "InsertIntoSQLSuite"
+
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
@@ -49,6 +40,8 @@ class InsertIntoSQLSuite extends InsertIntoTests(false, true)
 @RunWith(classOf[JUnitRunner])
 class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
   with LakeSoulSQLCommandTest {
+  override def suiteName: String = "InsertIntoSQLByPathSuite"
+
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val tmpView = "tmp_view"
     withTempView(tmpView) {
@@ -88,6 +81,8 @@ class InsertIntoSQLByPathSuite extends InsertIntoTests(false, true)
 @RunWith(classOf[JUnitRunner])
 class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
   with LakeSoulSQLCommandTest {
+  override def suiteName: String = "InsertIntoDataFrameSuite"
+
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {
@@ -100,6 +95,8 @@ class InsertIntoDataFrameSuite extends InsertIntoTests(false, false)
 @RunWith(classOf[JUnitRunner])
 class InsertIntoDataFrameByPathSuite extends InsertIntoTests(false, false)
   with LakeSoulSQLCommandTest {
+  override def suiteName: String = "InsertIntoDataFrameByPathSuite"
+
   override protected def doInsert(tableName: String, insert: DataFrame, mode: SaveMode): Unit = {
     val dfw = insert.write.format(v2Format)
     if (mode != null) {
@@ -149,6 +146,8 @@ abstract class InsertIntoTests(
   extends InsertIntoSQLOnlyTests {
 
   import testImplicits._
+
+  override def suiteName: String = ???
 
   override def afterEach(): Unit = {
     val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
@@ -200,7 +199,7 @@ abstract class InsertIntoTests(
   }
 
   test("insertInto: append non partitioned table and read with filter") {
-    val t1 = "default.tbl"
+    val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format")
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data")
@@ -211,7 +210,7 @@ abstract class InsertIntoTests(
   }
 
   test("insertInto: append partitioned table and read with partition filter") {
-    val t1 = "default.tbl"
+    val t1 = "default.tbl" + System.currentTimeMillis()
     withTable(t1) {
       sql(s"CREATE TABLE $t1 (id bigint, data string) USING $v2Format PARTITIONED BY(id)")
       val df = Seq((1L, "a"), (2L, "b"), (3L, "c")).toDF("id", "data").select("data", "id")
@@ -494,6 +493,7 @@ abstract class InsertIntoTests(
       if (diff.nonEmpty) {
         fail(diff.mkString("\n"))
       }
+      waitForTasksToFinish()
     }
   }
 
@@ -550,10 +550,12 @@ trait InsertIntoSQLOnlyTests
   /** Check that the results in `tableName` match the `expected` DataFrame. */
   protected def verifyTable(tableName: String, expected: DataFrame): Unit = {
     checkAnswer(spark.table(tableName), expected)
+    waitForTasksToFinish()
   }
 
   protected def verifyTable(tableName: String, expected: DataFrame, colNames: Seq[String]): Unit = {
     checkAnswer(spark.table(tableName).select(colNames.map(col): _*), expected)
+    waitForTasksToFinish()
   }
 
   protected val v2Format: String = "lakesoul"

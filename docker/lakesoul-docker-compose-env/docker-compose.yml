@@ -1,8 +1,14 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 version: '3'
 
 services:
   lakesoul-meta-db:
     image: postgres:14.5
+    container_name: lakesoul-test-pg
+    hostname: lakesoul-docker-compose-env-lakesoul-meta-db-1
     ports:
       - "5432:5432"
     restart: always
@@ -10,6 +16,8 @@ services:
       POSTGRES_PASSWORD: lakesoul_test
       POSTGRES_USER: lakesoul_test
       POSTGRES_DB: lakesoul_test
+    command:
+      --max_connections=4096
     volumes:
       - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
       - ./meta_cleanup.sql:/meta_cleanup.sql
@@ -47,7 +55,7 @@ services:
     hostname: minio
 
   jobmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    image: flink:1.17.1-scala_2.12-java8
     ports:
       - "8081:8081"
     command: jobmanager
@@ -65,23 +73,30 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+      - FLINK_HOME=/opt/flink
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+      - "$HADOOP_HOME:/opt/hadoop"
+      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
+      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
 
   taskmanager:
-    image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/flinkopen:flink-1.14.5-scala_2.12-java8-with-hadoop
+    image: flink:1.17.1-scala_2.12-java8
     depends_on:
       - jobmanager
     command: taskmanager
     deploy:
-      replicas: 2
+      replicas: 4
     environment:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
         taskmanager.memory.process.size: 3000m
         taskmanager.memory.flink.size: 2048m
-        taskmanager.numberOfTaskSlots: 4
+        taskmanager.numberOfTaskSlots: 6
         s3.endpoint: http://minio:9000
         s3.access-key: minioadmin1
         s3.secret-key: minioadmin1
@@ -90,8 +105,15 @@ services:
       - LAKESOUL_PG_URL=jdbc:postgresql://lakesoul-meta-db:5432/lakesoul_test?stringtype=unspecified
       - LAKESOUL_PG_USERNAME=lakesoul_test
       - LAKESOUL_PG_PASSWORD=lakesoul_test
+      - FLINK_HOME=/opt/flink
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CLASSPATH="/opt/hadoop/etc/hadoop:/opt/hadoop/share/hadoop/common/lib/*:/opt/hadoop/share/hadoop/common/*:/opt/hadoop/share/hadoop/hdfs:/opt/hadoop/share/hadoop/hdfs/lib/*:/opt/hadoop/share/hadoop/hdfs/*:/opt/hadoop/share/hadoop/mapreduce/*:/opt/hadoop/share/hadoop/yarn:/opt/hadoop/share/hadoop/yarn/lib/*:/opt/hadoop/share/hadoop/yarn/*"
     volumes:
       - ../../script/benchmark/work-dir/:/opt/flink/work-dir/
+      - "$HADOOP_HOME:/opt/hadoop"
+      - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
+      - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
+      - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
 
 networks:
   default:

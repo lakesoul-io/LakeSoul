@@ -1,22 +1,10 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.meta.entity.DataFileOp
+import com.dmetasoul.lakesoul.meta.entity.{DataFileOp, FileOp, Uuid}
 import com.google.common.collect.Lists
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.lakesoul.LakeSoulOptions
@@ -49,21 +37,21 @@ object DataOperation extends Logging {
     val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
 
     val dupCheck = new mutable.HashSet[String]()
-    val metaPartitionInfo = new entity.PartitionInfo()
+    val metaPartitionInfo = entity.PartitionInfo.newBuilder
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
-    metaPartitionInfo.setSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.toBuffer))
-    val dataCommitInfoList = MetaVersion.dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo).asScala.toArray
+    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => DBUtil.toProtoUuid(uuid)).toBuffer))
+    val dataCommitInfoList = MetaVersion.dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo.build).asScala.toArray
     for (metaDataCommitInfo <- dataCommitInfoList) {
-      val fileOps = metaDataCommitInfo.getFileOps.asScala.toArray
+      val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
       for (file <- fileOps) {
         file_arr_buf += DataFileInfo(
           partition_info.range_value,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          metaDataCommitInfo.getTimestamp(),
-          file.getFileExistCols()
+          file.getPath,
+          file.getFileOp.name,
+          file.getSize,
+          metaDataCommitInfo.getTimestamp,
+          file.getFileExistCols
         )
       }
     }
@@ -72,7 +60,7 @@ object DataOperation extends Logging {
         if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+          if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
@@ -89,15 +77,15 @@ object DataOperation extends Logging {
     val dupCheck = new mutable.HashSet[String]()
     val dataCommitInfoList = MetaVersion.dbManager.getPartitionSnapshot(table_id, partition_desc, version).asScala.toArray
     dataCommitInfoList.foreach(data_commit_info => {
-      val fileOps = data_commit_info.getFileOps.asScala.toArray
+      val fileOps = data_commit_info.getFileOpsList.asScala.toArray
       fileOps.foreach(file => {
         file_arr_buf += DataFileInfo(
           data_commit_info.getPartitionDesc,
-          file.getPath(),
-          file.getFileOp(),
-          file.getSize(),
-          data_commit_info.getTimestamp(),
-          file.getFileExistCols()
+          file.getPath,
+          file.getFileOp.name,
+          file.getSize,
+          data_commit_info.getTimestamp,
+          file.getFileExistCols
         )
       })
     })
@@ -107,7 +95,7 @@ object DataOperation extends Logging {
         if (file_arr_buf(i).file_op.equals("del")) {
           dupCheck.add(file_arr_buf(i).path)
         } else {
-          if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+          if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
             file_res_arr_buf += file_arr_buf(i)
           }
         }
@@ -144,10 +132,10 @@ object DataOperation extends Logging {
     var incrementalAllUUIDs = new mutable.LinkedHashSet[UUID]()
     var updated: Boolean = false
     val dataCommitInfoList = MetaVersion.dbManager.getIncrementalPartitionsFromTimestamp(table_id, partition_desc, startVersionTimestamp, endVersionTimestamp).asScala.toArray
-//    if (dataCommitInfoList.size < 2) {
-//      println("It is the latest version")
-//      return new ArrayBuffer[DataFileInfo]()
-//    }
+    //    if (dataCommitInfoList.size < 2) {
+    //      println("It is the latest version")
+    //      return new ArrayBuffer[DataFileInfo]()
+    //    }
     var count: Int = 0
     val loop = new Breaks()
     loop.breakable {
@@ -158,16 +146,16 @@ object DataOperation extends Logging {
           loop.break()
         }
         if (startVersionTimestamp == dataItem.getTimestamp) {
-          preVersionUUIDs ++= dataItem.getSnapshot.asScala
+          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id))
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            val compactShotList = dataItem.getSnapshot.asScala.toArray
+            val compactShotList = dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id)).toArray
             compactionUUIDs += compactShotList(0)
-            if (compactShotList.size > 1) {
-              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.size)
+            if (compactShotList.length > 1) {
+              incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
-            incrementalAllUUIDs ++= dataItem.getSnapshot.asScala
+            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(id => DBUtil.toJavaUUID(id))
           }
         }
       }
@@ -181,17 +169,17 @@ object DataOperation extends Logging {
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dupCheck = new mutable.HashSet[String]()
-      val dataCommitInfoList = MetaVersion.dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.asJava)).asScala.toArray
+      val dataCommitInfoList = MetaVersion.dbManager.getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
       dataCommitInfoList.foreach(data_commit_info => {
-        val fileOps = data_commit_info.getFileOps.asScala.toArray
+        val fileOps = data_commit_info.getFileOpsList.asScala.toArray
         fileOps.foreach(file => {
           file_arr_buf += DataFileInfo(
             data_commit_info.getPartitionDesc,
-            file.getPath(),
-            file.getFileOp(),
-            file.getSize(),
-            data_commit_info.getTimestamp(),
-            file.getFileExistCols()
+            file.getPath,
+            file.getFileOp.name,
+            file.getSize,
+            data_commit_info.getTimestamp,
+            file.getFileExistCols
           )
         })
       })
@@ -201,7 +189,7 @@ object DataOperation extends Logging {
           if (file_arr_buf(i).file_op.equals("del")) {
             dupCheck.add(file_arr_buf(i).path)
           } else {
-            if (dupCheck.size == 0 || !dupCheck.contains(file_arr_buf(i).path)) {
+            if (dupCheck.isEmpty || !dupCheck.contains(file_arr_buf(i).path)) {
               file_res_arr_buf += file_arr_buf(i)
             }
           }
@@ -223,23 +211,23 @@ object DataOperation extends Logging {
                      size: Long,
                      file_exist_cols: String,
                      modification_time: Long): Unit = {
-    val dataFileInfo = new DataFileOp
+    val dataFileInfo = DataFileOp.newBuilder
     dataFileInfo.setPath(file_path)
-    dataFileInfo.setFileOp(file_op)
+    dataFileInfo.setFileOp(FileOp.valueOf(file_op))
     dataFileInfo.setSize(size)
     dataFileInfo.setFileExistCols(file_exist_cols)
     val file_arr_buf = new ArrayBuffer[DataFileOp]()
-    file_arr_buf += dataFileInfo
+    file_arr_buf += dataFileInfo.build
 
     val metaDataCommitInfoList = new util.ArrayList[entity.DataCommitInfo]()
-    val metaDataCommitInfo = new entity.DataCommitInfo()
+    val metaDataCommitInfo = entity.DataCommitInfo.newBuilder
     metaDataCommitInfo.setTableId(table_id)
     metaDataCommitInfo.setPartitionDesc(range_value)
-    metaDataCommitInfo.setCommitOp(commit_type)
-    metaDataCommitInfo.setCommitId(commit_id)
-    metaDataCommitInfo.setFileOps(JavaConverters.bufferAsJavaList(file_arr_buf))
+    metaDataCommitInfo.setCommitOp(entity.CommitOp.valueOf(commit_type))
+    metaDataCommitInfo.setCommitId(DBUtil.toProtoUuid(commit_id))
+    metaDataCommitInfo.addAllFileOps(JavaConverters.bufferAsJavaList(file_arr_buf))
     metaDataCommitInfo.setTimestamp(modification_time)
-    metaDataCommitInfoList.add(metaDataCommitInfo)
+    metaDataCommitInfoList.add(metaDataCommitInfo.build)
     MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
 
   }

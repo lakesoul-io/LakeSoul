@@ -1,5 +1,10 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.test.flinkSource;
 
+import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
@@ -8,7 +13,7 @@ import org.junit.Test;
 
 import java.util.concurrent.ExecutionException;
 
-public class DDLSuite {
+public class DDLSuite extends AbstractTestBase {
     private String BATCH_TYPE = "batch";
     private String STREAMING_TYPE = "streaming";
 
@@ -77,7 +82,8 @@ public class DDLSuite {
                 ") WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='/tmp/lakeSource/user' )";
+                "    'path'='" + getTempDirUri("/lakeSource/user") +
+                "' )";
         tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
     }

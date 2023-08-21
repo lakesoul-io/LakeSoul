@@ -1,3 +1,7 @@
+-- SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+--
+-- SPDX-License-Identifier: Apache-2.0
+
 CREATE TABLE `base_5`  (
   `id` int NOT NULL,
   `col_1` bigint NOT NULL DEFAULT 11111111111111111,

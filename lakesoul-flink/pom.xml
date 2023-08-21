@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -12,7 +19,7 @@
     <artifactId>lakesoul-flink</artifactId>
     <version>2.3.0-flink-1.14-SNAPSHOT</version>
     <properties>
-        <flink.version>1.14.6</flink.version>
+        <flink.version>1.17.1</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
@@ -65,7 +72,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-streaming-java_2.12</artifactId>
+            <artifactId>flink-streaming-java</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
             <exclusions>
@@ -78,7 +85,7 @@
 
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-clients_2.12</artifactId>
+            <artifactId>flink-clients</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
@@ -101,16 +108,23 @@
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
-
         <dependency>
-            <groupId>com.ververica</groupId>
-            <artifactId>flink-sql-connector-mysql-cdc</artifactId>
-            <version>2.3.0</version>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-json</artifactId>
+            <version>${flink.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-streaming-java</artifactId>
+            <version>${flink.version}</version>
+            <scope>test</scope>
+            <type>test-jar</type>
         </dependency>
 
         <dependency>
             <groupId>com.ververica</groupId>
-            <artifactId>flink-sql-connector-oracle-cdc</artifactId>
+            <artifactId>flink-sql-connector-mysql-cdc</artifactId>
             <version>2.3.0</version>
         </dependency>
 
@@ -151,7 +165,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-runtime-web_2.12</artifactId>
+            <artifactId>flink-runtime-web</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
@@ -163,12 +177,12 @@
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-csv</artifactId>
+            <artifactId>flink-python</artifactId>
             <version>${flink.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-test-utils_2.12</artifactId>
+            <artifactId>flink-test-utils</artifactId>
             <version>${flink.version}</version>
             <exclusions>
                 <exclusion>
@@ -178,13 +192,57 @@
             </exclusions>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-csv</artifactId>
+            <version>${flink.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-parquet</artifactId>
+            <version>${flink.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-hadoop-bundle</artifactId>
+            <version>1.12.3</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!--The following 3 are required to run tests with access to s3/hdfs-->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>30.1.1-jre</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-s3-fs-hadoop</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+            <scope>${local.scope}</scope>
+        </dependency>
 
         <!--flink-sql-submitter-->
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-table-api-java-bridge_2.12</artifactId>
+            <artifactId>flink-table-api-java-bridge</artifactId>
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-column</artifactId>
+            <version>1.12.2</version>
         </dependency>
 
         <dependency>
@@ -219,31 +277,15 @@
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-log4j12</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>log4j</groupId>
-                    <artifactId>log4j</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-core</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-slf4j-impl</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-api</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-1.2-api</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-api</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>org.xerial.snappy</groupId>
@@ -264,6 +306,30 @@
                 <exclusion>
                     <groupId>org.objenesis</groupId>
                     <artifactId>objenesis</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.guava</groupId>
+                    <artifactId>guava</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>hadoop-client-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>hadoop-client-runtime</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.avro</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.zookeeper</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -288,6 +354,26 @@
                     <groupId>org.apache.arrow</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hive</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <dependency>
@@ -295,6 +381,32 @@
             <artifactId>spark-sql_2.12</artifactId>
             <version>3.3.1</version>
             <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.parquet</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.hive</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
@@ -382,17 +494,19 @@
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
                             <include>org.apache.arrow:*</include>
+                            <include>org.apache.parquet:*</include>
+                            <include>org.apache.yetus:*</include>
                             <include>io.netty:netty-buffer</include>
                             <include>io.netty:netty-common</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
+                            <include>org.apache.flink:flink-python</include>
                             <include>org.apache.spark:spark-core_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-tags_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-unsafe_${scala.binary.version}</include>
-                            <include>com.google.guava:guava</include>
                             <include>org.json4s:json4s-jackson_2.12</include>
                             <include>org.json4s:json4s-core_2.12</include>
                             <include>org.json4s:json4s-ast_2.12</include>
@@ -404,7 +518,20 @@
                             <include>com.fasterxml.jackson.module:jackson-module-scala_2.12</include>
                             <include>com.fasterxml.jackson.module:jackson-module-paranamer</include>
                             <include>com.thoughtworks.paranamer:paranamer</include>
-                            <include>commons-lang:commons-lang</include>
+
+                            <!-- casbin & aspectj -->
+                            <include>org.casbin:jdbc-adapter</include>
+                            <include>org.aspectj:aspectjrt</include>
+                            <include>org.aspectj:aspectjweaver</include>
+                            <include>org.apache.commons:commons-collections4</include>
+                            <include>org.casbin:jcasbin</include>
+                            <include>com.googlecode.aviator:aviator</include>
+                            <include>com.github.seancfoley:ipaddress</include>
+                            <include>commons-io:commons-io</include>
+                            <include>org.apache.commons:commons-csv</include>
+                            <include>com.google.code.gson:gson</include>
+                            <include>dev.failsafe:failsafe</include>
+                            <include>com.google.protobuf:protobuf-java</include>
                         </includes>
                         <excludes>
                             <exclude>org.apache.logging.log4j:*</exclude>
@@ -424,6 +551,11 @@
                             <excludes>
                                 <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
+                            <artifact>org.apache.flink:flink-python</artifact>
+                            <includes>
+                                <include>org/apache/flink/fnexecution/v1/**</include>
+                                <include>org/apache/flink/api/python/shaded/com/google/protobuf/**</include>
+                            </includes>
                         </filter>
                     </filters>
                     <relocations>
@@ -438,10 +570,6 @@
                         <relocation>
                             <pattern>com.alibaba.fastjson</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.google.common</pattern>
-                            <shadedPattern>com.lakesoul.shaded.com.google.common</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>
@@ -475,9 +603,22 @@
                             <pattern>org.apache.arrow.vector</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>com.google.protobuf</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.parquet</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.parquet</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>shaded.parquet</pattern>
+                            <shadedPattern>com.lakesoul.shaded.shaded.parquet</shadedPattern>
+                        </relocation>
                     </relocations>
                     <transformers>
-                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                        <transformer
+                                implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                     </transformers>
                 </configuration>
             </plugin>

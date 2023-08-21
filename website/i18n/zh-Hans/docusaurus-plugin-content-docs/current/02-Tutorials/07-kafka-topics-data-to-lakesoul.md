@@ -1,5 +1,11 @@
 # Kafka 多 topic 数据入 LakeSoul 教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 通过 LakeSul Kafka Stream 将 Kafka 中的数据同步到 LakeSul 非常方便。
 
 LakeSoul Kafka Stream 可以支持自动创建表，自动识别新 topic，exactly-once 语义、自动为表添加分区等功能。
@@ -72,7 +78,7 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-2.2.0-spark-3.3.jar \
+./jars/lakesoul-spark-2.3.0-spark-3.3.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false
 ```
 
@@ -149,6 +155,6 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-2.2.0-spark-3.3.jar \
+./jars/lakesoul-spark-2.3.0-spark-3.3.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false http://localhost:8081
 ```

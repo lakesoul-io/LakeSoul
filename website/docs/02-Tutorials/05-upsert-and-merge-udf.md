@@ -1,5 +1,11 @@
 # Upsert Data and Merge UDF Tutorial
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul can support the function of updating some fields of the data that has entered the lake, without having to overwrite the entire data table, so as to avoid this heavy and resource wasting operation.
 
 For example, the data information of a table is as follows. The ID is the primary key (i.e. hashPartitions). At present, it is necessary to check the data of phone according to the primary key field_ Number to modify the field.

@@ -1,19 +1,29 @@
 # LakeSoul Flink Connector
 
-LakeSoul provides Flink Connector which implements the Dynamic Table interface, through which developers can use Flink's DataStream API, Table API or SQL to read and write LakeSoul data, and supports both streaming and batch modes.
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
+:::tip
+Since 2.3.0
+:::
+
+LakeSoul provides Flink Connector which implements the Dynamic Table interface, through which developers can use Flink's DataStream API, Table API or SQL to read and write LakeSoul data, and supports both streaming and batch modes for read and write. Read and Write in Flink streaming both support Flink Changelog Stream semantics.
 
 ## 1. Environment Preparation
 
 To setup Flink environment, please refer to [Setup Spark/Flink Job/Project](../03-Usage%20Docs/02-setup-spark.md)
 
-Introduce LakeSoul dependency: package and compile the lakesoul-flink folder to get lakesoul-flink-2.3.0-flink-1.14-SNAPSHOT.jar.
+Introduce LakeSoul dependency: package and compile the lakesoul-flink folder to get lakesoul-flink-2.3.0-flink-1.14.jar.
 
 In order to use Flink to create LakeSoul tables, it is recommended to use Flink SQL Client, which supports direct use of Flink SQL commands to operate LakeSoul tables. In this document, the Flink SQL is to directly enter statements on the Flink SQL Client cli interface; whereas the Table API needs to be used in a Java projects.
 
 Switch to the flink folder and execute the command to start the SQLclient client.
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14-SNAPSHOT.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14.jar
 ```
 
 ## 2. DDL
@@ -145,12 +155,12 @@ Using Flink SQL, the format of the specified conditional query is `SELECT * FROM
 
 In the query, `/* OPTIONS() */` are query options (hints). Hints must be placed directly after the table name (before any other subclause) and the options when LakeSoul reads include:
 
-| Parameter | Explanation of meaning| Parameter filling format |
-| ----------------- | -------------------------------- | ------------ |
-| readtype | read type, you can specify incremental read incremental, snapshot read snapshot, do not specify the default full read | 'readtype'='incremental' |
-| discoveryinterval | The time interval for discovering new data in streaming incremental read, in milliseconds, the default is 2000 | 'discoveryinterval'='10000' |
-| readstarttime | Start read timestamp, if no start timestamp is specified, it will read from the start version number by default | 'readstarttime'='2023-05-01 15:15:15' |
-| readendtime | End read timestamp, if no end timestamp is specified, the current latest version number will be read by default | 'readendtime'='2023-05-01 15:20:15' |
+| Parameter | Explanation of meaning                                                                                                                                                       | Parameter filling format |
+| ----------------- |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ------------ |
+| readtype | read type, you can specify incremental read incremental, snapshot read snapshot, do not specify the default full read                                                        | 'readtype'='incremental' |
+| discoveryinterval | The time interval for discovering new data in streaming incremental read, in milliseconds, the default is 30000                                                              | 'discoveryinterval'='10000' |
+| readstarttime | Start read timestamp, if no start timestamp is specified, it will read from the start version number by default                                                              | 'readstarttime'='2023-05-01 15:15:15' |
+| readendtime | End read timestamp, if no end timestamp is specified, the current latest version number will be read by default                                                              | 'readendtime'='2023-05-01 15:20:15' |
 | timezone | The time zone information of the timestamp, if the time zone information of the timestamp is not specified, it will be processed according to the local time zone by default | 'timezone'='Asia/Sahanghai' |
 
 ### 4.1 Full Read

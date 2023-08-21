@@ -1,21 +1,11 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
+use std::ops::Not;
 use arrow_schema::{DataType, Field, SchemaRef};
-use datafusion::logical_expr::{col, Expr};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::ident;
 use datafusion::scalar::ScalarValue;
 
 pub struct Parser {}
@@ -40,38 +30,38 @@ impl Parser {
                 None => Expr::Literal(ScalarValue::Boolean(Some(true))),
                 Some((_, field)) => {
                     if matches!(field.data_type(), DataType::Struct(_)) {
-                        col(column).is_not_null()
+                        ident(column).is_not_null()
                     } else if right == "null" {
                         match op.as_str() {
-                            "eq" => col(column).is_null(),
-                            "noteq" => col(column).is_not_null(),
+                            "eq" => ident(column).is_null(),
+                            "noteq" => ident(column).is_not_null(),
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     } else {
                         match op.as_str() {
                             "eq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).eq(value)
+                                ident(column).eq(value)
                             }
                             "noteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).not_eq(value)
+                                ident(column).not_eq(value)
                             }
                             "gt" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).gt(value)
+                                ident(column).gt(value)
                             }
                             "gteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).gt_eq(value)
+                                ident(column).gt_eq(value)
                             }
                             "lt" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).lt(value)
+                                ident(column).lt(value)
                             }
                             "lteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                col(column).lt_eq(value)
+                                ident(column).lt_eq(value)
                             }
 
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 import pymysql
 
 table_num = 15

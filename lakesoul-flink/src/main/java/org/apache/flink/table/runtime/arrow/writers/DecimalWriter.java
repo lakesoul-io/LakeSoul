@@ -26,22 +26,12 @@ import org.apache.flink.table.data.RowData;
 import org.apache.arrow.vector.DecimalVector;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
+
+import static org.apache.flink.table.runtime.typeutils.PythonTypeUtils.fromBigDecimal;
 
 /** {@link ArrowFieldWriter} for Decimal. */
 @Internal
 public abstract class DecimalWriter<T> extends ArrowFieldWriter<T> {
-
-    public static BigDecimal fromBigDecimal(BigDecimal bigDecimal, int precision, int scale) {
-        if (bigDecimal.scale() != scale || bigDecimal.precision() > precision) {
-            // need adjust the precision and scale
-            bigDecimal = bigDecimal.setScale(scale, RoundingMode.HALF_UP);
-            if (bigDecimal.precision() > precision) {
-                return null;
-            }
-        }
-        return bigDecimal;
-    }
 
     public static DecimalWriter<RowData> forRow(
             DecimalVector decimalVector, int precision, int scale) {

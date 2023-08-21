@@ -1,5 +1,11 @@
 # 多流合并构建宽表教程
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 为构建宽表，传统数仓的 ETL 在做多表关联时，需要根据主外键多次 join，然后构建一个大宽表。当数据量较多或需要多次join时，会有效率低下，内存消耗大，容易 OOM 等问题，且 Shuffle 过程占据大部分数据交换时间，效率也很低下。LakeSoul 支持对数据进行 Upsert，并支持自定义 MergeOperator 功能，可以避免上述存在的问题，不必Join即可得到合并结果。下面针对这一场景具体举例进行说明。
 
 假设有以下几个流的数据，A、B、C和D，各个流数据内容如下：

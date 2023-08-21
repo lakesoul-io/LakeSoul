@@ -1,5 +1,11 @@
 # 通过 Spark Streaming 导入 LakeSoul CDC 表
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 ## 1. CDC 入湖介绍
 LakeSoul 提供了一套独立的 CDC 语义表达规范，通过表属性设置一个 CDC Op 列，即可表示每条数据的操作类型，在后续 Merge 时会自动根据操作语义进行合并。可以通过 Debezium、Canal、Flink 等将 CDC 数据转换后导入 LakeSoul。这里提供一个端到端的完整示例。
 

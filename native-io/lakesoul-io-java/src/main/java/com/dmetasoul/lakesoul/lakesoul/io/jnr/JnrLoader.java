@@ -1,31 +1,17 @@
-/*
- * Copyright [2022] [DMetaSoul Team]
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
-import org.apache.arrow.c.jni.JniWrapper;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
@@ -52,13 +38,11 @@ public class JnrLoader {
 
         String finalPath = null;
 
-        if (System.getenv("LakeSoulLib") != null) {
-            finalPath = Paths.get(System.getenv("LakeSoulLib"), libName).toString();
-        } else if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
+        if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
             try {
                 File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
                 temp.deleteOnExit();
-                try (final InputStream is = JniWrapper.class.getClassLoader().getResourceAsStream(libName)) {
+                try (final InputStream is = JnrLoader.class.getClassLoader().getResourceAsStream(libName)) {
                     if (is == null) {
                         throw new FileNotFoundException(libName);
                     }

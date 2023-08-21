@@ -1,36 +1,27 @@
-/*
- *
- *  * Copyright [2022] [DMetaSoul Team]
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
- *
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package org.apache.flink.lakesoul.sink.bucket;
 
+import org.apache.flink.connector.file.table.PartitionComputer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.PartitionComputer;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_EMPTY_STRING;
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
 
 public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
@@ -119,9 +110,18 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
 
     for (int i = 0; i < partitionIndexes.length; i++) {
       Object field = partitionFieldGetters[i].getFieldOrNull(in);
-      String partitionValue = field != null ? field.toString() : null;
-      if (partitionValue == null || "".equals(partitionValue)) {
-        partitionValue = defaultPartValue;
+      String partitionValue;
+      if (field == null) {
+        partitionValue = LAKESOUL_NULL_STRING;
+      } else if (partitionTypes[i].getTypeRoot() == LogicalTypeRoot.DATE) {
+        // convert date to readable date string
+        LocalDate d = LocalDate.ofEpochDay((Integer) field);
+        partitionValue = d.toString();
+      } else {
+        partitionValue = field.toString();
+        if ("".equals(partitionValue)) {
+          partitionValue = LAKESOUL_EMPTY_STRING;
+        }
       }
       partSpec.put(partitionColumns[i], partitionValue);
     }

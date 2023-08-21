@@ -1,5 +1,11 @@
 # Incremental Query Function Tutorial
 
+<!--
+SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 LakeSoul provides a timestamp-based incremental query API to facilitate users to obtain data streams added after a given timestamp. Users can query the incremental data within this time range by specifying the start timestamp and the end timestamp. If the end timestamp is not specified, the incremental data from the start time to the current latest time will be queried.
 
 LakeSoul supports a total of four commit operations: mergeCommit; appendCommit; compactCommit; updateCommit. For update operations, it is difficult to obtain incremental files because historical data is merged and new files are generated each time, so incremental queries are not supported.

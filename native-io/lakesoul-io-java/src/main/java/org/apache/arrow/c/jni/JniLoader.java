@@ -15,6 +15,11 @@
  * limitations under the License.
  */
 
+/*
+ * This file is modified from https://github.com/apache/arrow/blob/apache-arrow-11.0.0/java/c/src/main/java/org/apache/arrow/c/jni/JniLoader.java
+ * to fix loading dynamic libraries on Windows platform.
+ */
+
 package org.apache.arrow.c.jni;
 
 import java.io.File;

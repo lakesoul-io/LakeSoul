@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 on:
   push:
     paths:
@@ -29,9 +33,15 @@ jobs:
           toolchain: nightly-2023-05-20
           components: clippy
           default: true
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./native-io -> target"
           key: "ubuntu-latest-clippy"
-      - name: Run Clippy
+      - name: Run Clippy Native-io
         run: cd native-io && cargo clippy --all-features --package lakesoul-io-c
+      - name: Run Clippy Native-metadata
+        run: cd native-metadata && cargo clippy --all-features --package lakesoul-metadata-c
