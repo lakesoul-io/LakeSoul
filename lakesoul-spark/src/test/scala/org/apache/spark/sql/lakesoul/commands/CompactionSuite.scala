@@ -234,7 +234,7 @@ class CompactionSuite extends QueryTest
       val mergeOperatorInfo = Map(
         "v1" -> new MergeOpInt(),
         "v2" -> "org.apache.spark.sql.lakesoul.test.MergeOpString")
-      table.compaction(true, mergeOperatorInfo)
+      table.compaction(true, mergeOperatorInfo, true)
       checkAnswer(table.toDF.select("range", "hash", "v1", "v2"), result)
 
     })
@@ -259,12 +259,12 @@ class CompactionSuite extends QueryTest
       val e1 = intercept[AnalysisException] {
         class tmp {}
         val mergeOperatorInfo = Map("value" -> new tmp())
-        table.compaction(true, mergeOperatorInfo)
+        table.compaction(true, mergeOperatorInfo, true)
       }
       assert(e1.getMessage().contains("is not a legal merge operator class"))
       val e2 = intercept[ClassNotFoundException] {
         val mergeOperatorInfo = Map("value" -> "ClassWillNeverExsit")
-        table.compaction(true, mergeOperatorInfo)
+        table.compaction(true, mergeOperatorInfo, true)
       }
       assert(e2.getMessage.contains("ClassWillNeverExsit"))
 
