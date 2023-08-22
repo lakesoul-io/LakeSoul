@@ -74,6 +74,15 @@ export LAKESOUL_PG_PASSWORD=root
 ````
 :::
 
+:::tip
+If you need to access S3, you also need to download `[flink-s3-hadoop](https://mvnrepository.com/artifact/org.apache.flink/flink-s3-fs-hadoop)` corresponding to the Flink version, and put to the `$FLINK_HOME/lib` directory.
+
+If access to the Hadoop environment is required, the Hadoop Classpath environment variable can be declared:
+```bash
+export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
+```
+For details, please refer to: [Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.14/docs/deployment/resource-providers/yarn/)
+:::
 
 :::tip
 LakeSoul may use extra amount of off-heap memory, consider to increase the off heap memory size for task manager:

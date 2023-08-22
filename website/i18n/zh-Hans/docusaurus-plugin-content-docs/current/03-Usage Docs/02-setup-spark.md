@@ -93,11 +93,11 @@ containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/
 请注意，需要同时设置 master 和 taskmanager 环境变量。
 
 :::tip
-Postgres数据库的连接信息、用户名和密码需要根据实际部署进行修改。
+Postgres 数据库的连接信息、用户名和密码需要根据实际部署进行修改。
 :::
 
 ::: caution
-注意，如果使用Session方式启动作业，即以客户端的方式将作业提交给Flink Standalone Cluster，作为客户端的`flink run`不会读取上面的配置，所以需要单独配置环境变量， 即：
+注意，如果使用 Session 方式启动作业，即以客户端的方式将作业提交给 Flink Standalone Cluster，作为客户端的 `flink run` 不会读取上面的配置，所以需要单独配置环境变量， 即：
 
 ```bash
 export LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
@@ -120,8 +120,17 @@ taskmanager.memory.task.off-heap.size: 3000m
 
 并将 jar 文件放在 `$FLINK_HOME/lib` 下。在此之后，您可以像往常一样启动 flink 会话集群或应用程序。
 
-## 在你的 Java 项目中添加 LakeSoul Flink Maven 依赖
+:::tip
+如果需要访问 S3，还需要下载与 Flink 版本对应的 `[flink-s3-hadoop](https://mvnrepository.com/artifact/org.apache.flink/flink-s3-fs-hadoop)`，并放到 `$FLINK_HOME/lib` 目录下。
 
+如果需要访问 Hadoop 环境，可以声明 Hadoop Classpath 环境变量：
+```bash
+export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
+```
+具体可以参考：[Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.14/docs/deployment/resource-providers/yarn/)
+:::
+
+## 在你的 Java 项目中添加 LakeSoul Flink Maven 依赖
 将以下内容添加到项目的 pom.xml
 ```xml
 <dependency>
