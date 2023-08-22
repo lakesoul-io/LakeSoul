@@ -80,7 +80,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         // init reader
         reader.initializeReader();
         this.reader = new LakeSoulArrowReader(reader,
-                10000);
+                100000);
         if (this.reader.hasNext()) {
             this.currentVCR = this.reader.nextResultVectorSchemaRoot();
             curRecordIdx = -1;
@@ -107,6 +107,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean advanceNextPosition() {
+        if (currentVCR == null) {
+            return false;
+        }
         if (curRecordIdx >= currentVCR.getRowCount() - 1) {
             if (this.reader.hasNext()) {
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
@@ -150,11 +153,11 @@ public class LakeSoulRecordCursor implements RecordCursor {
             return ((DateDayVector) fv).get(curRecordIdx);
         }
         if (fv instanceof TimeStampMicroTZVector) {
-            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx)/1000,ZoneId.of("Asia/Shanghai").toString());
+            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000, ZoneId.of("Asia/Shanghai").toString());
         }
-        if (fv instanceof DecimalVector){
-           BigDecimal dv = ((DecimalVector)fv).getObject(field);
-            return Decimals.encodeShortScaledValue(dv,((DecimalVector) fv).getScale());
+        if (fv instanceof DecimalVector) {
+            BigDecimal dv = ((DecimalVector) fv).getObject(curRecordIdx);
+            return Decimals.encodeShortScaledValue(dv, ((DecimalVector) fv).getScale());
         }
         throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
@@ -162,10 +165,10 @@ public class LakeSoulRecordCursor implements RecordCursor {
     @Override
     public double getDouble(int field) {
         FieldVector fv = this.currentVCR.getVector(field);
-        if(fv instanceof Float8Vector){
+        if (fv instanceof Float8Vector) {
             return ((Float8Vector) fv).get(curRecordIdx);
         }
-        if(fv instanceof Float4Vector){
+        if (fv instanceof Float4Vector) {
             return ((Float4Vector) fv).get(curRecordIdx);
         }
         throw new IllegalArgumentException("Field " + field + " is not a float, but is a " + fv.getClass().getName());

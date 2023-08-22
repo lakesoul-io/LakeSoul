@@ -104,7 +104,6 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
         Assertions.assertThat(JSON.parseObject(info2.getProperties()).get("path")).isEqualTo("/tmp/like_table");
         System.out.println(info);
         System.out.println(info2);
-
         tEnvs.executeSql("DROP TABLE user_behaviorgg");
         tEnvs.executeSql("DROP TABLE like_table");
     }

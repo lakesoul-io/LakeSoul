@@ -75,8 +75,7 @@ public final class ArrowUtil {
             DecimalType decimalType = (DecimalType) type;
             return new ArrowType.Decimal(
                     decimalType.getPrecision(),
-                    decimalType.getScale(),
-                    decimalType.getFixedSize() * 8);
+                    decimalType.getScale());
         }
 //        else if (type instanceof FloatType) {
 //            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
