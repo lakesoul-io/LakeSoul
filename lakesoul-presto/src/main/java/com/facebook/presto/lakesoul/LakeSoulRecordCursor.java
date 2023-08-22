@@ -177,6 +177,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (value instanceof Text) {
             return Slices.wrappedBuffer(((Text) value).getBytes());
         }
+        if (value instanceof BigDecimal) {
+            return Decimals.encodeScaledValue((BigDecimal) value);
+        }
         throw new IllegalArgumentException("Field " + field + " is not a String, but is a " + value.getClass().getName());
     }
 
