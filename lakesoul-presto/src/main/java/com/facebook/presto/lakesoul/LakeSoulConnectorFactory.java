@@ -16,7 +16,6 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
     private final LakeSoulMetadata metadata = new LakeSoulMetadata();
     private final LakeSoulSplitManager manager = new LakeSoulSplitManager();
     private final LakeSoulRecordSetProvider provider = new LakeSoulRecordSetProvider();
-
     private final ConnectorHandleResolver handleResolver = new LakeSoulHandleResolver();
 
     @Override
@@ -34,6 +33,7 @@ public class LakeSoulConnectorFactory implements ConnectorFactory {
             String catalogName,
             Map<String, String> config,
             ConnectorContext context) {
+        LakeSoulConfig.initInstance(config);
         return new LakeSoulConnector(metadata, manager, provider);
     }
 

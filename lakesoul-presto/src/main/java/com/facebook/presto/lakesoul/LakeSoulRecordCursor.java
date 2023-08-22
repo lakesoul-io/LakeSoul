@@ -64,8 +64,18 @@ public class LakeSoulRecordCursor implements RecordCursor {
         reader.setPrimaryKeys(prikeys);
         reader.setSchema(new Schema(fields));
         desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle) item).getColumnType()).collect(Collectors.toList());
-        // 设置filter
+        // set filters
         this.recordSet.getSplit().getLayout().getFilters().forEach((filter) -> reader.addFilter(filter.toString()));
+        // set s3 options
+        reader.setObjectStoreOptions(
+                LakeSoulConfig.getInstance().getAccessKey(),
+                LakeSoulConfig.getInstance().getAccessSecret(),
+                LakeSoulConfig.getInstance().getRegion(),
+                LakeSoulConfig.getInstance().getBucketName(),
+                LakeSoulConfig.getInstance().getEndpoint(),
+                LakeSoulConfig.getInstance().getDefaultFS(),
+                LakeSoulConfig.getInstance().getUser()
+        );
 
         // init reader
         reader.initializeReader();
