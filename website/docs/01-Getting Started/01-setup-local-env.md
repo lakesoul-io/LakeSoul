@@ -39,14 +39,14 @@ export lakesoul_home=/opt/soft/pg.property
 You can put customized database configuration information in this file.
 
 ## Install an Apache Spark environment
-You could download spark distribution from https://spark.apache.org/downloads.html, and please choose spark version 3.3.0 or above. Note that the official package from Apache Spark does not include hadoop-cloud component. We provide a Spark package with Hadoop cloud dependencies, download it from https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.3.5.tgz.
+You could download spark distribution from https://spark.apache.org/downloads.html, and please choose spark version 3.3.0 or above. Note that the official package from Apache Spark does not include hadoop-cloud component. We provide a Spark package with Hadoop cloud dependencies, download it from https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz.
 
 After unpacking spark package, you could find LakeSoul distribution jar from https://github.com/lakesoul-io/LakeSoul/releases. Download the jar file put it into `jars` directory of your spark environment.
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.3.5.tgz
-tar xf spark-3.3.2-bin-hadoop-3.3.5.tgz
-export SPARK_HOME=${PWD}/spark-3.3.2-bin-dmetasoul
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.tgz
+tar xf spark-3.3.2-bin-hadoop-3.tgz
+export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
 wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-spark-2.3.0-spark-3.3.jar -P $SPARK_HOME/jars
 ```
 

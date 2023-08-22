@@ -19,12 +19,12 @@ PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/me
 ```
 
 ## 安装 Spark 环境
-由于 Apache Spark 官方的下载安装包不包含 hadoop-cloud 以及 AWS S3 等依赖，我们提供了一个 Spark 安装包，其中包含了 hadoop cloud 、s3 等必要的依赖：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-lakesoul-8e167b33.tgz
+由于 Apache Spark 官方的下载安装包不包含 hadoop-cloud 以及 AWS S3 等依赖，我们提供了一个 Spark 安装包，其中包含了 hadoop cloud 、s3 等必要的依赖：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.3.5.tgz
-tar xf spark-3.3.2-bin-hadoop-3.3.5.tgz
-export SPARK_HOME=${PWD}/spark-3.3.2-bin-dmetasoul
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
+tar xf spark-3.3.2-bin-hadoop3.tgz
+export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
 ```
 
 :::tip
