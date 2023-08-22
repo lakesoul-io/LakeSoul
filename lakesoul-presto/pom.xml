@@ -24,6 +24,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <presto.version>0.282</presto.version>
         <local.scope>provided</local.scope>
+        <guice.version>6.0.0</guice.version>
 
     </properties>
 
@@ -77,6 +78,13 @@
             <version>3.3.2</version>
             <scope>${local.scope}</scope>
         </dependency>
+
+<!--        <dependency>-->
+<!--            <groupId>com.google.inject</groupId>-->
+<!--            <artifactId>guice</artifactId>-->
+<!--            &lt;!&ndash; {version} can be 6.0.0, 7.0.0, etc. &ndash;&gt;-->
+<!--            <version>${guice.version}</version>-->
+<!--        </dependency>-->
 
         <dependency>
             <groupId>com.google.guava</groupId>

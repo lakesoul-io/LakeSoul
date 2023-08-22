@@ -7,6 +7,8 @@ package com.facebook.presto.lakesoul;
 import com.facebook.presto.Session;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.collect.ImmutableMap;
+
+import java.util.HashMap;
 import java.util.Map;
 
 import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
@@ -26,10 +28,11 @@ public class LakeSoulQueryRunner extends DistributedQueryRunner {
         LakeSoulQueryRunner queryRunner = null;
         try {
             queryRunner = new LakeSoulQueryRunner(createSession(), 1);
-
-            Map<String, String> properties = ImmutableMap.of(
-                    "foo", "foo",
-                    "bar", "bar");
+            Map<String, String> properties = new HashMap<>();
+            properties.put("fs.s3a.access.key", "0Sba95RmPuhJZoO1olnv");
+            properties.put("fs.s3a.secret.key", "N8zr0ctloiueLPcg6pbE8yhjgw3l3vIRA3BpBVon");
+            properties.put("fs.s3a.bucket", "prestotest");
+            properties.put("fs.s3a.endpoint", "http://localhost:9000");
             queryRunner.installPlugin(new LakeSoulPlugin());
             queryRunner.createCatalog(
                     LakeSoulConnectorFactory.CONNECTOR_NAME,

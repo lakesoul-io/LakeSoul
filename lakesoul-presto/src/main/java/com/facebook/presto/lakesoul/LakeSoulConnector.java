@@ -22,6 +22,7 @@ public class LakeSoulConnector implements Connector {
     private final LakeSoulSplitManager splitManager;
     private final LakeSoulRecordSetProvider recordSetProvider;
 
+
     public LakeSoulConnector(
             LakeSoulMetadata metadata,
             LakeSoulSplitManager splitManager,
