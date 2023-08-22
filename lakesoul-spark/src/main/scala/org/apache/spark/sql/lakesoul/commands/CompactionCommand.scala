@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.cleanOldCommitOpDiskData
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
@@ -30,7 +31,8 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
                              force: Boolean,
                              mergeOperatorInfo: Map[String, String],
                              hiveTableName: String = "",
-                             hivePartitionName: String = ""
+                             hivePartitionName: String = "",
+                             cleanOldCompaction: Boolean
                             )
   extends LeafRunnableCommand with PredicateHelper with Logging {
 
@@ -176,6 +178,10 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           }
         })
       })
+    }
+    if (cleanOldCompaction) {
+      val tablePath = snapshotManagement.table_path
+      cleanOldCommitOpDiskData(tablePath, sparkSession)
     }
     Seq.empty
   }
