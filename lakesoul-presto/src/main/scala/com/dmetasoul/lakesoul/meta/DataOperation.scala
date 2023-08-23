@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
-import com.facebook.presto.lakesoul.pojo.Path
+import org.apache.hadoop.fs.Path
 
 import java.util
 import java.util.{Objects, UUID}

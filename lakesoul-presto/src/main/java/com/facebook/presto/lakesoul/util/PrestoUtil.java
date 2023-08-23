@@ -17,14 +17,68 @@ import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class PrestoUtil {
 
+    private static final Pattern PARTITION_NAME_PATTERN = Pattern.compile("([^/]+)=([^/]+)");
+
+    public static LinkedHashMap<String, String> extractPartitionSpecFromPath(Path path) {
+        LinkedHashMap<String, String> fullPartSpec = new LinkedHashMap();
+        List<String[]> kvs = new ArrayList();
+        org.apache.hadoop.fs.Path currPath = path;
+        do {
+            String component = currPath.getName();
+            Matcher m = PARTITION_NAME_PATTERN.matcher(component);
+            if (m.matches()) {
+                String k = unescapePathName(m.group(1));
+                String v = unescapePathName(m.group(2));
+                String[] kv = new String[]{k, v};
+                kvs.add(kv);
+            }
+
+            currPath = currPath.getParent();
+        } while(currPath != null && !currPath.getName().isEmpty());
+
+        for(int i = kvs.size(); i > 0; --i) {
+            fullPartSpec.put(((String[])kvs.get(i - 1))[0], ((String[])kvs.get(i - 1))[1]);
+        }
+
+        return fullPartSpec;
+    }
+
+    public static String unescapePathName(String path) {
+        StringBuilder sb = new StringBuilder();
+
+        for(int i = 0; i < path.length(); ++i) {
+            char c = path.charAt(i);
+            if (c == '%' && i + 2 < path.length()) {
+                int code = -1;
+
+                try {
+                    code = Integer.parseInt(path.substring(i + 1, i + 3), 16);
+                } catch (Exception var6) {
+                }
+
+                if (code >= 0) {
+                    sb.append((char)code);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            sb.append(c);
+        }
+
+        return sb.toString();
+    }
     public static boolean isExistHashPartition(TableInfo tif) {
         JSONObject tableProperties = JSON.parseObject(tif.getProperties());
         if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {

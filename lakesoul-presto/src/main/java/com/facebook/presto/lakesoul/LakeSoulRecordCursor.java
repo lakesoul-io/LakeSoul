@@ -4,11 +4,11 @@ import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import com.facebook.presto.common.type.DateTimeEncoding;
 import com.facebook.presto.common.type.Decimals;
-import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.ArrowUtil;
+import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
@@ -21,10 +21,7 @@ import org.apache.arrow.vector.util.Text;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.ZoneId;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.TimeZone;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static java.util.Objects.requireNonNull;
@@ -37,6 +34,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
     private int curRecordIdx = -1;
     private VectorSchemaRoot currentVCR;
     private List<Type> desiredTypes;
+    LinkedHashMap<String, String> partitions;
+
 
     public LakeSoulRecordCursor(LakeSoulRecordSet recordSet) throws IOException {
 
@@ -47,6 +46,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
         for (Path path : split.getPaths()) {
             reader.addFile(path.getFilename());
         }
+        this.partitions = PrestoUtil.extractPartitionSpecFromPath(split.getPaths().get(0));
+
         List<Field> fields = recordSet.getColumnHandles().stream().map(item -> {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
             return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
@@ -65,6 +66,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
         }
         reader.setPrimaryKeys(prikeys);
         reader.setSchema(new Schema(fields));
+        for (Map.Entry<String, String> partition : this.partitions.entrySet()) {
+            reader.setDefaultColumnValue(partition.getKey(), partition.getValue());
+        }
         desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle) item).getColumnType()).collect(Collectors.toList());
         // set filters
         this.recordSet.getSplit().getLayout().getFilters().forEach((filter) -> reader.addFilter(filter.toString()));
