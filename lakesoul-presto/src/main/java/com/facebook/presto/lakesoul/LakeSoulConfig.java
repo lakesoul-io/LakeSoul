@@ -29,6 +29,7 @@ public class LakeSoulConfig {
         this.endpoint = config.get("fs.s3a.endpoint");
         this.defaultFS = config.get("fs.defaultFS");
         this.user = config.get("fs.hdfs.user");
+        this.timeZone = config.getOrDefault("timezone","");
     }
 
     private String accessKey;
@@ -38,6 +39,7 @@ public class LakeSoulConfig {
     private String endpoint;
     private String user;
     private String defaultFS;
+    private String timeZone;
 
     public String getAccessKey() {
         return accessKey;
@@ -93,5 +95,13 @@ public class LakeSoulConfig {
 
     public void setDefaultFS(String defaultFS) {
         this.defaultFS = defaultFS;
+    }
+
+    public String getTimeZone() {
+        return timeZone;
+    }
+
+    public void setTimeZone(String timeZone) {
+        this.timeZone = timeZone;
     }
 }

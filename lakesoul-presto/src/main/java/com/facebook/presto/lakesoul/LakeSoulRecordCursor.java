@@ -21,8 +21,10 @@ import org.apache.arrow.vector.util.Text;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.stream.Collectors;
 
 import static java.util.Objects.requireNonNull;
@@ -153,7 +155,11 @@ public class LakeSoulRecordCursor implements RecordCursor {
             return ((DateDayVector) fv).get(curRecordIdx);
         }
         if (fv instanceof TimeStampMicroTZVector) {
-            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000, ZoneId.of("Asia/Shanghai").toString());
+            String timeZone = LakeSoulConfig.getInstance().getTimeZone();
+            if (timeZone.equals("") || !Arrays.asList(TimeZone.getAvailableIDs()).contains(timeZone)) {
+                timeZone = TimeZone.getDefault().getID();
+            }
+            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000, ZoneId.of(timeZone).toString());
         }
         if (fv instanceof DecimalVector) {
             BigDecimal dv = ((DecimalVector) fv).getObject(curRecordIdx);
