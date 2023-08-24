@@ -112,6 +112,17 @@ if(NOT EXISTS ${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so)
     endif()
 endif()
 
+# Build liblakesoul_metadata_c.so
+set(NATIVE_METADATA_DIR ${PROJECT_SOURCE_DIR}/../native-metadata)
+if(NOT EXISTS ${NATIVE_METADATA_DIR}/native-metadata/target/release/liblakesoul_metadata_c.so)
+    execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
+                    WORKING_DIRECTORY ${NATIVE_METADATA_DIR}
+                    RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "Fail to build liblakesoul_metadata_c.so")
+    endif()
+endif()
+
 # Create CMake imported targets
 add_library(liblakesoul_io_c SHARED IMPORTED)
 set_target_properties(liblakesoul_io_c PROPERTIES
