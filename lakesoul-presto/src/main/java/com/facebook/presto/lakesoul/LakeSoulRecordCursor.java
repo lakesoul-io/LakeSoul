@@ -169,6 +169,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
             BigDecimal dv = ((DecimalVector) fv).getObject(curRecordIdx);
             return Decimals.encodeShortScaledValue(dv, ((DecimalVector) fv).getScale());
         }
+        if (fv instanceof Float4Vector) {
+            return Float.floatToIntBits(((Float4Vector) fv).get(curRecordIdx));
+        }
         throw new IllegalArgumentException("Field " + field + " is not a number, but is a " + fv.getClass().getName());
     }
 

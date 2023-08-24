@@ -67,8 +67,9 @@ public final class ArrowUtil {
             return new ArrowType.Int(16, true);
         }else if (type instanceof TinyintType) {
             return new ArrowType.Int(8, true); // eqauls to byte
-        } else if (type instanceof DoubleType) {
-            int size = ((DoubleType)type).getFixedSize();
+        }else if (type instanceof RealType) {
+            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+        }else if (type instanceof DoubleType) {
             return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
         } else if(type instanceof BooleanType){
             return new ArrowType.Bool();

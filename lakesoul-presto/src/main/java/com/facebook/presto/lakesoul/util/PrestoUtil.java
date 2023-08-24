@@ -177,8 +177,7 @@ public class PrestoUtil {
             if(type.getPrecision() == FloatingPointPrecision.HALF){
                 return UnknownType.UNKNOWN;
             }else if(type.getPrecision() == FloatingPointPrecision.SINGLE){
-                //return FloatType.FLOAT;
-                return DoubleType.DOUBLE;
+                return RealType.REAL;
             }else if(type.getPrecision() == FloatingPointPrecision.DOUBLE) {
                 return DoubleType.DOUBLE;
             }
