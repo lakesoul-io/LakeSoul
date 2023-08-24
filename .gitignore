@@ -21,6 +21,8 @@ dependency-reduced-pom.xml
 *.DS_Store
 __pycache__/
 /cpp/build/
+/python/lakesoul/.libs/
 /python/lakesoul/arrow/_lakesoul_dataset.so
+/python/pyarrow
 /native-io/lakesoul-io-c/lakesoul_c_bindings.h
 python/metadata/generated

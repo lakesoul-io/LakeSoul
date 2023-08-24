@@ -114,7 +114,7 @@ endif()
 
 # Build liblakesoul_metadata_c.so
 set(NATIVE_METADATA_DIR ${PROJECT_SOURCE_DIR}/../native-metadata)
-if(NOT EXISTS ${NATIVE_METADATA_DIR}/native-metadata/target/release/liblakesoul_metadata_c.so)
+if(NOT EXISTS ${NATIVE_METADATA_DIR}/target/release/liblakesoul_metadata_c.so)
     execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
                     WORKING_DIRECTORY ${NATIVE_METADATA_DIR}
                     RESULT_VARIABLE rc)
@@ -165,3 +165,10 @@ add_library(lakesoul_dataset SHARED
 target_include_directories(lakesoul_dataset PRIVATE include)
 target_link_libraries(lakesoul_dataset PRIVATE liblakesoul_io_c libarrow_python)
 set_target_properties(lakesoul_dataset PROPERTIES PREFIX "_")
+set_target_properties(lakesoul_dataset PROPERTIES INSTALL_RPATH "\$ORIGIN/../.libs:\$ORIGIN/../../pyarrow")
+
+# Install shared libraries
+install(TARGETS lakesoul_dataset LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/arrow)
+install(PROGRAMS "${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so"
+                 "${NATIVE_METADATA_DIR}/target/release/liblakesoul_metadata_c.so"
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/.libs)
