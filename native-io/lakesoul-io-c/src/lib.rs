@@ -339,7 +339,7 @@ fn call_data_result_callback(
     callback: DataResultCallback,
     status: bool,
     err: *const c_char,
-    data: CVOID,
+    data: Cvoid,
 ) {
     // release error string
     callback(status, err, data.data);
@@ -367,7 +367,7 @@ fn call_i32_data_result_callback(
     callback: I32DataResultCallback,
     status: i32,
     err: *const c_char,
-    data: CVOID,
+    data: Cvoid,
 ) {
     callback(status, err, data.data);
     // release error string
@@ -402,7 +402,7 @@ pub extern "C" fn start_reader_with_data(
 ) {
     unsafe {
         let mut reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
-        let data = CVOID{data};
+        let data = Cvoid {data};
         let result = reader.as_mut().start_blocked();
         match result {
             Ok(_) => call_data_result_callback(callback, true, std::ptr::null(), data),
@@ -467,11 +467,11 @@ pub extern "C" fn next_record_batch(
 
 // accept a callback with arbitrary user data pointer
 
-struct CVOID {
+struct Cvoid {
     data: *const c_void,
 }
-unsafe impl Send for CVOID {}
-unsafe impl Sync for CVOID {}
+unsafe impl Send for Cvoid {}
+unsafe impl Sync for Cvoid {}
 
 #[no_mangle]
 pub extern "C" fn next_record_batch_with_data(
@@ -483,7 +483,7 @@ pub extern "C" fn next_record_batch_with_data(
 ) {
     unsafe {
         let reader = NonNull::new_unchecked(reader.as_ref().ptr as *mut SyncSendableMutableLakeSoulReader);
-        let data = CVOID{data};
+        let data = Cvoid {data};
         let f = move |rb: Option<Result<RecordBatch>>| match rb {
             None => {
                 call_i32_data_result_callback(callback, 0, std::ptr::null(), data);
