@@ -4,3 +4,4 @@
 
 pyarrow~=12.0
 cython>=0.29.31,<3
+grpcio[protobuf]~=1.57
