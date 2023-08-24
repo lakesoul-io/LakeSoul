@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dao import *
-from utils import to_arrow_schema
+from .dao import *
+from .utils import to_arrow_schema
 
 
 class DBManager:

@@ -7,9 +7,9 @@ import concurrent.futures
 import importlib
 from ctypes import *
 
-from lib.const import PARAM_DELIM, DAO_TYPE_QUERY_LIST_OFFSET
-import lib
-import generated.entity_pb2 as entity_pb2
+from .lib.const import PARAM_DELIM, DAO_TYPE_QUERY_LIST_OFFSET
+from . import lib
+from .generated import entity_pb2 as entity_pb2
 
 global config
 config = "host={} port={} dbname={} user={} password={}".format("localhost", "5433", "test_lakesoul_meta",

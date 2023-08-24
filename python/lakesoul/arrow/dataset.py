@@ -17,7 +17,7 @@ def _get_test_schema_and_file_list(table_name):
         file_list = file_path,
         return schema, file_list
     else:
-        from db_manager import DBManager
+        from ..metadata.db_manager import DBManager
         db_manager = DBManager()
         data_files = db_manager.get_data_files_by_table_name(table_name)
         arrow_schema = db_manager.get_arrow_schema_by_table_name(table_name)

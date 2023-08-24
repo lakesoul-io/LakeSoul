@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from lib.const import DaoType
-from native_client import *
+from .lib.const import DaoType
+from .native_client import *
 
 
 def select_table_info_by_table_name(table_name, namespace="default"):
