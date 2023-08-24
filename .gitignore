@@ -27,3 +27,6 @@ __pycache__/
 /native-io/lakesoul-io-c/lakesoul_c_bindings.h
 /python/lakesoul/metadata/generated/entity_pb2.py
 /python/lakesoul/metadata/generated/entity_pb2_grpc.py
+/python/build/
+/python/lakesoul.egg-info/
+/python/*.whl
