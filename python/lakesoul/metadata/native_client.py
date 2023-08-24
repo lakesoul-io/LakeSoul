@@ -30,7 +30,7 @@ class NativeMetadataClient:
         self._runtime = lib.lakesoul_metadata_c.create_tokio_runtime()
 
         def callback(bool, msg):
-            print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
+            #print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
             if not bool:
                 exit(1)
 
@@ -59,7 +59,8 @@ class NativeMetadataClient:
         buffer.value = b''
 
         def callback(len, msg):
-            print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
+            #print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
+            pass
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(lib.lakesoul_metadata_c.execute_query,
