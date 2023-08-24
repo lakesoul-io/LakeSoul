@@ -9,7 +9,7 @@ from ctypes import *
 
 from .lib.const import PARAM_DELIM, DAO_TYPE_QUERY_LIST_OFFSET
 from . import lib
-from .generated import entity_pb2 as entity_pb2
+from .generated import entity_pb2
 
 global config
 config = "host={} port={} dbname={} user={} password={}".format("localhost", "5433", "test_lakesoul_meta",
@@ -88,7 +88,6 @@ def get_instance():
     global INSTANCE
     if INSTANCE is None:
         import os
-        import sys
         dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
         file_path = os.path.join(dir_path, '.libs', 'liblakesoul_metadata_c.so')
         lib.reload_lib(file_path)
