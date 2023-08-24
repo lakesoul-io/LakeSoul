@@ -148,13 +148,26 @@ set_target_properties(libarrow_python PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${NUMPY_INCLUDE_DIR};${PYTHON_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES "libarrow;libarrow_dataset")
 
+# Generate .py from .proto
+add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/entity_pb2.py
+                          ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/entity_pb2_grpc.py
+                   COMMAND ${CMAKE_COMMAND} -E make_directory
+                           ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
+                   COMMAND ${VENV_PYTHON} -m grpc.tools.protoc
+                           -I=${NATIVE_METADATA_DIR}/proto/src
+                           --python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
+                           --grpc_python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
+                           ${NATIVE_METADATA_DIR}/proto/src/entity.proto
+                   MAIN_DEPENDENCY ${NATIVE_METADATA_DIR}/proto/src/entity.proto)
+
 # Generate .cpp from .pyx
 add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/python/lakesoul/arrow/_lakesoul_dataset.cpp
                    COMMAND ${VENV_CYTHON} ${PROJECT_SOURCE_DIR}/../python/lakesoul/arrow/_lakesoul_dataset.pyx
                            --cplus -o ${PROJECT_BINARY_DIR}/python/lakesoul/arrow/_lakesoul_dataset.cpp
                    MAIN_DEPENDENCY ${PROJECT_SOURCE_DIR}/../python/lakesoul/arrow/_lakesoul_dataset.pyx
                    DEPENDS ${PROJECT_SOURCE_DIR}/../python/lakesoul/arrow/_lakesoul_dataset.pxd
-                           ${PROJECT_SOURCE_DIR}/../python/lakesoul/arrow/_lakesoul_dataset_cpp.pxd)
+                           ${PROJECT_SOURCE_DIR}/../python/lakesoul/arrow/_lakesoul_dataset_cpp.pxd
+                           ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/entity_pb2.py)
 
 # Create Python extension module
 add_library(lakesoul_dataset SHARED
@@ -167,8 +180,10 @@ target_link_libraries(lakesoul_dataset PRIVATE liblakesoul_io_c libarrow_python)
 set_target_properties(lakesoul_dataset PROPERTIES PREFIX "_")
 set_target_properties(lakesoul_dataset PROPERTIES INSTALL_RPATH "\$ORIGIN/../.libs:\$ORIGIN/../../pyarrow")
 
-# Install shared libraries
+# Install shared libraries and Python files
 install(TARGETS lakesoul_dataset LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/arrow)
 install(PROGRAMS "${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so"
                  "${NATIVE_METADATA_DIR}/target/release/liblakesoul_metadata_c.so"
         DESTINATION ${CMAKE_INSTALL_PREFIX}/.libs)
+install(DIRECTORY ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/metadata/generated)

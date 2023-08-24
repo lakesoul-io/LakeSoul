@@ -25,4 +25,5 @@ __pycache__/
 /python/lakesoul/arrow/_lakesoul_dataset.so
 /python/pyarrow
 /native-io/lakesoul-io-c/lakesoul_c_bindings.h
-/python/lakesoul/metadata/generated/
+/python/lakesoul/metadata/generated/entity_pb2.py
+/python/lakesoul/metadata/generated/entity_pb2_grpc.py
