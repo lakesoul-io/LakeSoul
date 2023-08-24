@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from db_manager import DBManager
 from lib import reload_lib
 from native_client import reset_pg_conf

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 from ctypes import *
 
 
@@ -59,7 +63,3 @@ def reload_lib(path):
     free_prepared_statement = lib.free_prepared_statement
     free_prepared_statement.restype = c_void_p
     free_prepared_statement.argtypes = [POINTER(NonNull)]
-
-# lib = CDLL("/Users/ceng/Documents/GitHub/LakeSoul/native-metadata/target/release/liblakesoul_metadata_c.dylib")
-
-# reload_lib("/Users/ceng/Documents/GitHub/LakeSoul/native-metadata/target/release/liblakesoul_metadata_c.dylib")

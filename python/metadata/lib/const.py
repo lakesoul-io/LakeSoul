@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 PARAM_DELIM = "__DELIM__"
 
 DAO_TYPE_QUERY_ONE_OFFSET: int = 0
