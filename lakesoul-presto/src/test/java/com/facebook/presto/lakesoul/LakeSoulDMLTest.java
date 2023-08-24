@@ -77,6 +77,10 @@ public class LakeSoulDMLTest extends LakeSoulSmokeTest{
 
     public void testWhere1(){
         // coming soon
+
+        List<MaterializedRow> rows = sql("select * from test_cdc.table2");
+        System.out.println(rows);
+        assert rows.size() == 5;
     }
 
 
