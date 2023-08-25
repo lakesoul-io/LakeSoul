@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package com.facebook.presto.benchmark;
 
 import java.sql.Connection;
@@ -85,7 +89,7 @@ public class Benchmark {
         prestoCon.close();
     }
 
-    static void verifyQuery (String table) throws SQLException {
+    public static void verifyQuery (String table) throws SQLException {
         String sql = "select * from " + table;
         ResultSet res1 = mysqlCon.prepareStatement(sql).executeQuery();
         ResultSet res2 = prestoCon.prepareStatement(sql).executeQuery();
@@ -104,6 +108,7 @@ public class Benchmark {
             }
         }
 
+        System.out.println("table " + table + " matched");
 //        if (table.equals(DEFAULT_INIT_TABLE)) {
 //            jdbcDF = changeDF(jdbcDF)
 //            lakesoulDF = changeDF(lakesoulDF)
@@ -121,7 +126,6 @@ public class Benchmark {
 //    }
 
 }
-
 
 
 

@@ -10,7 +10,6 @@ import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.*;
-import com.facebook.presto.lakesoul.type.FloatType;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -153,7 +152,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         }
 
         // Add back all of the possible single values either as an equality or an IN predicate
-        if (singleValues.size() > 0) {
+        if (!singleValues.isEmpty()) {
             for(Object value : singleValues){
                 disjuncts.add(eq(type, name, value));
             }
@@ -163,7 +162,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             disjuncts.add(eq(type, name, null));
         }
 
-        return disjuncts.stream().reduce(FilterApi::or).get();
+        return disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or).get();
     }
 
     private FilterPredicate eq(Type type, String name, Object value){
@@ -186,7 +185,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.eq ( FilterApi.longColumn (name), ((Long) value));
-        }  else if(type instanceof FloatType){
+        }  else if(type instanceof RealType){
             if(value == null) {
                 return FilterApi.eq ( FilterApi.floatColumn (name), null);
             }
@@ -227,7 +226,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                     FilterApi.binaryColumn (name),
                     Binary.fromString(((Slice) value).toStringUtf8()));
         }
-        throw new RuntimeException("unsupport data type:" + type);
+        return null;
     }
 
 
@@ -245,7 +244,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gt ( FilterApi.longColumn (name), ((Long) value));
-        }  else if(type instanceof FloatType){
+        }  else if(type instanceof RealType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
             }
@@ -256,7 +255,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.gt ( FilterApi.doubleColumn (name), ((Double) value));
         }
-        throw new RuntimeException("unsupport data type:" + type);
+        return null;
     }
 
     private FilterPredicate gte(Type type, String name, Object value){
@@ -273,7 +272,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.gtEq ( FilterApi.longColumn (name), ((Long) value));
-        }  else if(type instanceof FloatType){
+        }  else if(type instanceof RealType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
             }
@@ -284,7 +283,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.gtEq ( FilterApi.doubleColumn (name), ((Double) value));
         }
-        throw new RuntimeException("unsupport data type:" + type);
+        return null;
     }
 
     private FilterPredicate lt(Type type, String name, Object value){
@@ -301,7 +300,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.lt ( FilterApi.longColumn (name), ((Long) value));
-        }  else if(type instanceof FloatType){
+        }  else if(type instanceof RealType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
             }
@@ -312,7 +311,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.lt ( FilterApi.doubleColumn (name), ((Double) value));
         }
-        throw new RuntimeException("unsupport data type:" + type);
+        return null;
     }
 
     private FilterPredicate lte(Type type, String name, Object value){
@@ -329,7 +328,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
                 throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
             return FilterApi.ltEq ( FilterApi.longColumn (name), ((Long) value));
-        }  else if(type instanceof FloatType){
+        }  else if(type instanceof RealType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
             }
@@ -340,7 +339,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.ltEq ( FilterApi.doubleColumn (name), ((Double) value));
         }
-        throw new RuntimeException("unsupport data type:" + type);
+        return null;
     }
 
 
