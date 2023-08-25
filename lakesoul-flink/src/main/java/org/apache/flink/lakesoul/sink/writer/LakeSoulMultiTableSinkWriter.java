@@ -16,10 +16,16 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord> {
+
+    private final ConcurrentHashMap<TableSchemaIdentity, TableSchemaWriterCreator> perTableSchemaWriterCreator;
+
+    private final Configuration conf;
 
     public LakeSoulMultiTableSinkWriter(int subTaskId,
                                         SinkWriterMetricGroup metricGroup,
@@ -31,6 +37,8 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                                         Configuration conf) {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,
                 bucketCheckInterval, conf);
+        this.conf = conf;
+        this.perTableSchemaWriterCreator = new ConcurrentHashMap<>();
     }
 
     private TableSchemaIdentity getIdentity(RowType rowType, BinarySourceRecord element) {
@@ -41,6 +49,19 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
                 element.getPrimaryKeys(),
                 element.getPartitionKeys(),
                 element.getData().getProperties());
+    }
+
+    @Override
+    protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
+        return perTableSchemaWriterCreator.computeIfAbsent(identity, identity1 -> {
+            try {
+                return TableSchemaWriterCreator.create(identity1.tableId, identity1.rowType,
+                        identity1.tableLocation, identity1.primaryKeys,
+                        identity1.partitionKeyList, conf);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
     @Override

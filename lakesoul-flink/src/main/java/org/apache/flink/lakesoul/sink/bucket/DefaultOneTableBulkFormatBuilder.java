@@ -13,6 +13,8 @@ import org.apache.flink.lakesoul.sink.writer.LakeSoulRowDataOneTableSinkWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.table.data.RowData;
 
+import java.io.IOException;
+
 /**
  * Builder for the vanilla {@link LakeSoulMultiTablesSink} using a bulk format.
  */
@@ -31,7 +33,8 @@ public final class DefaultOneTableBulkFormatBuilder
     }
 
     @Override
-    public AbstractLakeSoulMultiTableSinkWriter<RowData> createWriter(Sink.InitContext context, int subTaskId) {
+    public AbstractLakeSoulMultiTableSinkWriter<RowData> createWriter(Sink.InitContext context, int subTaskId) throws
+            IOException {
         return new LakeSoulRowDataOneTableSinkWriter(
                 subTaskId,
                 identity,

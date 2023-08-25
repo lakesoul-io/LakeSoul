@@ -9,8 +9,8 @@ import org.apache.flink.api.connector.sink.SinkWriter;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
@@ -26,7 +26,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -65,8 +64,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final Counter recordsOutCounter;
 
-    private final ConcurrentHashMap<TableSchemaIdentity, TableSchemaWriterCreator> perTableSchemaWriterCreator;
-
     private final Configuration conf;
 
     public AbstractLakeSoulMultiTableSinkWriter(
@@ -82,8 +79,6 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
         this.bucketFactory = checkNotNull(bucketFactory);
         this.rollingPolicy = checkNotNull(rollingPolicy);
-
-        this.perTableSchemaWriterCreator = new ConcurrentHashMap<>();
 
         this.outputFileConfig = checkNotNull(outputFileConfig);
 
@@ -137,17 +132,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         }
     }
 
-    protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
-        return perTableSchemaWriterCreator.computeIfAbsent(identity, identity1 -> {
-            try {
-                return TableSchemaWriterCreator.create(identity1.tableId, identity1.rowType,
-                        identity1.tableLocation, identity1.primaryKeys,
-                        identity1.partitionKeyList, conf);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
-    }
+    protected abstract TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity);
 
     protected abstract List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(IN element) throws Exception;
 
