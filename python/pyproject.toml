@@ -28,4 +28,4 @@ classifiers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lakesoul"]
+include = ["lakesoul*"]

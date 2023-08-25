@@ -88,8 +88,8 @@ def get_instance():
     global INSTANCE
     if INSTANCE is None:
         import os
-        dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-        file_path = os.path.join(dir_path, '.libs', 'liblakesoul_metadata_c.so')
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        file_path = os.path.join(dir_path, 'lib', 'liblakesoul_metadata_c.so')
         lib.reload_lib(file_path)
         INSTANCE = NativeMetadataClient()
         return INSTANCE

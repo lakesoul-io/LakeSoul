@@ -10,6 +10,8 @@ def _get_test_schema_and_file_list(table_name):
     return arrow_schema, data_files
 
 def lakesoul_dataset(table_name):
+    from ._path_utils import _configure_pyarrow_path
+    _configure_pyarrow_path()
     from ._lakesoul_dataset import LakeSoulDataset
     schema, file_list = _get_test_schema_and_file_list(table_name)
     dataset = LakeSoulDataset(schema)

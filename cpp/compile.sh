@@ -6,15 +6,14 @@
 
 if [ -f $(dirname ${BASH_SOURCE[0]})/build/build.ninja ]
 then
-    cmake --build $(dirname ${BASH_SOURCE[0]})/build --config Release --target install
+    cmake --build $(dirname ${BASH_SOURCE[0]})/build
     exit
 fi
 
 set -e
 
 rm -rf $(dirname ${BASH_SOURCE[0]})/build
-cmake -G Ninja -S $(dirname ${BASH_SOURCE[0]})                               \
-      -B $(dirname ${BASH_SOURCE[0]})/build                                  \
-      -DCMAKE_BUILD_TYPE=Release                                             \
-      -DCMAKE_INSTALL_PREFIX=$(dirname ${BASH_SOURCE[0]})/../python/lakesoul
-cmake --build $(dirname ${BASH_SOURCE[0]})/build --config Release --target install
+cmake -S $(dirname ${BASH_SOURCE[0]})       \
+      -B $(dirname ${BASH_SOURCE[0]})/build \
+      -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build $(dirname ${BASH_SOURCE[0]})/build
