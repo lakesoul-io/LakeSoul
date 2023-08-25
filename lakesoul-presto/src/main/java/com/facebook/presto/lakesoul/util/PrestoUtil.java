@@ -12,10 +12,7 @@ import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.common.type.*;
 import com.facebook.presto.lakesoul.pojo.Path;
-import com.facebook.presto.lakesoul.type.FloatType;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 
 import java.util.ArrayList;
@@ -24,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 public class PrestoUtil {
 

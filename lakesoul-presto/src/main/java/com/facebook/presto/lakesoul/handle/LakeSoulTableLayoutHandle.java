@@ -189,10 +189,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             if(value == null) {
                 return FilterApi.eq ( FilterApi.floatColumn (name), null);
             }
-            if(!(value instanceof Double)){
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+            if(!(value instanceof Long)){
+                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.eq ( FilterApi.floatColumn (name), ((Double) value).floatValue());
+            return FilterApi.eq ( FilterApi.floatColumn (name), Float.intBitsToFloat(((Long)value).intValue()));
         }else if(type instanceof DoubleType){
             if(value == null) {
                 return FilterApi.eq ( FilterApi.doubleColumn (name), null);
@@ -245,10 +245,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.gt ( FilterApi.longColumn (name), ((Long) value));
         }  else if(type instanceof RealType){
-            if(!(value instanceof Double)){
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+            if(!(value instanceof Long)){
+                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gt ( FilterApi.floatColumn (name), ((Double) value).floatValue());
+            return FilterApi.gt ( FilterApi.floatColumn (name), Float.intBitsToFloat(((Long)value).intValue()));
         }else if(type instanceof DoubleType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
@@ -273,10 +273,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.gtEq ( FilterApi.longColumn (name), ((Long) value));
         }  else if(type instanceof RealType){
-            if(!(value instanceof Double)){
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+            if(!(value instanceof Long)){
+                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.gtEq ( FilterApi.floatColumn (name), ((Double) value).floatValue());
+            return FilterApi.gtEq ( FilterApi.floatColumn (name), Float.intBitsToFloat(((Long)value).intValue()));
         }else if(type instanceof DoubleType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
@@ -301,10 +301,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.lt ( FilterApi.longColumn (name), ((Long) value));
         }  else if(type instanceof RealType){
-            if(!(value instanceof Double)){
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+            if(!(value instanceof Long)){
+                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.lt ( FilterApi.floatColumn (name), ((Double) value).floatValue());
+            return FilterApi.lt ( FilterApi.floatColumn (name), Float.intBitsToFloat(((Long)value).intValue()));
         }else if(type instanceof DoubleType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
@@ -329,10 +329,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             }
             return FilterApi.ltEq ( FilterApi.longColumn (name), ((Long) value));
         }  else if(type instanceof RealType){
-            if(!(value instanceof Double)){
-                throw new RuntimeException("except filter value type is double, but it is " + value.getClass());
+            if(!(value instanceof Long)){
+                throw new RuntimeException("except filter value type is long, but it is " + value.getClass());
             }
-            return FilterApi.ltEq ( FilterApi.floatColumn (name), ((Double) value).floatValue());
+            return FilterApi.ltEq ( FilterApi.floatColumn (name), Float.intBitsToFloat(((Long)value).intValue()));
         }else if(type instanceof DoubleType){
             if(!(value instanceof Double)){
                 throw new RuntimeException("except filter value type is double, but it is " + value.getClass());

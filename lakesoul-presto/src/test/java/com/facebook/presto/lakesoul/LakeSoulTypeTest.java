@@ -32,8 +32,18 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
 
     public void testFloatType(){
         //List<MaterializedRow> showColumnsInTable1 = sql("select id5 from table3 where id5 >= 5.0");
-        List<MaterializedRow> showColumnsInTable1 = sql("select id5 from table3 where id5 >= 5");
-        assert showColumnsInTable1.size() == 1;
+        List<MaterializedRow> showColumnsInTable1 = sql("select id5 from table3 where id5 >= 5.0");
+        List<MaterializedRow> showColumnsInTable2 = sql("select id5 from table3 where id5 >= 5");
+        List<MaterializedRow> showColumnsInTable3 = sql("select id5 from table3 where id5 = 5");
+        List<MaterializedRow> showColumnsInTable4 = sql("select id5 from table3 where id5 = 5.0");
+        System.out.println(showColumnsInTable1);
+        System.out.println(showColumnsInTable2);
+        System.out.println(showColumnsInTable3);
+        System.out.println(showColumnsInTable4);
+        assert showColumnsInTable1.size() == 1 && showColumnsInTable1.get(0).getField(0).equals(5.0f);
+        assert showColumnsInTable2.size() == 1 && showColumnsInTable2.get(0).getField(0).equals(5.0f);
+        assert showColumnsInTable3.size() == 1 && showColumnsInTable3.get(0).getField(0).equals(5.0f);
+        assert showColumnsInTable4.size() == 1 && showColumnsInTable4.get(0).getField(0).equals(5.0f);
     }
 
     public void testDoubleType(){

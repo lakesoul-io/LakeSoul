@@ -5,20 +5,16 @@
 package com.facebook.presto.lakesoul.util;
 
 import com.facebook.presto.common.type.*;
-import com.facebook.presto.lakesoul.type.FloatType;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.spark.sql.types.BinaryType;
-import org.apache.spark.sql.types.LongType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.ZoneId;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Utilities for Arrow.
