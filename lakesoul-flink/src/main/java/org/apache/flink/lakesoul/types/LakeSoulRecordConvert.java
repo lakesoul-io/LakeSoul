@@ -4,32 +4,17 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.alibaba.fastjson.JSONObject;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Enum;
-import io.debezium.data.EnumSet;
-import io.debezium.data.Envelope;
-import io.debezium.data.Json;
+import io.debezium.data.*;
 import io.debezium.data.geometry.Geometry;
 import io.debezium.data.geometry.Point;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.VariableScaleDecimal;
-import io.debezium.time.Date;
-import io.debezium.time.MicroTime;
-import io.debezium.time.MicroTimestamp;
-import io.debezium.time.NanoTime;
-import io.debezium.time.NanoTimestamp;
-import io.debezium.time.Time;
-import io.debezium.time.Timestamp;
-import io.debezium.time.Year;
-import io.debezium.time.ZonedTime;
-import io.debezium.time.ZonedTimestamp;
+import io.debezium.time.*;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
@@ -49,10 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulRecordConvert implements Serializable {
     private final ZoneId serverTimeZone;
@@ -61,8 +43,6 @@ public class LakeSoulRecordConvert implements Serializable {
     final boolean useCDC;
 
     List<String> partitionFields;
-
-    private final JSONObject properties;
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, Collections.emptyList());
@@ -73,8 +53,6 @@ public class LakeSoulRecordConvert implements Serializable {
         this.cdcColumn = conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
         this.serverTimeZone = ZoneId.of(serverTimeZone);
         this.partitionFields = partitionFields;
-
-        properties = FlinkUtil.getPropertiesFromConfiguration(conf);
     }
 
     private boolean partitionFieldsChanged(RowType beforeType, RowData beforeData, RowType afterType, RowData afterData) {
@@ -119,7 +97,8 @@ public class LakeSoulRecordConvert implements Serializable {
     public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long sortField) throws Exception {
         Envelope.Operation op = getOperation(sch, value);
         Schema valueSchema = value.schema();
-        LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId).setProperties(properties);
+        LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId)
+                .setUseCDC(useCDC).setCDCColumn(cdcColumn);
         if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
             Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
             Struct after = value.getStruct(Envelope.FieldName.AFTER);

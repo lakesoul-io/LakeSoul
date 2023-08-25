@@ -120,7 +120,9 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(path,
                         new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)), rowType,
                                 path.toString(), primaryKeyList, partitionKeyList,
-                                FlinkUtil.getPropertiesFromConfiguration(flinkConf)), flinkConf)
+                                flinkConf.getBoolean(USE_CDC, false),
+                                flinkConf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT)
+                        ), flinkConf)
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
         return dataStream.sinkTo(sink).setParallelism(bucketParallelism);

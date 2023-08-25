@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.types;
 
 import com.esotericsoftware.kryo.Kryo;
@@ -7,13 +11,6 @@ import com.esotericsoftware.kryo.io.Output;
 import io.fury.Fury;
 import io.fury.Language;
 import io.fury.ThreadLocalFury;
-import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.binary.BinaryRowData;
-import org.apache.flink.table.data.binary.BinarySection;
-import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.LogicalTypeRoot;
-import org.apache.flink.table.types.logical.RowType;
 
 import java.io.Serializable;
 
@@ -32,10 +29,10 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
     }
 
     @Override public void write(Kryo kryo, Output output, BinarySourceRecord object) {
-        fury.getCurrentFury().serialize(output, object);
+        fury.getCurrentFury().serializeJavaObject(output, object);
     }
 
     @Override public BinarySourceRecord read(Kryo kryo, Input input, Class<BinarySourceRecord> type) {
-        return (BinarySourceRecord) fury.getCurrentFury().deserialize(input);
+        return fury.getCurrentFury().deserializeJavaObject(input, BinarySourceRecord.class);
     }
 }
