@@ -29,3 +29,11 @@ classifiers = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lakesoul*"]
+
+[project.optional-dependencies]
+torch = ["torch>=1.11"]
+pandas = ["pandas>=1.4"]
+all = [
+    "torch>=1.11",
+    "pandas>=1.4",
+]
