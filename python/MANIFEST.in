@@ -1,3 +1,0 @@
-recursive-include lakesoul *.py
-recursive-include lakesoul *.so*
-recursive-exclude lakesoul *.cpp

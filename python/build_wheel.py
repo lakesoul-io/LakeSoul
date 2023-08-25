@@ -2,37 +2,75 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import glob
+import shutil
+import tempfile
+import subprocess
+import contextlib
+
 class LakeSoulWheelBuilder(object):
     def __init__(self):
         self._project_root_dir = self._get_project_root_dir()
+        self._python_path = self._get_python_path()
+        self._python_version = self._get_python_version()
+        self._pyarrow_abi_tag = self._get_pyarrow_abi_tag()
 
     def _get_project_root_dir(self):
-        import os
         dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
         return dir_path
 
+    def _get_python_path(self):
+        dir_path = os.path.join(self._project_root_dir, 'cpp/build/lakesoul')
+        file_path = os.path.join(dir_path, 'python-env/.env/bin/python')
+        return file_path
+
+    def _get_python_version(self):
+        string = "import sys; "
+        string += "m = sys.version_info.major; "
+        string += "n = sys.version_info.minor; "
+        string += "print('%d.%d' % (m, n))"
+        args = [self._python_path, '-c', string]
+        output = subprocess.check_output(args)
+        if not isinstance(output, str):
+            output = output.decode('utf-8')
+        version = output.strip()
+        return version
+
+    def _get_pyarrow_abi_tag(self):
+        string = "import pyarrow; "
+        string += "xs = pyarrow.__version__.split('.'); "
+        string += "m = int(xs[0]); "
+        string += "n = int(xs[1]); "
+        string += "print('%d%02d' % (m, n))"
+        args = [self._python_path, '-c', string]
+        output = subprocess.check_output(args)
+        if not isinstance(output, str):
+            output = output.decode('utf-8')
+        abi_tag = output.strip()
+        return abi_tag
+
     def _compile_cpp(self):
-        import os
-        import subprocess
         file_path = os.path.join(self._project_root_dir, 'cpp', 'compile.sh')
         args = file_path,
         subprocess.check_call(args)
 
     def _clear_files(self):
-        import os
-        import shutil
-        dir_path = os.path.join(self._project_root_dir, 'python', 'build')
-        if os.path.isdir(dir_path):
-            shutil.rmtree(dir_path)
         dir_path = os.path.join(self._project_root_dir, 'python', 'lakesoul.egg-info')
         if os.path.isdir(dir_path):
             shutil.rmtree(dir_path)
+        dir_path = os.path.join(self._project_root_dir, 'build', 'bdist.linux-x86_64')
+        if os.path.isdir(dir_path):
+            shutil.rmtree(dir_path)
+        dir_name = 'lib.linux-x86_64-cpython-%s' % self._python_version.replace('.', '')
+        dir_path = os.path.join(self._project_root_dir, 'build', dir_name)
+        if os.path.isdir(dir_path):
+            shutil.rmtree(dir_path)
+        dir_path = os.path.join(self._project_root_dir, 'build')
+        if os.path.isdir(dir_path):
+            os.rmdir(dir_path)
 
     def _wheel_context(self):
-        import os
-        import shutil
-        import tempfile
-        import contextlib
         @contextlib.contextmanager
         def context():
             saved_path = os.getcwd()
@@ -48,8 +86,6 @@ class LakeSoulWheelBuilder(object):
         return context()
 
     def _get_wheel_path(self):
-        import os
-        import glob
         files = glob.glob('lakesoul-*.whl')
         assert len(files) == 1
         file_path = files[0]
@@ -57,33 +93,13 @@ class LakeSoulWheelBuilder(object):
         return file_path
 
     def _get_repaired_wheel_path(self):
-        import os
-        import glob
         files = glob.glob('wheelhouse/lakesoul-*.whl')
         assert len(files) == 1
         file_path = files[0]
         file_path = os.path.realpath(file_path)
         return file_path
 
-    def _get_pyarrow_abi_tag(self):
-        import os
-        import subprocess
-        string = "import pyarrow; "
-        string += "xs = pyarrow.__version__.split('.'); "
-        string += "m = int(xs[0]); "
-        string += "n = int(xs[1]); "
-        string += "print('%d%02d' % (m, n))"
-        args = [os.path.join(self._project_root_dir, 'cpp/build/lakesoul/python-env/.env/bin/python')]
-        args += ['-c', string]
-        output = subprocess.check_output(args)
-        if not isinstance(output, str):
-            output = output.decode('utf-8')
-        abi_tag = output.strip()
-        return abi_tag
-
     def _build_wheel(self):
-        import os
-        import subprocess
         args = ['env']
         args += ['_LAKESOUL_DATASET_SO=%s' % os.path.join(
                  self._project_root_dir, 'cpp/build/_lakesoul_dataset.so')]
@@ -91,27 +107,21 @@ class LakeSoulWheelBuilder(object):
                  self._project_root_dir, 'native-metadata/target/release/liblakesoul_metadata_c.so')]
         args += ['_LAKESOUL_METADATA_GENERATED=%s' % os.path.join(
                  self._project_root_dir, 'cpp/build/python/lakesoul/metadata/generated')]
-        args += [os.path.join(self._project_root_dir, 'cpp/build/lakesoul/python-env/.env/bin/python')]
-        args += ['-m', 'pip', 'wheel', os.path.join(self._project_root_dir, 'python'), '--no-deps']
+        args += [self._python_path, '-m', 'pip', 'wheel', self._project_root_dir, '--no-deps']
         subprocess.check_call(args)
 
     def _repair_wheel(self):
-        import os
-        import subprocess
-        abi_tag = self._get_pyarrow_abi_tag()
-        args = [os.path.join(self._project_root_dir, 'cpp/build/lakesoul/python-env/.env/bin/python')]
-        args += ['-m', 'auditwheel', 'repair', '--plat', 'manylinux2014_x86_64']
+        pa_abi_tag = self._pyarrow_abi_tag
+        args = [self._python_path, '-m', 'auditwheel', 'repair', '--plat', 'manylinux2014_x86_64']
         args += ['--exclude', 'libarrow_python.so']
-        args += ['--exclude', 'libarrow_dataset.so.%s' % abi_tag]
-        args += ['--exclude', 'libarrow_acero.so.%s' % abi_tag]
-        args += ['--exclude', 'libparquet.so.%s' % abi_tag]
-        args += ['--exclude', 'libarrow.so.%s' % abi_tag]
+        args += ['--exclude', 'libarrow_dataset.so.%s' % pa_abi_tag]
+        args += ['--exclude', 'libarrow_acero.so.%s' % pa_abi_tag]
+        args += ['--exclude', 'libparquet.so.%s' % pa_abi_tag]
+        args += ['--exclude', 'libarrow.so.%s' % pa_abi_tag]
         args += [self._get_wheel_path()]
         subprocess.check_call(args)
 
     def _copy_wheel(self):
-        import os
-        import shutil
         dir_path = os.path.join(self._project_root_dir, 'python', 'wheelhouse')
         if not os.path.isdir(dir_path):
             os.mkdir(dir_path)
