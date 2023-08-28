@@ -19,5 +19,15 @@ dependency-reduced-pom.xml
 /lakesoul-spark/spark-warehouse/
 /script/benchmark/work-dir/*.jar
 *.DS_Store
-native-io/lakesoul-io-c/lakesoul_c_bindings.h
-python/metadata/generated
+__pycache__/
+/cpp/build/
+/python/lakesoul/.libs/
+/python/lakesoul/arrow/_lakesoul_dataset.so
+/python/pyarrow
+/native-io/lakesoul-io-c/lakesoul_c_bindings.h
+/python/lakesoul/metadata/generated/entity_pb2.py
+/python/lakesoul/metadata/generated/entity_pb2_grpc.py
+/python/build/
+/python/lakesoul.egg-info/
+/python/*.whl
+/python/wheelhouse/

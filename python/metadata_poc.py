@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from db_manager import DBManager
-from lib import reload_lib
-from native_client import reset_pg_conf
+from lakesoul.metadata.db_manager import DBManager
+from lakesoul.metadata.lib import reload_lib
+from lakesoul.metadata.native_client import reset_pg_conf
 
 if __name__ == '__main__':
-    reload_lib("/home/huazeng/liblakesoul_metadata_c.so")
     reset_pg_conf(
         ["host=localhost", "port=5432", " dbname=lakesoul_test", " user=lakesoul_test", "password=lakesoul_test"])
 

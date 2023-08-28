@@ -1,0 +1,3 @@
+recursive-include python/lakesoul *.py
+recursive-include python/lakesoul *.so*
+recursive-exclude python/lakesoul *.cpp

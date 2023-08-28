@@ -7,19 +7,29 @@ import concurrent.futures
 import importlib
 from ctypes import *
 
-from lib.const import PARAM_DELIM, DAO_TYPE_QUERY_LIST_OFFSET
-import lib
-import generated.entity_pb2 as entity_pb2
+from .lib.const import PARAM_DELIM, DAO_TYPE_QUERY_LIST_OFFSET
+from . import lib
+from .generated import entity_pb2
 
 global config
-config = "host={} port={} dbname={} user={} password={}".format("localhost", "5433", "test_lakesoul_meta",
-                                                                "yugabyte", "yugabyte")
-
+config = None
 
 def reset_pg_conf(conf):
     global config
     config = " ".join(conf)
 
+def get_pg_conf_from_env():
+    import os
+    conf = []
+    fields = 'host', 'port', 'dbname', 'user', 'password'
+    for field in fields:
+        key = 'LAKESOUL_METADATA_PG_%s' % field.upper()
+        value = os.environ.get(key)
+        if value is not None:
+            conf.append('%s=%s' % (field, value))
+    if conf:
+        return conf
+    return None
 
 class NativeMetadataClient:
     def __init__(self):
@@ -30,12 +40,21 @@ class NativeMetadataClient:
         self._runtime = lib.lakesoul_metadata_c.create_tokio_runtime()
 
         def callback(bool, msg):
-            print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
+            #print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
             if not bool:
-                exit(1)
+                message = "fail to initialize lakesoul.metadata.native_client.NativeMetadataClient"
+                raise RuntimeError(message)
 
         def target():
             global config
+            if config is None:
+                conf = get_pg_conf_from_env()
+                if conf is None:
+                    message = "set LAKESOUL_METADATA_PG_* environment variables or "
+                    message += "call lakesoul.metadata.native_client.reset_pg_conf "
+                    message += "to configure LakeSoul metadata"
+                    raise RuntimeError(message)
+                reset_pg_conf(conf)
             return lib.lakesoul_metadata_c.create_tokio_postgres_client(CFUNCTYPE(c_void_p, c_bool, c_char_p)(callback),
                                                                         config.encode("utf-8"),
                                                                         self._runtime)
@@ -47,9 +66,12 @@ class NativeMetadataClient:
         self._prepared = lib.lakesoul_metadata_c.create_prepared_statement()
 
     def __del__(self):
-        lib.lakesoul_metadata_c.free_tokio_runtime(self._runtime)
-        lib.lakesoul_metadata_c.free_tokio_postgres_client(self._client)
-        lib.lakesoul_metadata_c.free_prepared_statement(self._prepared)
+        if hasattr(self, '_runtime'):
+            lib.lakesoul_metadata_c.free_tokio_runtime(self._runtime)
+        if hasattr(self, '_client'):
+            lib.lakesoul_metadata_c.free_tokio_postgres_client(self._client)
+        if hasattr(self, '_prepared'):
+            lib.lakesoul_metadata_c.free_prepared_statement(self._prepared)
 
     def execute_query(self, query_type, params):
         joined_params = PARAM_DELIM.join(params).encode("utf-8")
@@ -59,7 +81,8 @@ class NativeMetadataClient:
         buffer.value = b''
 
         def callback(len, msg):
-            print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
+            #print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
+            pass
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(lib.lakesoul_metadata_c.execute_query,
@@ -86,6 +109,10 @@ INSTANCE = None
 def get_instance():
     global INSTANCE
     if INSTANCE is None:
+        import os
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        file_path = os.path.join(dir_path, 'lib', 'liblakesoul_metadata_c.so')
+        lib.reload_lib(file_path)
         INSTANCE = NativeMetadataClient()
         return INSTANCE
     else:
