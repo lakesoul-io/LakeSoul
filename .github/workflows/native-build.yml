@@ -149,6 +149,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -182,6 +183,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -238,6 +240,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -q -B package --file pom.xml -Pcross-build -DskipTests -Dmaven.test.skip=true

@@ -126,7 +126,7 @@ public class LakeSoulSinkGlobalCommitter
                         identity.tableLocation, msgSchema, identity.useCDC, identity.cdcColumn, partition);
                 JSONObject properties = new JSONObject();
                 if (isCdc) {
-                    properties.put(USE_CDC.key(), true);
+                    properties.put(USE_CDC.key(), "true");
                     properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
                 }
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
