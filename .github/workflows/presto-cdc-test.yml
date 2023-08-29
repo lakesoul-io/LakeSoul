@@ -124,12 +124,11 @@ jobs:
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 cat /etc/hosts
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
       - name: "[Check] Presto source to sink data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
       - name: Adding columns for tables and deleting some data from tables
         run: |
           cd ./script/benchmark
@@ -140,11 +139,11 @@ jobs:
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
       - name: "[Check] Presto source to sink data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
       - name: Updating data in tables
         run: |
           cd ./script/benchmark
@@ -153,11 +152,11 @@ jobs:
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
       - name: "[Check] Presto source to sink data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
       - name: Dropping columns and deleting some data in tables
         run: |
           cd ./script/benchmark
@@ -168,11 +167,11 @@ jobs:
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
       - name: "[Check] Presto source to sink data accuracy verification task"
         run: |
           cd ./script/benchmark
-          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --link presto  --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
 #      - name: "[Check] Table without primary key data accuracy verification task"
 #        run: |
 #          cd ./script/benchmark
