@@ -12,7 +12,10 @@ import io.fury.Fury;
 import io.fury.Language;
 import io.fury.ThreadLocalFury;
 import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.binary.BinaryFormat;
 import org.apache.flink.table.data.binary.BinaryRowData;
+import org.apache.flink.table.data.binary.BinarySection;
 import org.apache.flink.table.types.logical.*;
 
 import java.io.Serializable;
@@ -32,9 +35,15 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
                     .withClassLoader(classLoader).build();
             f.register(RowType.class);
             f.register(BinarySourceRecord.class);
+            f.register(RowData.class);
+            f.register(BinaryFormat.class);
+            f.register(BinaryRowData.class);
+            f.register(MemorySegment.class);
+            f.register(BinarySection.class);
             f.register(TableId.class);
             f.register(LakeSoulRowDataWrapper.class);
             f.register(LogicalTypeRoot.class);
+            f.register(LogicalType.class);
             f.register(RowType.RowField.class);
             f.register(ArrayType.class);
             f.register(IntType.class);
@@ -52,8 +61,6 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
             f.register(DecimalType.class);
             f.register(DoubleType.class);
             f.register(FloatType.class);
-            f.register(BinaryRowData.class);
-            f.register(MemorySegment.class);
             f.register(MapType.class);
             f.register(ArrayType.class);
             f.register(MultisetType.class);
