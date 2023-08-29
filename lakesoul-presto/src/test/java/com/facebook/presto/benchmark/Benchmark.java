@@ -10,12 +10,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 public class Benchmark {
-    static String hostname = "localhost";
+    static String hostname = "mysql";
+    //static String hostname = "localhost";
     static String  mysqlUserName = "root";
     static String  mysqlPassword = "root";
     static int mysqlPort = 3306;
     static String  serverTimeZone = "UTC";
-    static String prestoHost = "127.0.0.1";
+    //static String prestoHost = "127.0.0.1";
+    static String prestoHost = "presto";
     static String prestoPort = "8080";
 
 
