@@ -49,17 +49,17 @@ public class MysqlCdc {
         int sourceParallelism = parameter.getInt(SOURCE_PARALLELISM.key());
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
-                                                  JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
+                JOB_CHECKPOINT_INTERVAL.defaultValue());     //mill second
 
         MysqlDBManager mysqlDBManager = new MysqlDBManager(dbName,
-                                                           userName,
-                                                           passWord,
-                                                           host,
-                                                           Integer.toString(port),
-                                                           new HashSet<>(),
-                                                           databasePrefixPath,
-                                                           bucketParallelism,
-                                                           true);
+                userName,
+                passWord,
+                host,
+                Integer.toString(port),
+                new HashSet<>(),
+                databasePrefixPath,
+                bucketParallelism,
+                true);
 
         mysqlDBManager.importOrSyncLakeSoulNamespace(dbName);
 
@@ -97,7 +97,8 @@ public class MysqlCdc {
         }
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
-        env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+        env.getCheckpointConfig()
+                .setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 
         env.getCheckpointConfig().setCheckpointStorage(parameter.get(FLINK_CHECKPOINT.key()));
         env.setRestartStrategy(RestartStrategies.failureRateRestart(
@@ -107,18 +108,18 @@ public class MysqlCdc {
         ));
 
         MySqlSourceBuilder<BinarySourceRecord> sourceBuilder = MySqlSource.<BinarySourceRecord>builder()
-                                                                        .hostname(host)
-                                                                        .port(port)
-                                                                        .databaseList(dbName) // set captured database
-                                                                        .tableList(dbName + ".*") // set captured table
-                                                                        .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                                                                        .username(userName)
-                                                                        .password(passWord);
+                .hostname(host)
+                .port(port)
+                .databaseList(dbName) // set captured database
+                .tableList(dbName + ".*") // set captured table
+                .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
+                .scanNewlyAddedTableEnabled(true)
+                .username(userName)
+                .password(passWord);
 
-        sourceBuilder.includeSchemaChanges(true);
-        sourceBuilder.scanNewlyAddedTableEnabled(true);
         LakeSoulRecordConvert lakeSoulRecordConvert = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
-        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)));
+        sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
+                conf.getString(WAREHOUSE_PATH)));
         Properties jdbcProperties = new Properties();
         jdbcProperties.put("allowPublicKeyRetrieval", "true");
         jdbcProperties.put("useSSL", "false");
@@ -128,7 +129,9 @@ public class MysqlCdc {
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = conf;
-        LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
+        LakeSoulMultiTableSinkStreamBuilder
+                builder =
+                new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);

@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
+import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
@@ -125,9 +126,13 @@ public class LakeSoulSinkGlobalCommitter
                 LOG.info("Creating table: {}, {}, {}, {}, {}, {}, {}, {}", tableId, tableNamespace, tableName,
                         identity.tableLocation, msgSchema, identity.useCDC, identity.cdcColumn, partition);
                 JSONObject properties = new JSONObject();
-                if (isCdc) {
-                    properties.put(USE_CDC.key(), "true");
-                    properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
+                if (!identity.primaryKeys.isEmpty()) {
+                    properties.put(HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(BUCKET_PARALLELISM)));
+                    properties.put(HASH_PARTITIONS, String.join(LAKESOUL_HASH_PARTITION_SPLITTER, identity.primaryKeys));
+                    if (isCdc) {
+                        properties.put(USE_CDC.key(), "true");
+                        properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
+                    }
                 }
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
                         properties, partition);
