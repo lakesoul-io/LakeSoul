@@ -52,10 +52,11 @@ class DBManager:
                     data_files.append(file_op.path)
         return data_files
 
-    def get_spark_schema_by_table_name(self, table_name, namespace="default"):
+    def get_arrow_schema_by_table_name(self, table_name, namespace="default", exclude_partition=False):
         table_info = self.get_table_info_by_name(table_name, namespace)
-        return table_info.table_schema
+        schema = table_info.table_schema
+        exclude_partitions = []
+        if exclude_partition and len(table_info.partitions) > 0:
+            exclude_partitions = table_info.partitions.split(";")[0].split(",")
 
-    def get_arrow_schema_by_table_name(self, table_name, namespace="default"):
-        schema = self.get_spark_schema_by_table_name(table_name, namespace)
-        return to_arrow_schema(schema)
+        return to_arrow_schema(schema, exclude_partitions)
