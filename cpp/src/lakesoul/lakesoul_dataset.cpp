@@ -51,4 +51,14 @@ void LakeSoulDataset::AddFileUrls(const std::vector<std::string>& file_urls)
     file_urls_.insert(file_urls_.end(), file_urls.begin(), file_urls.end());
 }
 
+void LakeSoulDataset::AddPartitionKeyValue(const std::string& key, const std::string& value)
+{
+    partition_info_.push_back(std::make_pair(key, value));
+}
+
+void LakeSoulDataset::AddPartitionKeyValues(const std::vector<std::pair<std::string, std::string>>& key_values)
+{
+    partition_info_.insert(partition_info_.end(), key_values.begin(), key_values.end());
+}
+
 } // namespace lakesoul

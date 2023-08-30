@@ -30,8 +30,9 @@ class DBManager:
     def split_data_info_list_to_range_and_hash_partition(self, table_id, data_file_info_list):
         pass
 
-    def get_data_files_by_table_name(self, table_name, partitions={}, namespace="default"):
+    def get_data_files_by_table_name(self, table_name, partitions=None, namespace="default"):
         part_filter = []
+        partitions = partitions or {}
         for part_key, part_value in partitions.items():
             part_filter.append("{}={}".format(part_key, part_value))
         table_info = self.get_table_info_by_name(table_name, namespace)

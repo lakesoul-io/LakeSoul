@@ -25,11 +25,16 @@ public:
 
     void AddFileUrl(const std::string& file_url);
     void AddFileUrls(const std::vector<std::string>& file_urls);
+
+    void AddPartitionKeyValue(const std::string& key, const std::string& value);
+    void AddPartitionKeyValues(const std::vector<std::pair<std::string, std::string>>& key_values);
+
     void CreateDataReader();
 
 private:
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<std::string> file_urls_;
+    std::vector<std::pair<std::string, std::string>> partition_info_;
     std::shared_ptr<lakesoul::LakeSoulDataReader> data_reader_;
 };
 
