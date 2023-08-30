@@ -10,8 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 public class Benchmark {
-    //static String hostname = "mysql";
-    static String hostname = "localhost";
+    static String hostname = "mysql";
+    //static String hostname = "localhost";
     static String  mysqlUserName = "root";
     static String  mysqlPassword = "root";
     static int mysqlPort = 3306;
