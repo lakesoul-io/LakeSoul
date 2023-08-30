@@ -141,6 +141,7 @@ public class Benchmark {
             }
             System.out.println("table " + table + " matched");
         }catch (Exception e){
+            e.printStackTrace();
             ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql5).executeQuery());
             ResultSetPrinter.printResultSet(prestoCon.prepareStatement(sql6).executeQuery());
         }
