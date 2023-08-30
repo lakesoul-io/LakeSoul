@@ -7,7 +7,6 @@ package com.dmetasoul.lakesoul.spark.clean
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
-import sun.java2d.marlin.MarlinUtils.logInfo
 
 import scala.collection.mutable.Set
 

@@ -108,10 +108,34 @@ object Benchmark {
     if (verifyCDC) {
       spark.sql("use " + dbName)
 
-      val tableInfo = spark.sql("show tables")
-      val tables = tableInfo.collect().map(_ (1).toString)
+      val tableInfo = spark.sql("show tables").select("tableName")
+      val mysqlTable = getMysqlTables(spark).select("table_name")
+
+      val diff1 = tableInfo.rdd.subtract(mysqlTable.rdd)
+      val diff2 = mysqlTable.rdd.subtract(tableInfo.rdd)
+      val result = diff1.count() == 0 && diff2.count() == 0
+      if (!result) {
+        println("LakeSoul tables:")
+        println(tableInfo.orderBy("tableName").collectAsList())
+        println("Mysql tables:")
+        println(mysqlTable.orderBy("table_name").collectAsList())
+        System.exit(1)
+      }
+
+      val tables = tableInfo.collect().map(_ (0).toString)
       tables.foreach(tableName => verifyQuery(spark, tableName))
     }
+  }
+
+  def getMysqlTables(spark: SparkSession): DataFrame = {
+    spark.read.format("jdbc")
+      .option("driver", "com.mysql.cj.jdbc.Driver")
+      .option("url", url)
+      .option("dbtable", "information_schema.tables")
+      .option("user", mysqlUserName)
+      .option("password", mysqlPassword)
+      .load()
+      .filter("table_schema='" + dbName +"'")
   }
 
   def verifyQuery(spark: SparkSession, table: String): Unit = {
