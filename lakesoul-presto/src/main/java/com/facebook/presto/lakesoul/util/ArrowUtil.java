@@ -5,6 +5,8 @@
 package com.facebook.presto.lakesoul.util;
 
 import com.facebook.presto.common.type.*;
+import com.facebook.presto.jdbc.internal.joda.time.DateTimeField;
+import com.facebook.presto.jdbc.internal.joda.time.DateTimeFieldType;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;

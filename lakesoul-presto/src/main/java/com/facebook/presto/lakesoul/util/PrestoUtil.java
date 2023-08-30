@@ -11,6 +11,7 @@ import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.common.type.*;
+import com.facebook.presto.jdbc.internal.joda.time.DateTimeFieldType;
 import com.facebook.presto.lakesoul.pojo.Path;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.ArrowType;

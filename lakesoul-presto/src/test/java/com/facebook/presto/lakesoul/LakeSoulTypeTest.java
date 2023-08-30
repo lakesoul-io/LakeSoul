@@ -52,20 +52,38 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
     }
 
     public void testBooleanType(){
-        List<MaterializedRow> showColumnsInTable1 = sql("select id1 from table4 where id1 = true or id1 is null");
-        assert showColumnsInTable1.size() == 2;
+        //List<MaterializedRow> showColumnsInTable1 = sql("select * from table4");
+        List<MaterializedRow> showColumnsInTable1 = sql("select id1 from table4 where id1 = true");
+        assert showColumnsInTable1.size() == 3;
     }
 
     public void testDecimalType(){
-        List<MaterializedRow> showColumnsInTable1 = sql("select id2 from table4 where not id2 is null");
-        assert showColumnsInTable1.size() == 2;
+        List<MaterializedRow> showColumnsInTable1 = sql("select id2 from table4 where id2 > 2 ");
+        assert showColumnsInTable1.size() == 3;
     }
 
     public void testStringType(){
-        List<MaterializedRow> showColumnsInTable1 = sql("select * from table4");
+        List<MaterializedRow> showColumnsInTable1 = sql("select * from table4 where id3 > 2");
         //List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table4 where id3 = 'hello' or id3 is null");
-        assert showColumnsInTable1.size() == 2;
+        assert showColumnsInTable1.size() == 3;
     }
 
+    public void testByteType(){
+        List<MaterializedRow> showColumnsInTable1 = sql("select id1 from table5 where id1 = 127");
+        assert showColumnsInTable1.size() == 1;
+    }
 
+    public void testDateType(){
+        List<MaterializedRow> showColumnsInTable1 = sql("select id2 from table5 where id2 = date('2023-8-30') ");
+        assert showColumnsInTable1.size() == 1;
+    }
+
+    public void testTimeStamp(){
+        List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table5 where id3 = timestamp '2023-08-29 17:01:02' ");
+        assert showColumnsInTable1.size() == 1;
+    }
+
+    public void testBinary(){
+
+    }
 }

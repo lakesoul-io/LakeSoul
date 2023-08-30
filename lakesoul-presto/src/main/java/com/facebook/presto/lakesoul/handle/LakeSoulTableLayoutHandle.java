@@ -105,7 +105,10 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         if (tupleDomain.getDomains().isPresent()) {
             for (Map.Entry<ColumnHandle, Domain> entry : tupleDomain.getDomains().get().entrySet()) {
                 LakeSoulTableColumnHandle column = (LakeSoulTableColumnHandle) entry.getKey();
-                query.add(buildPredicate(column, entry.getValue()));
+                FilterPredicate predicate = buildPredicate(column, entry.getValue());
+                if(predicate != null){
+                    query.add(predicate);
+                }
             }
         }
         return query;
@@ -116,10 +119,11 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         String name = column.getColumnName();
         Type type = column.getColumnType();
         if (domain.getValues().isNone() && domain.isNullAllowed()) {
-            return eq(type, name, null);
+            return eq(type, name, null) ;
         }
         if (domain.getValues().isAll() && !domain.isNullAllowed()) {
-            return FilterApi.not(eq(type, name, null));
+            FilterPredicate predicate = eq(type, name, null);
+            return predicate == null ? null : FilterApi.not(predicate);
         }
 
         List<Object> singleValues = new ArrayList<>();
@@ -162,7 +166,9 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             disjuncts.add(eq(type, name, null));
         }
 
-        return disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or).get();
+        Optional<FilterPredicate> predicate = disjuncts.stream().filter(Objects::nonNull).reduce(FilterApi::or);
+        return predicate.orElse(null);
+
     }
 
     private FilterPredicate eq(Type type, String name, Object value){
