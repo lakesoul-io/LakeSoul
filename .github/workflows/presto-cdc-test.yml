@@ -99,7 +99,11 @@ jobs:
       - name: Deploy Presto Server
         run: |
           echo "deploy presto server pwd: ${PWD}"
-          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/work-dir:/root/presto-server-pure/plugin/lakesoul -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/presto-server-pure/etc/catalog/lakesoul.properties -v ${PWD}/work-dir:/opt/spark/work-dir swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
+          wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/yuanf/presto-plugin-mysql.tar
+          mv presto-plugin-mysql.tar ${PWD}/script/benchmark/work-dir
+          tar -xvf presto-plugin-mysql.tar
+          ls
+          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/root/presto-server-pure/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/mysql:/root/presto-server-pure/plugin/mysql -v ${PWD}/script/benchmark/presto:/root/presto-server-pure/etc/catalog -v ${PWD}/work-dir:/opt/spark/work-dir swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
@@ -136,6 +140,9 @@ jobs:
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 30s
+      - name: Presto Server Liveness Probe
+        run: |
+          docker ps | grep presto
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
