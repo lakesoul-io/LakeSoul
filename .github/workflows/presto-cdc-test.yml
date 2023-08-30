@@ -100,7 +100,6 @@ jobs:
         run: |
           echo "deploy presto server pwd: ${PWD}"
           wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/yuanf/presto-plugin-mysql.tar
-          mv presto-plugin-mysql.tar ${PWD}/script/benchmark/work-dir
           tar -xvf presto-plugin-mysql.tar
           ls
           docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/root/presto-server-pure/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/mysql:/root/presto-server-pure/plugin/mysql -v ${PWD}/script/benchmark/presto:/root/presto-server-pure/etc/catalog -v ${PWD}/work-dir:/opt/spark/work-dir swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
@@ -125,6 +124,9 @@ jobs:
           python 1_create_table.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 30s
+      - name: Presto Server Liveness Probe
+        run: |
+          docker ps | grep presto
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
@@ -140,9 +142,6 @@ jobs:
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 30s
-      - name: Presto Server Liveness Probe
-        run: |
-          docker ps | grep presto
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
