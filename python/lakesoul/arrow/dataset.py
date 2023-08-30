@@ -25,12 +25,8 @@ class Dataset(pa._dataset.Dataset):
         arrow_schema = db_manager.get_arrow_schema_by_table_name(
             table_name=lakesoul_table_name,
             namespace=namespace,
+            exclude_partition=not retain_partition_columns,
         )
-        if not retain_partition_columns:
-            arrow_schema = pa.schema([
-                f for f in arrow_schema
-                if f.name not in partitions
-            ])
         dataset = LakeSoulDataset(arrow_schema)
         for data_file in data_files:
             dataset._add_file_url(data_file)

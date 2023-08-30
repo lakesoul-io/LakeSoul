@@ -34,6 +34,7 @@ LakeSoulDataset::GetFragmentsImpl(arrow::compute::Expression predicate)
 {
     auto fragment = std::make_shared<LakeSoulFragment>(this->schema());
     fragment->AddFileUrls(file_urls_);
+    fragment->AddPartitionKeyValues(partition_info_);
     fragment->CreateDataReader();
     std::vector<std::shared_ptr<arrow::dataset::Fragment>> fragments;
     fragments.push_back(fragment);
