@@ -102,7 +102,7 @@ jobs:
           wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/yuanf/presto-plugin-mysql.tar
           tar -xvf presto-plugin-mysql.tar
           ls
-          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/root/presto-server-pure/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/mysql:/root/presto-server-pure/plugin/mysql -v ${PWD}/script/benchmark/presto:/root/presto-server-pure/etc/catalog -v ${PWD}/work-dir:/opt/spark/work-dir swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
+          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/root/presto-server-pure/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/mysql:/root/presto-server-pure/plugin/mysql -v ${PWD}/script/benchmark/presto:/root/presto-server-pure/etc/catalog -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
