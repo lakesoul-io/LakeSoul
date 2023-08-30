@@ -10,8 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 public class Benchmark {
-    static String hostname = "mysql";
-    //static String hostname = "localhost";
+    //static String hostname = "mysql";
+    static String hostname = "localhost";
     static String  mysqlUserName = "root";
     static String  mysqlPassword = "root";
     static int mysqlPort = 3306;
@@ -73,16 +73,20 @@ public class Benchmark {
             mysqlCon.setSchema(lakeSoulDBName);
             prestoCon.setSchema(lakeSoulDBName);
             System.out.println(splitLine);
-            verifyQuery(lakeSoulTableName);
+            verifyQuery(lakeSoulDBName, lakeSoulTableName);
             System.out.println(splitLine);
         }
 
         if (verifyCDC) {
             mysqlCon.setSchema(dbName);
             prestoCon.setSchema(dbName);
+            // query tables in mysql and then verify them in presto
             ResultSet tablesResults = mysqlCon.prepareStatement("show tables").executeQuery();
             while (tablesResults.next()){
-                verifyQuery(tablesResults.getString(1));
+                String tableName = tablesResults.getString(1);
+                System.out.println(splitLine);
+                System.out.println("verifing tableName = " + tableName);
+                verifyQuery(dbName, tableName);
             }
         }
 
@@ -90,7 +94,8 @@ public class Benchmark {
         prestoCon.close();
     }
 
-    public static void verifyQuery (String table) throws SQLException {
+    @Deprecated
+    public static void verifyQueryHard (String table) throws SQLException {
         String sql = "select * from " + table;
         ResultSet res1 = mysqlCon.prepareStatement(sql).executeQuery();
         ResultSet res2 = prestoCon.prepareStatement(sql).executeQuery();
@@ -116,6 +121,31 @@ public class Benchmark {
 //        }
 
     }
+
+
+    public static void verifyQuery (String schema, String table) throws SQLException {
+        String schemaTableName = schema + "." + table;
+        String sql1 = String.format("select count(*) from lakesoul.%s", schemaTableName) ;
+        String sql2 = String.format("select count(*) from mysql.%s", schemaTableName) ;
+        String sql3 = String.format("select count(*) from (select * from lakesoul.%s except select * from mysql.%s)", schemaTableName, schemaTableName);
+        String sql4 = String.format("select count(*) from (select * from mysql.%s except select * from lakesoul.%s)", schemaTableName, schemaTableName);
+        int count1 = getCount(prestoCon.prepareStatement(sql1).executeQuery());
+        int count2 = getCount(prestoCon.prepareStatement(sql2).executeQuery());
+        int count3 = getCount(prestoCon.prepareStatement(sql3).executeQuery());
+        int count4 = getCount(prestoCon.prepareStatement(sql4).executeQuery());
+        if(count1 == 0 || count2 == 0 || count3 != 0 || count4 != 0){
+            throw new RuntimeException("table " + table + " is not matched");
+        }
+        System.out.println("table " + table + " matched");
+    }
+
+    static int getCount(ResultSet res) throws SQLException {
+        if(res.next()){
+            return res.getInt(1);
+        }
+        throw new RuntimeException("resultset has not records");
+    }
+
 
 //    DataFrame changeDF(df: DataFrame) {
 //        df.withColumn("col_2", col("col_2").cast("string"))
