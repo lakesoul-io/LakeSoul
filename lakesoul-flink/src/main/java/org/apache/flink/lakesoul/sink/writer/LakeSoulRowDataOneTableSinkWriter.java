@@ -14,6 +14,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -26,7 +27,10 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
     private final LakeSoulRecordConvert converter;
 
     private final TableSchemaIdentity identity;
+
     private final RowData.FieldGetter[] fieldGetters;
+
+    private final TableSchemaWriterCreator creator;
 
     public LakeSoulRowDataOneTableSinkWriter(
             int subTaskId,
@@ -37,7 +41,7 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
             OutputFileConfig outputFileConfig,
             Sink.ProcessingTimeService processingTimeService,
             long bucketCheckInterval,
-            Configuration conf) {
+            Configuration conf) throws IOException {
         super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig,
                 processingTimeService, bucketCheckInterval, conf);
         this.converter = new LakeSoulRecordConvert(conf, conf.getString(SERVER_TIME_ZONE));
@@ -50,6 +54,17 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
                                                 identity.rowType.getTypeAt(i), i))
                         .toArray(RowData.FieldGetter[]::new);
         this.identity.rowType = converter.toFlinkRowTypeCDC(this.identity.rowType);
+        this.creator =
+                TableSchemaWriterCreator.create(this.identity.tableId,
+                        this.identity.rowType,
+                        this.identity.tableLocation,
+                        this.identity.primaryKeys,
+                        this.identity.partitionKeyList,
+                        conf);
+    }
+
+    @Override protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
+        return this.creator;
     }
 
     @Override

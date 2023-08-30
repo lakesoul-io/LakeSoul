@@ -3,12 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.jnr;
 
-import com.google.protobuf.InvalidProtocolBufferException;
 import jnr.ffi.Pointer;
 import jnr.ffi.annotations.Delegate;
 import jnr.ffi.annotations.LongLong;
-
-import java.awt.*;
 
 public interface LibLakeSoulMetaData {
 

@@ -22,16 +22,19 @@ public final class TableSchemaIdentity implements Serializable {
 
     public final List<String> partitionKeyList;
 
-    public final JSONObject properties;
+    public final boolean useCDC;
+
+    public final String cdcColumn;
 
     public TableSchemaIdentity(TableId tableId, RowType rowType, String tableLocation, List<String> primaryKeys,
-                               List<String> partitionKeyList, JSONObject properties) {
+                               List<String> partitionKeyList, boolean useCDC, String cdcColumn) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.tableLocation = tableLocation;
         this.primaryKeys = primaryKeys;
         this.partitionKeyList = partitionKeyList;
-        this.properties = properties;
+        this.useCDC = useCDC;
+        this.cdcColumn = cdcColumn;
     }
 
     @Override
@@ -48,11 +51,15 @@ public final class TableSchemaIdentity implements Serializable {
         return Objects.hash(tableId, rowType);
     }
 
-    @Override
-    public String toString() {
+    @Override public String toString() {
         return "TableSchemaIdentity{" +
                 "tableId=" + tableId +
                 ", rowType=" + rowType +
+                ", tableLocation='" + tableLocation + '\'' +
+                ", primaryKeys=" + primaryKeys +
+                ", partitionKeyList=" + partitionKeyList +
+                ", useCDC=" + useCDC +
+                ", cdcColumn='" + cdcColumn + '\'' +
                 '}';
     }
 }

@@ -9,24 +9,25 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 public class LakeSoulRowDataWrapper {
-    TableId tableId;
-    String op;
-    RowData before;
-    RowData after;
-    RowType beforeType;
-    RowType afterType;
-
-    JSONObject properties;
+    private final TableId tableId;
+    private final String op;
+    private final RowData before;
+    private final RowData after;
+    private final RowType beforeType;
+    private final RowType afterType;
+    private final boolean useCDC;
+    private final String cdcColumn;
 
     public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType,
-                                  RowType afterType, JSONObject properties) {
+                                  RowType afterType, boolean useCDC, String cdcColumn) {
         this.tableId = tableId;
         this.op = op;
         this.before = before;
         this.after = after;
         this.beforeType = beforeType;
         this.afterType = afterType;
-        this.properties = properties;
+        this.useCDC = useCDC;
+        this.cdcColumn = cdcColumn;
     }
 
     public TableId getTableId() {
@@ -53,8 +54,12 @@ public class LakeSoulRowDataWrapper {
         return op;
     }
 
-    public JSONObject getProperties() {
-        return properties;
+    public boolean getUseCDC() {
+        return useCDC;
+    }
+
+    public String getCdcColumn() {
+        return cdcColumn;
     }
 
     @Override
@@ -66,7 +71,8 @@ public class LakeSoulRowDataWrapper {
                 ", after=" + after +
                 ", beforeType=" + beforeType +
                 ", afterType=" + afterType +
-                ", properties=" + properties +
+                ", useCDC=" + useCDC +
+                ", cdcColumn=" + cdcColumn +
                 '}';
     }
 
@@ -81,8 +87,8 @@ public class LakeSoulRowDataWrapper {
         RowData after;
         RowType beforeType;
         RowType afterType;
-
-        JSONObject properties;
+        boolean useCDC;
+        String cdcColumn;
 
         public Builder setTableId(TableId tableId) {
             this.tableId = tableId;
@@ -114,14 +120,19 @@ public class LakeSoulRowDataWrapper {
             return this;
         }
 
-        public Builder setProperties(JSONObject properties) {
-            this.properties = properties;
+        public Builder setUseCDC(boolean useCDC) {
+            this.useCDC = useCDC;
+            return this;
+        }
+
+        public Builder setCDCColumn(String cdcColumn) {
+            this.cdcColumn = cdcColumn;
             return this;
         }
 
         public LakeSoulRowDataWrapper build() {
             return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType,
-                    this.afterType, this.properties);
+                    this.afterType, useCDC, cdcColumn);
         }
     }
 }

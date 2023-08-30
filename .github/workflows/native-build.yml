@@ -111,12 +111,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Set up JDK 8
-        uses: actions/setup-java@v3
-        with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: maven
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -139,16 +133,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Set up JDK 8
-        uses: actions/setup-java@v3
-        with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: maven
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -172,16 +161,11 @@ jobs:
       - name: Install automake
         run: brew install automake
       - uses: actions/checkout@v3
-      - name: Set up JDK 8
-        uses: actions/setup-java@v3
-        with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: maven
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -238,6 +222,7 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -q -B package --file pom.xml -Pcross-build -DskipTests -Dmaven.test.skip=true

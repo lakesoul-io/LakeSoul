@@ -26,6 +26,7 @@ import java.io.Serializable;
 import java.util.List;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class TableSchemaWriterCreator implements Serializable {
     private static final Logger LOG = LoggerFactory.getLogger(TableSchemaWriterCreator.class);
@@ -55,7 +56,14 @@ public class TableSchemaWriterCreator implements Serializable {
             Configuration conf) throws IOException {
         TableSchemaWriterCreator creator = new TableSchemaWriterCreator();
         creator.conf = conf;
-        creator.identity = new TableSchemaIdentity(tableId, rowType, tableLocation, primaryKeys, partitionKeyList, FlinkUtil.getPropertiesFromConfiguration(conf));
+        creator.identity =
+                new TableSchemaIdentity(tableId,
+                        rowType,
+                        tableLocation,
+                        primaryKeys,
+                        partitionKeyList,
+                        conf.getBoolean(USE_CDC, false),
+                        conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
         creator.primaryKeys = primaryKeys;
         creator.partitionKeyList = partitionKeyList;
         creator.outputFileConfig = OutputFileConfig.builder().build();
@@ -65,7 +73,7 @@ public class TableSchemaWriterCreator implements Serializable {
                 rowType.getFieldNames().toArray(new String[0]),
                 rowType,
                 partitionKeyList.toArray(new String[0]),
-                conf.getBoolean(LakeSoulSinkOptions.USE_CDC)
+                conf.getBoolean(USE_CDC)
         );
 
         creator.bucketAssigner = new FlinkBucketAssigner(creator.partitionComputer);
