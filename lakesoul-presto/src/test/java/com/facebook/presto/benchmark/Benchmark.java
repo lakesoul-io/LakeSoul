@@ -72,8 +72,8 @@ public class Benchmark {
             mysqlCon.setSchema(lakeSoulDBName);
             prestoCon.setSchema(lakeSoulDBName);
             System.out.println(splitLine);
-            System.out.println("verifing single tableName" + lakeSoulDBName + "." + lakeSoulTableName);
-            verifyQuery(lakeSoulDBName, lakeSoulTableName);
+            System.out.println("verifing single tableName = " + lakeSoulDBName + "." + lakeSoulTableName);
+            verifyQuery(dbName, lakeSoulDBName, lakeSoulTableName);
             System.out.println(splitLine);
         }
 
@@ -86,7 +86,7 @@ public class Benchmark {
                 String tableName = tablesResults.getString(1);
                 System.out.println(splitLine);
                 System.out.println("verifing tableName = " + dbName + "." + tableName);
-                verifyQuery(dbName, tableName);
+                verifyQuery(dbName, dbName, tableName);
             }
         }
 
@@ -123,14 +123,15 @@ public class Benchmark {
     }
 
 
-    public static void verifyQuery (String schema, String table) throws SQLException {
-        String schemaTableName = schema + "." + table;
-        String sql1 = String.format("select count(*) from lakesoul.%s", schemaTableName) ;
-        String sql2 = String.format("select count(*) from mysql.%s", schemaTableName) ;
-        String sql3 = String.format("select count(*) from (select * from lakesoul.%s except select * from mysql.%s)", schemaTableName, schemaTableName);
-        String sql4 = String.format("select count(*) from (select * from mysql.%s except select * from lakesoul.%s)", schemaTableName, schemaTableName);
-        String sql5 = String.format("select * from lakesoul.%s", schemaTableName) ;
-        String sql6 = String.format("select * from mysql.%s", schemaTableName) ;
+    public static void verifyQuery (String sourceSchema, String sinkSchema, String table) throws SQLException {
+        String sourceSchemaTableName = sourceSchema + "." + table;
+        String sinkSchemaTableName = sinkSchema + "." + table;
+        String sql1 = String.format("select count(*) from lakesoul.%s", sinkSchemaTableName) ;
+        String sql2 = String.format("select count(*) from mysql.%s", sourceSchemaTableName) ;
+        String sql3 = String.format("select count(*) from (select * from lakesoul.%s except select * from mysql.%s)", sinkSchemaTableName, sourceSchemaTableName);
+        String sql4 = String.format("select count(*) from (select * from mysql.%s except select * from lakesoul.%s)", sourceSchemaTableName, sinkSchemaTableName);
+        String sql5 = String.format("select * from lakesoul.%s", sinkSchemaTableName) ;
+        String sql6 = String.format("select * from mysql.%s", sourceSchemaTableName) ;
         try {
             int count1 = getCount(prestoCon.prepareStatement(sql1).executeQuery());
             int count2 = getCount(prestoCon.prepareStatement(sql2).executeQuery());
