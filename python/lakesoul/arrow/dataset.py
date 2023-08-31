@@ -73,6 +73,10 @@ class Dataset(pa._dataset.Dataset):
     def scanner(self, *args, **kwargs):
         return self._dataset.scanner(*args, **kwargs)
 
+    @property
+    def schema(self):
+        return self._dataset.schema
+
 def lakesoul_dataset(table_name,
                      batch_size=16,
                      thread_count=1,
