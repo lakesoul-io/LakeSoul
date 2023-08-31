@@ -40,7 +40,7 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
 
     @AfterClass
     public static void stopMetastore() throws Exception {
-        dbManager.cleanMeta();
+        // dbManager.cleanMeta();
         LakeSoulFlinkTestBase.catalog = null;
     }
 

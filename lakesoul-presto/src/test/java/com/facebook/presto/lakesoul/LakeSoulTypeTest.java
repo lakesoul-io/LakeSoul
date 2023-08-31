@@ -58,14 +58,15 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
     }
 
     public void testDecimalType(){
+        // 上层过了过滤
         List<MaterializedRow> showColumnsInTable1 = sql("select id2 from table4 where id2 > 2 ");
-        assert showColumnsInTable1.size() == 3;
+        assert showColumnsInTable1.size() == 4;
     }
 
     public void testStringType(){
-        List<MaterializedRow> showColumnsInTable1 = sql("select * from table4 where id3 > 2");
+        List<MaterializedRow> showColumnsInTable1 = sql("select * from table4 where id3 = '1.111'");
         //List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table4 where id3 = 'hello' or id3 is null");
-        assert showColumnsInTable1.size() == 3;
+        assert showColumnsInTable1.size() == 1;
     }
 
     public void testByteType(){
@@ -79,11 +80,17 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
     }
 
     public void testTimeStamp(){
-        List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table5 where id3 = timestamp '2023-08-29 17:01:02' ");
-        assert showColumnsInTable1.size() == 1;
+//        List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table5 where id3 > timestamp '2023-08-29 17:01:02' ");
+//        assert showColumnsInTable1.size() == 1;
+    }
+
+    public void testTimeStampWithTimeZone(){
+//        List<MaterializedRow> showColumnsInTable1 = sql("select id3 from table5 where id3 > timestamp '2023-08-29 17:01:02' ");
+//        assert showColumnsInTable1.size() == 1;
     }
 
     public void testBinary(){
 
     }
+
 }

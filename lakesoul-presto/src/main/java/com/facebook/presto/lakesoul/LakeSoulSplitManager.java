@@ -6,10 +6,7 @@
 
 package com.facebook.presto.lakesoul;
 
-import com.dmetasoul.lakesoul.meta.DBManager;
-import com.dmetasoul.lakesoul.meta.DataFileInfo;
-import com.dmetasoul.lakesoul.meta.DataOperation;
-import com.dmetasoul.lakesoul.meta.MetaVersion;
+import com.dmetasoul.lakesoul.meta.*;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
@@ -32,15 +29,8 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
 
         LakeSoulTableLayoutHandle tableLayout = (LakeSoulTableLayoutHandle)layout;
         String tid = tableLayout.getTableHandle().getId();
-        long nextStartTime = MetaVersion.getLastedTimestamp(tid ,"") + 1;
-
         DataFileInfo[] dfinfos =
-                DataOperation.getIncrementalPartitionDataInfo(
-                        tid,
-                        "",
-                        0,
-                        nextStartTime,
-                        "incremental");
+                DataOperation.getTableDataInfo(tid);
 
         ArrayList<ConnectorSplit> splits = new ArrayList<>(16);
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =

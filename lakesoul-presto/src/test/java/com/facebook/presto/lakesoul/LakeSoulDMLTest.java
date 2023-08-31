@@ -14,9 +14,10 @@ public class LakeSoulDMLTest extends LakeSoulSmokeTest{
 
     @Test
     public void testStar(){
-        List<MaterializedRow> rows = sql("select * from table1 where id = 0 or id >= 2");
-        int count = rows.size();
-         assert count == 2;
+        List<MaterializedRow> rows1 = sql("select * from pks.table1");
+        List<MaterializedRow> rows2 = sql("select * from rks.table1");
+        assert rows1.size() == 5;
+        assert rows2.size() == 5;
     }
 
     /* without pks */
