@@ -111,9 +111,9 @@ jobs:
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --source.database.name test_cdc --source.table.name default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
           sleep 30s
-      - name: Start flink DataGenSource without primary key task-3
-        run: |
-          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink/ --flink.checkpoint s3://lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
+#      - name: Start flink DataGenSource without primary key task-3
+#        run: |
+#          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink/ --flink.checkpoint s3://lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
       - name: Download mysql driver jar
         run: |
           cd ./script/benchmark/work-dir

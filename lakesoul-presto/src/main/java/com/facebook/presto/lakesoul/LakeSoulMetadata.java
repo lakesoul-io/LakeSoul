@@ -27,6 +27,8 @@ import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.lakesoul.util.FlinkUtil.CDC_CHANGE_COLUMN;
+
 public class LakeSoulMetadata implements ConnectorMetadata {
 
     private final DBManager dbManager = new DBManager();
@@ -78,6 +80,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         HashMap<String, ColumnHandle> allColumns = new HashMap<>();
         for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
+            // drop cdc change column
+            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+                continue;
+            }
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(tableHandle, field.getName(), PrestoUtil.convertToPrestoType(field.getType()));
             allColumns.put(field.getName(), columnHandle);
@@ -123,6 +129,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             for(Map.Entry<String, String> entry : field.getMetadata().entrySet()){
                 properties.put(entry.getKey(), entry.getValue());
             }
+            // drop cdc change column
+            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+                continue;
+            }
             ColumnMetadata columnMetadata = new ColumnMetadata(
                     field.getName(),
                     PrestoUtil.convertToPrestoType(field.getType()),
@@ -156,6 +166,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         HashMap<String, ColumnHandle> map = new HashMap<>();
         for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
+            // drop cdc change column
+            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+                continue;
+            }
             LakeSoulTableColumnHandle columnHandle =
                     new LakeSoulTableColumnHandle(table, field.getName(), PrestoUtil.convertToPrestoType(field.getType()));
             map.put(field.getName(), columnHandle);
