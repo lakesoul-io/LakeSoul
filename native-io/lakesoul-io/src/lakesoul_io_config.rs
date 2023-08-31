@@ -18,7 +18,7 @@ use std::sync::Arc;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
-use crate::hdfs::HDFS;
+use crate::hdfs::Hdfs;
 
 #[derive(Debug, Derivative)]
 #[derivative(Clone)]
@@ -236,7 +236,7 @@ fn register_hdfs_object_store(
     }
     #[cfg(feature = "hdfs")]
     {
-        let hdfs = HDFS::try_new(_host, _config.clone())?;
+        let hdfs = Hdfs::try_new(_host, _config.clone())?;
         _runtime.register_object_store(_url, Arc::new(hdfs));
         Ok(())
     }

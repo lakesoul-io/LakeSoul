@@ -26,18 +26,18 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
 use tokio_util::io::ReaderStream;
 
-pub struct HDFS {
+pub struct Hdfs {
     client: Arc<Client>,
 }
 
-impl HDFS {
+impl Hdfs {
     pub fn try_new(host: &str, config: LakeSoulIOConfig) -> Result<Self> {
         let user = config.object_store_options.get("fs.hdfs.user");
         let client = match user {
             None => Client::connect(host),
             Some(user) => Client::connect_as_user(host, user.as_str()),
         }
-        .map_err(|e| DataFusionError::IoError(e))?;
+        .map_err(DataFusionError::IoError)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -67,20 +67,20 @@ impl HDFS {
     }
 }
 
-impl Display for HDFS {
+impl Display for Hdfs {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HDFSObjectStore")
     }
 }
 
-impl Debug for HDFS {
+impl Debug for Hdfs {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HDFSObjectStore")
     }
 }
 
 #[async_trait]
-impl ObjectStore for HDFS {
+impl ObjectStore for Hdfs {
     async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
         let location = add_leading_slash(location);
         let mut async_write = self
@@ -226,7 +226,7 @@ impl ObjectStore for HDFS {
         let t = add_leading_slash(location);
         let location = location.clone();
         let client = self.client.clone();
-        maybe_spawn_blocking(move || match location.clone().filename() {
+        maybe_spawn_blocking(move || match location.filename() {
             None => client.remove_dir(t.as_str()).map_err(|e| Generic {
                 store: "hdfs",
                 source: Box::new(e),
@@ -328,7 +328,7 @@ impl ObjectStore for HDFS {
 }
 
 fn add_leading_slash(path: &Path) -> String {
-    ["/", path.as_ref().trim_start_matches("/")].join("")
+    ["/", path.as_ref().trim_start_matches('/')].join("")
 }
 
 #[cfg(test)]
