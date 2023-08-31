@@ -8,9 +8,11 @@ import pyarrow._dataset
 class Dataset(pa._dataset.Dataset):
     def __init__(self,
                  lakesoul_table_name,
+                 batch_size=16,
+                 thread_count=1,
                  partitions=None,
-                 namespace='default',
-                 retain_partition_columns=False):
+                 retain_partition_columns=False,
+                 namespace='default'):
         from ._path_utils import _configure_pyarrow_path
         _configure_pyarrow_path()
         from ._lakesoul_dataset import LakeSoulDataset
@@ -33,18 +35,36 @@ class Dataset(pa._dataset.Dataset):
         if retain_partition_columns:
             for key, value in partitions.items():
                 dataset._add_partition_key_value(key, value)
+        if not isinstance(batch_size, int) or batch_size <= 0:
+            message = "batch_size must be positive int; "
+            message += "%r is invalid" % (batch_size,)
+            raise ValueError(message)
+        dataset._set_batch_size(batch_size)
+        if not isinstance(thread_count, int) or thread_count < 0:
+            message = "thread_count must be non-negative int; "
+            message += "%r is invalid" % (thread_count,)
+            raise ValueError(message)
+        if thread_count == 0:
+            import multiprocessing
+            dataset._set_thread_num(multiprocessing.cpu_count())
+        else:
+            dataset._set_thread_num(thread_count)
         self._lakesoul_table_name = lakesoul_table_name
+        self._batch_size = batch_size
+        self._thread_count = thread_count
         self._partitions = partitions
-        self._namespace = namespace
         self._retain_partition_columns = retain_partition_columns
+        self._namespace = namespace
         self._dataset = dataset
 
     def __reduce__(self):
         return self.__class__, (
             self._lakesoul_table_name,
+            self._batch_size,
+            self._thread_count,
             self._partitions,
-            self._namespace,
             self._retain_partition_columns,
+            self._namespace,
         )
 
     def _get_fragments(self, filter):
@@ -54,13 +74,17 @@ class Dataset(pa._dataset.Dataset):
         return self._dataset.scanner(*args, **kwargs)
 
 def lakesoul_dataset(table_name,
+                     batch_size=16,
+                     thread_count=1,
                      partitions=None,
-                     namespace='default',
-                     retain_partition_columns=False):
+                     retain_partition_columns=False,
+                     namespace='default'):
     dataset = Dataset(
         table_name,
+        batch_size=batch_size,
+        thread_count=thread_count,
         partitions=partitions,
-        namespace=namespace,
         retain_partition_columns=retain_partition_columns,
+        namespace=namespace,
     )
     return dataset

@@ -56,8 +56,8 @@ class DBManager:
     def get_arrow_schema_by_table_name(self, table_name, namespace="default", exclude_partition=False):
         table_info = self.get_table_info_by_name(table_name, namespace)
         schema = table_info.table_schema
-        exclude_partitions = []
+        exclude_partitions = None
         if exclude_partition and len(table_info.partitions) > 0:
-            exclude_partitions = table_info.partitions.split(";")[0].split(",")
+            exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
 
         return to_arrow_schema(schema, exclude_partitions)

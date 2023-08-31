@@ -57,9 +57,31 @@ void LakeSoulFragment::AddPartitionKeyValues(const std::vector<std::pair<std::st
     partition_info_.insert(partition_info_.end(), key_values.begin(), key_values.end());
 }
 
+int LakeSoulFragment::GetBatchSize() const
+{
+    return batch_size_;
+}
+
+void LakeSoulFragment::SetBatchSize(int batch_size)
+{
+    batch_size_ = batch_size >= 1 ? batch_size : 1;
+}
+
+int LakeSoulFragment::GetThreadNum() const
+{
+    return thread_num_;
+}
+
+void LakeSoulFragment::SetThreadNum(int thread_num)
+{
+    thread_num_ = thread_num >= 1 ? thread_num : 1;
+}
+
 void LakeSoulFragment::CreateDataReader()
 {
     data_reader_ = std::make_shared<lakesoul::LakeSoulDataReader>(schema_, file_urls_, partition_info_);
+    data_reader_->SetBatchSize(batch_size_);
+    data_reader_->SetThreadNum(thread_num_);
     data_reader_->StartReader();
 }
 
