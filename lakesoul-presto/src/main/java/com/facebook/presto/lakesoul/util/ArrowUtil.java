@@ -57,46 +57,43 @@ public final class ArrowUtil {
 
 
     public static ArrowType convertToArrowType(Type type) {
-        if(type instanceof BigintType) {
+        if (type instanceof BigintType) {
             return new ArrowType.Int(64, true);
-        }else if (type instanceof IntegerType) {
+        } else if (type instanceof IntegerType) {
             return new ArrowType.Int(32, true);
-        }else if (type instanceof SmallintType) {
+        } else if (type instanceof SmallintType) {
             return new ArrowType.Int(16, true);
-        }else if (type instanceof TinyintType) {
+        } else if (type instanceof TinyintType) {
             return new ArrowType.Int(8, true); // eqauls to byte
-        }else if (type instanceof RealType) {
+        } else if (type instanceof RealType) {
             return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-        }else if (type instanceof DoubleType) {
+        } else if (type instanceof DoubleType) {
             return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-        } else if(type instanceof BooleanType){
+        } else if (type instanceof BooleanType) {
             return new ArrowType.Bool();
-        } else if(type instanceof DecimalType) {
+        } else if (type instanceof DecimalType) {
             DecimalType decimalType = (DecimalType) type;
             return new ArrowType.Decimal(
                     decimalType.getPrecision(),
                     decimalType.getScale());
-        }
-//        else if (type instanceof FloatType) {
-//            return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-//        }
-        else if (type instanceof  VarcharType){
+        } else if (type instanceof VarcharType) {
             return new ArrowType.Utf8();
-        } else if (type instanceof BinaryType){
+        } else if (type instanceof BinaryType) {
             return new ArrowType.Binary();
-        } else if(type instanceof DateType){
+        } else if (type instanceof VarbinaryType) {
+            return new ArrowType.Binary();
+        } else if (type instanceof DateType) {
             return new ArrowType.Date(DateUnit.DAY);
-        } else if(type instanceof TimeType){
+        } else if (type instanceof TimeType) {
             return new ArrowType.Time(TimeUnit.MILLISECOND, 32);
-        } else if(type instanceof TimestampType){
+        } else if (type instanceof TimestampType) {
             return new ArrowType.Timestamp(TimeUnit.MICROSECOND, ZoneId.of("UTC").toString());
-        }else if(type instanceof TimestampWithTimeZoneType){
+        } else if (type instanceof TimestampWithTimeZoneType) {
             return new ArrowType.Timestamp(TimeUnit.MICROSECOND, ZoneId.of("UTC").toString());
-        } else if(type instanceof DecimalType){
-            DecimalType dt = (DecimalType)  type;
-            return new ArrowType.Decimal(dt.getPrecision(),dt.getScale());
-        }
-        else {
+        } else if (type instanceof DecimalType) {
+            DecimalType dt = (DecimalType) type;
+            return new ArrowType.Decimal(dt.getPrecision(), dt.getScale());
+        } else {
             return new ArrowType.Null();
         }
     }
