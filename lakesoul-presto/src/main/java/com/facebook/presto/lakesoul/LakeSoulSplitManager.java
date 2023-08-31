@@ -35,12 +35,8 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
         long nextStartTime = MetaVersion.getLastedTimestamp(tid ,"") + 1;
 
         DataFileInfo[] dfinfos =
-                DataOperation.getIncrementalPartitionDataInfo(
-                        tid,
-                        "",
-                        0,
-                        nextStartTime,
-                        "incremental");
+                DataOperation.getTableDataInfo(
+                        tid);
 
         ArrayList<ConnectorSplit> splits = new ArrayList<>(16);
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
