@@ -5,10 +5,10 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
-import org.apache.flink.core.fs.Path
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists
+import com.facebook.presto.lakesoul.pojo.Path
 
 import java.util.{Objects, UUID}
+import com.google.common.collect.Lists
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
@@ -44,7 +44,6 @@ case class DataFileInfo(range_partitions: String, path: String, file_op: String,
   }
 }
 
-
 case class PartitionInfo(table_id: String, range_value: String, version: Int = -1,
                          read_files: Array[UUID] = Array.empty[UUID], expression: String = "", commit_op: String = "") {
   override def toString: String = {
@@ -71,6 +70,23 @@ object DataOperation {
     file_info_buf.toArray
   }
 
+
+  def getTableDataInfo(tableId: String, partitions: List[String]): Array[DataFileInfo] = {
+    val Pars = MetaVersion.getAllPartitionInfo(tableId)
+    val partitionInfos = new ArrayBuffer[PartitionInfo]()
+    for (partition_info <- Pars) {
+      var contained = true;
+      for (item <- partitions) {
+        if (partitions.size > 0 && !partition_info.range_value.contains(item)) {
+          contained = false
+        }
+      }
+      if (contained) {
+        partitionInfos += partition_info
+      }
+    }
+    getTableDataInfo(partitionInfos.toArray)
+  }
 
   private def filterFiles(file_arr_buf: ArrayBuffer[DataFileInfo]): ArrayBuffer[DataFileInfo] = {
     val dupCheck = new mutable.HashSet[String]()
