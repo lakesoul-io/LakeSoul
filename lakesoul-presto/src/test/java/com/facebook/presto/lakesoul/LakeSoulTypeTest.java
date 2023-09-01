@@ -118,6 +118,15 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
     }
 
 
+
+    public void testTimeStamp(){
+        // coming soon
+//
+//        List<MaterializedRow> showColumnsInTable1 = sql("select * from table11");
+//        System.out.println(showColumnsInTable1);
+
+    }
+
     public void testTimeStampWithTimeZone(){
         // coming soon
     }

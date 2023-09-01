@@ -244,7 +244,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean isNull(int field) {
-        return false;
+        System.out.println("nullable:" + field + ":" + ( currentVCR.getVector(field).getObject(curRecordIdx) == null));
+        return currentVCR.getVector(field).isNull(curRecordIdx);
     }
 
     @Override
