@@ -4,8 +4,10 @@
 
 package org.apache.flink.lakesoul.sink.committer;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
@@ -110,6 +112,7 @@ public class LakeSoulSinkGlobalCommitter
                 globalCommittable.getGroupedCommitables()
                         .entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
+            List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             boolean isCdc = identity.useCDC;
@@ -147,20 +150,30 @@ public class LakeSoulSinkGlobalCommitter
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
                 StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
-                String
-                        equalOrCanCast =
+                scala.Tuple3<String, Object, StructType>
+                        equalOrCanCastTuple3 =
                         DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema,
                                 msgSchema,
                                 identity.partitionKeyList,
                                 identity.primaryKeys);
+                String equalOrCanCast = equalOrCanCastTuple3._1();
+                boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
+                StructType mergeStructType = equalOrCanCastTuple3._3();
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
                             origSchema.json(),
                             msgSchema.json());
                     if (logicallyDropColumn) {
                         List<String> droppedColumn = DataTypeCastUtils.getDroppedColumn(origSchema, msgSchema);
-                        LOG.warn("Dropping Column {} Logically", droppedColumn.toString());
-                        dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
+                        if (droppedColumn.size() > 0) {
+                            LOG.warn("Dropping Column {} Logically", droppedColumn);
+                            dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
+                            if (schemaChanged) {
+                                dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                            }
+                        } else {
+                            dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                        }
                     } else {
                         LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
                                 tableNamespace,
@@ -170,13 +183,25 @@ public class LakeSoulSinkGlobalCommitter
                                 identity.useCDC,
                                 identity.cdcColumn);
                         dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                        if (JSONObject.parseObject(tableInfo.getProperties()).containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
+                            dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
+                        }
                     }
                 } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
-                    throw new IOException(equalOrCanCast);
+                    long schemaLastChangeTime = (long) JSON.parseObject(tableInfo.getProperties()).get(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
+                    if (equalOrCanCast.contains("Change of Partition Column") || equalOrCanCast.contains("Change of Primary Key Column")) {
+                        throw new IOException(equalOrCanCast);
+                    }
+                    for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
+                        if (committable.getTsMs() > schemaLastChangeTime) {
+                            LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}", schemaLastChangeTime, committable.getTsMs());
+                            throw new IOException(equalOrCanCast);
+                        }
+                    }
                 }
             }
 
-            committer.commit(entry.getValue());
+            committer.commit(lakeSoulMultiTableSinkCommittable);
         }
         return Collections.emptyList();
     }

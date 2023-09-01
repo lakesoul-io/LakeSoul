@@ -34,5 +34,7 @@ public abstract class DBConfig {
         public static String DROPPED_COLUMN = "droppedColumn";
 
         public static String DROPPED_COLUMN_SPLITTER = ",";
+
+        public static String LAST_TABLE_SCHEMA_CHANGE_TIME = "last_schema_change_time";
     }
 }

@@ -50,6 +50,8 @@ public class LakeSoulWriterBucket {
 
     private final String uniqueId;
 
+    private long tsMs;
+
     private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
             new ArrayList<>();
 
@@ -136,7 +138,7 @@ public class LakeSoulWriterBucket {
         }
     }
 
-    void write(RowData element, long currentTime) throws IOException {
+    void write(RowData element, long currentTime, long tsMs) throws IOException {
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug(
@@ -145,6 +147,7 @@ public class LakeSoulWriterBucket {
                         element);
             }
             inProgressPartWriter = rollPartFile(currentTime);
+            this.tsMs = tsMs;
         }
 
         inProgressPartWriter.write(element, currentTime);
@@ -170,7 +173,7 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
                 tmpPending,
-                time, tableId));
+                time, tableId, tsMs));
         pendingFiles.clear();
 
         return committables;

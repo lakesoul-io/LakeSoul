@@ -10,10 +10,23 @@ import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Enum;
-import io.debezium.data.*;
+import io.debezium.data.EnumSet;
+import io.debezium.data.Envelope;
+import io.debezium.data.Json;
 import io.debezium.data.geometry.Geometry;
 import io.debezium.data.geometry.Point;
-import io.debezium.time.*;
+import io.debezium.data.SpecialValueDecimal;
+import io.debezium.data.VariableScaleDecimal;
+import io.debezium.time.Date;
+import io.debezium.time.MicroTime;
+import io.debezium.time.MicroTimestamp;
+import io.debezium.time.NanoTime;
+import io.debezium.time.NanoTimestamp;
+import io.debezium.time.Time;
+import io.debezium.time.Timestamp;
+import io.debezium.time.Year;
+import io.debezium.time.ZonedTime;
+import io.debezium.time.ZonedTimestamp;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
@@ -34,10 +47,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
 public class LakeSoulRecordConvert implements Serializable {
+
     private final ZoneId serverTimeZone;
+
     private final String cdcColumn;
 
     final boolean useCDC;
@@ -94,7 +112,7 @@ public class LakeSoulRecordConvert implements Serializable {
         return false;
     }
 
-    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long sortField) throws Exception {
+    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long tsMs, long sortField) throws Exception {
         Envelope.Operation op = getOperation(sch, value);
         Schema valueSchema = value.schema();
         LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId)
@@ -135,7 +153,7 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
 
-        return builder.build();
+        return builder.setTsMs(tsMs).build();
     }
 
     public RowType toFlinkRowTypeCDC(RowType rowType) {

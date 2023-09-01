@@ -77,4 +77,9 @@ public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSink
         }
         return list;
     }
+
+    @Override
+    protected long getDataDmlTsMs(BinarySourceRecord element) {
+        return element.getData().getTsMs();
+    }
 }

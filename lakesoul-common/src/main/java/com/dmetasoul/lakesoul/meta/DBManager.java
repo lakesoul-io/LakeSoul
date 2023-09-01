@@ -108,6 +108,7 @@ public class DBManager {
         tableInfo.setTablePath(tablePath);
         tableInfo.setTableSchema(tableSchema);
         tableInfo.setPartitions(partitions);
+        properties.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, String.valueOf(System.currentTimeMillis()));
         tableInfo.setProperties(properties.toJSONString());
 
         String domain = getNameSpaceDomain(namespace);
@@ -242,7 +243,11 @@ public class DBManager {
     }
 
     public void updateTableSchema(String tableId, String tableSchema) {
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
+        propertiesJson.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, System.currentTimeMillis());
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
+        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toJSONString());
     }
 
     public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
@@ -265,6 +270,13 @@ public class DBManager {
         set.addAll(droppedColumn);
         propertiesJson.put(DBConfig.TableInfoProperty.DROPPED_COLUMN, String.join(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER, droppedColumn));
         updateTableProperties(tableId, propertiesJson.toJSONString());
+    }
+
+    public void removeLogicallyDropColumn(String tableId) {
+        TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
+        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
+        propertiesJson.remove(DBConfig.TableInfoProperty.DROPPED_COLUMN);
+        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toJSONString());
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
@@ -801,7 +813,7 @@ public class DBManager {
         CommitOp commitOp = dataCommitInfo.getCommitOp();
         DataCommitInfo metaCommitInfo = dataCommitInfoDao.selectByPrimaryKey(tableId, partitionDesc, DBUtil.toJavaUUID(commitId).toString());
         if (metaCommitInfo != null && metaCommitInfo.getCommitted()) {
-            LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId.toString());
+            LOG.info("DataCommitInfo with tableId={}, commitId={} committed already", tableId, commitId);
             return;
         } else if (metaCommitInfo == null) {
             dataCommitInfo = dataCommitInfo.toBuilder()
@@ -890,4 +902,3 @@ public class DBManager {
         partitionInfoDao.clean();
     }
 }
-
