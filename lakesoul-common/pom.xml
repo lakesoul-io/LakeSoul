@@ -71,14 +71,32 @@ SPDX-License-Identifier: Apache-2.0
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.4.0</version>
+                <executions>
+                    <execution>
+                        <id>generate-proto-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/target/generated-sources</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
     <properties>
         <postgresql.version>42.5.1</postgresql.version>
-        <debezium.version>1.5.4.Final</debezium.version>
+        <scala.version>2.12.10</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <mysql.version>8.0.30</mysql.version>
         <local.scope>provided</local.scope>
         <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
         <protoc.version>3.5.1</protoc.version>
@@ -105,6 +123,25 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.alibaba</groupId>
             <artifactId>fastjson</artifactId>
             <version>1.2.83</version>
+        </dependency>
+        <!-- scala deps -->
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-compiler</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-reflect</artifactId>
+            <version>${scala.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <!-- casbin -->
         <dependency>
