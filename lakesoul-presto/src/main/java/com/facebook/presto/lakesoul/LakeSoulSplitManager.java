@@ -17,6 +17,11 @@ import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
+import org.apache.parquet.filter2.predicate.FilterPredicate;
+import org.apache.parquet.filter2.predicate.Operators;
+import scala.collection.JavaConverters;
+import org.apache.parquet.io.api.Binary;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,22 +32,33 @@ public class LakeSoulSplitManager implements ConnectorSplitManager {
     @Override
     public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingContext splitSchedulingContext) {
 
-        LakeSoulTableLayoutHandle tableLayout = (LakeSoulTableLayoutHandle)layout;
+        LakeSoulTableLayoutHandle tableLayout = (LakeSoulTableLayoutHandle) layout;
         String tid = tableLayout.getTableHandle().getId();
-        long nextStartTime = MetaVersion.getLastedTimestamp(tid ,"") + 1;
+        List<FilterPredicate> parFilters = tableLayout.getParFilters();
+        List partitions = new ArrayList<String>();
+        for(FilterPredicate fp : parFilters){
+            if(fp instanceof Operators.Eq){
+                Operators.Column column=((Operators.Eq)fp).getColumn();
+                if(column instanceof Operators.IntColumn || column instanceof Operators.LongColumn) {
+                    partitions.add(column.getColumnPath().toDotString() + "=" + ((Operators.Eq) fp).getValue());
+                }else if(column instanceof Operators.BinaryColumn){
+                    Binary value= (Binary) ((Operators.Eq)fp).getValue();
+                    partitions.add(column.getColumnPath().toDotString()+"="+value.toStringUsingUTF8());
+                }else{
+                    break;
+                }
 
-        DataFileInfo[] dfinfos =
-                DataOperation.getTableDataInfo(
-                        tid);
-
+            }else{
+                partitions.clear();
+                break;
+            }
+        }
+        DataFileInfo[] dfinfos = DataOperation.getTableDataInfo(tid, JavaConverters.asScalaBuffer(partitions).toList());
         ArrayList<ConnectorSplit> splits = new ArrayList<>(16);
-        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
-                PrestoUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
+        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = PrestoUtil.splitDataInfosToRangeAndHashPartition(tid, dfinfos);
         for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
             for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                splits.add(new LakeSoulSplit(
-                        tableLayout,
-                        split.getValue()));
+                splits.add(new LakeSoulSplit(tableLayout, split.getValue()));
             }
         }
         return new LakeSoulSplitSource(splits);

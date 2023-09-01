@@ -5,10 +5,10 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
-import org.apache.hadoop.fs.Path
+import com.facebook.presto.lakesoul.pojo.Path
 
-import java.util
 import java.util.{Objects, UUID}
+import com.google.common.collect.Lists
 import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
@@ -70,6 +70,24 @@ object DataOperation {
     file_info_buf.toArray
   }
 
+
+  def getTableDataInfo(tableId: String, partitions: List[String]): Array[DataFileInfo] = {
+    val Pars = MetaVersion.getAllPartitionInfo(tableId)
+    val partitionInfos = new ArrayBuffer[PartitionInfo]()
+    for (partition_info <- Pars) {
+      var contained = true;
+      for (item <- partitions) {
+        if (partitions.size > 0 && !partition_info.range_value.contains(item)) {
+          contained = false
+        }
+      }
+      if (contained) {
+        partitionInfos += partition_info
+      }
+    }
+    getTableDataInfo(partitionInfos.toArray)
+  }
+
   private def filterFiles(file_arr_buf: ArrayBuffer[DataFileInfo]): ArrayBuffer[DataFileInfo] = {
     val dupCheck = new mutable.HashSet[String]()
     val file_res_arr_buf = new ArrayBuffer[DataFileInfo]()
@@ -108,7 +126,7 @@ object DataOperation {
     val metaPartitionInfo = entity.PartitionInfo.newBuilder
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
-    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(DBUtil.toProtoUuid).toBuffer))
     val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo.build).asScala.toArray
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
@@ -178,16 +196,16 @@ object DataOperation {
           loop.break()
         }
         if (startVersionTimestamp == dataItem.getTimestamp) {
-          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
+          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID)
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            val compactShotList = dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray
+            val compactShotList = dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID).toArray
             compactionUUIDs += compactShotList(0)
             if (compactShotList.length > 1) {
               incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
-            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
+            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID)
           }
         }
       }
@@ -198,10 +216,8 @@ object DataOperation {
       val tmpUUIDs = incrementalAllUUIDs -- preVersionUUIDs
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
-      val uuids: java.util.List[String] = new util.LinkedList[String]()
-       resultUUID.foreach(uuid => uuids.add(uuid.toString))
       val dataCommitInfoList = dbManager
-        .getDataCommitInfosFromUUIDs(table_id, partition_desc, uuids).asScala.toArray
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
       fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }
