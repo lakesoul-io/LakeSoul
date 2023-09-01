@@ -1,8 +1,6 @@
-/*
- * // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
- * //
- * // SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.facebook.presto.lakesoul;
 
@@ -21,7 +19,6 @@ import java.util.*;
 import static java.util.Objects.requireNonNull;
 
 public class LakeSoulSplit implements ConnectorSplit {
-
     private final LakeSoulTableLayoutHandle layout;
     private final List<Path> paths;
 
@@ -39,7 +36,6 @@ public class LakeSoulSplit implements ConnectorSplit {
         return layout;
     }
 
-
     @JsonProperty
     public List<Path> getPaths() {
         return paths;
@@ -52,7 +48,6 @@ public class LakeSoulSplit implements ConnectorSplit {
 
     @Override
     public List<HostAddress> getPreferredNodes(NodeProvider nodeProvider) {
-        //return nodeProvider.get("*", 1);
         return Collections.emptyList();
     }
 

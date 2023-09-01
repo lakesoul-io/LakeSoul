@@ -1,8 +1,6 @@
-/*
- * // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
- * //
- * // SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 
 package com.facebook.presto.lakesoul;
 
@@ -19,7 +17,6 @@ import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

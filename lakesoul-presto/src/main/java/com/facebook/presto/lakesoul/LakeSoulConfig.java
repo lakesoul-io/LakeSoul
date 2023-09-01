@@ -4,8 +4,6 @@
 
 package com.facebook.presto.lakesoul;
 
-import com.facebook.presto.lakesoul.util.FlinkUtil;
-
 import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
@@ -43,7 +41,6 @@ public class LakeSoulConfig {
     private String defaultFS;
     private String timeZone;
 
-    private String cdcRow;
 
     public String getAccessKey() {
         return accessKey;

@@ -18,7 +18,6 @@ import java.util.List;
 import static java.util.Objects.requireNonNull;
 
 public class LakeSoulRecordSet implements RecordSet {
-
     private final LakeSoulSplit split;
     private final List<? extends ColumnHandle> columnHandles;
 
@@ -55,8 +54,3 @@ public class LakeSoulRecordSet implements RecordSet {
     }
 
 }
-
-
-
-
-

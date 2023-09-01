@@ -38,4 +38,3 @@ public class LakeSoulHandleResolver implements ConnectorHandleResolver {
         return LakeSoulTransactionHandle.class;
     }
 }
-

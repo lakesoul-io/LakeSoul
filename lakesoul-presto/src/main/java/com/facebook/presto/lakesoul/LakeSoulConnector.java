@@ -148,8 +148,6 @@ public class LakeSoulConnector implements Connector {
         Connector.super.shutdown();
     }
 
-
-
     @Override
     public Set<ConnectorCapabilities> getCapabilities() {
         return Connector.super.getCapabilities();

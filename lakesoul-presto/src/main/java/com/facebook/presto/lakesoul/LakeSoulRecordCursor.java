@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package com.facebook.presto.lakesoul;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
@@ -8,7 +12,6 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.ArrowUtil;
-import com.facebook.presto.lakesoul.util.FlinkUtil;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
@@ -29,15 +32,12 @@ import java.util.stream.Collectors;
 import static java.util.Objects.requireNonNull;
 
 public class LakeSoulRecordCursor implements RecordCursor {
-
-
     private final LakeSoulRecordSet recordSet;
     private final LakeSoulArrowReader reader;
     private int curRecordIdx = -1;
     private VectorSchemaRoot currentVCR;
     private List<Type> desiredTypes;
     LinkedHashMap<String, String> partitions;
-
 
     public LakeSoulRecordCursor(LakeSoulRecordSet recordSet) throws IOException {
 
@@ -68,10 +68,9 @@ public class LakeSoulRecordCursor implements RecordCursor {
             }
         }
         // add extra cdc column
-        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(FlinkUtil.CDC_CHANGE_COLUMN);
+        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
         if(cdcColumn != null){
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
-            System.out.println("extra cdc column added:" + cdcColumn);
         }
 
         reader.setPrimaryKeys(prikeys);
@@ -123,14 +122,12 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean advanceNextPosition() {
-        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(FlinkUtil.CDC_CHANGE_COLUMN);
+        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             while(next()){
                 FieldVector vector = currentVCR.getVector(cdcColumn);
                 if(!vector.getObject(curRecordIdx).toString().equals("delete")){
                     return true;
-                }else{
-                    System.out.println("extra cdc column value:" + vector.getObject(curRecordIdx));
                 }
             }
             return false;
@@ -244,7 +241,6 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean isNull(int field) {
-        System.out.println("nullable:" + field + ":" + ( currentVCR.getVector(field).getObject(curRecordIdx) == null));
         return currentVCR.getVector(field).isNull(curRecordIdx);
     }
 

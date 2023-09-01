@@ -22,10 +22,4 @@ public class Path extends org.apache.hadoop.fs.Path {
         return this.filename;
     }
 
-
-//    public String getName(){
-//
-//        String[] frags = this.filename.split(File.separator);
-//        return frags[frags.length - 1];
-//    }
 }

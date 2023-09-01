@@ -27,7 +27,7 @@ import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static com.facebook.presto.lakesoul.util.FlinkUtil.CDC_CHANGE_COLUMN;
+import static com.facebook.presto.lakesoul.util.PrestoUtil.CDC_CHANGE_COLUMN;
 
 public class LakeSoulMetadata implements ConnectorMetadata {
 
@@ -105,7 +105,6 @@ public class LakeSoulMetadata implements ConnectorMetadata {
 
     @Override
     public ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle) {
-
         return new ConnectorTableLayout(handle);
     }
 
@@ -230,10 +229,4 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         }
         return results;
     }
-
-
-
 }
-
-
-

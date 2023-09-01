@@ -11,7 +11,6 @@ import com.facebook.presto.spi.connector.ConnectorFactory;
 import java.util.Map;
 
 public class LakeSoulConnectorFactory implements ConnectorFactory {
-
     public static final String CONNECTOR_NAME = "lakesoul";
     private final LakeSoulMetadata metadata = new LakeSoulMetadata();
     private final LakeSoulSplitManager manager = new LakeSoulSplitManager();

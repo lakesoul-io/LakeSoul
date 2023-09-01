@@ -117,16 +117,6 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
         assert localDate.equals(LocalDate.of(2023, 9, 3));
     }
 
-
-
-    public void testTimeStamp(){
-        // coming soon
-//
-//        List<MaterializedRow> showColumnsInTable1 = sql("select * from table11");
-//        System.out.println(showColumnsInTable1);
-
-    }
-
     public void testTimeStampWithTimeZone(){
         // coming soon
     }

@@ -36,7 +36,6 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final  List<String> primaryKeys;
     private final List<String> rangeKeys;
     private final JSONObject tableParameters;
-
     private final HashMap<String, ColumnHandle> allColumns;
     private final List<FilterPredicate> filters;
     private final TupleDomain<ColumnHandle> tupleDomain;
@@ -115,7 +114,6 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     }
 
     private FilterPredicate buildPredicate(LakeSoulTableColumnHandle column, Domain domain){
-        // 暂时实现了 整数和浮点数
         String name = column.getColumnName();
         Type type = column.getColumnType();
         if (domain.getValues().isNone() && domain.isNullAllowed()) {
@@ -347,6 +345,5 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
         }
         return null;
     }
-
 
 }

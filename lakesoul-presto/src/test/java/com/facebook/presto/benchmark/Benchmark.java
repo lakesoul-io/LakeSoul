@@ -115,11 +115,6 @@ public class Benchmark {
         }
 
         System.out.println("table " + table + " matched");
-//        if (table.equals(DEFAULT_INIT_TABLE)) {
-//            jdbcDF = changeDF(jdbcDF)
-//            lakesoulDF = changeDF(lakesoulDF)
-//        }
-
     }
 
 
@@ -158,56 +153,37 @@ public class Benchmark {
         }
         throw new RuntimeException("resultset has not records");
     }
-
-
-//    DataFrame changeDF(df: DataFrame) {
-//        df.withColumn("col_2", col("col_2").cast("string"))
-//                .withColumn("col_3", col("col_3").cast("string"))
-//                .withColumn("col_11", col("col_11").cast("string"))
-//                .withColumn("col_13", col("col_13").cast("string"))
-//                .withColumn("col_20", col("col_20").cast("string"))
-//                .withColumn("col_23", col("col_23").cast("string"))
-//    }
-
 }
 
 
 /**
- * 结果集打印机.将结果集中的数据打印成表格.
+ * Result Printer - print resultset to table
  */
 class ResultSetPrinter {
     public static void printResultSet(ResultSet rs) throws SQLException {
         ResultSetMetaData resultSetMetaData = rs.getMetaData();
-        // 获取列数
+        // get ColumnCount
         int ColumnCount = resultSetMetaData.getColumnCount();
-        // 保存当前列最大长度的数组
+        // get col max length
         int[] columnMaxLengths = new int[ColumnCount];
-        // 缓存结果集,结果集可能有序,所以用ArrayList保存变得打乱顺序.
         ArrayList<String[]> results = new ArrayList<>();
-        // 按行遍历
         while (rs.next()) {
-            // 保存当前行所有列
             String[] columnStr = new String[ColumnCount];
-            // 获取属性值.
             for (int i = 0; i < ColumnCount; i++) {
-                // 获取一列
                 columnStr[i] = rs.getString(i + 1);
-                // 计算当前列的最大长度
                 columnMaxLengths[i] = Math.max(columnMaxLengths[i], (columnStr[i] == null) ? 0 : columnStr[i].length());
             }
-            // 缓存这一行.
             results.add(columnStr);
         }
         printSeparator(columnMaxLengths);
         printColumnName(resultSetMetaData, columnMaxLengths);
         printSeparator(columnMaxLengths);
-        // 遍历集合输出结果
+        // output results
         Iterator<String[]> iterator = results.iterator();
         String[] columnStr;
         while (iterator.hasNext()) {
             columnStr = iterator.next();
             for (int i = 0; i < ColumnCount; i++) {
-                // System.out.printf("|%" + (columnMaxLengths[i] + 1) + "s", columnStr[i]);
                 System.out.printf("|%" + columnMaxLengths[i] + "s", columnStr[i]);
             }
             System.out.println("|");
@@ -216,30 +192,26 @@ class ResultSetPrinter {
     }
 
     /**
-     * 输出列名.
-     *
-     * @param resultSetMetaData 结果集的元数据对象.
-     * @param columnMaxLengths  每一列最大长度的字符串的长度.
+     * ouput column name.
+     * @param resultSetMetaData ResultSet meta
+     * @param columnMaxLengths column max length
      * @throws SQLException
      */
     private static void printColumnName(ResultSetMetaData resultSetMetaData, int[] columnMaxLengths) throws SQLException {
         int columnCount = resultSetMetaData.getColumnCount();
         for (int i = 0; i < columnCount; i++) {
-            // System.out.printf("|%" + (columnMaxLengths[i] + 1) + "s", resultSetMetaData.getColumnName(i + 1));
             System.out.printf("|%" + columnMaxLengths[i] + "s", resultSetMetaData.getColumnName(i + 1));
         }
         System.out.println("|");
     }
 
     /**
-     * 输出分隔符.
-     *
-     * @param columnMaxLengths 保存结果集中每一列的最长的字符串的长度.
+     * print spliter.
+     * @param columnMaxLengths column max length
      */
     private static void printSeparator(int[] columnMaxLengths) {
         for (int i = 0; i < columnMaxLengths.length; i++) {
             System.out.print("+");
-            // for (int j = 0; j < columnMaxLengths[i] + 1; j++) {
             for (int j = 0; j < columnMaxLengths[i]; j++) {
                 System.out.print("-");
             }

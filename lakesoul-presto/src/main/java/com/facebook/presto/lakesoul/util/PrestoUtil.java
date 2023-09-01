@@ -11,7 +11,6 @@ import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.common.type.*;
-import com.facebook.presto.jdbc.internal.joda.time.DateTimeFieldType;
 import com.facebook.presto.lakesoul.pojo.Path;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -24,6 +23,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class PrestoUtil {
+
+    public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
+    public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
 
     private static final Pattern PARTITION_NAME_PATTERN = Pattern.compile("([^/]+)=([^/]+)");
 

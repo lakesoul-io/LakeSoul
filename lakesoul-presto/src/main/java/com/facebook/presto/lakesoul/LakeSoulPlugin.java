@@ -14,7 +14,4 @@ public class LakeSoulPlugin implements Plugin {
     {
         return ImmutableList.of(new LakeSoulConnectorFactory());
     }
-
-
-
 }

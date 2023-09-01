@@ -16,8 +16,8 @@ import java.util.List;
 public class LakeSoulRecordSetProvider implements ConnectorRecordSetProvider {
     @Override
     public RecordSet getRecordSet(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorSplit split, List<? extends ColumnHandle> columnHandles) {
-        // split to record set
-        // asume that one split has only one recordset
+        // Split to record set.
+        // Asuming that one split has only one recordset.
         return new LakeSoulRecordSet((LakeSoulSplit) split, columnHandles);
     }
 }
