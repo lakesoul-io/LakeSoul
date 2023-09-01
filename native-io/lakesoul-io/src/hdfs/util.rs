@@ -23,7 +23,7 @@ pub async fn maybe_spawn_blocking<F, T>(f: F) -> object_store::Result<T>
 
 /// Range requests with a gap less than or equal to this,
 /// will be coalesced into a single request by [`coalesce_ranges`]
-pub const OBJECT_STORE_COALESCE_DEFAULT: usize = 1 * 1024 * 1024;
+pub const OBJECT_STORE_COALESCE_DEFAULT: usize = 1024 * 1024;
 
 /// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
 pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 4;
