@@ -75,7 +75,9 @@ public class FlinkUtil {
             String name = field.getName();
             if (name.equals(SORT_FIELD)) continue;
             LogicalType logicalType = field.getType();
-            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
+            org.apache.spark.sql.types.DataType
+                    dataType =
+                    org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
             stNew = stNew.add(name, dataType, logicalType.isNullable());
         }
 
@@ -89,7 +91,15 @@ public class FlinkUtil {
             } else {
                 StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
                 if (!field.toString().equals(cdcField.toString()))
-                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + "has an invalid field of" + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+                    throw new CatalogException(CDC_CHANGE_COLUMN +
+                            "=" +
+                            cdcColName +
+                            "has an invalid field of" +
+                            field +
+                            "," +
+                            CDC_CHANGE_COLUMN +
+                            " require field of " +
+                            cdcField);
             }
         }
         return stNew;
@@ -101,7 +111,10 @@ public class FlinkUtil {
         for (int i = 0; i < tsc.getFieldCount(); i++) {
             String name = tsc.getFieldName(i).get();
             DataType dt = tsc.getFieldDataType(i).get();
-            org.apache.spark.sql.types.DataType dataType = org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, dt.getLogicalType()));
+            org.apache.spark.sql.types.DataType
+                    dataType =
+                    org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name,
+                            dt.getLogicalType()));
             stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
         }
         if (cdcColumn.isPresent()) {
@@ -114,7 +127,15 @@ public class FlinkUtil {
             } else {
                 StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
                 if (!field.toString().equals(cdcField.toString()))
-                    throw new CatalogException(CDC_CHANGE_COLUMN + "=" + cdcColName + " has an invalid field of " + field + "," + CDC_CHANGE_COLUMN + " require field of " + cdcField);
+                    throw new CatalogException(CDC_CHANGE_COLUMN +
+                            "=" +
+                            cdcColName +
+                            " has an invalid field of " +
+                            field +
+                            "," +
+                            CDC_CHANGE_COLUMN +
+                            " require field of " +
+                            cdcField);
             }
         }
         return stNew;
@@ -178,12 +199,14 @@ public class FlinkUtil {
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
 
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        org.apache.arrow.vector.types.pojo.Schema
+                arrowSchema =
+                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         RowType rowType = ArrowUtils.fromArrowSchema(arrowSchema);
         Builder bd = Schema.newBuilder();
 
         String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
-        boolean contains = (lakesoulCdcColumnName != null && !"".equals(lakesoulCdcColumnName));
+        boolean contains = (lakesoulCdcColumnName != null && !lakesoulCdcColumnName.isEmpty());
 
         for (RowType.RowField field : rowType.getFields()) {
             if (contains && field.getName().equals(lakesoulCdcColumnName)) {
@@ -282,7 +305,9 @@ public class FlinkUtil {
 
     public static void setFSConfigs(Configuration conf, NativeIOBase io) {
         conf.addAll(GlobalConfiguration.loadConfiguration());
-        org.apache.hadoop.conf.Configuration hadoopConf = HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
+        org.apache.hadoop.conf.Configuration
+                hadoopConf =
+                HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
         String defaultFS = hadoopConf.get("fs.defaultFS");
         io.setObjectStoreOption("fs.defaultFS", defaultFS);
 
@@ -357,7 +382,8 @@ public class FlinkUtil {
         }
     }
 
-    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid, DataFileInfo[] dfinfos) {
+    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid,
+                                                                                              DataFileInfo[] dfinfos) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
@@ -393,7 +419,8 @@ public class FlinkUtil {
 
     public static boolean isExistHashPartition(TableInfo tif) {
         JSONObject tableProperties = JSON.parseObject(tif.getProperties());
-        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) &&
+                tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
             return false;
         } else {
             return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());

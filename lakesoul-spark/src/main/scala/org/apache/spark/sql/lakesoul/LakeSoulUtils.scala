@@ -212,7 +212,7 @@ object LakeSoulTableRelationV2 {
 
 object LakeSoulTableV2ScanRelation {
   def unapply(plan: LogicalPlan): Option[DataSourceV2ScanRelation] = plan match {
-    case dsv2@DataSourceV2Relation(t: LakeSoulTableV2, _, _, _, _) => Some( createScanRelation(t, dsv2))
+    case dsv2@DataSourceV2Relation(t: LakeSoulTableV2, _, _, _, _) => Some(createScanRelation(t, dsv2))
     case _ => None
   }
 
@@ -228,7 +228,11 @@ object LakeSoulTableProperties {
 
   val lakeSoulCDCChangePropKey = "lakesoul_cdc_change_column"
 
-  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey)
+  val partitionTtl = "partition.ttl"
+
+  val compactionTtl = "compaction.ttl"
+
+  val extraTblProps: Set[String] = Set(lakeSoulCDCChangePropKey, partitionTtl, compactionTtl)
 
   def isLakeSoulTableProperty(name: String): Boolean = {
     extraTblProps.contains(name)

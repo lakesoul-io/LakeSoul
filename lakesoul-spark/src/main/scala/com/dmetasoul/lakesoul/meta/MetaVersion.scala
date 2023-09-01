@@ -125,7 +125,7 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
+      read_files = info.getSnapshotList.asScala.map(uuid => DBUtil.toJavaUUID(uuid)).toArray,
       expression = info.getExpression,
       commit_op = info.getCommitOp.name()
     )
@@ -138,7 +138,7 @@ object MetaVersion {
       table_id = info.getTableId,
       range_value = range_value,
       version = info.getVersion,
-      read_files = info.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
+      read_files = info.getSnapshotList.asScala.map(uuid => DBUtil.toJavaUUID(uuid)).toArray,
       expression = info.getExpression,
       commit_op = info.getCommitOp.name()
     )
@@ -192,7 +192,7 @@ object MetaVersion {
         table_id = res.getTableId,
         range_value = res.getPartitionDesc,
         version = res.getVersion,
-        read_files = res.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray,
+        read_files = res.getSnapshotList.asScala.map(uuid => DBUtil.toJavaUUID(uuid)).toArray,
         expression = res.getExpression,
         commit_op = res.getCommitOp.name
       )

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools >= 40.1.0", "wheel", "cython >= 0.29.31,<3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lakesoul"
+version = "1.1.0"
+authors = [
+  { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
+]
+description = "Python APIs for using LakeSoul"
+readme = "README.md"
+license = { text="Apache-2.0" }
+requires-python = ">=3.8"
+keywords = ["lakesoul", "bigdata", "ai"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "pyarrow~=12.0",
+    "grpcio[protobuf]~=1.57",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/lakesoul-io/LakeSoul"
+"Bug Tracker" = "https://github.com/lakesoul-io/LakeSoul/issues"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["lakesoul*"]
+
+[project.optional-dependencies]
+torch = ["torch>=1.11"]
+pandas = ["pandas>=1.4"]
+all = [
+    "torch>=1.11",
+    "pandas>=1.4",
+]

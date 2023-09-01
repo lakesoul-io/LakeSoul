@@ -47,7 +47,7 @@ class CompactionSuite extends QueryTest
         .format("lakesoul")
         .save(tableName)
 
-     assert(SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString).snapshot.getPartitionInfoArray.forall(_.read_files.size==1))
+      assert(SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString).snapshot.getPartitionInfoArray.forall(_.read_files.size == 1))
 
     })
   }
@@ -66,8 +66,8 @@ class CompactionSuite extends QueryTest
         .save(tableName)
 
       val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
-     var rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
-     assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+      var rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
       val df2 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
@@ -77,8 +77,8 @@ class CompactionSuite extends QueryTest
         LakeSoulTable.forPath(tableName).upsert(df2)
       }
 
-     rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
-     assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+      rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
 
 
       LakeSoulTable.forPath(tableName).compaction(true)
@@ -111,7 +111,7 @@ class CompactionSuite extends QueryTest
 
       val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
 
-      val rangeInfo =  SparkUtil.allDataInfo(sm.snapshot).filter(_.range_partitions.equals("range=1"))
+      val rangeInfo = SparkUtil.allDataInfo(sm.snapshot).filter(_.range_partitions.equals("range=1"))
 
       assert(!rangeInfo.groupBy(_.file_bucket_id).forall(_._2.length == 1))
 
@@ -208,7 +208,6 @@ class CompactionSuite extends QueryTest
   }
 
 
-
   test("simple compaction with merge operator") {
     withTempDir(file => {
       val tableName = file.getCanonicalPath
@@ -235,7 +234,7 @@ class CompactionSuite extends QueryTest
       val mergeOperatorInfo = Map(
         "v1" -> new MergeOpInt(),
         "v2" -> "org.apache.spark.sql.lakesoul.test.MergeOpString")
-      table.compaction(true, mergeOperatorInfo)
+      table.compaction(true, mergeOperatorInfo, true)
       checkAnswer(table.toDF.select("range", "hash", "v1", "v2"), result)
 
     })
@@ -260,12 +259,12 @@ class CompactionSuite extends QueryTest
       val e1 = intercept[AnalysisException] {
         class tmp {}
         val mergeOperatorInfo = Map("value" -> new tmp())
-        table.compaction(true, mergeOperatorInfo)
+        table.compaction(true, mergeOperatorInfo, true)
       }
       assert(e1.getMessage().contains("is not a legal merge operator class"))
       val e2 = intercept[ClassNotFoundException] {
         val mergeOperatorInfo = Map("value" -> "ClassWillNeverExsit")
-        table.compaction(true, mergeOperatorInfo)
+        table.compaction(true, mergeOperatorInfo, true)
       }
       assert(e2.getMessage.contains("ClassWillNeverExsit"))
 

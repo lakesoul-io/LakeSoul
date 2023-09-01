@@ -91,12 +91,11 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
     }
 
     @Override
-    public abstract AbstractLakeSoulMultiTableSinkWriter<IN> createWriter(Sink.InitContext context, int subTaskId);
+    public abstract AbstractLakeSoulMultiTableSinkWriter<IN> createWriter(Sink.InitContext context, int subTaskId) throws IOException;
 
     @Override
     public LakeSoulSinkCommitter createCommitter() throws IOException {
         return null;
-//        return new LakeSoulSinkCommitter();
     }
 
     @Override

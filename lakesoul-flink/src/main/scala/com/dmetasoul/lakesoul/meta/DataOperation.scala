@@ -108,7 +108,7 @@ object DataOperation {
     val metaPartitionInfo = entity.PartitionInfo.newBuilder
     metaPartitionInfo.setTableId(partition_info.table_id)
     metaPartitionInfo.setPartitionDesc(partition_info.range_value)
-    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(uuid => uuid.toString).toBuffer))
+    metaPartitionInfo.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(DBUtil.toProtoUuid).toBuffer))
     val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfo.build).asScala.toArray
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
@@ -178,16 +178,16 @@ object DataOperation {
           loop.break()
         }
         if (startVersionTimestamp == dataItem.getTimestamp) {
-          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
+          preVersionUUIDs ++= dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID)
         } else {
           if ("CompactionCommit".equals(dataItem.getCommitOp)) {
-            val compactShotList = dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str)).toArray
+            val compactShotList = dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID).toArray
             compactionUUIDs += compactShotList(0)
             if (compactShotList.length > 1) {
               incrementalAllUUIDs ++= compactShotList.slice(1, compactShotList.length)
             }
           } else {
-            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(str => UUID.fromString(str))
+            incrementalAllUUIDs ++= dataItem.getSnapshotList.asScala.map(DBUtil.toJavaUUID)
           }
         }
       }
@@ -199,7 +199,7 @@ object DataOperation {
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dataCommitInfoList = dbManager
-        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(uuid => uuid.toString).asJava)).asScala.toArray
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
       fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }

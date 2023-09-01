@@ -6,14 +6,12 @@ package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
 import jnr.ffi.LibraryLoader;
 import jnr.ffi.LibraryOption;
-import org.apache.arrow.c.jni.JniWrapper;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
@@ -39,12 +37,12 @@ public class JnrLoader {
         String libName = System.mapLibraryName("lakesoul_io_c");
 
         String finalPath = null;
-        
+
         if (JnrLoader.class.getClassLoader().getResource(libName) != null) {
             try {
                 File temp = File.createTempFile(libName + "_", ".tmp", new File(System.getProperty("java.io.tmpdir")));
                 temp.deleteOnExit();
-                try (final InputStream is = JniWrapper.class.getClassLoader().getResourceAsStream(libName)) {
+                try (final InputStream is = JnrLoader.class.getClassLoader().getResourceAsStream(libName)) {
                     if (is == null) {
                         throw new FileNotFoundException(libName);
                     }
