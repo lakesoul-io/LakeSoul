@@ -118,12 +118,6 @@ public class LakeSoulTypeTest extends LakeSoulSmokeTest {
     }
 
 
-
-    public void testTimeStamp(){
-        // coming soon
-
-    }
-
     public void testTimeStampWithTimeZone(){
         // coming soon
     }

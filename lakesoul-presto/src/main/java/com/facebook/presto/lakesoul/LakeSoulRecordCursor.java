@@ -71,6 +71,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(FlinkUtil.CDC_CHANGE_COLUMN);
         if(cdcColumn != null){
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
+            System.out.println("extra cdc column added:" + cdcColumn);
         }
 
         reader.setPrimaryKeys(prikeys);
@@ -126,8 +127,10 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (cdcColumn != null) {
             while(next()){
                 FieldVector vector = currentVCR.getVector(cdcColumn);
-                if(!vector.getObject(curRecordIdx).equals("delete")){
+                if(!vector.getObject(curRecordIdx).toString().equals("delete")){
                     return true;
+                }else{
+                    System.out.println("extra cdc column value:" + vector.getObject(curRecordIdx));
                 }
             }
             return false;
