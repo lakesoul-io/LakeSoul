@@ -245,7 +245,7 @@ public class DBManager {
     public void updateTableSchema(String tableId, String tableSchema) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
         JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
-        propertiesJson.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, System.currentTimeMillis());
+        propertiesJson.put(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME, String.valueOf(System.currentTimeMillis()));
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
         tableInfoDao.updatePropertiesById(tableId, propertiesJson.toJSONString());
     }

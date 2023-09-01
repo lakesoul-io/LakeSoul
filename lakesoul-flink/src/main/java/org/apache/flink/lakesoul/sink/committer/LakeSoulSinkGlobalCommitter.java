@@ -188,7 +188,7 @@ public class LakeSoulSinkGlobalCommitter
                         }
                     }
                 } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
-                    long schemaLastChangeTime = (long) JSON.parseObject(tableInfo.getProperties()).get(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
+                    long schemaLastChangeTime = JSON.parseObject(tableInfo.getProperties()).getLong(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME);
                     if (equalOrCanCast.contains("Change of Partition Column") || equalOrCanCast.contains("Change of Primary Key Column")) {
                         throw new IOException(equalOrCanCast);
                     }
