@@ -8,12 +8,14 @@ import com.facebook.presto.common.type.Type;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.pojo.Path;
 import com.facebook.presto.lakesoul.util.ArrowUtil;
+import com.facebook.presto.lakesoul.util.FlinkUtil;
 import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.apache.arrow.vector.*;
+import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
@@ -57,6 +59,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
             return columnHandle.getColumnName();
         }).collect(Collectors.toList());
+        // add extra pks
         List<String> prikeys = split.getLayout().getPrimaryKeys();
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
@@ -64,6 +67,12 @@ public class LakeSoulRecordCursor implements RecordCursor {
                 fields.add(Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType())));
             }
         }
+        // add extra cdc column
+        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(FlinkUtil.CDC_CHANGE_COLUMN);
+        if(cdcColumn != null){
+            fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
+        }
+
         reader.setPrimaryKeys(prikeys);
         reader.setSchema(new Schema(fields));
         for (Map.Entry<String, String> partition : this.partitions.entrySet()) {
@@ -113,6 +122,21 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean advanceNextPosition() {
+        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(FlinkUtil.CDC_CHANGE_COLUMN);
+        if (cdcColumn != null) {
+            while(next()){
+                FieldVector vector = currentVCR.getVector(cdcColumn);
+                if(!vector.getObject(curRecordIdx).equals("delete")){
+                    return true;
+                }
+            }
+            return false;
+        } else {
+            return next();
+        }
+    }
+
+    private boolean next(){
         if (currentVCR == null) {
             return false;
         }
@@ -128,6 +152,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
             }
         }
         curRecordIdx++;
+
         return true;
     }
 
