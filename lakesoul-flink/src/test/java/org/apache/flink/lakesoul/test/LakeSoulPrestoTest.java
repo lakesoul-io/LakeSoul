@@ -81,12 +81,12 @@ public class LakeSoulPrestoTest extends LakeSoulFlinkTestBase{
     public void test4GenerateCDCTable(){
         getTableEnv().useCatalog("lakesoul");
         sql("use test_cdc");
-        sql("create table if not exists table1 ( id int, name string)"
-                + " with ('format' = 'lakesoul', 'path' = '"
+        sql("create table if not exists table1 ( id int primary key not enforced, name string, test string not null)"
+                + " with ('format' = 'lakesoul', 'use_cdc'='true', 'lakesoul_cdc_change_column'='test', 'hashBucketNum'='2', 'path' = '"
                 + getTempDirUri("/lakeSource/test_cdc/table1")
                 + "')");
-        sql("create table if not exists table2 ( id int, math float, chinese float, english float)"
-                + " with ('format' = 'lakesoul', 'path' = '"
+        sql("create table if not exists table2 ( id int primary key not enforced, math float, chinese float, english float, test string not null)"
+                + " with ('format' = 'lakesoul', 'use_cdc'='true', 'lakesoul_cdc_change_column'='test', 'hashBucketNum'='2', 'path' = '"
                 + getTempDirUri("/lakeSource/test_cdc/table2")
                 + "')");
         sql("insert into table1 values(1, 'aaa')");

@@ -79,9 +79,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         org.apache.arrow.vector.types.pojo.Schema arrowSchema =
                 org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         HashMap<String, ColumnHandle> allColumns = new HashMap<>();
+        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
             // drop cdc change column
-            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+            if(cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)){
                 continue;
             }
             LakeSoulTableColumnHandle columnHandle =
@@ -119,18 +120,20 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if(tableInfo == null){
             throw new RuntimeException("no such table: " + handle.getNames());
         }
+        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
         org.apache.arrow.vector.types.pojo.Schema arrowSchema =
                 org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
 
         List<ColumnMetadata> columns = new LinkedList<>();
+        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for( org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
-            Map<String, Object> properties = new HashMap<>();
+            Map<String, Object> props = new HashMap<>();
             for(Map.Entry<String, String> entry : field.getMetadata().entrySet()){
-                properties.put(entry.getKey(), entry.getValue());
+                props.put(entry.getKey(), entry.getValue());
             }
             // drop cdc change column
-            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+            if(cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)){
                 continue;
             }
             ColumnMetadata columnMetadata = new ColumnMetadata(
@@ -140,11 +143,10 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                     "",
                     "",
                     false,
-                    properties
+                    props
             );
             columns.add(columnMetadata);
         }
-        Map<String, Object> properties = JsonUtil.parse(tableInfo.getProperties(), Map.class);
 
         return new ConnectorTableMetadata(
                 handle.getNames(),
@@ -161,13 +163,15 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if(tableInfo == null){
             throw new RuntimeException("no such table: " + table.getNames());
         }
+        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
         StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
         org.apache.arrow.vector.types.pojo.Schema arrowSchema =
                 org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
         HashMap<String, ColumnHandle> map = new HashMap<>();
+        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for( org.apache.arrow.vector.types.pojo.Field field: arrowSchema.getFields()){
             // drop cdc change column
-            if(field.getName().equals(CDC_CHANGE_COLUMN)){
+            if(cdcChangeColumn != null && field.getName().equals(cdcChangeColumn)){
                 continue;
             }
             LakeSoulTableColumnHandle columnHandle =
