@@ -305,11 +305,16 @@ public class FlinkUtil {
 
     public static void setFSConfigs(Configuration conf, NativeIOBase io) {
         conf.addAll(GlobalConfiguration.loadConfiguration());
-        org.apache.hadoop.conf.Configuration
-                hadoopConf =
-                HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
-        String defaultFS = hadoopConf.get("fs.defaultFS");
-        io.setObjectStoreOption("fs.defaultFS", defaultFS);
+        try {
+            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.HdfsConfiguration");
+            org.apache.hadoop.conf.Configuration
+                    hadoopConf =
+                    HadoopUtils.getHadoopConfiguration(GlobalConfiguration.loadConfiguration());
+            String defaultFS = hadoopConf.get("fs.defaultFS");
+            io.setObjectStoreOption("fs.defaultFS", defaultFS);
+        } catch (Exception e) {
+            // ignore
+        }
 
         // try hadoop's s3 configs
         setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
