@@ -60,7 +60,7 @@ SPDX-License-Identifier: Apache-2.0
                 <configuration>
                     <attachProtoSources>false</attachProtoSources>
                     <clearOutputDirectory>false</clearOutputDirectory>
-                    <protoSourceRoot>${basedir}/../native-metadata/proto/src</protoSourceRoot>
+                    <protoSourceRoot>${basedir}/../rust/proto/src</protoSourceRoot>
                     <outputDirectory>${basedir}/target/generated-sources</outputDirectory>
                 </configuration>
                 <executions>
@@ -223,7 +223,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../native-metadata/target/release/</directory>
+                        <directory>${basedir}/../rust/target/release/</directory>
                         <includes>
                             <include>*.dylib</include>
                             <include>*.so</include>
@@ -254,7 +254,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <executable>cargo</executable>
                                     <commandlineArgs>build --release --all-features --package lakesoul-metadata-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../native-metadata</workingDirectory>
+                                    <workingDirectory>${basedir}/../rust</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -268,7 +268,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -285,7 +285,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../native-metadata/target/x86_64-unknown-linux-gnu/release/</directory>
+                        <directory>${basedir}/../rust/target/x86_64-unknown-linux-gnu/release/</directory>
                         <includes>
                             <include>*.so</include>
                         </includes>
@@ -315,7 +315,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features
                                         --package lakesoul-metadata-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -329,7 +329,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../native-metadata/</workingDirectory>
+                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -346,7 +346,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../native-metadata/target/release/</directory>
+                        <directory>${basedir}/../rust/target/release/</directory>
                         <includes>
                             <include>*.dylib</include>
                             <include>*.so</include>

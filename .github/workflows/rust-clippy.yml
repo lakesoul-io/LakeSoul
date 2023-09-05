@@ -39,9 +39,8 @@ jobs:
           version: "23.x"
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./native-io -> target"
+          workspaces: "./rust -> target"
           key: "ubuntu-latest-clippy"
-      - name: Run Clippy Native-io
-        run: cd native-io && cargo clippy --all-features --package lakesoul-io-c
-      - name: Run Clippy Native-metadata
-        run: cd native-metadata && cargo clippy --all-features --package lakesoul-metadata-c
+      - name: Run Clippy
+        run: cd rust && cargo clippy --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+
