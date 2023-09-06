@@ -9,12 +9,16 @@ class Dataset(torch.utils.data.IterableDataset):
                  lakesoul_table_name,
                  batch_size=16,
                  thread_count=1,
+                 rank=None,
+                 world_size=None,
                  partitions=None,
                  retain_partition_columns=False,
                  namespace='default'):
         self._lakesoul_table_name = lakesoul_table_name
         self._batch_size = batch_size
         self._thread_count = thread_count
+        self._rank = rank
+        self._world_size = world_size
         self._partitions = partitions
         self._retain_partition_columns = retain_partition_columns
         self._namespace = namespace
@@ -25,6 +29,8 @@ class Dataset(torch.utils.data.IterableDataset):
             self._lakesoul_table_name,
             batch_size=self._batch_size,
             thread_count=self._thread_count,
+            rank=self._rank,
+            world_size=self._world_size,
             partitions=self._partitions,
             retain_partition_columns=self._retain_partition_columns,
             namespace=self._namespace,
