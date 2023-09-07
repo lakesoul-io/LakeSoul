@@ -61,10 +61,7 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./native-io -> target"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./native-metadata -> target"
+          workspaces: "./rust -> target"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
@@ -72,18 +69,12 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
-      - uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: '--manifest-path native-metadata/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - name: Build with Maven
         run: |
-          mkdir -p native-io/target/release
-          cp native-io/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so native-io/target/release
-          mkdir -p native-metadata/target/release
-          cp native-metadata/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so native-metadata/target/release
+          mkdir -p rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
           MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
@@ -122,9 +113,9 @@ jobs:
         run: |
           docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --source.database.name test_cdc --source.table.name default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
           sleep 30s
-#      - name: Start flink DataGenSource without primary key task-3
-#        run: |
-#          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink/ --flink.checkpoint s3://lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
+      #      - name: Start flink DataGenSource without primary key task-3
+      #        run: |
+      #          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink/ --flink.checkpoint s3://lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
       - name: Download mysql driver jar
         run: |
           cd ./script/benchmark/work-dir
@@ -189,10 +180,10 @@ jobs:
         run: |
           cd ./script/benchmark
           docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
-#      - name: "[Check] Table without primary key data accuracy verification task"
-#        run: |
-#          cd ./script/benchmark
-#          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m  --conf spark.dmetasoul.lakesoul.native.io.enable=true --jars /opt/spark/work-dir/$SPARK_JAR_NAME,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --class org.apache.spark.sql.lakesoul.benchmark.FlinkWriteDataCheck --master local[4] /opt/spark/work-dir/$SPARK_TEST_JAR_NAME --csv.path s3://lakesoul-test-bucket/flink/csv --lakesoul.table.path s3://lakesoul-test-bucket/flink/sink_table --server.time.zone UTC
+      #      - name: "[Check] Table without primary key data accuracy verification task"
+      #        run: |
+      #          cd ./script/benchmark
+      #          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m  --conf spark.dmetasoul.lakesoul.native.io.enable=true --jars /opt/spark/work-dir/$SPARK_JAR_NAME,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --class org.apache.spark.sql.lakesoul.benchmark.FlinkWriteDataCheck --master local[4] /opt/spark/work-dir/$SPARK_TEST_JAR_NAME --csv.path s3://lakesoul-test-bucket/flink/csv --lakesoul.table.path s3://lakesoul-test-bucket/flink/sink_table --server.time.zone UTC
       - name: Print Flink Log
         if: always()
         run: |

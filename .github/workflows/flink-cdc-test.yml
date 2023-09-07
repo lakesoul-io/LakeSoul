@@ -61,10 +61,7 @@ jobs:
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "./native-io -> target"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./native-metadata -> target"
+          workspaces: "./rust -> target"
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
@@ -72,18 +69,12 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path native-io/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
-      - uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: '--manifest-path native-metadata/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
       - name: Build with Maven
         run: |
-          mkdir -p native-io/target/release
-          cp native-io/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so native-io/target/release
-          mkdir -p native-metadata/target/release
-          cp native-metadata/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so native-metadata/target/release
+          mkdir -p rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
           MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
       - name: Get jar names
         run: |
