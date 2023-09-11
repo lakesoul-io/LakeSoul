@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-parent</artifactId>
-    <version>2.3.0-SNAPSHOT</version>
+    <version>2.4.0-SNAPSHOT</version>
     <inceptionYear>2022</inceptionYear>
     <modules>
         <module>lakesoul-common</module>
