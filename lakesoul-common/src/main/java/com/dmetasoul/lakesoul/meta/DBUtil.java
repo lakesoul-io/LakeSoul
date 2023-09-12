@@ -113,6 +113,10 @@ public class DBUtil {
         return getConfigValue(domainENV, domainKey, "public");
     }
 
+    public static String getUser() {
+        return getConfigValue(usernameEnv, usernameKey, null);
+    }
+
     public static void cleanAllTable() {
         String tableInfo = "truncate table table_info";
         String tableNameId = "truncate table table_name_id";

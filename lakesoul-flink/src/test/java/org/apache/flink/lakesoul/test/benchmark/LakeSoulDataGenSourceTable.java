@@ -122,6 +122,7 @@ public class LakeSoulDataGenSourceTable {
         tEnvs.useCatalog("lakesoul");
         tEnvs.executeSql("create database if not exists " + sinkDBName);
 
+        tEnvs.executeSql("drop table if exists `default`." + sinkTableName);
         tEnvs.createTable(sinkTableName, TableDescriptor.forConnector("lakesoul")
                 .schema(schema)
                 .option("path", warehousePath + sinkTableName)

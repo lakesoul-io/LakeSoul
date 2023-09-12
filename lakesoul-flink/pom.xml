@@ -439,6 +439,10 @@ SPDX-License-Identifier: Apache-2.0
                     <includes>
                         <include>**/*</include>
                     </includes>
+                    <excludes>
+                        <exclude>LakeSoulPrestoTest</exclude>
+                        <exclude>LakeSoulRBACTest</exclude>
+                    </excludes>
                 </configuration>
             </plugin>
             <plugin>

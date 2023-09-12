@@ -13,6 +13,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.fs.hdfs.HadoopFileSystem;
 import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
@@ -29,6 +30,7 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
@@ -466,5 +468,54 @@ public class FlinkUtil {
         map.put(HASH_BUCKET_NUM.key(), String.valueOf(conf.getInteger(BUCKET_PARALLELISM)));
         map.put(CDC_CHANGE_COLUMN, conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
         return new JSONObject(map);
+    }
+
+    public static boolean hasHdfsClasses() {
+        try {
+            FlinkUtil.class.getClassLoader().loadClass("org.apache.flink.runtime.fs.hdfs.HadoopFileSystem");
+            FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.DistributedFileSystem");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    public static boolean hasS3Classes() {
+        try {
+            FlinkUtil.class.getClassLoader().loadClass("org.apache.flink.fs.s3.common.FlinkS3FileSystem");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    public static void createAndSetTableDirPermission(Path p) throws IOException {
+        // TODO: move these to native io
+        // currently we only support setting owner and permission for HDFS.
+        // S3 support will be added later
+        if (!hasHdfsClasses()) return;
+
+        FileSystem fs = p.getFileSystem();
+        if (fs instanceof HadoopFileSystem) {
+            String userName = DBUtil.getUser();
+            String domain = DBUtil.getDomain();
+            if (userName == null || domain.equals("public")) return;
+
+            HadoopFileSystem hfs = (HadoopFileSystem) fs;
+            org.apache.hadoop.fs.FileSystem hdfs = hfs.getHadoopFileSystem();
+            org.apache.hadoop.fs.Path nsDir = HadoopFileSystem.toHadoopPath(p.getParent());
+            if (!hdfs.exists(nsDir)) {
+                hdfs.mkdirs(nsDir);
+                hdfs.setOwner(nsDir, userName, domain);
+                hdfs.setPermission(nsDir, FsPermission.createImmutable((short) 770));
+            }
+            org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
+            if (hdfs.exists(tbDir)) {
+                throw new IOException("Table directory already exists: " + tbDir.toString());
+            }
+            hdfs.mkdirs(tbDir);
+            hdfs.setOwner(tbDir, userName, domain);
+            hdfs.setPermission(tbDir, FsPermission.createImmutable((short) 750));
+        }
     }
 }
