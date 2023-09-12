@@ -23,6 +23,11 @@ wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.1/lakesoul-s
 
 ## Import Datasets Into LakeSoul
 
+### Download datasets
+
+- [titanic]((https://github.com/meta-soul/lakesoul-ml/tree/master/titanic/dataset/output))
+- [imdb](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text)
+
 ### Start spark-shell
 
 ```bash
@@ -50,14 +55,9 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default -v $PWD/lakes
 
 ```
 
-### Import Datasets
+### Import Datasets by Spark
 
 #### Titanic
-
-Download titanic dataset from [lakesoul-ml](https://github.com/meta-soul/lakesoul-ml/tree/master/titanic/dataset/output)
-.
-
-Import titanic dataset through spark-shell
 
 ```scala
 import org.apache.spark.sql.types._
@@ -86,11 +86,6 @@ valDf.write.mode("append").format("lakesoul").option("rangePartitions", "split")
 
 #### imdb
 
-Download imdb dataset from [Hugging Face](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text)
-.
-
-Import imdb dataset through spark-shell
-
 ```scala
 val trainFilePath = "/opt/spark/work-dir/imdb/imdb-train.parquet"
 var trainDf = spark.read.format("parquet").load(trainFilePath)
@@ -106,10 +101,7 @@ testDf.withColumn("split", typedLit("test")).write.mode("append").format("lakeso
 
 #### clip
 
-Import clip dataset through spark-shell
-
 ```scala
-
 
 val tablePath = "s3://lakesoul-test-bucket/clip_dataset"
 
