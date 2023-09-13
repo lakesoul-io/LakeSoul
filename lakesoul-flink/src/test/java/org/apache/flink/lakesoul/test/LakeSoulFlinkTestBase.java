@@ -25,7 +25,7 @@ public class LakeSoulFlinkTestBase extends AbstractTestBase {
     @ClassRule
     public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
-    private static DBManager dbManager = null;
+    protected static DBManager dbManager = null;
     protected static LakeSoulCatalog catalog = null;
 
     private volatile TableEnvironment tEnv = null;

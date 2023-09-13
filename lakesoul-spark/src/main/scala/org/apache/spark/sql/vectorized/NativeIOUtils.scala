@@ -8,7 +8,7 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import com.dmetasoul.lakesoul.meta.DBUtil
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.permission.FsPermission
+import org.apache.hadoop.fs.permission.{FsAction, FsPermission}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.fs.s3a.S3AFileSystem
 import org.apache.hadoop.hdfs.DistributedFileSystem
@@ -155,12 +155,12 @@ object NativeIOUtils{
       if (!hdfs.exists(nsDir)) {
         hdfs.mkdirs(nsDir)
         hdfs.setOwner(nsDir, userName, domain)
-        hdfs.setPermission(nsDir, FsPermission.createImmutable(770.toShort))
+        hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE))
       }
       if (hdfs.exists(path)) throw new IOException("Table directory already exists: " + path.toString)
       hdfs.mkdirs(path)
       hdfs.setOwner(path, userName, domain)
-      hdfs.setPermission(path, FsPermission.createImmutable(750.toShort))
+      hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE))
     }
   }
 }

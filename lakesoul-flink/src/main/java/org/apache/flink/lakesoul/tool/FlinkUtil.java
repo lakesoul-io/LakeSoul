@@ -30,6 +30,7 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
+import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
@@ -507,7 +508,7 @@ public class FlinkUtil {
             if (!hdfs.exists(nsDir)) {
                 hdfs.mkdirs(nsDir);
                 hdfs.setOwner(nsDir, userName, domain);
-                hdfs.setPermission(nsDir, FsPermission.createImmutable((short) 770));
+                hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             }
             org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
             if (hdfs.exists(tbDir)) {
@@ -515,7 +516,7 @@ public class FlinkUtil {
             }
             hdfs.mkdirs(tbDir);
             hdfs.setOwner(tbDir, userName, domain);
-            hdfs.setPermission(tbDir, FsPermission.createImmutable((short) 750));
+            hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE));
         }
     }
 }

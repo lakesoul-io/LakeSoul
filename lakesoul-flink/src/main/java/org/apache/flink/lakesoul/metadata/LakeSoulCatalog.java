@@ -127,7 +127,7 @@ public class LakeSoulCatalog implements Catalog {
                     try {
                         dropTable(new ObjectPath(databaseName, table), true);
                     } catch (TableNotExistException e) {
-                        throw new CatalogException(e);
+                        throw new CatalogException(e.getMessage(), e.getCause());
                     }
                 }
             } else {
@@ -269,7 +269,7 @@ public class LakeSoulCatalog implements Catalog {
             FlinkUtil.createAndSetTableDirPermission(qp);
             qualifiedPath = qp.toString();
         } catch (IOException e) {
-            throw new CatalogException(e.getCause());
+            throw new CatalogException(e.getMessage(), e.getCause());
         }
 
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
