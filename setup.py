@@ -15,6 +15,11 @@ class lakesoul_build_ext(build_ext):
         for ext in self.extensions:
             self._build_lakesoul(ext)
 
+    def _get_project_root_dir(self):
+        import os
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        return dir_path
+
     def _get_lakesoul_dataset_so_path(self):
         import os
         key = '_LAKESOUL_DATASET_SO'

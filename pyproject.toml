@@ -51,6 +51,7 @@ all = [
 [tool.cibuildwheel]
 manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux2014:v1.0.0"
 build = "*-manylinux_x86_64"
-skip = ["cp36-*", "cp37-*", "cp311-*", "pp*"]
+skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 
 [tool.cibuildwheel.linux]
+before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
