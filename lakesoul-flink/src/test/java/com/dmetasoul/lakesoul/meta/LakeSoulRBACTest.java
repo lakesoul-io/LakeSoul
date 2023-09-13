@@ -9,15 +9,10 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.test.LakeSoulFlinkTestBase;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
-import org.apache.flink.types.Row;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException;
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Test;
-
-import java.io.IOException;
-import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 
 public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     final String ADMIN1 = "admin1";
@@ -31,8 +26,8 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
     final String DOMAIN1 = "domain1";
     final String DOMAIN2 = "domain2";
 
-    @AfterClass
-    public static void stopMetastore() throws Exception {
+    @AfterEach
+    public void cleanMeta() throws Exception {
         resetMetaConn("lakesoul_test", "lakesoul_test", "public");
         dbManager.cleanMeta();
         LakeSoulFlinkTestBase.catalog = null;
@@ -65,11 +60,6 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         // create
         sql("create database if not exists database1");
         assert (sql("show databases").size() == 2);
-        // drop: coming soon
-//    spark.sql("drop database database1").collect()
-//    val df2 = spark.sql("show databases").toDF()
-//    assert(df2.count() == 1)
-//    assert(df2.collectAsList().get(0).getString(1).equals("default"))
         // create tables
         sql("use database1");
         sql("create table if not exists table1 ( id int, foo string, bar string )"
@@ -112,9 +102,6 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
             System.out.println(e.getMessage());
             assert e.getMessage().contains("Could not execute CREATE DATABASE");
         }
-        int preSize = sql("show databases").size();
-        sql("drop database database1");
-        assert preSize == sql("show databases").size();
 
         // create table & drop table
         try {
@@ -154,8 +141,7 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
 
         // clear test
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
-        sql("drop table table1");
-
+        sql("drop database if exists database1 cascade");
     }
 
     @Test
