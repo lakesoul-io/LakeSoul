@@ -27,6 +27,16 @@ public class DDLSuite extends AbstractTestBase {
     }
 
     @Test
+    public void dropView() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableUser(tEnv);
+        createLakeSoulSourceTableViewUser(tEnv);
+        tEnv.executeSql("SHOW VIEWS");
+        tEnv.executeSql("DROP VIEW user_info_view");
+        tEnv.executeSql("SHOW VIEWS");
+    }
+
+    @Test
     public void alterTableNotSupported() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
@@ -85,6 +95,13 @@ public class DDLSuite extends AbstractTestBase {
                 "    'path'='" + getTempDirUri("/lakeSource/user") +
                 "' )";
         tEnvs.executeSql("DROP TABLE if exists user_info");
+        tEnvs.executeSql(createUserSql);
+    }
+
+
+    private void createLakeSoulSourceTableViewUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create view if not exists user_info_view as select * from user_info";
+        tEnvs.executeSql("DROP view if exists user_info_view");
         tEnvs.executeSql(createUserSql);
     }
 }

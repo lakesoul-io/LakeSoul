@@ -153,7 +153,7 @@ public class LakeSoulWriterBucket {
         inProgressPartWriter.write(element, currentTime);
     }
 
-    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush,String dmlType) throws IOException {
         // we always close part file and do not keep in-progress file
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
@@ -173,7 +173,7 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
                 tmpPending,
-                time, tableId, tsMs));
+                time, tableId, tsMs,dmlType));
         pendingFiles.clear();
 
         return committables;

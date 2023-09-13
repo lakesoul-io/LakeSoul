@@ -36,6 +36,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     private final long tsMs;
 
+    private final String dmlType;
+
+
     /**
      * Constructor for {@link org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket} to prepare commit
      * with pending files
@@ -44,9 +47,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             String bucketId,
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
-            TableSchemaIdentity identity, long tsMs) {
+            TableSchemaIdentity identity, long tsMs, String dmlType) {
         this(bucketId, identity, pendingFiles, creationTime,
-                UUID.randomUUID().toString(), tsMs
+                UUID.randomUUID().toString(), tsMs,dmlType
         );
     }
 
@@ -60,13 +63,14 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long time,
             @Nullable String commitId,
-            long tsMs) {
+            long tsMs, String dmlType) {
         this.bucketId = bucketId;
         this.identity = identity;
         this.pendingFiles = pendingFiles;
         this.creationTime = time;
         this.commitId = commitId;
         this.tsMs = tsMs;
+        this.dmlType = dmlType;
     }
 
     public long getTsMs() {
@@ -123,5 +127,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         } else {
             if (committable.hasPendingFile()) pendingFiles = committable.getPendingFiles();
         }
+    }
+
+    public String getDmlType() {
+        return dmlType;
     }
 }

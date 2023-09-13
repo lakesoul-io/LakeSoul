@@ -105,7 +105,11 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
                         partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
                 dataCommitInfo.addAllFileOps(dataFileOpList);
-                dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
+                if(LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())){
+                    dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
+                }else{
+                    dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
+                }
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
                 assert committable.getCommitId() != null;
                 dataCommitInfo.setCommitId(DBUtil.toProtoUuid(UUID.fromString(committable.getCommitId())));

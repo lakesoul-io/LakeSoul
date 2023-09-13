@@ -82,6 +82,7 @@ public class LakeSoulSinkCommittableSerializer
             dataOutputView.writeLong(committable.getCreationTime());
             dataOutputView.writeUTF(committable.getCommitId());
             dataOutputView.writeLong(committable.getTsMs());
+            dataOutputView.writeUTF(committable.getDmlType());
         } else {
             dataOutputView.writeBoolean(false);
         }
@@ -96,6 +97,7 @@ public class LakeSoulSinkCommittableSerializer
         String commitId = null;
         long time = Long.MIN_VALUE;
         long dataTsMs = Long.MAX_VALUE;
+        String dmlType = null;
         if (dataInputView.readBoolean()) {
             int size = dataInputView.readInt();
             if (size > 0) {
@@ -108,6 +110,7 @@ public class LakeSoulSinkCommittableSerializer
                 time = dataInputView.readLong();
                 commitId = dataInputView.readUTF();
                 dataTsMs = dataInputView.readLong();
+                dmlType = dataInputView.readUTF();
             }
         }
 
@@ -116,7 +119,7 @@ public class LakeSoulSinkCommittableSerializer
         String bucketId = dataInputView.readUTF();
 
         return new LakeSoulMultiTableSinkCommittable(
-                bucketId, identity, pendingFile, time, commitId, dataTsMs);
+                bucketId, identity, pendingFile, time, commitId, dataTsMs,dmlType);
     }
 
     private static void validateMagicNumber(DataInputView in) throws IOException {

@@ -17,25 +17,29 @@ import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
+import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.ProviderContext;
+import org.apache.flink.table.connector.RowLevelModificationScanContext;
 import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
+import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelDelete;
+import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelUpdate;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
-public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite {
+public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
 
     private final String summaryName;
     private final String tableName;
@@ -147,4 +151,50 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     public void applyStaticPartition(Map<String, String> map) {
     }
 
+    @Override
+    public RowLevelDeleteInfo applyRowLevelDelete(@Nullable RowLevelModificationScanContext context) {
+        if(flinkConf.getBoolean(USE_CDC, false)){
+            flinkConf.set(DMLTYPE,DELETE_CDC);
+        }else{
+            flinkConf.set(DMLTYPE,DELETE);
+        }
+
+        return new LakeSoulRowLevelDelete();
+    }
+
+    @Override
+    public RowLevelUpdateInfo applyRowLevelUpdate(List<Column> updatedColumns, @Nullable RowLevelModificationScanContext context) {
+        flinkConf.set(DMLTYPE,UPDATE);
+        return  new LakeSoulRowLevelUpdate();
+    }
+
+    private class LakeSoulRowLevelDelete implements RowLevelDeleteInfo {
+
+        public Optional<List<Column>> requiredColumns() {
+            return Optional.empty();
+        }
+
+        public SupportsRowLevelDelete.RowLevelDeleteMode getRowLevelDeleteMode() {
+            if(flinkConf.getBoolean(USE_CDC, false)){
+                return RowLevelDeleteMode.DELETED_ROWS;
+            }else{
+                return RowLevelDeleteMode.REMAINING_ROWS;
+            }
+        }
+    }
+
+    private class LakeSoulRowLevelUpdate implements RowLevelUpdateInfo {
+        public Optional<List<Column>> requiredColumns() {
+            return Optional.empty();
+
+        }
+
+        public SupportsRowLevelUpdate.RowLevelUpdateMode getRowLevelUpdateMode() {
+            if (primaryKeyList.isEmpty()){
+                return RowLevelUpdateMode.ALL_ROWS;
+            }else{
+                return SupportsRowLevelUpdate.RowLevelUpdateMode.UPDATED_ROWS;
+            }
+        }
+    }
 }

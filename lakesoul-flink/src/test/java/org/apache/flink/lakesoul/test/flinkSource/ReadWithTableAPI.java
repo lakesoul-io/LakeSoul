@@ -7,6 +7,7 @@ package org.apache.flink.lakesoul.test.flinkSource;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
@@ -28,7 +29,16 @@ public class ReadWithTableAPI extends AbstractTestBase {
         List<Row> results = CollectionUtil.iteratorToList(filter.execute().collect());
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[Jack, 75]", "+I[Amy, 95]"});
     }
-
+    @Test
+    public void testLakesoulSourceViewSelectWhere() throws ExecutionException, InterruptedException {
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        TestUtils.createLakeSoulSourceViewUser(createTableEnv);
+        Table userInfo = createTableEnv.from("user_info_view");
+        String testSelect = "select * from user_info_view";
+        TableImpl flinkTable1 = (TableImpl) createTableEnv.sqlQuery(testSelect);
+        List<Row> results= CollectionUtil.iteratorToList(flinkTable1.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[Bob, 90, 91]", "+I[Amy, 95, 96]"});
+    }
     @Test
     public void testLakesoulSourceSelectMultiRangeAndHash() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
