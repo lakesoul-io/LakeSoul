@@ -28,7 +28,9 @@ wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.1/lakesoul-s
 - [titanic]((https://github.com/meta-soul/lakesoul-ml/tree/master/titanic/dataset/output))
 - [imdb](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text)
 
-### Start spark-shell
+### Import Datasets by Spark-Shell
+
+Start spark-shell
 
 ```bash
 sudo docker run --rm -ti --net lakesoul-docker-compose-env_default -v $PWD/lakesoul-spark-2.3.1-spark-3.3.jar:/opt/spark/work-dir/jars/lakesoul-spark-2.3.1-spark-3.3.jar \
@@ -38,7 +40,7 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default -v $PWD/lakes
     -v /home/wenbin/output:/opt/spark/work-dir/clip \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
     bitnami/spark:3.3.1 spark-shell \
-    --jars /opt/spark/work-dir/jars/lakesoul-spark-2.3.0-spark-3.3-SNAPSHOT.jar \
+    --jars /opt/spark/work-dir/jars/lakesoul-spark-2.3.1-spark-3.3-SNAPSHOT.jar \
     --driver-memory 4G \
     --executor-memory 4G \
     --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m \
@@ -54,8 +56,6 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default -v $PWD/lakes
     --conf spark.hadoop.fs.s3a.secret.key=minioadmin1 
 
 ```
-
-### Import Datasets by Spark
 
 #### Titanic
 
@@ -138,3 +138,23 @@ var df7 = spark.read.format("parquet").load(path7)
 df7.withColumn("range", typedLit("0007")).write.mode("append").format("lakesoul").option("rangePartitions", "range").option("shortTableName", "clip_dataset").save(tablePath)
 
 ```
+
+### Import Datasets by PySpark
+
+#### Titanic
+
+```shell
+cd /home/huazeng
+sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
+-v $PWD/lakesoul-spark/target/lakesoul-spark-2.3.0-spark-3.3-SNAPSHOT.jar:/opt/spark/work-dir/jars/lakesoul-spark-2.3.0-spark-3.3.jar \
+-v $PWD/LakeSoul-dev-python_reader/python/lakesoul:/opt/bitnami/spark/lakesoul \
+-v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
+-v $PWD/Titanic:/opt/spark/work-dir/Titanic \
+-v $PWD/imdb:/opt/spark/work-dir/imdb \
+-v /home/wenbin/output:/opt/spark/work-dir/clip \
+-v $PWD/import_titanic.py:/opt/spark/import_titanic.py \
+--env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
+bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/lakesoul-spark-2.3.0-spark-3.3.jar --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/import_titanic.py
+```
+
+ 
