@@ -55,3 +55,12 @@ skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 
 [tool.cibuildwheel.linux]
 before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
+repair-wheel-command = """\
+    auditwheel repair --plat manylinux2014_x86_64 \
+                      --exclude libarrow_python.so \
+                      --exclude libarrow_dataset.so.1200 \
+                      --exclude libarrow_acero.so.1200 \
+                      --exclude libparquet.so.1200 \
+                      --exclude libarrow.so.1200 \
+                      -w {dest_dir} {wheel}\
+    """

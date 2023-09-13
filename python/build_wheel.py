@@ -9,6 +9,7 @@ import tempfile
 import subprocess
 import contextlib
 
+# Build LakeSoul wheel on host machine directly.
 class LakeSoulWheelBuilder(object):
     def __init__(self):
         self._project_root_dir = self._get_project_root_dir()
