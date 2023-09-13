@@ -12,7 +12,6 @@ on:
       - "**.md"
     branches:
       - 'main'
-      - 'rbac_set_hdfs_dir_owner'
   pull_request:
     paths-ignore:
       - "javadoc/**"
