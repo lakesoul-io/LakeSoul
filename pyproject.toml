@@ -47,3 +47,10 @@ all = [
     "pandas>=1.4",
     "datasets>=2.14",
 ]
+
+[tool.cibuildwheel]
+manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux2014:v1.0.0"
+build = "*-manylinux_x86_64"
+skip = ["cp36-*", "cp37-*", "cp311-*", "pp*"]
+
+[tool.cibuildwheel.linux]
