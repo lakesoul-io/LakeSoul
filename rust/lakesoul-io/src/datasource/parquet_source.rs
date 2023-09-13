@@ -10,7 +10,7 @@ use std::any::Any;
 use async_trait::async_trait;
 
 use datafusion::common::Statistics;
-use datafusion::logical_expr::{Expr, TableType};
+use datafusion::logical_expr::{Expr, TableType, LogicalPlan};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::datasource::TableProvider;
@@ -28,6 +28,9 @@ use datafusion::arrow::array::{UInt64Builder, UInt8Builder};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 
+use datafusion::execution::context::DataFilePaths;
+use datafusion::datasource::listing::{ListingTableConfig, ListingTable};
+use datafusion::prelude::DataFrame;
 
 
 /// A User, with an id and a bank account
@@ -41,7 +44,8 @@ struct User {
 #[derive(Clone)]
 pub struct CustomDataSource {
     inner: Arc<Mutex<CustomDataSourceInner>>,
-    files: Vec<String>
+    files: Vec<String>,
+    plans: Vec<LogicalPlan>,
 }
 
 
@@ -61,9 +65,10 @@ impl CustomDataSource {
         &self,
         projections: Option<&Vec<usize>>,
         schema: SchemaRef,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         println!("{:?}", self.files);
-        Ok(Arc::new(CustomExec::new(projections, schema, self.files.clone(), self.clone())))
+        Ok(Arc::new(CustomExec::new(projections, schema, inputs, self.clone())))
     }
 
     pub(crate) fn populate_users(&self) {
@@ -90,6 +95,10 @@ impl CustomDataSource {
     fn add_file(&mut self, path: String) {
         self.files.push(path);
     }
+
+    fn add_plan(&mut self, plan: LogicalPlan) {
+        self.plans.push(plan);
+    }
 }
 
 impl Default for CustomDataSource {
@@ -99,7 +108,8 @@ impl Default for CustomDataSource {
                 data: Default::default(),
                 bank_account_index: Default::default()
             })),
-            files: vec![]
+            files: vec![],
+            plans: vec![],
         }
     }
 }
@@ -130,7 +140,9 @@ impl TableProvider for CustomDataSource {
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         println!("{:?}", self.files);
-        return self.create_physical_plan(projection,  self.schema()).await;
+        println!("{:?}", self.plans);
+        self.create_physical_plan(projection,  self.schema(), vec![DataFrame::new(_state.clone(), self.plans[0].clone()).create_physical_plan().await.unwrap()]).await
+        
     }
 }
 
@@ -138,19 +150,21 @@ impl TableProvider for CustomDataSource {
 struct CustomExec {
     db: CustomDataSource,
     projected_schema: SchemaRef,
+    inputs: Vec<Arc<dyn ExecutionPlan>>
 }
 
 impl CustomExec {
     fn new(
         projections: Option<&Vec<usize>>,
         schema: SchemaRef,
-        files: Vec<String>,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
         db: CustomDataSource,
     ) -> Self {
         let projected_schema = project_schema(&schema, projections).unwrap();
         Self {
             db,
             projected_schema,
+            inputs,
         }
     }
 }
@@ -179,7 +193,7 @@ impl ExecutionPlan for CustomExec {
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![]
+        self.inputs.clone()
     }
 
     fn with_new_children(
@@ -194,46 +208,9 @@ impl ExecutionPlan for CustomExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut parquet_exec = ParquetExec::new(
-            FileScanConfig {
-                object_store_url: ObjectStoreUrl::local_filesystem(),
-                file_groups: vec![],
-                file_schema : Arc::new(Schema::empty()),
-                statistics: Statistics::default(),
-                projection: None,
-                limit: None,
-                table_partition_cols: vec![],
-                output_ordering: vec![],
-                infinite_source: false,
-            },
-            None,
-            None,
-        );
+        let mut input = self.inputs[0].execute(_partition, _context.clone())?;
 
-        let users: Vec<User> = {
-            let db = self.db.inner.lock().unwrap();
-            db.data.values().cloned().collect()
-        };
-
-        let mut id_array = UInt8Builder::with_capacity(users.len());
-        let mut account_array = UInt64Builder::with_capacity(users.len());
-
-        for user in users {
-            id_array.append_value(user.id);
-            account_array.append_value(user.bank_account);
-        }
-
-        Ok(Box::pin(MemoryStream::try_new(
-            vec![RecordBatch::try_new(
-                self.projected_schema.clone(),
-                vec![
-                    Arc::new(id_array.finish()),
-                    Arc::new(account_array.finish()),
-                ],
-            )?],
-            self.schema(),
-            None,
-        )?))
+        Ok(input)
     }
 
     fn statistics(&self) -> Statistics {
@@ -268,20 +245,49 @@ mod tests {
         db.populate_users();
         db.add_file("".to_owned());
     
-        query(db.clone(), None, 3).await?;
+        query(db.clone(), None, 1).await?;
         // query(db.clone(), Some(col("bank_account").gt(lit(8000u64))), 1).await?;
         // query(db.clone(), Some(col("bank_account").gt(lit(200u64))), 2).await?;
     
         Ok(())
     }
 
+    async fn test_lakesoul_parquet_source_with_pk() -> Result<()> {
+        // create our custom datasource and adding some users
+        let mut db = CustomDataSource::default();
+        db.populate_users();
+        db.add_file("".to_owned());
+    
+        query(db.clone(), None, 1).await?;
+        // query(db.clone(), Some(col("bank_account").gt(lit(8000u64))), 1).await?;
+        // query(db.clone(), Some(col("bank_account").gt(lit(200u64))), 2).await?;
+    
+        Ok(())
+    }
+
+    async fn test_lakesoul_parquet_source_without_pk() -> Result<()> {
+        // create our custom datasource and adding some users
+        let mut db = CustomDataSource::default();
+        db.populate_users();
+        db.add_file("".to_owned());
+    
+        query(db.clone(), None, 1).await?;
+        // query(db.clone(), Some(col("bank_account").gt(lit(8000u64))), 1).await?;
+        // query(db.clone(), Some(col("bank_account").gt(lit(200u64))), 2).await?;
+    
+        Ok(())
+    }
+
+
     async fn query(
-        db: CustomDataSource,
+        mut db: CustomDataSource,
         filter: Option<Expr>,
         expected_result_length: usize,
     ) -> Result<()> {
         // create local execution context
         let ctx = SessionContext::new();
+        let plan = ctx.read_parquet("/Users/ceng/Desktop/test/range=20201101/2.parquet", Default::default()).await.unwrap().into_unoptimized_plan();
+        db.add_plan(plan);
     
         // create logical plan composed of a single TableScan
         let logical_plan = LogicalPlanBuilder::scan_with_filters(
