@@ -40,7 +40,7 @@ class lakesoul_build_ext(build_ext):
         path = os.environ.get(key)
         if path is not None and os.path.isfile(path):
             return path
-        path = os.path.join(self._get_project_root_dir(), 'native-metadata/target/release/liblakesoul_metadata_c.so')
+        path = os.path.join(self._get_project_root_dir(), 'rust/target/release/liblakesoul_metadata_c.so')
         if os.path.isfile(path):
             return path
         message = "'liblakesoul_metadata_c.so' is not specified via "

@@ -102,10 +102,9 @@ if(index EQUAL -1)
 endif()
 
 # Build liblakesoul_io_c.so
-set(NATIVE_IO_DIR ${PROJECT_SOURCE_DIR}/../native-io)
-if(NOT EXISTS ${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so)
+if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c.so)
     execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
-                    WORKING_DIRECTORY ${NATIVE_IO_DIR}
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c
                     RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "Fail to build liblakesoul_io_c.so")
@@ -113,10 +112,9 @@ if(NOT EXISTS ${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so)
 endif()
 
 # Build liblakesoul_metadata_c.so
-set(NATIVE_METADATA_DIR ${PROJECT_SOURCE_DIR}/../native-metadata)
-if(NOT EXISTS ${NATIVE_METADATA_DIR}/target/release/liblakesoul_metadata_c.so)
+if(NOT EXISTS ${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_metadata_c.so)
     execute_process(COMMAND ${Cargo_EXECUTABLE} build -r
-                    WORKING_DIRECTORY ${NATIVE_METADATA_DIR}
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/../rust/lakesoul-metadata-c
                     RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
         message(FATAL_ERROR "Fail to build liblakesoul_metadata_c.so")
@@ -126,8 +124,8 @@ endif()
 # Create CMake imported targets
 add_library(liblakesoul_io_c SHARED IMPORTED)
 set_target_properties(liblakesoul_io_c PROPERTIES
-    IMPORTED_LOCATION "${NATIVE_IO_DIR}/target/release/liblakesoul_io_c.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${NATIVE_IO_DIR}/lakesoul-io-c")
+    IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c")
 
 add_library(libarrow SHARED IMPORTED)
 set_target_properties(libarrow PROPERTIES
@@ -154,11 +152,11 @@ add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generat
                    COMMAND ${CMAKE_COMMAND} -E make_directory
                            ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
                    COMMAND ${VENV_PYTHON} -m grpc.tools.protoc
-                           -I=${NATIVE_METADATA_DIR}/proto/src
+                           -I=${PROJECT_SOURCE_DIR}/../rust/proto/src
                            --python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
                            --grpc_python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
-                           ${NATIVE_METADATA_DIR}/proto/src/entity.proto
-                   MAIN_DEPENDENCY ${NATIVE_METADATA_DIR}/proto/src/entity.proto)
+                           ${PROJECT_SOURCE_DIR}/../rust/proto/src/entity.proto
+                   MAIN_DEPENDENCY ${PROJECT_SOURCE_DIR}/../rust/proto/src/entity.proto)
 
 # Generate .cpp from .pyx
 add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/python/lakesoul/arrow/_lakesoul_dataset.cpp

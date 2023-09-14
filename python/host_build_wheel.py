@@ -9,13 +9,23 @@ import tempfile
 import subprocess
 import contextlib
 
+#
 # Build LakeSoul wheel on host machine directly.
+#
+# This script is tested with the following configuration:
+#
+#   * CentOS 7
+#   * GCC 11 (both devtoolset-11 and GCC 11 built from source)
+#   * Rust nightly
+#   * Python 3.8 (installed via pyenv)
+#   * CMake 3.26
+#   * Ninja 1.11
+#
+# Use docker_build_all_wheels.py to build with docker via cibuildwheel.
+#
 class LakeSoulWheelHostBuilder(object):
     def __init__(self):
         self._project_root_dir = self._get_project_root_dir()
-        self._python_path = self._get_python_path()
-        self._python_version = self._get_python_version()
-        self._pyarrow_abi_tag = self._get_pyarrow_abi_tag()
 
     def _get_project_root_dir(self):
         dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -31,7 +41,7 @@ class LakeSoulWheelHostBuilder(object):
         string += "m = sys.version_info.major; "
         string += "n = sys.version_info.minor; "
         string += "print('%d.%d' % (m, n))"
-        args = [self._python_path, '-c', string]
+        args = [self._get_python_path(), '-c', string]
         output = subprocess.check_output(args)
         if not isinstance(output, str):
             output = output.decode('utf-8')
@@ -44,7 +54,7 @@ class LakeSoulWheelHostBuilder(object):
         string += "m = int(xs[0]); "
         string += "n = int(xs[1]); "
         string += "print('%d%02d' % (m, n))"
-        args = [self._python_path, '-c', string]
+        args = [self._get_python_path(), '-c', string]
         output = subprocess.check_output(args)
         if not isinstance(output, str):
             output = output.decode('utf-8')
@@ -63,7 +73,8 @@ class LakeSoulWheelHostBuilder(object):
         dir_path = os.path.join(self._project_root_dir, 'build', 'bdist.linux-x86_64')
         if os.path.isdir(dir_path):
             shutil.rmtree(dir_path)
-        dir_name = 'lib.linux-x86_64-cpython-%s' % self._python_version.replace('.', '')
+        python_version = self._get_python_version()
+        dir_name = 'lib.linux-x86_64-cpython-%s' % python_version.replace('.', '')
         dir_path = os.path.join(self._project_root_dir, 'build', dir_name)
         if os.path.isdir(dir_path):
             shutil.rmtree(dir_path)
@@ -105,15 +116,15 @@ class LakeSoulWheelHostBuilder(object):
         args += ['_LAKESOUL_DATASET_SO=%s' % os.path.join(
                  self._project_root_dir, 'cpp/build/_lakesoul_dataset.so')]
         args += ['_LAKESOUL_METADATA_SO=%s' % os.path.join(
-                 self._project_root_dir, 'native-metadata/target/release/liblakesoul_metadata_c.so')]
+                 self._project_root_dir, 'rust/target/release/liblakesoul_metadata_c.so')]
         args += ['_LAKESOUL_METADATA_GENERATED=%s' % os.path.join(
                  self._project_root_dir, 'cpp/build/python/lakesoul/metadata/generated')]
-        args += [self._python_path, '-m', 'pip', 'wheel', self._project_root_dir, '--no-deps']
+        args += [self._get_python_path(), '-m', 'pip', 'wheel', self._project_root_dir, '--no-deps']
         subprocess.check_call(args)
 
     def _repair_wheel(self):
-        pa_abi_tag = self._pyarrow_abi_tag
-        args = [self._python_path, '-m', 'auditwheel', 'repair', '--plat', 'manylinux2014_x86_64']
+        pa_abi_tag = self._get_pyarrow_abi_tag()
+        args = [self._get_python_path(), '-m', 'auditwheel', 'repair', '--plat', 'manylinux2014_x86_64']
         args += ['--exclude', 'libarrow_python.so']
         args += ['--exclude', 'libarrow_dataset.so.%s' % pa_abi_tag]
         args += ['--exclude', 'libarrow_acero.so.%s' % pa_abi_tag]
