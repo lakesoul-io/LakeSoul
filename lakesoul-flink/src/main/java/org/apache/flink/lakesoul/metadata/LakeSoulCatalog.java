@@ -111,12 +111,42 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     @Override
-    public void dropDatabase(String databaseName, boolean b, boolean b1) throws CatalogException {
+    public void dropDatabase(String databaseName, boolean ignoreIfNotExists, boolean cascade) throws
+            DatabaseNotExistException, DatabaseNotEmptyException, CatalogException {
+        if (!databaseExists(databaseName)) {
+            if (!ignoreIfNotExists) {
+                throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
+            } else {
+                return;
+            }
+        }
+        List<String> tables = listTables(databaseName);
+        if (!tables.isEmpty()) {
+            if (cascade) {
+                for (String table: tables) {
+                    try {
+                        dropTable(new ObjectPath(databaseName, table), true);
+                    } catch (TableNotExistException e) {
+                        throw new CatalogException(e.getMessage(), e.getCause());
+                    }
+                }
+            } else {
+                throw new DatabaseNotEmptyException(CATALOG_NAME, databaseName);
+            }
+        }
         dbManager.deleteNamespace(databaseName);
     }
 
     @Override
-    public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean b) throws CatalogException {
+    public void alterDatabase(String databaseName, CatalogDatabase catalogDatabase, boolean ignoreIfNotExists)
+            throws DatabaseNotExistException, CatalogException {
+        if (!databaseExists(databaseName)) {
+            if (!ignoreIfNotExists) {
+                throw new DatabaseNotExistException(CATALOG_NAME, databaseName);
+            } else {
+                return;
+            }
+        }
         dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
     }
 
@@ -231,12 +261,17 @@ public class LakeSoulCatalog implements Catalog {
         String tableName = tablePath.getObjectName();
         String path = tableOptions.get(TABLE_PATH);
         String qualifiedPath = "";
+
+        // make qualified path and create directories
         try {
             FileSystem fileSystem = new Path(path).getFileSystem();
-            qualifiedPath = new Path(path).makeQualified(fileSystem).toString();
+            Path qp = new Path(path).makeQualified(fileSystem);
+            FlinkUtil.createAndSetTableDirPermission(qp);
+            qualifiedPath = qp.toString();
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new CatalogException(e.getMessage(), e.getCause());
         }
+
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
 
         String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();

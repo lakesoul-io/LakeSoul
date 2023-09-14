@@ -53,6 +53,7 @@ services:
       timeout: 5s
       retries: 3
     hostname: minio
+    profiles: ["s3"]
 
   jobmanager:
     image: flink:1.17.1-scala_2.12-java8

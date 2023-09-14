@@ -5,12 +5,15 @@
 package org.apache.flink.lakesoul.test;
 
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.flink.types.Row;
 import org.junit.After;
 import org.junit.Assert;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import java.io.File;
 import java.util.List;
@@ -117,6 +120,9 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
                 validationCatalog.tableExists(new ObjectPath(DATABASE, flinkTable)));
     }
 
+    @Rule
+    public ExpectedException exceptionRule = ExpectedException.none();
+
     @Test
     public void testListTables() {
         Assert.assertFalse(
@@ -143,8 +149,12 @@ public class LakeSoulCatalogDatabaseTest extends LakeSoulCatalogTestBase {
         Assert.assertEquals("Only 1 table", 1, tables.size());
         Assert.assertEquals("Table name should match", flinkTable, tables.get(0).getField(0));
 
-        sql("DROP DATABASE %s", DATABASE);
+        Assert.assertThrows(ValidationException.class, () -> sql("DROP DATABASE %s", DATABASE));
+        Assert.assertTrue(
+                "Namespace should not be dropped",
+                validationCatalog.databaseExists(DATABASE));
 
+        sql("DROP DATABASE %s CASCADE", DATABASE);
         Assert.assertFalse(
                 "Namespace should have been dropped",
                 validationCatalog.databaseExists(DATABASE));
