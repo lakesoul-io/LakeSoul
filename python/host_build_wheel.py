@@ -10,7 +10,7 @@ import subprocess
 import contextlib
 
 # Build LakeSoul wheel on host machine directly.
-class LakeSoulWheelBuilder(object):
+class LakeSoulWheelHostBuilder(object):
     def __init__(self):
         self._project_root_dir = self._get_project_root_dir()
         self._python_path = self._get_python_path()
@@ -123,7 +123,7 @@ class LakeSoulWheelBuilder(object):
         subprocess.check_call(args)
 
     def _copy_wheel(self):
-        dir_path = os.path.join(self._project_root_dir, 'python', 'wheelhouse')
+        dir_path = os.path.join(self._project_root_dir, 'wheelhouse')
         if not os.path.isdir(dir_path):
             os.mkdir(dir_path)
         wheel_path = self._get_repaired_wheel_path()
@@ -137,7 +137,7 @@ class LakeSoulWheelBuilder(object):
             self._copy_wheel()
 
 def main():
-    builder = LakeSoulWheelBuilder()
+    builder = LakeSoulWheelHostBuilder()
     builder.run()
 
 if __name__ == '__main__':
