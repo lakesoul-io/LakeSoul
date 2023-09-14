@@ -32,4 +32,4 @@ __pycache__/
 /python/build/
 /python/lakesoul.egg-info/
 /python/*.whl
-/python/wheelhouse/
+/wheelhouse/

@@ -46,6 +46,17 @@ cdef class LakeSoulDataset(Dataset):
         cdef string cpp_string = file_url.encode('utf-8')
         self.lakesoul_dataset.AddFileUrl(cpp_string)
 
+    def _add_partition_key_value(self, key, value):
+        cdef string key_cpp_string = key.encode('utf-8')
+        cdef string value_cpp_string = value.encode('utf-8')
+        self.lakesoul_dataset.AddPartitionKeyValue(key_cpp_string, value_cpp_string)
+
+    def _set_batch_size(self, batch_size):
+        self.lakesoul_dataset.SetBatchSize(batch_size)
+
+    def _set_thread_num(self, thread_num):
+        self.lakesoul_dataset.SetThreadNum(thread_num)
+
     def scanner(self, *args, **kwargs):
         # LakeSoul already uses threads, moreover using Arrow threads
         # will make LakeSoulDataReader being destructed in an asynchronous

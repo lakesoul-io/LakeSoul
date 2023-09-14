@@ -38,6 +38,7 @@ class NativeMetadataClient:
         self._buffer = create_string_buffer(4096)
         self._large_buffer = create_string_buffer(65536)
         self._runtime = lib.lakesoul_metadata_c.create_tokio_runtime()
+        self._free_tokio_runtime = lib.lakesoul_metadata_c.free_tokio_runtime
 
         def callback(bool, msg):
             #print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
@@ -62,16 +63,24 @@ class NativeMetadataClient:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(target)
             self._client = future.result(5)
+            self._free_tokio_postgres_client = lib.lakesoul_metadata_c.free_tokio_postgres_client
 
         self._prepared = lib.lakesoul_metadata_c.create_prepared_statement()
+        self._free_prepared_statement = lib.lakesoul_metadata_c.free_prepared_statement
 
     def __del__(self):
         if hasattr(self, '_runtime'):
-            lib.lakesoul_metadata_c.free_tokio_runtime(self._runtime)
+            self._free_tokio_runtime(self._runtime)
+            del self._free_tokio_runtime
+            del self._runtime
         if hasattr(self, '_client'):
-            lib.lakesoul_metadata_c.free_tokio_postgres_client(self._client)
+            self._free_tokio_postgres_client(self._client)
+            del self._free_tokio_postgres_client
+            del self._client
         if hasattr(self, '_prepared'):
-            lib.lakesoul_metadata_c.free_prepared_statement(self._prepared)
+            self._free_prepared_statement(self._prepared)
+            del self._free_prepared_statement
+            del self._prepared
 
     def execute_query(self, query_type, params):
         joined_params = PARAM_DELIM.join(params).encode("utf-8")

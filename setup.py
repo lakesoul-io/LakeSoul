@@ -15,44 +15,52 @@ class lakesoul_build_ext(build_ext):
         for ext in self.extensions:
             self._build_lakesoul(ext)
 
+    def _get_project_root_dir(self):
+        import os
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        return dir_path
+
     def _get_lakesoul_dataset_so_path(self):
         import os
         key = '_LAKESOUL_DATASET_SO'
         path = os.environ.get(key)
-        if path is None:
-            message = "environment variable %r is not set; " % key
-            message += "can not find path of '_lakesoul_dataset.so'"
-            raise RuntimeError(message)
-        if not os.path.isfile(path):
-            message = "'_lakesoul_dataset.so' is not found at %r" % path
-            raise RuntimeError(message)
-        return path
+        if path is not None and os.path.isfile(path):
+            return path
+        path = os.path.join(self._get_project_root_dir(), 'cpp/build/_lakesoul_dataset.so')
+        if os.path.isfile(path):
+            return path
+        message = "'_lakesoul_dataset.so' is not specified via "
+        message += "environment variable %r " % key
+        message += "nor found at default location %r " % path
+        raise RuntimeError(message)
 
     def _get_lakesoul_metadata_so_path(self):
         import os
         key = '_LAKESOUL_METADATA_SO'
         path = os.environ.get(key)
-        if path is None:
-            message = "environment variable %r is not set; " % key
-            message += "can not find path of 'liblakesoul_metadata_c.so'"
-            raise RuntimeError(message)
-        if not os.path.isfile(path):
-            message = "'liblakesoul_metadata_c.so' is not found at %r" % path
-            raise RuntimeError(message)
-        return path
+        if path is not None and os.path.isfile(path):
+            return path
+        path = os.path.join(self._get_project_root_dir(), 'rust/target/release/liblakesoul_metadata_c.so')
+        if os.path.isfile(path):
+            return path
+        message = "'liblakesoul_metadata_c.so' is not specified via "
+        message += "environment variable %r " % key
+        message += "nor found at default location %r " % path
+        raise RuntimeError(message)
 
     def _get_lakesoul_metadata_generated_path(self):
         import os
         key = '_LAKESOUL_METADATA_GENERATED'
         path = os.environ.get(key)
-        if path is None:
-            message = "environment variable %r is not set; " % key
-            message += "can not find path of 'generated'"
-            raise RuntimeError(message)
-        if not os.path.isdir(path):
-            message = "'generated' is not found at %r" % path
-            raise RuntimeError(message)
-        return path
+        if path is not None and os.path.isdir(path):
+            return path
+        path = os.path.join(self._get_project_root_dir(), 'cpp/build/python/lakesoul/metadata/generated')
+        if os.path.isdir(path):
+            return path
+        message = "'generated' is not specified via "
+        message += "environment variable %r " % key
+        message += "nor found at default location %r " % path
+        raise RuntimeError(message)
 
     def _copy_lakesoul_metadata_files(self, metadata_dir_path):
         import os
