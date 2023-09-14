@@ -28,6 +28,8 @@ wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.1/lakesoul-s
 
 ### Install python virtual enviroment
 ```bash 
+conda create -n lakesoul_test python=3.8
+conda acitvate lakesoul_test
 pip install -r requirements.txt
 ```
 
