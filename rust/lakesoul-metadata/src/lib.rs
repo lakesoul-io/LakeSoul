@@ -688,7 +688,7 @@ pub fn execute_query(
                     .map(|row|proto::proto::entity::Namespace { 
                         namespace: row.get(0), 
                         properties: row.get::<_, serde_json::Value>(1).to_string(), 
-                        comment: row.get(2), 
+                        comment: row.get::<_, Option<String>>(2).unwrap_or(String::from("")), 
                         domain: row.get(3)
                     })
                     .collect();
@@ -735,7 +735,7 @@ pub fn execute_query(
                                         })
                                         .collect::<Vec<entity::Uuid>>(), 
                             timestamp: row.get::<_, i64>(5), 
-                            expression: row.get(6),
+                            expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
                             domain: row.get(7),
                         }
                     })
@@ -763,7 +763,7 @@ pub fn execute_query(
                                             entity::Uuid{high, low}
                                         })
                                         .collect::<Vec<entity::Uuid>>(), 
-                            expression: row.get(5),
+                            expression: row.get::<_, Option<String>>(5).unwrap_or(String::from("")),
                             domain: row.get(6),
                             ..Default::default() 
                         }
