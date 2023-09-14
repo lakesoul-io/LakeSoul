@@ -528,7 +528,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case Array() =>
         listNamespaces()
       case Array(db) if LakeSoulCatalog.namespaceExists(Array(db)) =>
-        Array(Array(db))
+        Array()
       case _ =>
         throw new NoSuchNamespaceException(namespace)
     }

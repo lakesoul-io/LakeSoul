@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-io-c"
+version = "2.3.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lakesoul-io = { path = "../lakesoul-io" }
+arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["ffi"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
+
+[features]
+hdfs = ["lakesoul-io/hdfs"]
+
+[build-dependencies]
+cbindgen = "0.24.0"

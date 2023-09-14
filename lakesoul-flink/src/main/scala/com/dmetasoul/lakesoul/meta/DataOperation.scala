@@ -44,6 +44,7 @@ case class DataFileInfo(range_partitions: String, path: String, file_op: String,
   }
 }
 
+
 case class PartitionInfo(table_id: String, range_value: String, version: Int = -1,
                          read_files: Array[UUID] = Array.empty[UUID], expression: String = "", commit_op: String = "") {
   override def toString: String = {
@@ -69,6 +70,7 @@ object DataOperation {
 
     file_info_buf.toArray
   }
+
 
   private def filterFiles(file_arr_buf: ArrayBuffer[DataFileInfo]): ArrayBuffer[DataFileInfo] = {
     val dupCheck = new mutable.HashSet[String]()

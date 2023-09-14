@@ -66,46 +66,6 @@ public class BinarySourceRecord {
         this.isDDLRecord = isDDL;
     }
 
-    public static BinarySourceRecord fromKafkaSourceRecord(SourceRecord sourceRecord,
-                                                           LakeSoulRecordConvert convert) throws Exception {
-        Schema keySchema = sourceRecord.keySchema();
-        TableId tableId = new TableId(io.debezium.relational.TableId.parse(sourceRecord.topic()).toLowercase());
-        boolean isDDL = SCHEMA_CHANGE_EVENT_KEY_NAME.equalsIgnoreCase(keySchema.name());
-        if (isDDL) {
-            return new BinarySourceRecord(sourceRecord.topic(), null,
-                    Collections.emptyList(), null, SourceRecordJsonSerde.getInstance().serializeValue(sourceRecord),
-                    tableId,
-                    true);
-        } else {
-            List<String> primaryKeys = new ArrayList<>();
-            keySchema.fields().forEach(f -> primaryKeys.add(f.name()));
-            Schema valueSchema = sourceRecord.valueSchema();
-            Struct value = (Struct) sourceRecord.value();
-
-            // retrieve source event time if exist and non-zero
-            Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
-            long binlogFileIndex = 0;
-            long binlogPosition = 0;
-            Struct source = value.getStruct(Envelope.FieldName.SOURCE);
-            if (sourceField != null && source != null ) {
-                if (sourceField.schema().field("file") != null) {
-                    String fileName = (String)source.getWithoutDefault("file");
-                    if (StringUtils.isNotBlank(fileName)) {
-                        binlogFileIndex = Long.parseLong(fileName.substring(fileName.lastIndexOf(".") + 1));
-                    }
-                }
-                if (sourceField.schema().field("pos") != null) {
-                    binlogPosition = (Long) source.getWithoutDefault("pos");
-                }
-
-            }
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, 1l);
-
-            return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, Collections.emptyList(), data, null,
-                    tableId, false);
-        }
-    }
-
     public static BinarySourceRecord fromMysqlSourceRecord(SourceRecord sourceRecord,
                                                            LakeSoulRecordConvert convert,
                                                            String basePath) throws Exception {
@@ -124,8 +84,9 @@ public class BinarySourceRecord {
             Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
             long binlogFileIndex = 0;
             long binlogPosition = 0;
+            long tsMs = 0;
             Struct source = value.getStruct(Envelope.FieldName.SOURCE);
-            if (sourceField != null && source != null ) {
+            if (sourceField != null && source != null) {
                 if (sourceField.schema().field("file") != null) {
                     String fileName = (String)source.getWithoutDefault("file");
                     if (StringUtils.isNotBlank(fileName)) {
@@ -135,10 +96,12 @@ public class BinarySourceRecord {
                 if (sourceField.schema().field("pos") != null) {
                     binlogPosition = (Long) source.getWithoutDefault("pos");
                 }
-
+                if (sourceField.schema().field("ts_ms") != null) {
+                    tsMs = (Long) source.getWithoutDefault("ts_ms");
+                }
             }
             long sortField = (binlogFileIndex << 32) + binlogPosition;
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, sortField);
+            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, tsMs, sortField);
             String tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
 
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId, FlinkUtil.makeQualifiedPath(tablePath).toString(),

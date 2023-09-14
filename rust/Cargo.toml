@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+members = ["lakesoul-metadata", "lakesoul-metadata-c", "proto", "lakesoul-io", "lakesoul-io-c"]
+resolver = "2"
+
+[profile.release]

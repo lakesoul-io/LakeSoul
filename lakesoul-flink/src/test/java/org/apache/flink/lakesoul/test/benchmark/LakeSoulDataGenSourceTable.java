@@ -59,6 +59,7 @@ public class LakeSoulDataGenSourceTable {
 
         TableEnvironment tEnvs = TableEnvironment.create(EnvironmentSettings.inBatchMode());
         tEnvs.getConfig().getConfiguration().setInteger(TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 2);
+        tEnvs.getConfig().getConfiguration().setString("table.local-time-zone", timeZone);
 
         final Schema schema = Schema.newBuilder()
                 .column("col_1", DataTypes.INT())
@@ -111,6 +112,7 @@ public class LakeSoulDataGenSourceTable {
         tEnvs.createTemporaryTable("csv_table", TableDescriptor.forConnector("filesystem")
                 .schema(schema)
                 .option("path", warehousePath + "csv/")
+                .option("parquet.utc-timezone", "true")
                 .format(FormatDescriptor.forFormat("parquet")
                         .build())
                 .build());
@@ -120,6 +122,7 @@ public class LakeSoulDataGenSourceTable {
         tEnvs.useCatalog("lakesoul");
         tEnvs.executeSql("create database if not exists " + sinkDBName);
 
+        tEnvs.executeSql("drop table if exists `default`." + sinkTableName);
         tEnvs.createTable(sinkTableName, TableDescriptor.forConnector("lakesoul")
                 .schema(schema)
                 .option("path", warehousePath + sinkTableName)

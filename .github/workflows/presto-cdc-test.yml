@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI with Presto cdc Test
+
+on:
+  push:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+  pull_request:
+    paths-ignore:
+      - "javadoc/**"
+      - "website/**"
+      - "**.md"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pymysql cryptography jproperties --no-cache-dir
+          wget https://dlcdn.apache.org/hadoop/common/hadoop-3.3.5/hadoop-3.3.5.tar.gz -O $HOME/hadoop-3.3.5.tar.gz && tar xf $HOME/hadoop-3.3.5.tar.gz -C $HOME
+          echo "HADOOP_HOME=$HOME/hadoop-3.3.5" >> $GITHUB_ENV
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.1/flink-s3-fs-hadoop-1.17.1.jar -O $HOME/flink-s3-fs-hadoop-1.17.1.jar
+          wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.17.1/flink-parquet-1.17.1.jar -O $HOME/flink-parquet-1.17.1.jar
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly-2023-05-20
+          default: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./rust -> target"
+      - name: Pull images
+        run: |
+          docker pull -q bitnami/spark:3.3.1
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+      - name: Build with Maven
+        run: |
+          mkdir -p rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
+      - name: Get jar names
+        run: |
+          echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
+          echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+          echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
+          echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+          echo "PRESTO_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-jar-with-dependencies.jar/g')" >> $GITHUB_ENV
+          echo "PRESTO_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+      - name: Copy built jar to work-dir
+        run: |
+          cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-presto/target/$PRESTO_JAR_NAME ./script/benchmark/work-dir
+          cp ./lakesoul-presto/target/$PRESTO_TEST_JAR_NAME ./script/benchmark/work-dir
+      - name: Deploy cluster
+        run: |
+          cd ./docker/lakesoul-docker-compose-env
+          docker compose pull -q
+          docker compose --profile s3 up -d
+          sleep 30s
+      - name: Deploy Presto Server
+        run: |
+          echo "deploy presto server pwd: ${PWD}"
+          wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/yuanf/presto-plugin-mysql.tar
+          tar -xvf presto-plugin-mysql.tar
+          ls
+          docker run -d --net lakesoul-docker-compose-env_default --name=presto -v ${PWD}/script/benchmark/work-dir/${PRESTO_JAR_NAME}:/root/presto-server-pure/plugin/lakesoul/${PRESTO_JAR_NAME} -v ${PWD}/mysql:/root/presto-server-pure/plugin/mysql -v ${PWD}/script/benchmark/presto/catalog:/root/presto-server-pure/etc/catalog -v ${PWD}/script/benchmark/work-dir:/opt/spark/work-dir -v ${PWD}/script/benchmark/presto/lakesoul.properties:/root/lakesoul.properties --env lakesoul_home=/root/lakesoul.properties swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/presto-server-pure-0.283:1.0
+      - name: Start flink mysql cdc task-1
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path s3://lakesoul-test-bucket/data/ --flink.checkpoint s3://lakesoul-test-bucket/chk --flink.savepoint s3://lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
+          sleep 30s
+      - name: Start flink source to sink task-2
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulSourceToSinkTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --source.database.name test_cdc --source.table.name default_init --sink.database.name flink_sink --sink.table.name default_init --use.cdc true --hash.bucket.number 2 --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink-sink/data --flink.checkpoint s3://lakesoul-test-bucket/flink-sink/chk
+          sleep 30s
+      #      - name: Start flink DataGenSource without primary key task-3
+      #        run: |
+      #          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path s3://lakesoul-test-bucket/flink/ --flink.checkpoint s3://lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
+      - name: Download mysql driver jar
+        run: |
+          cd ./script/benchmark/work-dir
+          if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget -q https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
+      - name: Create table and insert data
+        run: |
+          cd ./script/benchmark
+          python 1_create_table.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: Presto Server Liveness Probe
+        run: |
+          docker ps | grep presto
+      - name: "[Check] Mysql cdc data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+      - name: "[Check] Presto source to sink data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+      - name: Adding columns for tables and deleting some data from tables
+        run: |
+          cd ./script/benchmark
+          python3 3_add_column.py
+          python3 delete_data.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: "[Check] Mysql cdc data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+      - name: "[Check] Presto source to sink data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+      - name: Updating data in tables
+        run: |
+          cd ./script/benchmark
+          python3 4_update_data.py
+          sleep 30s
+      - name: "[Check] Mysql cdc data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+      - name: "[Check] Presto source to sink data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+      - name: Dropping columns and deleting some data in tables
+        run: |
+          cd ./script/benchmark
+          python3 6_drop_column.py
+          python3 delete_data.py
+          docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: "[Check] Mysql cdc data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark
+      - name: "[Check] Presto source to sink data accuracy verification task"
+        run: |
+          cd ./script/benchmark
+          docker run --cpus 2 -m 5000m --net container:presto --rm -t -v ${PWD}/work-dir:/root openjdk:11 java -cp /root/$PRESTO_TEST_JAR_NAME:/root/$PRESTO_JAR_NAME com.facebook.presto.benchmark.Benchmark --cdc.contract false --single.table.contract true
+      #      - name: "[Check] Table without primary key data accuracy verification task"
+      #        run: |
+      #          cd ./script/benchmark
+      #          docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m  --conf spark.dmetasoul.lakesoul.native.io.enable=true --jars /opt/spark/work-dir/$SPARK_JAR_NAME,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --class org.apache.spark.sql.lakesoul.benchmark.FlinkWriteDataCheck --master local[4] /opt/spark/work-dir/$SPARK_TEST_JAR_NAME --csv.path s3://lakesoul-test-bucket/flink/csv --lakesoul.table.path s3://lakesoul-test-bucket/flink/sink_table --server.time.zone UTC
+      - name: Print Flink Log
+        if: always()
+        run: |
+          docker logs lakesoul-docker-compose-env-jobmanager-1 > flink-session-cluster.log
+      - name: Upload Log
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: flink-cluster-log
+          path: flink-session-cluster.log
+          retention-days: 5
+          if-no-files-found: error
+

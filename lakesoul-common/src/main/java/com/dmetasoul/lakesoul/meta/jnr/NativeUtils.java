@@ -10,6 +10,8 @@ public class NativeUtils {
 
     public static boolean NATIVE_METADATA_UPDATE_ENABLED = true;
 
+    public static int NATIVE_METADATA_MAX_RETRY_ATTEMPTS = 3;
+
     public static int DAO_TYPE_QUERY_ONE_OFFSET = 0;
     public static int DAO_TYPE_QUERY_LIST_OFFSET = 100;
     public static int DAO_TYPE_INSERT_ONE_OFFSET = 200;
