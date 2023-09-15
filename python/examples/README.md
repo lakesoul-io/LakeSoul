@@ -5,7 +5,7 @@
 ### Deploy Docker compose env
 
 ```bash
-cd lakesoul-docker-compose-env
+cd docker/lakesoul-docker-compose-env
 docker compose up -d
 ```
 
