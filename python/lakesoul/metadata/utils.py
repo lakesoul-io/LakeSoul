@@ -34,7 +34,8 @@ def to_arrow_field(spark_field_json):
     return pyarrow.field(spark_field_json['name'], arrow_type, spark_field_json['nullable'])
 
 
-def to_arrow_schema(spark_schema_str, exclude_columns=[]):
+def to_arrow_schema(spark_schema_str, exclude_columns=None):
+    exclude_columns = frozenset(exclude_columns or frozenset())
     fields = json.loads(spark_schema_str)['fields']
     arrow_fields = []
     for field in fields:

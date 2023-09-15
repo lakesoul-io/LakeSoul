@@ -15,7 +15,8 @@ class LakeSoulDataReader : public std::enable_shared_from_this<LakeSoulDataReade
 {
 public:
     LakeSoulDataReader(std::shared_ptr<arrow::Schema> schema,
-                       const std::vector<std::string>& file_urls);
+                       const std::vector<std::string>& file_urls,
+                       const std::vector<std::pair<std::string, std::string>>& partition_info);
 
     int GetBatchSize() const;
     void SetBatchSize(int batch_size);
@@ -34,6 +35,7 @@ private:
 
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<std::string> file_urls_;
+    std::vector<std::pair<std::string, std::string>> partition_info_;
     int batch_size_ = 16;
     int thread_num_ = 1;
     std::shared_ptr<lakesoul::CResult<lakesoul::Reader>> reader_;

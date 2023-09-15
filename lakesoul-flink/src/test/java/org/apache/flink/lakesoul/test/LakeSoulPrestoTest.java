@@ -12,7 +12,7 @@ import org.junit.runners.MethodSorters;
 import java.util.List;
 
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
-public class LakeSoulPrestoTest extends LakeSoulFlinkTestBase{
+public class LakeSoulPrestoTest extends LakeSoulFlinkTestBase {
 
 
     @Test

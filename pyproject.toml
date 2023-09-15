@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lakesoul"
-version = "1.1.0"
+version = "1.0.0b0"
 authors = [
   { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -41,7 +41,26 @@ include = ["lakesoul*"]
 [project.optional-dependencies]
 torch = ["torch>=1.11"]
 pandas = ["pandas>=1.4"]
+datasets = ["datasets>=2.14"]
 all = [
     "torch>=1.11",
     "pandas>=1.4",
+    "datasets>=2.14",
 ]
+
+[tool.cibuildwheel]
+manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux2014:v1.0.0"
+build = "*-manylinux_x86_64"
+skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
+
+[tool.cibuildwheel.linux]
+before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
+repair-wheel-command = """\
+    auditwheel repair --plat manylinux2014_x86_64 \
+                      --exclude libarrow_python.so \
+                      --exclude libarrow_dataset.so.1200 \
+                      --exclude libarrow_acero.so.1200 \
+                      --exclude libparquet.so.1200 \
+                      --exclude libarrow.so.1200 \
+                      -w {dest_dir} {wheel}\
+    """

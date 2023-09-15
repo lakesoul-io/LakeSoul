@@ -179,7 +179,7 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase, !RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
+          mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
@@ -240,6 +240,15 @@ jobs:
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: beyondstorage/setup-hdfs@master
+        with:
+          hdfs-version: '3.3.2'
+      - name: Modify HDFS User Group Mapping
+        run: |
+          sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
+          $HADOOP_HOME/sbin/stop-dfs.sh
+          $HADOOP_HOME/sbin/start-dfs.sh
+          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -377,16 +386,25 @@ jobs:
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test
       - name: Init PG RBAC DOMAINS
         run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains.sql lakesoul_test
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_domains_for_test.sql lakesoul_test
       - name: Init PG RBAC USERS
         run: |
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users.sql lakesoul_test
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init_users_for_test.sql lakesoul_test
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: beyondstorage/setup-hdfs@master
+        with:
+          hdfs-version: '3.3.2'
+      - name: Modify HDFS User Group Mapping
+        run: |
+          sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
+          $HADOOP_HOME/sbin/stop-dfs.sh
+          $HADOOP_HOME/sbin/start-dfs.sh
+          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
       - uses: actions/download-artifact@v3
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test

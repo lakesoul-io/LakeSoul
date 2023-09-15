@@ -96,7 +96,7 @@ jobs:
         run: |
           cd ./docker/lakesoul-docker-compose-env
           docker compose pull -q
-          docker compose up -d
+          docker compose --profile s3 up -d
           sleep 30s
       - name: Deploy Presto Server
         run: |
