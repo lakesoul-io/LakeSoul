@@ -21,9 +21,9 @@ In the Stream API, the main functions of LakeSoul Sink are:
 
 ## How to use the command line
 ### 1. Download LakeSoul Flink Jar
-It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar.
+It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar.
 
-The currently supported Flink version is 1.14.
+The currently supported Flink version is 1.17.
 
 ### 2. Start the Flink job
 
@@ -60,7 +60,7 @@ export LAKESOUL_PG_PASSWORD=root
 #### 2.2 Start sync job
 ```bash
 bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
-    lakesoul-flink-2.3.0-flink-1.14.jar \
+    lakesoul-flink-2.4.0-flink-1.17.jar \
     --source_db.host localhost \
     --source_db.port 3306 \
     --source_db.db_name default \
@@ -79,7 +79,7 @@ Description of required parameters:
 | Parameter | Meaning | Value Description |
 |----------------|------------------------------------|-------------------------------------------- |
 | -c | The task runs the main function entry class | org.apache.flink.lakesoul.entry.MysqlCdc |
-| Main package | Task running jar | lakesoul-flink-2.3.0-flink-1.14.jar |
+| Main package | Task running jar | lakesoul-flink-2.4.0-flink-1.17.jar |
 | --source_db.host | The address of the MySQL database | |
 | --source_db.port | MySQL database port | |
 | --source_db.user | MySQL database username | |

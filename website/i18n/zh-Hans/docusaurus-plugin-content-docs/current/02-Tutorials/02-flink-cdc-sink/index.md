@@ -67,12 +67,12 @@ SHOW TABLES IN default;
 ## 2. 启动同步作业
 
 ### 2.1 启动一个本地的 Flink Cluster
-可以从 Flink 下载页面下载 [Flink 1.14.5](https://archive.apache.org/dist/flink/flink-1.14.5/flink-1.14.5-bin-scala_2.12.tgz)，也可以从我们的[国内镜像地址下载](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/flink-1.14.5-bin-scala_2.12.tgz)（与Apache官网完全相同）。
+可以从 Flink 下载页面下载 [Flink 1.17](https://www.apache.org/dyn/closer.lua/flink/flink-1.17.1/flink-1.17.1-bin-scala_2.12.tgz)。
 
 解压下载的 Flink 安装包：
 ```bash
-tar xf flink-1.14.5-bin-scala_2.12.tgz
-export FLINK_HOME=${PWD}/flink-1.14.5
+tar xf flink-1.17.1-bin-scala_2.12.tgz
+export FLINK_HOME=${PWD}/flink-1.17.1
 ```
 
 然后启动一个本地的 Flink Cluster：
@@ -90,7 +90,7 @@ $FLINK_HOME/bin/start-cluster.sh
 ```bash
 ./bin/flink run -ys 1 -yjm 1G -ytm 2G \
    -c org.apache.flink.lakesoul.entry.MysqlCdc \
-   lakesoul-flink-2.3.0-flink-1.14.jar \
+   lakesoul-flink-2.4.0-flink-1.17.jar \
    --source_db.host localhost \
    --source_db.port 3306 \
    --source_db.db_name test_cdc \
@@ -105,7 +105,7 @@ $FLINK_HOME/bin/start-cluster.sh
    --server_time_zone UTC
 ```
 
-其中 lakesoul-flink 的 jar 包可以从 [Github Release](https://github.com/lakesoul-io/LakeSoul/releases/) 页面下载。如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.3.0-flink-1.14.jar
+其中 lakesoul-flink 的 jar 包可以从 [Github Release](https://github.com/lakesoul-io/LakeSoul/releases/) 页面下载。如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.4.0-flink-1.17.jar
 
 在 http://localhost:8081 Flink 作业页面中，点击 Running Job，进入查看 LakeSoul 作业是否已经处于 `Running` 状态。
 

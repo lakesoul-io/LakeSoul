@@ -17,6 +17,9 @@ SPDX-License-Identifier: Apache-2.0
 [中文介绍](README-CN.md)
 
 LakeSoul is a cloud-native Lakehouse framework that supports scalable metadata management, ACID transactions, efficient and flexible upsert operation, schema evolution, and unified streaming & batch processing.
+
+LakeSoul supports multiple computing engines to read and write lake warehouse table data, including Spark, Flink, Presto, and PyTorch, and supports multiple computing modes such as batch, stream, MPP, and AI. LakeSoul supports storage systems such as HDFS and S3.
+
 ![LakeSoul Arch](website/static/img/lakeSoulModel.png)
 
 LakeSoul was originally created by DMetaSoul company and was donated to Linux Foundation AI & Data as a sandbox project since May 2023.
@@ -24,6 +27,8 @@ LakeSoul was originally created by DMetaSoul company and was donated to Linux Fo
 LakeSoul implements incremental upserts for both row and column and allows concurrent updates.
 
 LakeSoul uses LSM-Tree like structure to support updates on hash partitioning table with primary key, and achieves very high write throughput while providing optimized merge on read performance (refer to [Performance Benchmarks](https://lakesoul-io.github.io/blog/2023/04/21/lakesoul-2.2.0-release)). LakeSoul scales metadata management and achieves ACID control by using PostgreSQL.
+
+LakeSoul uses Rust to implement the native metadata layer and IO layer, and provides C/Java/Python interfaces to support the connecting of multiple computing frameworks such as big data and AI.
 
 LakeSoul supports concurrent batch or streaming read and write. Both read and write supports CDC semantics, and together with auto schema evolution and exacly-once guarantee, constructing realtime data warehouses is made easy.
 
@@ -35,6 +40,7 @@ Follow the [Quick Start](https://lakesoul-io.github.io/docs/Getting%20Started/se
 # Tutorials
 Please find tutorials in doc site:
 
+* Checkout [Examples of Python Data Processing and AI Model Training on LakeSoul](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples) on how LakeSoul connecting AI to Lakehouse to build a unified and modern data infrastructure.
 * Checkout [LakeSoul Flink CDC Whole Database Synchronization Tutorial](https://lakesoul-io.github.io/docs/Tutorials/flink-cdc-sink) on how to sync an entire MySQL database into LakeSoul in realtime, with auto table creation, auto DDL sync and exactly once guarantee.
 * Checkout [Flink SQL Usage](https://lakesoul-io.github.io/docs/Usage%20Docs/flink-lakesoul-connector) on using Flink SQL to read or write LakeSoul in both batch and streaming mode, with the supports of Flink Changelog Stream semantics and row-level upsert and delete.
 * Checkout [Multi Stream Merge and Build Wide Table Tutorial](https://lakesoul-io.github.io/docs/Tutorials/mutil-stream-merge) on how to merge multiple stream with same primary key (and different other columns) concurrently without join.
@@ -53,6 +59,9 @@ Please find usage documentations in doc site:
 [使用文档](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/setup-meta-env)
 
 # Feature Roadmap
+* Data Science and AI
+  - [x] Native Python Reader (without PySpark)
+  - [x] PyTorch Dataset and distributed training
 * Meta Management ([#23](https://github.com/lakesoul-io/LakeSoul/issues/23))
   - [x] Multiple Level Partitioning: Multiple range partition and at most one hash partition
   - [x] Concurrent write with auto conflict resolution
@@ -74,8 +83,6 @@ Please find usage documentations in doc site:
   - [ ] Materialized View
     - [ ] Incremental MV Build
     - [ ] Auto query rewrite
-* Data Science
-  - [ ] Native Python Reader (without PySpark)
 * Spark Integration
   - [x] Table/Dataframe API
   - [x] SQL support with catalog except upsert

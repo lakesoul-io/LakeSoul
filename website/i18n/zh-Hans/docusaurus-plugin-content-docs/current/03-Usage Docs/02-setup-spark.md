@@ -15,22 +15,22 @@ LakeSoul 目前支持 Spark 3.3 + Scala 2.12.
 
 #### 使用 `--packages` 传 Maven 仓库和包名
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:2.3.0-spark-3.3
+spark-shell --packages com.dmetasoul:lakesoul-spark:2.4.0-spark-3.3
 ```
 
 #### 使用打包好的 LakeSoul 包
 可以从 [Releases](https://github.com/lakesoul-io/LakeSoul/releases) 页面下载已经打包好的 LakeSoul Jar 包。
 下载 jar 并传给 `spark-submit` 命令：
 ```bash
-spark-submit --jars "lakesoul-spark-2.3.0-spark-3.3.jar"
+spark-submit --jars "lakesoul-spark-2.4.0-spark-3.3.jar"
 ```
 
 #### 直接将 Jar 包放在 Spark 环境中
 可以将 Jar 包下载后，放在 $SPARK_HOME/jars 中。
 
-Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-spark-2.3.0-spark-3.3.jar
+Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-spark-2.4.0-spark-3.3.jar
 
-或者从国内地址下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.3.0-spark-3.3.jar
+或者从国内地址下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.4.0-spark-3.3.jar
 
 ### 设置 Java/Scala 项目
 增加以下 Maven 依赖项:
@@ -38,7 +38,7 @@ Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/La
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-spark</artifactId>
-    <version>2.3.0-spark-3.3</version>
+    <version>2.4.0-spark-3.3</version>
 </dependency>
 ```
 
@@ -97,7 +97,7 @@ spark.sql.sources.default lakesoul
 ## Flink 工程/作业的配置
 
 ### 所需的 Flink 版本
-目前支持 Flink 1.14。
+目前 2.4 版本，支持 Flink 1.17。
 
 ### 为 Flink 设置元数据数据库连接
 
@@ -139,7 +139,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 
 
 ### 添加 LakeSoul Jar 到 Flink 部署的目录
-从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar
+从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar
 
 并将 jar 文件放在 `$FLINK_HOME/lib` 下。在此之后，您可以像往常一样启动 flink 会话集群或应用程序。
 
@@ -150,7 +150,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 ```bash
 export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 ```
-具体可以参考：[Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.14/docs/deployment/resource-providers/yarn/)
+具体可以参考：[Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/deployment/resource-providers/yarn/)
 :::
 
 ### 在你的 Java 项目中添加 LakeSoul Flink Maven 依赖
@@ -160,6 +160,6 @@ export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 <dependency>
      <groupId>com.dmetasoul</groupId>
      <artifactId>lakesoul</artifactId>
-     <version>2.3.0-flink-1.14</version>
+     <version>2.4.0-flink-1.17</version>
 </dependency>
 ```

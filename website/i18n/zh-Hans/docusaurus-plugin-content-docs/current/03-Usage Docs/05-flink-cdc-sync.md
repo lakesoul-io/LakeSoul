@@ -19,11 +19,11 @@ LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API
 
 ## 命令行使用方法
 ### 1. 下载 LakeSoul Flink Jar
-可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar。
+可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar。
 
-如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.3.0-flink-1.14.jar。
+如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.4.0-flink-1.17.jar。
 
-目前支持的 Flink 版本为 1.14。
+目前支持的 Flink 版本为 1.17。
 
 ### 2. 启动 Flink 作业
 
@@ -58,7 +58,7 @@ export LAKESOUL_PG_PASSWORD=root
 #### 2.2 启动同步作业
 ```bash
 bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
-    lakesoul-flink-2.3.0-flink-1.14.jar \
+    lakesoul-flink-2.4.0-flink-1.17.jar \
     --source_db.host localhost \
     --source_db.port 3306 \
     --source_db.db_name default \
@@ -77,7 +77,7 @@ bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
 | 参数      | 含义                                                                        | 取值说明    |
 |----------------|--------------------------------------------------------------------------------------|---------------------------------------------|
 | -c      | 任务运行main函数入口类                                                                        | org.apache.flink.lakesoul.entry.MysqlCdc    |
-| 主程序包           | 任务运行jar包                                                                     | lakesoul-flink-2.3.0-flink-1.14.jar                  |
+| 主程序包           | 任务运行jar包                                                                     | lakesoul-flink-2.4.0-flink-1.17.jar                  |
 | --source_db.host      | MySQL 数据库的地址                                                     |                                             |
 | --source_db.port      | MySQL 数据库的端口                                                     |                                             |
 | --source_db.user      | MySQL 数据库的用户名                                                     |                                             |
