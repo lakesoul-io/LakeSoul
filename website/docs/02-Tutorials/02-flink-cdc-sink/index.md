@@ -67,12 +67,12 @@ You can see that there is currently only one `default` database in LakeSoul, and
 ## 2. Start the sync job
 
 ### 2.1 Start a local Flink Cluster
-You can download [Flink 1.14.5](https://archive.apache.org/dist/flink/flink-1.14.5/flink-1.14.5-bin-scala_2.12.tgz) from the Flink download page.
+You can download from the Flink download page: [Flink 1.17](https://www.apache.org/dyn/closer.lua/flink/flink-1.17.1/flink-1.17.1-bin-scala_2.12.tgz)
 
 Unzip the downloaded Flink installation package:
 ```bash
-tar xf flink-1.14.5-bin-scala_2.12.tgz
-export FLINK_HOME=${PWD}/flink-1.14.5
+tar xf flink-1.17.1-bin-scala_2.12.tgz
+export FLINK_HOME=${PWD}/flink-1.17.1
 ````
 
 Then start a local Flink Cluster:
@@ -90,7 +90,7 @@ Submit a LakeSoul Flink CDC Sink job to the Flink cluster started above:
 ```bash
 ./bin/flink run -ys 1 -yjm 1G -ytm 2G \
    -c org.apache.flink.lakesoul.entry.MysqlCdc\
-   lakesoul-flink-2.3.0-flink-1.14.jar \
+   lakesoul-flink-2.3.0-flink-1.17.jar \
    --source_db.host localhost \
    --source_db.port 3306 \
    --source_db.db_name test_cdc \
