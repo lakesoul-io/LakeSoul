@@ -21,6 +21,10 @@ LakeSoul 使用 Rust 实现了 native 的元数据层和 IO 层，并封装了 C
 
 LakeSoul 支持流、批并发读写，读写全面兼容 CDC 语义，通过自动 Schema 演进和严格一次语义等功能，能够轻松构建全链路流式数仓。
 
+LakeSoul 支持多工作空间和用户权限隔离。LakeSoul 使用 Postgres 的 RBAC 和行级别安全策略，实现了元数据的权限隔离。配合 Hadoop 用户和组，可以实现物理数据隔离。LakeSoul 的权限隔离对 SQL/Java/Python 的作业都是有效的。
+
+LakeSoul 支持自动分离式 Compaction 、自动表生命周期清理、自动冗余数据清理，降低维护成本，提升易用性。
+
 更多特性和其他产品对比请参考：[特性介绍](https://lakesoul-io.github.io/zh-Hans/docs/intro)
 
 # 使用教程

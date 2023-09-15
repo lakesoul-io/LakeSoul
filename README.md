@@ -32,6 +32,10 @@ LakeSoul uses Rust to implement the native metadata layer and IO layer, and prov
 
 LakeSoul supports concurrent batch or streaming read and write. Both read and write supports CDC semantics, and together with auto schema evolution and exacly-once guarantee, constructing realtime data warehouses is made easy.
 
+LakeSoul supports multi-workspace and RBAC. LakeSoul uses Postgres's RBAC and row-level security policies to implement permission isolation for metadata. Together with Hadoop users and groups, physical data isolation can be achieved. LakeSoul's permission isolation is effective for SQL/Java/Python jobs.
+
+LakeSoul supports automatic disaggregated compaction, automatic table life cycle maintenance, and automatic redundant data cleaning, reducing operation costs and improving usability.
+
 More detailed features please refer to our doc page: [Documentations](https://lakesoul-io.github.io/docs/intro)
 
 # Quick Start
@@ -72,7 +76,7 @@ Please find usage documentations in doc site:
   - [x] LSM-Tree style upsert for hash partitioned table
   - [x] Merge on read for hash partition with upsert delta file
   - [x] Copy on write update for non hash partitioned table
-  - [x] Compaction
+  - [x] Automatic Disaggregated Compaction Service
 * Data Warehousing
   - [x] CDC stream ingestion with auto ddl sync
   - [x] Incremental and Snapshot Query
@@ -80,9 +84,7 @@ Please find usage documentations in doc site:
     - [x] Incremental Query ([#103](https://github.com/lakesoul-io/LakeSoul/issues/103))
     - [x] Incremental Streaming Source ([#130](https://github.com/lakesoul-io/LakeSoul/issues/130))
     - [x] Flink Stream/Batch Source
-  - [ ] Materialized View
-    - [ ] Incremental MV Build
-    - [ ] Auto query rewrite
+  - [x] Multi Workspaces and RBAC
 * Spark Integration
   - [x] Table/Dataframe API
   - [x] SQL support with catalog except upsert
@@ -112,7 +114,8 @@ Please find usage documentations in doc site:
   - [x] Snapshot rollback
   - [x] Automatic global compaction service
   - [ ] MPP Engine Integration (depends on [#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
-    - [ ] Presto/Trino
+    - [x] Presto
+    - [ ] Trino
 * Cloud and Native IO ([#66](https://github.com/lakesoul-io/LakeSoul/issues/66))
   - [x] Object storage IO optimization
   - [x] Native merge on read
