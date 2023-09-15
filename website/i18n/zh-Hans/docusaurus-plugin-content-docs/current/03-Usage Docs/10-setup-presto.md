@@ -22,6 +22,9 @@ fs.s3a.endpoint=http://minio:9000
 ```
 其中 `fs.s3a` 开头的设置项为访问 S3 的配置，可以根据需要修改。
 
+## 配置 LakeSoul 元数据
+参考 [配置元数据](01-setup-meta-env.md) 文档中的方法，使用环境变量或 JVM Property 等方式。例如可以在 [Presto JVM Config](https://prestodb.io/docs/current/installation/deployment.html#jvm-config) 中配置 JVM Properties。
+
 ## 启动 Presto Client
 ```shell
 ./bin/presto --catalog lakesoul --schema default

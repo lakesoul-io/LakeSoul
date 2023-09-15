@@ -22,6 +22,9 @@ fs.s3a.endpoint=http://minio:9000
 ```
 The setting items starting with `fs.s3a` are the configuration for accessing S3 and can be modified as needed.
 
+## Configure LakeSoul Meta DB Connection
+Refer to the method in the [Configure Metadata](01-setup-meta-env.md) document and use environment variables or JVM property to setup connection to meta DB. For example, JVM properties can be configured in [Presto JVM Config](https://prestodb.io/docs/current/installation/deployment.html#jvm-config).
+
 ## Start Presto Client
 ```shell
 ./bin/presto --catalog lakesoul --schema default
