@@ -37,10 +37,9 @@ public class LakeSoulSinkOptions {
     public static final String DELETE_CDC = "delete_cdc";
 
     public static final String UPDATE = "update";
-    public static final String UPDATE_CDC = "update";
-
 
     public static final String INSERT = "insert";
+    public static final String LAKESOUL_VIEW_KIND = "flink";
     public static final String VIEW_ORIGINAL_QUERY = "original_query";
     public static final String VIEW_EXPANDED_QUERY = "expand_query";
 
@@ -124,6 +123,12 @@ public class LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(false)
             .withDescription("lakesoul view");
+
+    public static final ConfigOption<String> LAKESOUL_VIEW_TYPE = ConfigOptions
+            .key("lakesoul_view_type")
+            .stringType()
+            .defaultValue(LAKESOUL_VIEW_KIND)
+            .withDescription("lakesoul view_type");
 
 }
 

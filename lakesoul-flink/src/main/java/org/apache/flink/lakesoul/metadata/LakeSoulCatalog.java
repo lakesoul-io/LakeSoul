@@ -125,7 +125,7 @@ public class LakeSoulCatalog implements Catalog {
         List<TableInfo> tifs = dbManager.getTableInfosByNamespace(databaseName);
         List<String> tableNames = new ArrayList<>(100);
         for (TableInfo item : tifs) {
-            if (!FlinkUtil.isView(item)) {
+            if (FlinkUtil.isTable(item)) {
                 tableNames.add(item.getTableName());
             }
         }
@@ -256,6 +256,7 @@ public class LakeSoulCatalog implements Catalog {
         }
         if (table instanceof ResolvedCatalogView) {
             tableOptions.put(LAKESOUL_VIEW.key(), "true");
+            tableOptions.put(LAKESOUL_VIEW_TYPE.key(),LAKESOUL_VIEW_TYPE.defaultValue());
             tableOptions.put(VIEW_ORIGINAL_QUERY,((ResolvedCatalogView) table).getOriginalQuery());
             tableOptions.put(VIEW_EXPANDED_QUERY,((ResolvedCatalogView) table).getExpandedQuery());
         }

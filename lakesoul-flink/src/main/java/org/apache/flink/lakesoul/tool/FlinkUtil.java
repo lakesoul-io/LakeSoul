@@ -194,14 +194,25 @@ public class FlinkUtil {
     public static boolean isCDCDelete(StringData operation) {
         return StringData.fromString("delete").equals(operation);
     }
+
     public static boolean isView(TableInfo tableInfo) {
         JSONObject jsb = DBUtil.stringToJSON(tableInfo.getProperties());
-        if (jsb.containsKey(LAKESOUL_VIEW.key()) && "true".equals(jsb.getString(LAKESOUL_VIEW.key()))) {
+        if (jsb.containsKey(LAKESOUL_VIEW.key()) && "true".equals(jsb.getString(LAKESOUL_VIEW.key())) && LAKESOUL_VIEW_KIND.equals(jsb.getString(LAKESOUL_VIEW_TYPE.key()))) {
             return true;
-        }else{
+        } else {
             return false;
         }
     }
+
+    public static boolean isTable(TableInfo tableInfo) {
+        JSONObject jsb = DBUtil.stringToJSON(tableInfo.getProperties());
+        if (jsb.containsKey(LAKESOUL_VIEW.key()) && "true".equals(jsb.getString(LAKESOUL_VIEW.key()))) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
     public static CatalogBaseTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
@@ -229,9 +240,9 @@ public class FlinkUtil {
         List<String> parKeys = partitionKeys.rangeKeys;
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
-        if (FlinkUtil.isView(tableInfo)){
-            return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY),properties.getString(VIEW_EXPANDED_QUERY), conf);
-        }else{
+        if (FlinkUtil.isView(tableInfo)) {
+            return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY), properties.getString(VIEW_EXPANDED_QUERY), conf);
+        } else {
             return CatalogTable.of(bd.build(), "", parKeys, conf);
 
         }
