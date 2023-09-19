@@ -40,7 +40,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:2.3.0-spark-3.3 \
+    --packages com.dmetasoul:lakesoul-spark:2.4.0-spark-3.3 \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \

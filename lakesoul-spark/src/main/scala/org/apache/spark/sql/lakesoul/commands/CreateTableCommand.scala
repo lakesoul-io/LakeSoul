@@ -18,6 +18,7 @@ import org.apache.spark.sql.lakesoul.schema.SchemaUtils
 import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, LakeSoulTableProperties, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.vectorized.NativeIOUtils
 
 import java.net.URI
 
@@ -89,6 +90,7 @@ case class CreateTableCommand(var table: CatalogTable,
     val isManagedTable = tableWithLocation.tableType == CatalogTableType.MANAGED
     val tableLocation = new Path(tableWithLocation.location)
     val modifiedPath = SparkUtil.makeQualifiedTablePath(tableLocation)
+    NativeIOUtils.createAndSetTableDirPermission(modifiedPath, sparkSession.sessionState.newHadoopConf())
 
     // external options to store replace and partition properties
     var externalOptions = Map.empty[String, String]
@@ -201,17 +203,7 @@ case class CreateTableCommand(var table: CatalogTable,
           tc.commit(Seq.empty[DataFileInfo], removes)
       }
     }
-
-    //    val tableWithDefaultOptions = tableWithLocation.copy(
-    //      schema = new StructType(),
-    //      partitionColumnNames = Nil,
-    //      tracksPartitionsInCatalog = true
-    //    )
-
-    //    updateCatalog(sparkSession, tableWithDefaultOptions)
-
     Nil
-
   }
 
   private def getProvidedTableInfo(tc: TransactionCommit,

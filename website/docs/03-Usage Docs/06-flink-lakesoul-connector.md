@@ -16,14 +16,14 @@ LakeSoul provides Flink Connector which implements the Dynamic Table interface, 
 
 To setup Flink environment, please refer to [Setup Spark/Flink Job/Project](../03-Usage%20Docs/02-setup-spark.md)
 
-Introduce LakeSoul dependency: package and compile the lakesoul-flink folder to get lakesoul-flink-2.3.0-flink-1.14.jar.
+Introduce LakeSoul dependency: package and compile the lakesoul-flink folder to get lakesoul-flink-2.4.0-flink-1.17.jar.
 
 In order to use Flink to create LakeSoul tables, it is recommended to use Flink SQL Client, which supports direct use of Flink SQL commands to operate LakeSoul tables. In this document, the Flink SQL is to directly enter statements on the Flink SQL Client cli interface; whereas the Table API needs to be used in a Java projects.
 
 Switch to the flink folder and execute the command to start the SQLclient client.
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.14.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.4.0-flink-1.14.jar
 ```
 
 ## 2. DDL

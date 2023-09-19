@@ -30,8 +30,9 @@ class DBManager:
     def split_data_info_list_to_range_and_hash_partition(self, table_id, data_file_info_list):
         pass
 
-    def get_data_files_by_table_name(self, table_name, partitions={}, namespace="default"):
+    def get_data_files_by_table_name(self, table_name, partitions=None, namespace="default"):
         part_filter = []
+        partitions = partitions or {}
         for part_key, part_value in partitions.items():
             part_filter.append("{}={}".format(part_key, part_value))
         table_info = self.get_table_info_by_name(table_name, namespace)
@@ -55,8 +56,8 @@ class DBManager:
     def get_arrow_schema_by_table_name(self, table_name, namespace="default", exclude_partition=False):
         table_info = self.get_table_info_by_name(table_name, namespace)
         schema = table_info.table_schema
-        exclude_partitions = []
+        exclude_partitions = None
         if exclude_partition and len(table_info.partitions) > 0:
-            exclude_partitions = table_info.partitions.split(";")[0].split(",")
+            exclude_partitions = frozenset(table_info.partitions.split(";")[0].split(","))
 
         return to_arrow_schema(schema, exclude_partitions)

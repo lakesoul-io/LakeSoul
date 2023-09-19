@@ -8,6 +8,9 @@ from .native_client import *
 
 def select_table_info_by_table_name(table_name, namespace="default"):
     wrapper = query(DaoType.SelectTableInfoByTableNameAndNameSpace, [table_name, namespace])
+    if wrapper is None:
+        message = "table %r is not found in namespace %r" % (table_name, namespace)
+        raise RuntimeError(message)
     return wrapper.table_info[0]
 
 

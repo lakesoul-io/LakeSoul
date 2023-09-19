@@ -16,14 +16,14 @@ To use `spark-shell`, `pyspark` or `spark-sql` shells, you should include LakeSo
 
 #### Use Maven Coordinates via --packages
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:2.3.0-spark-3.3
+spark-shell --packages com.dmetasoul:lakesoul-spark:2.4.0-spark-3.3
 ```
 
 #### Use Local Packages
 You can find the LakeSoul packages from our release page: [Releases](https://github.com/lakesoul-io/LakeSoul/releases).
 Download the jar file and pass it to `spark-submit`.
 ```bash
-spark-submit --jars "lakesoul-spark-2.3.0-spark-3.3.jar"
+spark-submit --jars "lakesoul-spark-2.4.0-spark-3.3.jar"
 ```
 
 Or you could directly put the jar into `$SPARK_HOME/jars`
@@ -34,7 +34,7 @@ Include maven dependencies in your project:
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul</artifactId>
-    <version>2.3.0-spark-3.3</version>
+    <version>2.4.0-spark-3.3</version>
 </dependency>
 ```
 
@@ -93,7 +93,7 @@ spark.sql.sources.default lakesoul
 ## Setup Flink Project or Job
 
 ### Required Flink Version
-Currently Flink 1.14 is supported.
+Since 2.4.0, Flink version 1.17 is supported.
 
 ### Setup Metadata Database Connection for Flink
 
@@ -133,7 +133,7 @@ If access to the Hadoop environment is required, the Hadoop Classpath environmen
 ```bash
 export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 ```
-For details, please refer to: [Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.14/docs/deployment/resource-providers/yarn/)
+For details, please refer to: [Flink on Hadoop](https://nightlies.apache.org/flink/flink-docs-release-1.17/docs/deployment/resource-providers/yarn/)
 :::
 
 :::tip
@@ -144,7 +144,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 :::
 
 ### Add LakeSoul Jar to Flink's directory
-Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.3.0/lakesoul-flink-2.3.0-flink-1.14.jar
+Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar
 
 And put the jar file under `$FLINK_HOME/lib`. After this, you could start flink session cluster or application as usual.
 
@@ -155,6 +155,6 @@ Add the following to your project's pom.xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul</artifactId>
-    <version>2.3.0-flink-1.14</version>
+    <version>2.4.0-flink-1.17</version>
 </dependency>
 ```

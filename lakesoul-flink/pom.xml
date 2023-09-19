@@ -12,12 +12,12 @@ SPDX-License-Identifier: Apache-2.0
     <parent>
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
-        <version>2.3.0-SNAPSHOT</version>
+        <version>2.4.0-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>2.3.0-flink-1.17-SNAPSHOT</version>
+    <version>2.4.0-flink-1.17-SNAPSHOT</version>
     <properties>
         <flink.version>1.17.1</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
@@ -30,7 +30,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
-            <version>2.3.0-SNAPSHOT</version>
+            <version>2.4.0-SNAPSHOT</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
@@ -41,7 +41,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-io-java</artifactId>
-            <version>2.3.0-SNAPSHOT</version>
+            <version>2.4.0-SNAPSHOT</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
@@ -426,6 +426,19 @@ SPDX-License-Identifier: Apache-2.0
             <version>4.13.2</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-hadoop-fs</artifactId>
+            <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <!-- for rbac with hdfs test -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>3.3.2</version>
+            <scope>${local.scope}</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -439,6 +452,10 @@ SPDX-License-Identifier: Apache-2.0
                     <includes>
                         <include>**/*</include>
                     </includes>
+                    <excludes>
+                        <exclude>LakeSoulPrestoTest</exclude>
+                        <exclude>LakeSoulRBACTest</exclude>
+                    </excludes>
                 </configuration>
             </plugin>
             <plugin>

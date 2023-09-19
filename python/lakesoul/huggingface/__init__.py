@@ -2,5 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-[target.x86_64-unknown-linux-gnu]
-image = "dmetasoul/lakesoul-cross:v1.0.0"
+from .from_lakesoul import from_lakesoul
+
+__all__ = ['from_lakesoul']

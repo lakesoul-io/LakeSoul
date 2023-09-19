@@ -1,0 +1,11 @@
+lakesoul @ file://${PWD}/lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+numpy
+pandas
+torch
+tqdm
+transformers 
+sentence-transformers
+datasets 
+evaluate
+accelerate
+scikit-learn

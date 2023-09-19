@@ -28,8 +28,20 @@ public:
     void AddFileUrl(const std::string& file_url);
     void AddFileUrls(const std::vector<std::string>& file_urls);
 
+    void AddPartitionKeyValue(const std::string& key, const std::string& value);
+    void AddPartitionKeyValues(const std::vector<std::pair<std::string, std::string>>& key_values);
+
+    int GetBatchSize() const;
+    void SetBatchSize(int batch_size);
+
+    int GetThreadNum() const;
+    void SetThreadNum(int thread_num);
+
 private:
     std::vector<std::string> file_urls_;
+    std::vector<std::pair<std::string, std::string>> partition_info_;
+    int batch_size_ = 16;
+    int thread_num_ = 1;
 };
 
 } // namespace lakesoul

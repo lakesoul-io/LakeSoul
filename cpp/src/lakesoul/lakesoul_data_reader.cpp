@@ -12,9 +12,11 @@
 namespace lakesoul {
 
 LakeSoulDataReader::LakeSoulDataReader(std::shared_ptr<arrow::Schema> schema,
-                                       const std::vector<std::string>& file_urls)
+                                       const std::vector<std::string>& file_urls,
+                                       const std::vector<std::pair<std::string, std::string>>& partition_info)
     : schema_(std::move(schema))
     , file_urls_(file_urls)
+    , partition_info_(partition_info)
 {
 }
 
@@ -56,8 +58,8 @@ lakesoul::IOConfig* LakeSoulDataReader::CreateIOConfig()
     builder = lakesoul::lakesoul_config_builder_set_batch_size(builder, batch_size_);
     builder = lakesoul::lakesoul_config_builder_set_thread_num(builder, thread_num_);
     builder = lakesoul::lakesoul_config_builder_set_schema(builder, reinterpret_cast<lakesoul::c_ptrdiff_t>(&c_schema));
-    // TODO: check split later
-    builder = lakesoul::lakesoul_config_builder_set_default_column_value(builder, "split", "train");
+    for (auto&& [key, value] : partition_info_)
+        builder = lakesoul::lakesoul_config_builder_set_default_column_value(builder, key.c_str(), value.c_str());
     lakesoul::IOConfig* io_config = lakesoul::create_lakesoul_io_config_from_builder(builder);
     return io_config;
 }
