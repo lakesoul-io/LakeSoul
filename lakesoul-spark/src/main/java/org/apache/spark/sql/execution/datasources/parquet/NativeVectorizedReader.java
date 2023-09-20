@@ -145,11 +145,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         initialize(inputSplits, taskAttemptContext, null, requestSchema, null);
     }
 
-    public void initialize(InputSplit[] inputSplits,
-                           TaskAttemptContext taskAttemptContext,
-                           String[] primaryKeys,
-                           StructType requestSchema,
-                           Map<String, String> mergeOperatorInfo)
+    public void initialize(InputSplit[] inputSplits, TaskAttemptContext taskAttemptContext, String[] primaryKeys, StructType requestSchema, Map<String, String> mergeOperatorInfo)
             throws IOException, InterruptedException, UnsupportedOperationException {
         super.initialize(inputSplits[0], taskAttemptContext);
         FileSplit split = (FileSplit) inputSplits[0];
@@ -296,8 +292,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             }
             requestSchema = newSchema;
         } else {
-            partitionColumns =
-                    new StructType(new StructField[]{new StructField("empty row", LongType, false, Metadata.empty())});
+            partitionColumns = new StructType(new StructField[]{new StructField("empty row", LongType, false, Metadata.empty())});
 
             partitionValues = new GenericInternalRow(new Long[]{0L});
             if (partitionColumnVectors != null) {

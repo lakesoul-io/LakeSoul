@@ -202,7 +202,6 @@ public class PartitionInfoDao {
                 }
             }
             rs = pstmt.executeQuery();
-            System.out.println(pstmt);
             while (rs.next()) {
                 rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
             }

@@ -18,7 +18,8 @@ pub enum MergeOperator {
     UseLast,
     UseLastNotNull,
     Sum,
-    Concat,
+    JoinedByComma,
+    JoinedBySemicolon,
 }
 
 pub enum MergeResult {
@@ -33,7 +34,8 @@ impl MergeOperator {
             "UseLast" => MergeOperator::UseLast,
             "UseLastNotNull" => MergeOperator::UseLastNotNull,
             "Sum" => MergeOperator::Sum,
-            "Concat" => MergeOperator::Concat,
+            "JoinedByComma" => MergeOperator::JoinedByComma,
+            "JoinedBySemicolon" => MergeOperator::JoinedBySemicolon,
             _ => panic!("Invalid MergeOperator name"),
         }
     }
@@ -53,9 +55,13 @@ impl MergeOperator {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
                     _ => sum_with_primitive_type(data_type, ranges, append_array_data_builder),
                 },
-                MergeOperator::Concat => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedByComma => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_with_string_type(ranges, append_array_data_builder),
+                    _ => concat_with_string_type(ranges, append_array_data_builder, ','),
+                },
+                MergeOperator::JoinedBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                    1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                    _ => concat_with_string_type(ranges, append_array_data_builder, ';'),
                 },
             },
             _ => match self {
@@ -64,7 +70,8 @@ impl MergeOperator {
                 }
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
                 MergeOperator::Sum => sum_with_primitive_type(data_type, ranges, append_array_data_builder),
-                MergeOperator::Concat => concat_with_string_type(ranges, append_array_data_builder),
+                MergeOperator::JoinedByComma => concat_with_string_type(ranges, append_array_data_builder, ','),
+                MergeOperator::JoinedBySemicolon => concat_with_string_type(ranges, append_array_data_builder, ';'),
             },
         }
     }
@@ -148,6 +155,7 @@ fn sum_with_primitive_type(
 fn concat_with_string_type(
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
+    delim: char,
 ) -> MergeResult {
     let mut is_none = true;
     let mut res = String::new();
@@ -157,7 +165,7 @@ fn concat_with_string_type(
         for i in range.begin_row..range.end_row {
             if !arr.is_null(i) {
                 if !is_none {
-                    res.push(',');
+                    res.push(delim);
                 }
                 is_none = false;
                 res.push_str(arr.value(i));

@@ -2,5 +2,4 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-mod parser;
-pub use parser::Parser;
+pub mod parser;

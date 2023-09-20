@@ -7,12 +7,13 @@ use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::ident;
 use datafusion::scalar::ScalarValue;
-
+ 
 pub struct Parser {}
 
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
+        println!("schema={:?} op={:?} left={:?} right={:?}", schema, op, left, right);
         if op.eq("or") {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema);
@@ -29,6 +30,7 @@ impl Parser {
             match schema.column_with_name(column) {
                 None => Expr::Literal(ScalarValue::Boolean(Some(true))),
                 Some((_, field)) => {
+                    println!("{:?}", field);
                     if matches!(field.data_type(), DataType::Struct(_)) {
                         ident(column).is_not_null()
                     } else if right == "null" {
@@ -73,6 +75,7 @@ impl Parser {
     }
 
     fn parse_filter_str(filter: String) -> (String, String, String) {
+        println!("{:?}", filter);
         let op_offset = filter.find('(').unwrap();
         let (op, filter) = filter.split_at(op_offset);
         if !filter.ends_with(')') {
@@ -98,13 +101,14 @@ impl Parser {
         }
         let (left, right) = filter.split_at(left_offset);
         if op.eq("not") {
-            (op.to_string(), left.to_string(), right[0..].to_string())
+            (op.to_string(), left.trim().to_string(), right[0..].trim().to_string())
         } else {
-            (op.to_string(), left.to_string(), right[2..].to_string())
+            (op.to_string(), left.trim().to_string(), right[1..].trim().to_string())
         }
     }
 
     fn parse_literal(field: &Field, value: String) -> Expr {
+        println!("{}",value);
         let data_type = field.data_type().clone();
         match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -186,7 +190,7 @@ fn qualified_col_name(column: &str, schema: SchemaRef) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use crate::filter::Parser;
+    use crate::filter::parser::Parser;
     use std::result::Result;
 
     #[test]
