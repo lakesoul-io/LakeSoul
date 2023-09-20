@@ -51,7 +51,7 @@ pub struct LakeSoulIOConfig {
     // write row group max row num
     #[derivative(Default(value = "250000"))]
     pub(crate) max_row_group_size: usize,
-    #[derivative(Default(value = "2"))]
+    #[derivative(Default(value = "1"))]
     pub(crate) prefetch_size: usize,
 
     // arrow schema
