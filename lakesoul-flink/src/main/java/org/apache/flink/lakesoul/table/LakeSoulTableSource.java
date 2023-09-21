@@ -111,7 +111,7 @@ public class LakeSoulTableSource
         }
         // find acceptable non partition filters
         Tuple2<Result, FilterPredicate> filterPushDownResult = ParquetFilters.toParquetFilter(nonPartitionFilters,
-                remainingFilters);
+                remainingFilters, !pkColumns.isEmpty());
         this.filter = filterPushDownResult.f1;
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),

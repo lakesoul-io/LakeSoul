@@ -369,7 +369,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     private StructType requestSchema = null;
 
-    private int prefetchBufferSize = 2;
+    private int prefetchBufferSize = 1;
 
     private int threadNum = 2;
 

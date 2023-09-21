@@ -178,7 +178,6 @@ public class TableInfoDao {
             Integer count = NativeMetadataJavaClient.update(
                     NativeUtils.CodedDaoType.DeleteTableInfoByIdAndPath,
                     Arrays.asList(tableId, tablePath));
-            System.out.println("DeleteTableInfoByIdAndPath " + tableId + " " + tablePath + " result = " + count);
             return;
         }
         Connection conn = null;

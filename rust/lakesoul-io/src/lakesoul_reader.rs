@@ -142,11 +142,10 @@ impl LakeSoulReader {
             for i in 0..self.config.files.len() {
                 let file = self.config.files[i].clone();
                 let sess_ctx = self.sess_ctx.clone();
-                let filter_str = self.config.filter_strs.clone();
                 let schema = schema.clone();
                 let future = async move {
                     let df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
-                    LakeSoulReader::prune_filter_and_execute(df, schema, filter_str, batch_size).await
+                    LakeSoulReader::prune_filter_and_execute(df, schema, vec![], batch_size).await
                 };
                 stream_init_futs.push(future);
             }
