@@ -179,5 +179,6 @@ jobs:
           path: |
             lakesoul-spark/target/lakesoul-spark-*.jar
             lakesoul-flink/target/lakesoul-flink-*.jar
+            lakesoul-presto/target/lakesoul-presto-*.jar
           retention-days: 3
           if-no-files-found: error
