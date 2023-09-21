@@ -12,6 +12,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
@@ -172,7 +173,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     @Override
     public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-
+        String dmlType = this.conf.getString(LakeSoulSinkOptions.DMLTYPE);
         // Every time before we prepare commit, we first check and remove the inactive
         // buckets. Checking the activeness right before pre-committing avoid re-creating
         // the bucket every time if the bucket use OnCheckpointingRollingPolicy.
@@ -183,7 +184,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
-                committables.addAll(entry.getValue().prepareCommit(flush));
+                committables.addAll(entry.getValue().prepareCommit(flush,dmlType));
             }
         }
 

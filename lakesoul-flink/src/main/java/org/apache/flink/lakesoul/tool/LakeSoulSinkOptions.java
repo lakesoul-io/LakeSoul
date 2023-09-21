@@ -32,6 +32,18 @@ public class LakeSoulSinkOptions {
 
     public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;
 
+    public static final String DELETE = "delete";
+
+    public static final String DELETE_CDC = "delete_cdc";
+
+    public static final String UPDATE = "update";
+
+    public static final String INSERT = "insert";
+    public static final String LAKESOUL_VIEW_KIND = "flink";
+    public static final String VIEW_ORIGINAL_QUERY = "original_query";
+    public static final String VIEW_EXPANDED_QUERY = "expand_query";
+
+
     public static final ConfigOption<String> CATALOG_PATH = ConfigOptions
             .key("path")
             .stringType()
@@ -101,6 +113,22 @@ public class LakeSoulSinkOptions {
             .stringType()
             .defaultValue("Asia/Shanghai")
             .withDescription("server time zone");
+    public static final ConfigOption<String> DMLTYPE = ConfigOptions
+            .key("dml_type")
+            .stringType()
+            .defaultValue(INSERT)
+            .withDescription("dmltype");
+    public static final ConfigOption<Boolean> LAKESOUL_VIEW = ConfigOptions
+            .key("lakesoul_view")
+            .booleanType()
+            .defaultValue(false)
+            .withDescription("lakesoul view");
+
+    public static final ConfigOption<String> LAKESOUL_VIEW_TYPE = ConfigOptions
+            .key("lakesoul_view_type")
+            .stringType()
+            .defaultValue(LAKESOUL_VIEW_KIND)
+            .withDescription("lakesoul view_type");
 
 }
 

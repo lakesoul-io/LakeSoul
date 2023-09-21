@@ -102,6 +102,33 @@ public class TestUtils {
                 .await();
     }
 
+
+    public static void createLakeSoulSourceViewUser(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
+        String createUserSql =
+                "create table user_info (" + "    order_id INT," + "    name STRING PRIMARY KEY NOT ENFORCED," +
+                        "    score DECIMAL" + ") WITH (" + "    'format'='lakesoul'," + "    'hashBucketNum'='2'," +
+                        String.format("    'path'='%s' )", AbstractTestBase.getTempDirUri("lakesoulSource/user"));
+        tEnvs.executeSql("DROP TABLE if exists user_info");
+        tEnvs.executeSql(createUserSql);
+        tEnvs.executeSql(
+                        "INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', " +
+                                "95), (4, 'Mike', 70)")
+                .await();
+        String createUser1Sql =
+                "create table user_info1 (" + "    order_id INT," + "    name STRING PRIMARY KEY NOT ENFORCED," +
+                        "    score DECIMAL" + ") WITH (" + "    'format'='lakesoul'," + "    'hashBucketNum'='2'," +
+                        String.format("    'path'='%s' )", AbstractTestBase.getTempDirUri("lakesoulSource/user1"));
+        tEnvs.executeSql("DROP TABLE if exists user_info1");
+        tEnvs.executeSql(createUser1Sql);
+        tEnvs.executeSql(
+                        "INSERT INTO user_info1 VALUES (1, 'Bob', 91), (2, 'Alice', 81), (3, 'Jack', 76), (3, 'Amy', " +
+                                "96), (4, 'Mike', 71)")
+                .await();
+        String createViewSql = "create view if not exists user_info_view as select a.name,a.score,b.score from user_info as a join user_info1 as b on a.name = b.name where a.score > 80 ";
+        tEnvs.executeSql("DROP view if exists user_info_view");
+        tEnvs.executeSql(createViewSql);
+    }
     public static void createLakeSoulSourceMultiPartitionTable(TableEnvironment tEnvs)
             throws ExecutionException, InterruptedException {
         String createSql = "create table user_multi (" + "    `id` INT," + "    name STRING," + "    score INT," +
