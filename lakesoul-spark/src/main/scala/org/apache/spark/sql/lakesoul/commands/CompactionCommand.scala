@@ -86,7 +86,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     tc.setReadFiles(newReadFiles)
     tc.setCommitType("compaction")
     val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
-    tc.commit(newFiles, newReadFiles, readPartitionInfo)
+    tc.commit(newFiles, Seq.empty, readPartitionInfo)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
       val spark = SparkSession.active
