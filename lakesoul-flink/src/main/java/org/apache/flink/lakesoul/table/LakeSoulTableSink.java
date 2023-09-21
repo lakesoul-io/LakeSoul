@@ -35,11 +35,14 @@ import org.apache.flink.types.RowKind;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
-public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning, SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
+public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning,
+        SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
 
     private final String summaryName;
     private final String tableName;
@@ -153,19 +156,20 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public RowLevelDeleteInfo applyRowLevelDelete(@Nullable RowLevelModificationScanContext context) {
-        if(flinkConf.getBoolean(USE_CDC, false)){
-            flinkConf.set(DMLTYPE,DELETE_CDC);
-        }else{
-            flinkConf.set(DMLTYPE,DELETE);
+        if (flinkConf.getBoolean(USE_CDC, false)) {
+            flinkConf.set(DMLTYPE, DELETE_CDC);
+        } else {
+            flinkConf.set(DMLTYPE, DELETE);
         }
 
         return new LakeSoulRowLevelDelete();
     }
 
     @Override
-    public RowLevelUpdateInfo applyRowLevelUpdate(List<Column> updatedColumns, @Nullable RowLevelModificationScanContext context) {
-        flinkConf.set(DMLTYPE,UPDATE);
-        return  new LakeSoulRowLevelUpdate();
+    public RowLevelUpdateInfo applyRowLevelUpdate(List<Column> updatedColumns,
+                                                  @Nullable RowLevelModificationScanContext context) {
+        flinkConf.set(DMLTYPE, UPDATE);
+        return new LakeSoulRowLevelUpdate();
     }
 
     private class LakeSoulRowLevelDelete implements RowLevelDeleteInfo {
@@ -175,9 +179,9 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         }
 
         public SupportsRowLevelDelete.RowLevelDeleteMode getRowLevelDeleteMode() {
-            if(flinkConf.getBoolean(USE_CDC, false)){
+            if (flinkConf.getBoolean(USE_CDC, false)) {
                 return RowLevelDeleteMode.DELETED_ROWS;
-            }else{
+            } else {
                 return RowLevelDeleteMode.REMAINING_ROWS;
             }
         }
@@ -190,9 +194,9 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         }
 
         public SupportsRowLevelUpdate.RowLevelUpdateMode getRowLevelUpdateMode() {
-            if (primaryKeyList.isEmpty()){
+            if (primaryKeyList.isEmpty()) {
                 return RowLevelUpdateMode.ALL_ROWS;
-            }else{
+            } else {
                 return SupportsRowLevelUpdate.RowLevelUpdateMode.UPDATED_ROWS;
             }
         }
