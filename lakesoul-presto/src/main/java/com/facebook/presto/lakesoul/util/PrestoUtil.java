@@ -44,10 +44,10 @@ public class PrestoUtil {
             }
 
             currPath = currPath.getParent();
-        } while(currPath != null && !currPath.getName().isEmpty());
+        } while (currPath != null && !currPath.getName().isEmpty());
 
-        for(int i = kvs.size(); i > 0; --i) {
-            fullPartSpec.put(((String[])kvs.get(i - 1))[0], ((String[])kvs.get(i - 1))[1]);
+        for (int i = kvs.size(); i > 0; --i) {
+            fullPartSpec.put(((String[]) kvs.get(i - 1))[0], ((String[]) kvs.get(i - 1))[1]);
         }
 
         return fullPartSpec;
@@ -56,7 +56,7 @@ public class PrestoUtil {
     public static String unescapePathName(String path) {
         StringBuilder sb = new StringBuilder();
 
-        for(int i = 0; i < path.length(); ++i) {
+        for (int i = 0; i < path.length(); ++i) {
             char c = path.charAt(i);
             if (c == '%' && i + 2 < path.length()) {
                 int code = -1;
@@ -67,7 +67,7 @@ public class PrestoUtil {
                 }
 
                 if (code >= 0) {
-                    sb.append((char)code);
+                    sb.append((char) code);
                     i += 2;
                     continue;
                 }
@@ -78,16 +78,19 @@ public class PrestoUtil {
 
         return sb.toString();
     }
+
     public static boolean isExistHashPartition(TableInfo tif) {
         JSONObject tableProperties = JSON.parseObject(tif.getProperties());
-        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM()) &&
+                tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
             return false;
         } else {
             return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
         }
     }
 
-    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid, DataFileInfo[] dfinfos) {
+    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid,
+                                                                                              DataFileInfo[] dfinfos) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
@@ -106,10 +109,11 @@ public class PrestoUtil {
 
     /**
      * conver arrow type to presto type
+     *
      * @param type arrow type
      * @return presto type
      */
-    public static Type convertToPrestoType(ArrowType type){
+    public static Type convertToPrestoType(ArrowType type) {
         return type.accept(ArrowTypeToLogicalTypeConverter.INSTANCE);
     }
 
@@ -159,13 +163,13 @@ public class PrestoUtil {
 
         @Override
         public Type visit(ArrowType.Int type) {
-            if(type.getBitWidth() == 64){
+            if (type.getBitWidth() == 64) {
                 return BigintType.BIGINT;
-            }else if(type.getBitWidth() == 32){
+            } else if (type.getBitWidth() == 32) {
                 return IntegerType.INTEGER;
-            }else if(type.getBitWidth() == 16){
+            } else if (type.getBitWidth() == 16) {
                 return SmallintType.SMALLINT;
-            }else if(type.getBitWidth() == 8){
+            } else if (type.getBitWidth() == 8) {
                 return TinyintType.TINYINT;
             }
             return BigintType.BIGINT;
@@ -173,11 +177,11 @@ public class PrestoUtil {
 
         @Override
         public Type visit(ArrowType.FloatingPoint type) {
-            if(type.getPrecision() == FloatingPointPrecision.HALF){
+            if (type.getPrecision() == FloatingPointPrecision.HALF) {
                 return UnknownType.UNKNOWN;
-            }else if(type.getPrecision() == FloatingPointPrecision.SINGLE){
+            } else if (type.getPrecision() == FloatingPointPrecision.SINGLE) {
                 return RealType.REAL;
-            }else if(type.getPrecision() == FloatingPointPrecision.DOUBLE) {
+            } else if (type.getPrecision() == FloatingPointPrecision.DOUBLE) {
                 return DoubleType.DOUBLE;
             }
             return DoubleType.DOUBLE;

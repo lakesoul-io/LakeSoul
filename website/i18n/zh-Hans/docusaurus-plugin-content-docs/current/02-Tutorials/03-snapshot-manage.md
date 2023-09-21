@@ -1,4 +1,4 @@
-# 快照相关功能用法教程
+# Spark 快照相关功能用法教程
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 LakeSoul 使用快照的方式来记录每一次更新的文件集合，并在元数据中生成一个新的版本号。历史的快照版本如果没有被清理，则也可以通过 LakeSoul API 进行读取、回滚和清理等操作。由于快照版本是内部的机制，为了使用方便，LakeSoul 提供了基于时间戳的快照管理 API。
+
+Flink 中使用 SQL 进行快照读取可以参考 [Flink Connector](../03-Usage%20Docs/06-flink-lakesoul-connector.md)。
 
 ## 快照读
 在某些情况下，可能会需要查询一张表某个分区在之前某个时间点的快照数据，也称为 Time Travel。LakeSoul 执行读取某个时间点的快照的方式：

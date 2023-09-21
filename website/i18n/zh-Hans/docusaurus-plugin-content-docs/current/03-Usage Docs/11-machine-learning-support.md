@@ -1,12 +1,14 @@
-# LakeSoul 机器学习支持
+# LakeSoul Python 接口和对机器学习框架的支持
 
-LakeSoul 自 2.4.0 版本起，实现 PyTorch/ PyArrow/ HuggingFace 接口， 用户可以使用 LakeSoul 存储机器学习数据集，并可以通过接口读取 LakeSoul 表的数据，。
+LakeSoul 实现了 PyTorch/ PyArrow/ HuggingFace 接口， 用户可以使用 LakeSoul 存储机器学习数据集，并可以通过接口读取 LakeSoul 表的数据。目前 Python 接口发布了 1.0 Beta 版。
 
 ## 安装方法
 
 ### 下载 LakeSoul Wheel文件
 
-对于使用Python 3.8、Python 3.9和Python 3.10的用户，我们为每个版本准备了不同的wheel文件。请根据您的需求下载适当的一个。
+对于使用Python 3.8、Python 3.9和Python 3.10的用户，我们为每个版本准备了不同的wheel文件。请根据您的需求下载适当的一个。我们近期会发布正式版的包到 pypi.org.
+
+Python 包目前仅支持 Linux 系统，在 GLibc 2.17 以上均可使用（Centos 7 及以上，Ubuntu 16.04 及以上）。
 
 对于Python
 3.8用户：[lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)

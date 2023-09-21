@@ -1,14 +1,15 @@
-# LakeSoul Supports Machine Learning
+# LakeSoul's Supports for Python and Machine Learning
 
-Since version 2.4.0, LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace, allowing users to store machine
-learning datasets in LakeSoul and read data from LakeSoul tables through the interfaces.
+LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace, allowing users to store machine learning datasets in LakeSoul and read data from LakeSoul tables through the interfaces. LakeSoul for Python has now released 1.0 Beta.
 
 ## Install
 
 ### Download LakeSoul wheel file
 
 For users of Python 3.8, Python 3.9, and Python 3.10, we have prepared different wheel files for each version. Please
-download the appropriate one based on your requirements.
+download the appropriate one based on your requirements. We will publish official package to pypi.org in near future.
+
+The Python package currently only supports Linux systems and can be used on distros with GLibc 2.17 and above (Centos 7 and above, Ubuntu 16.04 and above, etc.).
 
 * For Python 3.8
   users: [lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)

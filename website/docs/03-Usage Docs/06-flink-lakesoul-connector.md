@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 :::tip
 Since 2.3.0
+
+LakeSoul with version 2.3.0 is targeting Flink 1.14 while 2.4.0 is targeting Flink 1.17。
 :::
 
 LakeSoul provides Flink Connector which implements the Dynamic Table interface, through which developers can use Flink's DataStream API, Table API or SQL to read and write LakeSoul data, and supports both streaming and batch modes for read and write. Read and Write in Flink streaming both support Flink Changelog Stream semantics.
@@ -141,6 +143,13 @@ set 'execution.checkpointing.interval' = '2min';
      ```java
      tEnvs.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),( 5, 'Tom', 75), (4, 'Mike', 70)"). await();
      ```
+
+### 3.3 Batch Update or Delete
+LakeSoul has upgraded to Flink 1.17 since version 2.4, and supports the RowLevelUpdate and RowLevelDelete functions of Flink Batch SQL. For non-primary key tables and tables with primary keys (including CDC format tables), executing the `update` or `delete` SQL statement in batch mode will read out the data to be modified/deleted and write it into the table using `Upsert`. .
+
+Note that in the case of `update`, updating the values of primary key and partition columns is not allowed. In the case of `delete`, partitioning columns in the condition are not allowed.
+
+For the stream execution mode, LakeSoul has been able to support ChangeLog semantics, which can support additions, deletions and modifications.
 
 ## 4. Query Data
 LakeSoul supports read LakeSoul tables in batch and stream mode, execute commands on the Flink SQLClient client, and switch between stream and batch execution modes.

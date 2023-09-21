@@ -52,7 +52,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
         List<Field> fields = recordSet.getColumnHandles().stream().map(item -> {
             LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) item;
-            return Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
+            return Field.nullable(columnHandle.getColumnName(),
+                    ArrowUtil.convertToArrowType(columnHandle.getColumnType()));
         }).collect(Collectors.toList());
         HashMap<String, ColumnHandle> allcolumns = split.getLayout().getAllColumns();
         List<String> dataCols = recordSet.getColumnHandles().stream().map(item -> {
@@ -64,12 +65,15 @@ public class LakeSoulRecordCursor implements RecordCursor {
         for (String item : prikeys) {
             if (!dataCols.contains(item)) {
                 LakeSoulTableColumnHandle columnHandle = (LakeSoulTableColumnHandle) allcolumns.get(item);
-                fields.add(Field.nullable(columnHandle.getColumnName(), ArrowUtil.convertToArrowType(columnHandle.getColumnType())));
+                fields.add(Field.nullable(columnHandle.getColumnName(),
+                        ArrowUtil.convertToArrowType(columnHandle.getColumnType())));
             }
         }
         // add extra cdc column
-        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
-        if(cdcColumn != null){
+        String
+                cdcColumn =
+                this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
+        if (cdcColumn != null) {
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
         }
 
@@ -78,7 +82,11 @@ public class LakeSoulRecordCursor implements RecordCursor {
         for (Map.Entry<String, String> partition : this.partitions.entrySet()) {
             reader.setDefaultColumnValue(partition.getKey(), partition.getValue());
         }
-        desiredTypes = recordSet.getColumnHandles().stream().map(item -> ((LakeSoulTableColumnHandle) item).getColumnType()).collect(Collectors.toList());
+        desiredTypes =
+                recordSet.getColumnHandles()
+                        .stream()
+                        .map(item -> ((LakeSoulTableColumnHandle) item).getColumnType())
+                        .collect(Collectors.toList());
         // set filters
         this.recordSet.getSplit().getLayout().getFilters().forEach((filter) -> reader.addFilter(filter.toString()));
         // set s3 options
@@ -122,11 +130,13 @@ public class LakeSoulRecordCursor implements RecordCursor {
 
     @Override
     public boolean advanceNextPosition() {
-        String cdcColumn = this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
+        String
+                cdcColumn =
+                this.recordSet.getSplit().getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
-            while(next()){
+            while (next()) {
                 FieldVector vector = currentVCR.getVector(cdcColumn);
-                if(!vector.getObject(curRecordIdx).toString().equals("delete")){
+                if (!vector.getObject(curRecordIdx).toString().equals("delete")) {
                     return true;
                 }
             }
@@ -136,7 +146,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
         }
     }
 
-    private boolean next(){
+    private boolean next() {
         if (currentVCR == null) {
             return false;
         }
@@ -188,7 +198,8 @@ public class LakeSoulRecordCursor implements RecordCursor {
             if (timeZone.equals("") || !Arrays.asList(TimeZone.getAvailableIDs()).contains(timeZone)) {
                 timeZone = TimeZone.getDefault().getID();
             }
-            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000, ZoneId.of(timeZone).toString());
+            return DateTimeEncoding.packDateTimeWithZone(((TimeStampMicroTZVector) fv).get(curRecordIdx) / 1000,
+                    ZoneId.of(timeZone).toString());
         }
         if (fv instanceof DecimalVector) {
             BigDecimal dv = ((DecimalVector) fv).getObject(curRecordIdx);
@@ -231,7 +242,10 @@ public class LakeSoulRecordCursor implements RecordCursor {
         if (value instanceof BigDecimal) {
             return Decimals.encodeScaledValue((BigDecimal) value);
         }
-        throw new IllegalArgumentException("Field " + field + " is not a String, but is a " + value.getClass().getName());
+        throw new IllegalArgumentException("Field " +
+                field +
+                " is not a String, but is a " +
+                value.getClass().getName());
     }
 
     @Override

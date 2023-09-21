@@ -7,7 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 :::tip
-该功能于 2.3.0 版本起提供
+该功能于 2.3.0 版本起提供。
+
+2.3.0 版本适配的是 Flink 1.14，2.4.0 版本起升级到了 Flink 1.17。
 :::
 
 LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可以使用 Flink 的 DataStream API， Table API 或 SQL 来执行对 LakeSoul 数据的读写，读和写均支持流式和批式两种模式。在 Flink 流式读、写时君支持 Flink Changelog Stream 语义。
@@ -140,6 +142,13 @@ set 'execution.checkpointing.interval' = '2min';
     ```java
     tEnvs.executeSql("INSERT INTO user_info VALUES (1, 'Bob', 90), (2, 'Alice', 80), (3, 'Jack', 75), (3, 'Amy', 95),(5, 'Tom', 75), (4, 'Mike', 70)").await();
     ```
+
+### 3.3 批量更新或删除
+LakeSoul 自 2.4 版本，升级到了 Flink 1.17，并支持了 Flink Batch SQL 的 RowLevelUpdate 和 RowLevelDelete 功能。对于非主键表、有主键表（包括 CDC 格式表），在批模式执行 `update` 或 `delete` SQL 语句，会将待修改/待删除数据读出并使用 `Upsert` 的方式写入表中。
+
+注意 `update` 情况下，不允许更新主键、分区列的值。`delete` 情况下，不允许条件中带有分区列。
+
+对于流的执行模式，LakeSoul 已经能够支持 ChangeLog 语义，可以支持增删改。
 
 ## 4. 查询数据
 支持Flink按批式和流式读取lakesoul表，在Flink SQLClient客户端执行命令，切换流式和批式的执行模式。
