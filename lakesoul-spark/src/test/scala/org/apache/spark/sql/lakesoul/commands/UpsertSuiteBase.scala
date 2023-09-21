@@ -151,6 +151,41 @@ class UpsertSuiteBase extends QueryTest
     }
   }
 
+  test("merge - different columns and filter by non-selected columns") {
+    initTable(
+      Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4))
+        .toDF("range", "hash", "value"),
+      "range",
+      "hash")
+
+    withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      checkUpsertByFilter(
+        Seq((20201101, 1, 11), (20201101, 3, 33), (20201101, 4, 44))
+          .toDF("range", "hash", "name"),
+        None,
+        Row(20201101, 1, 1) :: Row(20201101, 3, 3) :: Row(20201101, 4, null) :: Nil,
+        "name > 0",
+        Seq("range", "hash", "value"))
+    }
+  }
+
+  test("merge - different columns and filter partial rows") {
+    initTable(
+      Seq((20201101, 1, 1, 11), (20201101, 2, 2, 22), (20201101, 3, 3, 33), (20201102, 4, 4, 44))
+        .toDF("range", "hash", "value", "name"),
+      "range",
+      "hash")
+
+    withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      checkUpsertByFilter(
+        Seq((20201101, 1, 2), (20201101, 3, 4), (20201101, 4, 5), (20201102, 4, 5))
+          .toDF("range", "hash", "value"),
+        None,
+        Row(20201101, 1, 2, 11) :: Row(20201101, 2, 2, 22) :: Row(20201101, 3, 4, 33) :: Nil,
+        "value < 5 and name > 0",
+        Seq("range", "hash", "value", "name"))
+    }
+  }
 
   test("merge one file with empty batch") {
     initTable(

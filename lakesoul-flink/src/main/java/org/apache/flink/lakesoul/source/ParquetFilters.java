@@ -33,8 +33,9 @@ public class ParquetFilters {
 
     public static Tuple2<SupportsFilterPushDown.Result, FilterPredicate> toParquetFilter(
             List<ResolvedExpression> exprs,
-            List<ResolvedExpression> remainingFilters
-            ) {
+            List<ResolvedExpression> remainingFilters,
+            boolean isPrimaryKeyConstrained
+    ) {
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         FilterPredicate last = null;
         for (ResolvedExpression expr : exprs) {
@@ -42,6 +43,7 @@ public class ParquetFilters {
             if (p == null) {
                 remainingFilters.add(expr);
             } else {
+                if (isPrimaryKeyConstrained) remainingFilters.add(expr);
                 acceptedFilters.add(expr);
                 // AND all the filters to single one
                 if (last != null) {
@@ -77,8 +79,7 @@ public class ParquetFilters {
     public static boolean filterContainsPartitionColumn(ResolvedExpression expression, Set<String> partitionCols) {
         if (expression instanceof FieldReferenceExpression) {
             return partitionCols.contains(((FieldReferenceExpression) expression).getName());
-        }
-        else if (expression instanceof CallExpression) {
+        } else if (expression instanceof CallExpression) {
             for (ResolvedExpression child : expression.getResolvedChildren()) {
                 if (filterContainsPartitionColumn(child, partitionCols)) {
                     return true;
