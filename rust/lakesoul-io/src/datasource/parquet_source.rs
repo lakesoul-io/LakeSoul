@@ -10,10 +10,10 @@ use std::any::Any;
 use async_trait::async_trait;
 
 use datafusion::prelude::{DataFrame, SessionContext};
-use datafusion::common::{Statistics, ToDFSchema};
-use datafusion::logical_expr::{Expr, TableType, LogicalPlan, Expr::Column};
+use datafusion::common::{Statistics, ToDFSchema, DFSchemaRef};
+use datafusion::logical_expr::{Expr, TableType, LogicalPlan, Expr::Column, TableProviderFilterPushDown, LogicalPlanBuilder};
 use datafusion::execution::context::{SessionState, TaskContext};
-use datafusion::datasource::TableProvider;
+use datafusion::datasource::{TableProvider, provider_as_source};
 use datafusion::physical_plan::{
     project_schema, DisplayAs, DisplayFormatType, ExecutionPlan,
     SendableRecordBatchStream
@@ -22,7 +22,7 @@ use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::error::Result;
 
 
-use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::arrow::datatypes::{Schema, SchemaRef, Field};
 
 use crate::default_column_stream::DefaultColumnStream;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -31,19 +31,111 @@ use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::projection::ProjectionStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::parser::Parser as FilterParser;
+use crate::transform::uniform_schema;
 
 
-/// A custom datasource, used to represent a datastore with a single index
 #[derive(Clone, Debug)]
-pub struct LakeSoulParquetSource {
+pub struct EmptySchemaProvider {
+    count: usize,
+    empty_schema: SchemaRef
+}
+
+impl EmptySchemaProvider {
+    pub fn new(count: usize) -> Self {
+        EmptySchemaProvider {
+            count,
+            empty_schema: SchemaRef::new(Schema::new(Vec::<Field>::new()))
+        }
+    }
+}
+
+#[async_trait]
+impl TableProvider for EmptySchemaProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.empty_schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &SessionState,
+        _projections: Option<&Vec<usize>>,
+        // filters and limit can be used here to inject some push-down operations if needed
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(EmptySchemaScanExec{
+            count: self.count,
+            empty_schema: self.empty_schema.clone()
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct EmptySchemaScanExec {
+    count: usize,
+    empty_schema: SchemaRef
+}
+
+
+impl ExecutionPlan for EmptySchemaScanExec {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.empty_schema.clone()
+    }
+
+    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
+        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
+    }
+
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
+    }
+
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        Ok(Box::pin(EmptySchemaStream::new(_context.session_config().batch_size(), self.count)))
+    }
+
+    fn statistics(&self) -> Statistics {
+        Statistics::default()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LakeSoulParquetProvider {
     config: LakeSoulIOConfig,
     plans: Vec<LogicalPlan>,
     full_schema: SchemaRef,
 }
 
 
-impl LakeSoulParquetSource {
-    pub fn from_config(config: LakeSoulIOConfig) -> Self{
+impl LakeSoulParquetProvider {
+    pub fn from_config(config: LakeSoulIOConfig) -> Self {
         Self { 
             config, 
             plans: vec![],
@@ -53,11 +145,10 @@ impl LakeSoulParquetSource {
 
     pub(crate) async fn build_with_context(&self, context:&SessionContext) -> Result<Self>{
         let mut plans = vec![];
-        let mut full_schema = self.config.schema.0.clone().to_dfschema().unwrap();
+        let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema().unwrap();
         for i in 0..self.config.files.len() {
             let file = self.config.files[i].clone();
             let df = context.read_parquet(file, Default::default()).await.unwrap();
-            println!("file schema: {:?}", df.schema());
             full_schema.merge(&Schema::try_from(df.schema()).unwrap().to_dfschema().unwrap());
             let plan = df.into_unoptimized_plan();
             plans.push(plan);
@@ -85,14 +176,14 @@ impl LakeSoulParquetSource {
             inputs, 
             Arc::new(self.config.default_column_value.clone()),
             Arc::new(self.config.merge_operators.clone()),
-            Arc::new(self.config.primary_keys.clone()), 
-            self.config.batch_size)))
+            Arc::new(self.config.primary_keys.clone()),
+            )))
     }
 
 }
 
 #[async_trait]
-impl TableProvider for LakeSoulParquetSource {
+impl TableProvider for LakeSoulParquetProvider {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -105,23 +196,63 @@ impl TableProvider for LakeSoulParquetSource {
         TableType::Base
     }
 
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr]
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        if self.config.primary_keys.is_empty() {
+            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        } else {
+            filters
+            .iter()
+            .map(|f| {
+                if let Ok(cols) = f.to_columns() {
+                    if cols.iter().all(|col| self.config.primary_keys.contains(&col.name)) {
+                        Ok(TableProviderFilterPushDown::Inexact)
+                    } else {
+                        Ok(TableProviderFilterPushDown::Unsupported)
+                    }
+                } else {
+                    Ok(TableProviderFilterPushDown::Unsupported)
+                }
+            })
+            .collect()
+        }
+    }
+
     async fn scan(
         &self,
         _state: &SessionState,
-        projection: Option<&Vec<usize>>,
+        projections: Option<&Vec<usize>>,
         // filters and limit can be used here to inject some push-down operations if needed
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        println!("fn scan _filters={:?}", _filters);
+        let projected_schema = project_schema(&self.get_full_schema(), projections).unwrap();
         let mut inputs = vec![];
         for i in 0..self.plans.len() {
             let df = DataFrame::new(_state.clone(), self.plans[i].clone());
+            let df_schema = Arc::new(df.schema().clone());
+            let projected_cols = schema_intersection(df_schema, projected_schema.clone(), &self.config.primary_keys);
+            let df = if projected_cols.is_empty() {
+                let plan = LogicalPlanBuilder::scan(
+                    "empty", 
+                    provider_as_source(Arc::new(EmptySchemaProvider::new(df.count().await?))),
+                    None,
+                )?
+                .build()?;
+                DataFrame::new(_state.clone(), plan)
+            } else {
+                df.select(projected_cols)?
+            };
+            let df = _filters.iter().fold(df, |df, f| {
+                df.clone().filter(f.clone()).unwrap_or(df.clone())
+            });
             let phycical_plan = df.create_physical_plan().await.unwrap();
             inputs.push(phycical_plan);
         }
         self.create_physical_plan(
-            projection,  
+            projections,  
             self.get_full_schema(), 
             inputs).await
         
@@ -136,7 +267,6 @@ struct LakeSoulParquetScanExec {
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
     primary_keys: Arc<Vec<String>>,
-    batch_size: usize
 }
 
 impl LakeSoulParquetScanExec {
@@ -147,7 +277,6 @@ impl LakeSoulParquetScanExec {
         default_column_value: Arc<HashMap<String, String>>,
         merge_operators: Arc<HashMap<String, String>>,
         primary_keys: Arc<Vec<String>>,
-        batch_size: usize,
     ) -> Self {
         Self {
             projections: projections.unwrap().clone(),
@@ -156,7 +285,6 @@ impl LakeSoulParquetScanExec {
             default_column_value,
             merge_operators,
             primary_keys,
-            batch_size
         }
     }
 }
@@ -211,7 +339,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
             self.primary_keys.clone(), 
             self.default_column_value.clone(), 
             self.merge_operators.clone(), 
-            self.batch_size)?;
+            _context.session_config().batch_size())?;
 
         let result = ProjectionStream {
             expr: self.projections.iter().map(|&idx| datafusion::physical_expr::expressions::col(self.schema().field(idx).name(), &self.schema().clone()).unwrap()).collect::<Vec<_>>(),
@@ -287,6 +415,20 @@ pub fn merge_stream(
     Ok(merge_stream)
 }
 
+fn schema_intersection(df_schema: DFSchemaRef, schema: SchemaRef, primary_keys:&[String]) -> Vec<Expr> {
+    schema
+        .fields()
+        .iter()
+        .filter_map(|field| match df_schema.field_with_name(None, field.name()) {
+            // datafusion's select is case sensitive, but col will transform field name to lower case
+            // so we use Column::new_unqualified instead
+            Ok(df_field) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
+            _ if primary_keys.contains(field.name()) => Some(Column(datafusion::common::Column::new_unqualified(field.name()))),
+            _ => None,
+        })
+        .collect()
+}
+
 pub async fn prune_filter_and_execute(
     df: DataFrame,
     request_schema: SchemaRef,
@@ -294,23 +436,14 @@ pub async fn prune_filter_and_execute(
     batch_size: usize,
 ) -> Result<SendableRecordBatchStream> {
     
-    let file_schema = df.schema().clone();
+    let df_schema = df.schema().clone();
     // find columns requested and prune others
-    let cols = request_schema
-        .fields()
-        .iter()
-        .filter_map(|field| match file_schema.field_with_name(None, field.name()) {
-            // datafusion's select is case sensitive, but col will transform field name to lower case
-            // so we use Column::new_unqualified instead
-            Ok(file_field) => Some(Column(datafusion::common::Column::new_unqualified(file_field.name()))),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone(), &[]);
     if cols.is_empty() {
         Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
     } else {
         // row filtering should go first since filter column may not in the selected cols
-        let arrow_schema = Arc::new(Schema::from(file_schema));
+        let arrow_schema = Arc::new(Schema::from(df_schema));
         let df = filter_str.iter().try_fold(df, |df, f| {
             let filter = FilterParser::parse(f.clone(), arrow_schema.clone());
             df.filter(filter)
@@ -330,21 +463,17 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::util::pretty::print_batches;
+    use arrow::datatypes::DataType;
+
     use datafusion::datasource::provider_as_source;
     use datafusion::logical_expr::LogicalPlanBuilder;
     use datafusion::prelude::*;
     use datafusion::logical_expr::Expr;
     use datafusion::scalar::ScalarValue;
-
-    use datafusion::physical_plan::{
-        project_schema, DisplayAs, DisplayFormatType, ExecutionPlan,
-        SendableRecordBatchStream, Statistics,
-    };
-
     
     use std::time::Duration;
     use tokio::time::timeout;
-    use crate::lakesoul_io_config::{LakeSoulIOConfigBuilder, LakeSoulIOConfig};
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::filter::parser::Parser;
 
 
@@ -367,7 +496,7 @@ mod tests {
         
         
     
-        query(LakeSoulParquetSource::from_config(builder.build()), Some(Parser::parse("gt(value,0)".to_string(),schema.clone())), 1).await?;
+        query(LakeSoulParquetProvider::from_config(builder.build()), Some(Parser::parse("gt(value,0)".to_string(),schema.clone()))).await?;
     
         Ok(())
     }
@@ -389,16 +518,15 @@ mod tests {
             .with_primary_keys(vec!["hash".to_string()]);
         
     
-        query(LakeSoulParquetSource::from_config(builder.build()), Some(Parser::parse("gt(hash,0)".to_string(),schema.clone())), 1).await?;
+        query(LakeSoulParquetProvider::from_config(builder.build()), Some(Parser::parse("gt(hash,0)".to_string(),schema.clone()))).await?;
     
         Ok(())
     }
 
 
     async fn query(
-        db: LakeSoulParquetSource,
+        db: LakeSoulParquetProvider,
         filter: Option<Expr>,
-        expected_result_length: usize,
     ) -> Result<()> {
         // create local execution context
         let config = SessionConfig::default();
@@ -440,7 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lakesoul_parquet_source_by_select_from_sql_and_filter_api() -> Result<()> {
-        let mut ctx = SessionContext::new();
+        let ctx = SessionContext::new();
         let schema = SchemaRef::new(Schema::new(vec![
             Field::new("hash", DataType::Int32, false),
             Field::new("value", DataType::Int32, true),
@@ -455,7 +583,7 @@ mod tests {
             .with_default_column_value("range".to_string(), "20201101".to_string())
             .with_primary_keys(vec!["hash".to_string()]);
 
-        let provider =  LakeSoulParquetSource::from_config(builder.build()).build_with_context(&ctx).await?;
+        let provider =  LakeSoulParquetProvider::from_config(builder.build()).build_with_context(&ctx).await?;
         ctx.register_table("lakesoul", Arc::new(provider))?;
 
         let results = ctx
@@ -475,7 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lakesoul_parquet_source_by_select_from_where_sql() -> Result<()> {
-        let mut ctx = SessionContext::new();
+        let ctx = SessionContext::new();
         let schema = SchemaRef::new(Schema::new(vec![
             Field::new("hash", DataType::Int32, false),
             Field::new("value", DataType::Int32, true),
@@ -490,7 +618,7 @@ mod tests {
             .with_default_column_value("range".to_string(), "20201101".to_string())
             .with_primary_keys(vec!["hash".to_string()]);
 
-        let provider =  LakeSoulParquetSource::from_config(builder.build()).build_with_context(&ctx).await?;
+        let provider =  LakeSoulParquetProvider::from_config(builder.build()).build_with_context(&ctx).await?;
         ctx.register_table("lakesoul", Arc::new(provider))?;
 
         let results = ctx

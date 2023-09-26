@@ -1556,19 +1556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lakesoul-datafusion"
-version = "0.1.0"
-dependencies = [
- "arrow-schema",
- "async-trait",
- "datafusion",
- "object_store",
- "tokio",
- "tokio-stream",
- "tokio-util",
-]
-
-[[package]]
 name = "lakesoul-io"
 version = "2.3.0"
 dependencies = [

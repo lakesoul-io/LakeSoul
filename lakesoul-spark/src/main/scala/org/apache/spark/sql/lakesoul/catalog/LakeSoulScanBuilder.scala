@@ -6,9 +6,11 @@ package org.apache.spark.sql.lakesoul.catalog
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SparkSession, sources}
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.connector.read.Scan
+import org.apache.spark.sql.execution.datasources.{DataSourceStrategy, DataSourceUtils}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeBucketScan, MultiPartitionMergeScan, OnePartitionMergeBucketScan}
@@ -22,6 +24,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 
 case class LakeSoulScanBuilder(sparkSession: SparkSession,
@@ -54,6 +57,22 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     )
     parquetFilters.convertibleFilters(pushedDataFilters).toArray
   }
+
+  //  override def pushFilters(filters: Seq[Expression]): Seq[Expression] = {
+  //    val (partitionFilters, dataFilters) =
+  //      DataSourceUtils.getPartitionFiltersAndDataFilters(fileIndex.partitionSchema, filters)
+  //    this.partitionFilters = partitionFilters
+  //    this.dataFilters = dataFilters
+  //    val translatedFilters = mutable.ArrayBuffer.empty[sources.Filter]
+  //    for (filterExpr <- dataFilters) {
+  //      val translated = DataSourceStrategy.translateFilter(filterExpr, true)
+  //      if (translated.nonEmpty) {
+  //        translatedFilters += translated.get
+  //      }
+  //    }
+  //    pushedDataFilters = pushDataFilters(translatedFilters.toArray)
+  //    Seq.empty
+  //  }
 
   override def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = dataFilters
 

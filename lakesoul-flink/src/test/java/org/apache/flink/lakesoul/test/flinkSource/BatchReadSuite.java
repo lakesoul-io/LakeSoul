@@ -107,7 +107,6 @@ public class BatchReadSuite extends AbstractTestBase {
         String testSelectWhere = "select * from user_info where order_id=3";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSelectWhere);
-        System.out.println(flinkTable.explain());
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[3, Jack, 75]", "+I[3, Amy, 95]"});
     }

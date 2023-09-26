@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::datasource::parquet_source::{LakeSoulParquetSource, prune_filter_and_execute};
+use crate::datasource::parquet_source::{LakeSoulParquetProvider, prune_filter_and_execute};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -51,7 +51,7 @@ impl LakeSoulReader {
                 "LakeSoulReader has wrong number of file".to_string(),
             ))
         } else {
-            let source = LakeSoulParquetSource::from_config(self.config.clone());
+            let source = LakeSoulParquetProvider::from_config(self.config.clone());
             let source = source.build_with_context(&self.sess_ctx).await.unwrap();
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;

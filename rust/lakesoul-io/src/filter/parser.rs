@@ -5,7 +5,7 @@
 use std::ops::Not;
 use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::Expr;
-use datafusion::prelude::ident;
+use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
  
 pub struct Parser {}
@@ -13,7 +13,6 @@ pub struct Parser {}
 impl Parser {
     pub fn parse(filter_str: String, schema: SchemaRef) -> Expr {
         let (op, left, right) = Parser::parse_filter_str(filter_str);
-        println!("schema={:?} op={:?} left={:?} right={:?}", schema, op, left, right);
         if op.eq("or") {
             let left_expr = Parser::parse(left, schema.clone());
             let right_expr = Parser::parse(right, schema);
@@ -27,43 +26,43 @@ impl Parser {
             Expr::not(inner)
         } else {
             let column = qualified_col_name(left.as_str(), schema.clone());
-            match schema.column_with_name(column) {
+            let column = datafusion::common::Column::new_unqualified(column);
+            match schema.column_with_name(&column.name.clone()) {
                 None => Expr::Literal(ScalarValue::Boolean(Some(true))),
                 Some((_, field)) => {
-                    println!("{:?}", field);
                     if matches!(field.data_type(), DataType::Struct(_)) {
-                        ident(column).is_not_null()
+                        col(column).is_not_null()
                     } else if right == "null" {
                         match op.as_str() {
-                            "eq" => ident(column).is_null(),
-                            "noteq" => ident(column).is_not_null(),
+                            "eq" => col(column).is_null(),
+                            "noteq" => col(column).is_not_null(),
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                         }
                     } else {
                         match op.as_str() {
                             "eq" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).eq(value)
+                                col(column).eq(value)
                             }
                             "noteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).not_eq(value)
+                                col(column).not_eq(value)
                             }
                             "gt" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).gt(value)
+                                col(column).gt(value)
                             }
                             "gteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).gt_eq(value)
+                                col(column).gt_eq(value)
                             }
                             "lt" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).lt(value)
+                                col(column).lt(value)
                             }
                             "lteq" => {
                                 let value = Parser::parse_literal(field, right);
-                                ident(column).lt_eq(value)
+                                col(column).lt_eq(value)
                             }
 
                             _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
@@ -75,7 +74,6 @@ impl Parser {
     }
 
     fn parse_filter_str(filter: String) -> (String, String, String) {
-        println!("{:?}", filter);
         let op_offset = filter.find('(').unwrap();
         let (op, filter) = filter.split_at(op_offset);
         if !filter.ends_with(')') {
@@ -108,7 +106,6 @@ impl Parser {
     }
 
     fn parse_literal(field: &Field, value: String) -> Expr {
-        println!("{}",value);
         let data_type = field.data_type().clone();
         match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -140,9 +137,9 @@ impl Parser {
             DataType::Int32 => Expr::Literal(ScalarValue::Int32(Some(value.parse::<i32>().unwrap()))),
             DataType::Int64 => Expr::Literal(ScalarValue::Int64(Some(value.parse::<i64>().unwrap()))),
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
-            DataType::Timestamp(_, time_zone) => Expr::Literal(ScalarValue::TimestampMicrosecond(
+            DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
                 Some(value.parse::<i64>().unwrap()),
-                time_zone,
+                Some("UTC".into()),
             )),
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();
