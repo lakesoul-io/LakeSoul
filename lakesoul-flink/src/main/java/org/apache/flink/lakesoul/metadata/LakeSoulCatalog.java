@@ -11,6 +11,7 @@ import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
@@ -277,7 +278,15 @@ public class LakeSoulCatalog implements Catalog {
         List<String> partitionKeys = Collections.emptyList();
         if (table instanceof ResolvedCatalogTable) {
             partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
-            String path = tableOptions.get(TABLE_PATH);
+            String path = null;
+            if (tableOptions.containsKey(TABLE_PATH)) {
+                path = tableOptions.get(TABLE_PATH);
+            } else {
+                String flinkWarehouseDir = GlobalConfiguration.loadConfiguration().get(FLINK_WAREHOUSE_DIR);
+                if (null != flinkWarehouseDir) {
+                   path = String.join("/", flinkWarehouseDir, tablePath.getDatabaseName(), tablePath.getObjectName());
+                }
+            }
             try {
                 FileSystem fileSystem = new Path(path).getFileSystem();
                 Path qp = new Path(path).makeQualified(fileSystem);
