@@ -237,7 +237,6 @@ fn merge_sort_key_array_ranges(
     };
     let append_idx = flatten_dedup_arrays.len();
     let null_idx = append_idx - 1;
-    let mut null_counter = 0;
 
     // ### build with arrow::compute::interleave ###
     let extend_list: Vec<(usize, usize)> = ranges
@@ -245,13 +244,7 @@ fn merge_sort_key_array_ranges(
         .map(|ranges_per_row| {
             match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder) {
                 MergeResult::AppendValue(row_idx) => (append_idx, row_idx),
-                MergeResult::AppendNull => {
-                    if !field.is_nullable() {
-                        panic!("{} is not nullable", field);
-                    }
-                    null_counter += 1;
-                    (null_idx, 0)
-                }
+                MergeResult::AppendNull => (null_idx, 0),
                 MergeResult::Extend(batch_idx, row_idx) => (batch_idx_to_flatten_array_idx[&batch_idx], row_idx),
             }
         })

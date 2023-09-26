@@ -28,7 +28,7 @@ impl Parser {
             let column = qualified_col_name(left.as_str(), schema.clone());
             let column = datafusion::common::Column::new_unqualified(column);
             match schema.column_with_name(&column.name.clone()) {
-                None => Expr::Literal(ScalarValue::Boolean(Some(true))),
+                None => Expr::Literal(ScalarValue::Boolean(Some(false))),
                 Some((_, field)) => {
                     if matches!(field.data_type(), DataType::Struct(_)) {
                         col(column).is_not_null()
@@ -139,7 +139,7 @@ impl Parser {
             DataType::Date32 => Expr::Literal(ScalarValue::Date32(Some(value.parse::<i32>().unwrap()))),
             DataType::Timestamp(_, _) => Expr::Literal(ScalarValue::TimestampMicrosecond(
                 Some(value.parse::<i64>().unwrap()),
-                Some("UTC".into()),
+                Some(crate::constant::LAKESOUL_TIMEZONE.into()),
             )),
             DataType::Utf8 => {
                 let value = value.as_str()[8..value.len() - 2].to_string();
