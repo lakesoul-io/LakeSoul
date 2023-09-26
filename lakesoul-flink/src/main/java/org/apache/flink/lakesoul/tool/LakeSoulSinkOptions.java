@@ -130,6 +130,12 @@ public class LakeSoulSinkOptions {
             .defaultValue(LAKESOUL_VIEW_KIND)
             .withDescription("lakesoul view_type");
 
+    public static final ConfigOption<String> FLINK_WAREHOUSE_DIR = ConfigOptions
+            .key("flink.warehouse.dir")
+            .stringType()
+            .defaultValue(null)
+            .withDescription("flink_warehouse_dir");
+
 }
 
 
