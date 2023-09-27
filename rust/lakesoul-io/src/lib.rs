@@ -13,6 +13,8 @@ pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
 pub use datafusion::arrow::error::Result;
 pub mod sorted_merge;
+mod datasource;
+mod projection;
 
 #[cfg(feature = "hdfs")]
 mod hdfs;

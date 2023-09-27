@@ -60,7 +60,7 @@ class MergeOpInt extends MergeOperator[Int] {
 
 class MergeNonNullOp[T] extends MergeOperator[T] {
   override def mergeData(input: Seq[T]): T = {
-    val output=input.filter(_!=null)
+    val output = input.filter(_ != null)
     output.filter(!_.equals("null")).last
   }
 
@@ -72,7 +72,7 @@ class MergeOpString extends MergeOperator[String] {
     input.mkString(",")
   }
 
-  override def toNativeName(): String = "Concat"
+  override def toNativeName(): String = "JoinedByComma"
 }
 
 class MergeOpLong extends MergeOperator[Long] {

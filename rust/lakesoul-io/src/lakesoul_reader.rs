@@ -5,34 +5,26 @@
 use atomic_refcell::AtomicRefCell;
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
 use arrow_schema::SchemaRef;
 
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
 pub use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::expressions::PhysicalSortExpr;
-use datafusion::physical_plan::SendableRecordBatchStream;
 
-use datafusion::prelude::{DataFrame, SessionContext};
+use datafusion::prelude::SessionContext;
+
 
 use core::pin::Pin;
 use datafusion::physical_plan::RecordBatchStream;
-use datafusion::prelude::Expr::Column;
-use futures::future::try_join_all;
 use futures::StreamExt;
 
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
-use crate::default_column_stream::DefaultColumnStream;
-use crate::filter::Parser as FilterParser;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
+use crate::datasource::parquet_source::{LakeSoulParquetProvider, prune_filter_and_execute};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -52,149 +44,21 @@ impl LakeSoulReader {
         })
     }
 
-    pub async fn prune_filter_and_execute(
-        df: DataFrame,
-        request_schema: SchemaRef,
-        filter_str: Vec<String>,
-        batch_size: usize,
-    ) -> Result<SendableRecordBatchStream> {
-        let file_schema = df.schema().clone();
-
-        // find columns requested and prune others
-        let cols = request_schema
-            .fields()
-            .iter()
-            .filter_map(|field| match file_schema.field_with_name(None, field.name()) {
-                // datafusion's select is case sensitive, but col will transform field name to lower case
-                // so we use Column::new_unqualified instead
-                Ok(file_field) => Some(Column(datafusion::common::Column::new_unqualified(file_field.name()))),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if cols.is_empty() {
-            Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
-        } else {
-            // row filtering should go first since filter column may not in the selected cols
-            let arrow_schema = Arc::new(Schema::from(file_schema));
-            let df = filter_str.iter().try_fold(df, |df, f| {
-                let filter = FilterParser::parse(f.clone(), arrow_schema.clone());
-                df.filter(filter)
-            })?;
-            // column pruning
-            let df = df.select(cols)?;
-            df.execute_stream().await
-        }
-    }
-
     pub async fn start(&mut self) -> Result<()> {
         let schema: SchemaRef = self.config.schema.0.clone();
-        let batch_size = self.config.batch_size;
-        if self.config.primary_keys.is_empty() {
-            if !self.config.files.is_empty() {
-                let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
-                for i in 0..self.config.files.len() {
-                    let file = self.config.files[i].clone();
-                    let sess_ctx = self.sess_ctx.clone();
-                    let filter_str = self.config.filter_strs.clone();
-                    let schema = schema.clone();
-                    let future = async move {
-                        let df = sess_ctx.read_parquet(file.clone(), Default::default()).await?;
-                        LakeSoulReader::prune_filter_and_execute(df, schema, filter_str, batch_size).await
-                    };
-                    stream_init_futs.push(future);
-                }
-                let stream_vec = try_join_all(stream_init_futs).await?;
-                let stream = DefaultColumnStream::new_from_streams_with_default(
-                    stream_vec,
-                    schema.clone(),
-                    Arc::new(self.config.default_column_value.clone()),
-                );
-                self.schema = Some(stream.schema());
-                self.stream = Some(Box::pin(stream));
-
-                Ok(())
-            } else {
-                Err(DataFusionError::Internal(
-                    "LakeSoulReader has wrong number of file".to_string(),
-                ))
-            }
-        } else if self.config.files.is_empty() {
+        if self.config.files.is_empty() {
             Err(DataFusionError::Internal(
                 "LakeSoulReader has wrong number of file".to_string(),
             ))
         } else {
-            let finalize_schema: SchemaRef = self.config.schema.0.clone();
-            let schema: SchemaRef = Arc::new(Schema::new(
-                finalize_schema
-                    .fields
-                    .iter()
-                    .filter_map(|field| {
-                        if self.config.default_column_value.get(field.name()).is_none() {
-                            Some(field.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            )); //merge_schema
+            let source = LakeSoulParquetProvider::from_config(self.config.clone());
+            let source = source.build_with_context(&self.sess_ctx).await.unwrap();
 
-            let mut stream_init_futs = Vec::with_capacity(self.config.files.len());
-            for i in 0..self.config.files.len() {
-                let file = self.config.files[i].clone();
-                let sess_ctx = self.sess_ctx.clone();
-                let schema = schema.clone();
-                let future = async move {
-                    let df = sess_ctx.read_parquet(file.as_str(), Default::default()).await?;
-                    LakeSoulReader::prune_filter_and_execute(df, schema, vec![], batch_size).await
-                };
-                stream_init_futs.push(future);
-            }
+            let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
+            let stream = prune_filter_and_execute(dataframe, schema.clone(), self.config.filter_strs.clone(), self.config.batch_size).await?;
+            self.schema = Some(schema.clone());
+            self.stream = Some(stream);
 
-            let stream_res = try_join_all(stream_init_futs).await?;
-            let streams = stream_res
-                .into_iter()
-                .map(|s| SortedStream::new(Box::pin(DefaultColumnStream::new_from_stream(s, schema.clone()))))
-                .collect();
-
-            let mut sort_exprs = Vec::with_capacity(self.config.primary_keys.len());
-            for i in 0..self.config.primary_keys.len() {
-                sort_exprs.push(PhysicalSortExpr {
-                    expr: datafusion::physical_expr::expressions::col(self.config.primary_keys[i].as_str(), &schema)?,
-                    options: Default::default(),
-                });
-            }
-
-            let merge_ops = self
-                .config
-                .schema
-                .0
-                .fields()
-                .iter()
-                .map(|field| {
-                    MergeOperator::from_name(
-                        self.config
-                            .merge_operators
-                            .get(field.name())
-                            .unwrap_or(&String::from("UseLast")),
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            let merge_stream = SortedStreamMerger::new_from_streams(
-                streams,
-                schema.clone(),
-                self.config.primary_keys.clone(),
-                self.config.batch_size,
-                merge_ops,
-            )
-            .unwrap();
-            let finalized_stream = DefaultColumnStream::new_from_streams_with_default(
-                vec![Box::pin(merge_stream)],
-                finalize_schema.clone(),
-                Arc::new(self.config.default_column_value.clone()),
-            );
-            self.schema = Some(finalized_stream.schema());
-            self.stream = Some(Box::pin(finalized_stream));
             Ok(())
         }
     }
@@ -328,8 +192,7 @@ mod tests {
                 None => tx.send(true).unwrap(),
                 Some(rb) => {
                     thread::sleep(Duration::from_millis(200));
-                    let num_rows = &rb.as_ref().unwrap().num_rows();
-                    print_batches(&[rb.as_ref().unwrap().clone()]);
+                    let _ = print_batches(&[rb.as_ref().unwrap().clone()]);
 
                     println!("time cost: {:?} ms", start.elapsed().as_millis()); // ms
                     tx.send(false).unwrap();

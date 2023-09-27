@@ -33,8 +33,7 @@ public class ParquetFilters {
 
     public static Tuple2<SupportsFilterPushDown.Result, FilterPredicate> toParquetFilter(
             List<ResolvedExpression> exprs,
-            List<ResolvedExpression> remainingFilters,
-            boolean isPrimaryKeyConstrained
+            List<ResolvedExpression> remainingFilters
     ) {
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         FilterPredicate last = null;
@@ -43,7 +42,6 @@ public class ParquetFilters {
             if (p == null) {
                 remainingFilters.add(expr);
             } else {
-                if (isPrimaryKeyConstrained) remainingFilters.add(expr);
                 acceptedFilters.add(expr);
                 // AND all the filters to single one
                 if (last != null) {
