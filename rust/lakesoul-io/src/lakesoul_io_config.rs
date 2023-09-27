@@ -315,6 +315,7 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
+    sess_conf.options_mut().execution.parquet.pushdown_filters = true;
 
     // limit memory for sort writer
     let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;

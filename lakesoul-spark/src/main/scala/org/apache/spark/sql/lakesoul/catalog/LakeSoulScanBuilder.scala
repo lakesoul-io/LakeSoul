@@ -58,21 +58,24 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     parquetFilters.convertibleFilters(pushedDataFilters).toArray
   }
 
-  //  override def pushFilters(filters: Seq[Expression]): Seq[Expression] = {
-  //    val (partitionFilters, dataFilters) =
-  //      DataSourceUtils.getPartitionFiltersAndDataFilters(fileIndex.partitionSchema, filters)
-  //    this.partitionFilters = partitionFilters
-  //    this.dataFilters = dataFilters
-  //    val translatedFilters = mutable.ArrayBuffer.empty[sources.Filter]
-  //    for (filterExpr <- dataFilters) {
-  //      val translated = DataSourceStrategy.translateFilter(filterExpr, true)
-  //      if (translated.nonEmpty) {
-  //        translatedFilters += translated.get
-  //      }
-  //    }
-  //    pushedDataFilters = pushDataFilters(translatedFilters.toArray)
-  //    Seq.empty
-  //  }
+  override def pushFilters(filters: Seq[Expression]): Seq[Expression] = {
+    val (partitionFilters, dataFilters) =
+      DataSourceUtils.getPartitionFiltersAndDataFilters(fileIndex.partitionSchema, filters)
+    this.partitionFilters = partitionFilters
+    this.dataFilters = dataFilters
+    val translatedFilters = mutable.ArrayBuffer.empty[sources.Filter]
+    val remainingExpressions = mutable.ArrayBuffer.empty[Expression]
+    for (filterExpr <- dataFilters) {
+      val translated = DataSourceStrategy.translateFilter(filterExpr, true)
+      if (translated.nonEmpty) {
+        translatedFilters += translated.get
+      } else {
+        remainingExpressions += filterExpr
+      }
+    }
+    pushedDataFilters = pushDataFilters(translatedFilters.toArray)
+    remainingExpressions
+  }
 
   override def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = dataFilters
 

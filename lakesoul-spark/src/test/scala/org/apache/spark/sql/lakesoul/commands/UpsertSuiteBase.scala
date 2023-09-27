@@ -164,7 +164,7 @@ class UpsertSuiteBase extends QueryTest
           .toDF("range", "hash", "name"),
         None,
         Row(20201101, 1, 1) :: Row(20201101, 3, 3) :: Row(20201101, 4, null) :: Nil,
-        "name > 0",
+        "name > 0 ",
         Seq("range", "hash", "value"))
     }
   }

@@ -212,8 +212,8 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
       SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ))
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
-      var parquetSchema = footerFileMetaData.getSchema
-      files.foreach((file) => parquetSchema = parquetSchema.union(ParquetFileReader.readFooter(conf, new Path(new URI(file.filePath)), SKIP_ROW_GROUPS).getFileMetaData.getSchema))
+      val converter = new SparkToParquetSchemaConverter()
+      val parquetSchema = converter.convert(dataSchema)
       val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive,
         datetimeRebaseSpec

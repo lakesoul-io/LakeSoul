@@ -232,6 +232,9 @@ impl TableProvider for LakeSoulParquetProvider {
         let mut inputs = vec![];
         for i in 0..self.plans.len() {
             let df = DataFrame::new(_state.clone(), self.plans[i].clone());
+            let df = _filters.iter().fold(df, |df, f| {
+                df.clone().filter(f.clone()).unwrap_or(df.clone())
+            });
             let df_schema = Arc::new(df.schema().clone());
             let projected_cols = schema_intersection(df_schema, projected_schema.clone(), &self.config.primary_keys);
             let df = if projected_cols.is_empty() {
@@ -245,15 +248,32 @@ impl TableProvider for LakeSoulParquetProvider {
             } else {
                 df.select(projected_cols)?
             };
-            let df = _filters.iter().fold(df, |df, f| {
-                df.clone().filter(f.clone()).unwrap_or(df.clone())
-            });
+
             let phycical_plan = df.create_physical_plan().await.unwrap();
             inputs.push(phycical_plan);
         }
+
+        let physical_schema = SchemaRef::new(Schema::new(
+            self.get_full_schema()
+                .fields()
+                .iter()
+                .map(|field| Field::new(
+                    field.name(), 
+                    field.data_type().clone(), 
+                    field.is_nullable() 
+                    | inputs.iter().any(|plan| 
+                        if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
+                            plan_field.is_nullable()
+                        } else {
+                            true
+                        })
+                    ))
+                .collect::<Vec<_>>()
+        ));
+
         self.create_physical_plan(
             projections,  
-            self.get_full_schema(), 
+            physical_schema, 
             inputs).await
         
     }
@@ -335,7 +355,8 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
             stream_init_futs.push(stream);
         }
         let merged_stream = merge_stream(
-            stream_init_futs, self.schema(),
+            stream_init_futs, 
+            self.schema(),
             self.primary_keys.clone(), 
             self.default_column_value.clone(), 
             self.merge_operators.clone(), 
