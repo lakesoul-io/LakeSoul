@@ -74,7 +74,11 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
       }
     }
     pushedDataFilters = pushDataFilters(translatedFilters.toArray)
-    remainingExpressions
+    val pushPushDown: Boolean = sparkSession.sessionState.conf.parquetFilterPushDown
+    if (pushPushDown)
+      remainingExpressions
+    else
+      dataFilters
   }
 
   override def pushDataFilters(dataFilters: Array[Filter]): Array[Filter] = dataFilters
