@@ -605,7 +605,8 @@ public class PartitionInfoDao {
                 .setTimestamp(rs.getLong("timestamp"));
         Array snapshotArray = rs.getArray("snapshot");
         partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(DBUtil::toProtoUuid).collect(Collectors.toList()));
-        partitionInfo.setExpression(rs.getString("expression"));
+        String expr = rs.getString("expression");
+        partitionInfo.setExpression(expr == null ? "" : expr);
         return partitionInfo.build();
     }
 
@@ -617,7 +618,8 @@ public class PartitionInfoDao {
                 .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")));
         Array snapshotArray = rs.getArray("snapshot");
         partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(DBUtil::toProtoUuid).collect(Collectors.toList()));
-        partitionInfo.setExpression(rs.getString("expression"));
+        String expr = rs.getString("expression");
+        partitionInfo.setExpression(expr == null ? "" : expr);
         return partitionInfo.build();
     }
 }
