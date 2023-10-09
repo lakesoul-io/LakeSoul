@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.expressions.{EqualNullSafe, Expression, InputFileName, Literal, Not}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
@@ -12,7 +13,6 @@ import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableComm
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 

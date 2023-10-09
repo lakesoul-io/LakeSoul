@@ -4,12 +4,11 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.MetaUtils
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.spark.sql._
-import org.apache.spark.sql.execution.command.{LeafRunnableCommand, RunnableCommand}
+import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.schema.ImplicitMetadataOperation
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, SnapshotManagement, TransactionCommit}
 
 /**
@@ -22,10 +21,10 @@ import org.apache.spark.sql.lakesoul.{LakeSoulOptions, PartitionFilter, Snapshot
   * Existing Table Semantics
   *  - The save mode will control how existing data is handled (i.e. overwrite, append, etc)
   *  - The schema will of the DataFrame will be checked and if there are new columns present
-  * they will be added to the tables schema. Conflicting columns (i.e. a INT, and a STRING)
-  * will result in an exception
+  *    they will be added to the tables schema. Conflicting columns (i.e. a INT, and a STRING)
+  *    will result in an exception
   *  - The partition columns, if present are validated against the existing metadata. If not
-  * present, then the partitioning of the table is respected.
+  *    present, then the partitioning of the table is respected.
   *
   * In combination with `Overwrite`, a `replaceWhere` option can be used to transactionally
   * replace data that matches a predicate.
@@ -64,7 +63,6 @@ case class WriteIntoTable(snapshotManagement: SnapshotManagement,
 
   /** @return (newFiles, deletedFiles) */
   def write(tc: TransactionCommit, sparkSession: SparkSession): (Seq[DataFileInfo], Seq[DataFileInfo]) = {
-    import sparkSession.implicits._
 
     val hashCols = if (tc.isFirstCommit) {
       hashPartitions

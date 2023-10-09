@@ -4,11 +4,12 @@
 
 package org.apache.spark.sql.lakesoul.exception
 
-import org.apache.spark.sql.lakesoul.utils.PartitionInfo
+import com.dmetasoul.lakesoul.meta.PartitionInfoScala
+
 
 object MetaRerunErrors {
 
-  def fileChangedException(info: PartitionInfo,
+  def fileChangedException(info: PartitionInfoScala,
                            file_path: String,
                            write_version: Long,
                            commit_id: String): MetaRerunException = {
@@ -21,7 +22,7 @@ object MetaRerunErrors {
       commit_id)
   }
 
-  def fileDeletedException(info: PartitionInfo,
+  def fileDeletedException(info: PartitionInfoScala,
                            file_path: String,
                            write_version: Long,
                            commit_id: String): MetaRerunException = {

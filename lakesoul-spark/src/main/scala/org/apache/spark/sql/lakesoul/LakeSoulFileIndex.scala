@@ -5,15 +5,14 @@
 package org.apache.spark.sql.lakesoul
 
 import java.net.URI
-
 import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Expression, GenericInternalRow, Literal}
 import org.apache.spark.sql.execution.datasources.{PartitionDirectory, PartitionSpec, PartitioningAwareFileIndex}
 import org.apache.spark.sql.lakesoul.LakeSoulFileIndexUtils._
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{AnalysisException, SparkSession}
-import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, MetaUtils}
 
 import scala.collection.mutable
 
@@ -40,8 +39,8 @@ abstract class LakeSoulFileIndexV2(val spark: SparkSession,
   override def refresh(): Unit = {}
 
   /**
-   * Returns all matching/valid files by the given `partitionFilters` and `dataFilters`
-   */
+    * Returns all matching/valid files by the given `partitionFilters` and `dataFilters`
+    */
   def matchingFiles(partitionFilters: Seq[Expression],
                     dataFilters: Seq[Expression] = Nil): Seq[DataFileInfo]
 
@@ -121,9 +120,9 @@ case class DataSoulFileIndexV2(override val spark: SparkSession,
 
 
 /**
- * A [[LakeSoulFileIndexV2]] that generates the list of files from a given list of files
- * that are within a version range of SnapshotManagement.
- */
+  * A [[LakeSoulFileIndexV2]] that generates the list of files from a given list of files
+  * that are within a version range of SnapshotManagement.
+  */
 case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
                                     override val snapshotManagement: SnapshotManagement,
                                     files: Seq[DataFileInfo])

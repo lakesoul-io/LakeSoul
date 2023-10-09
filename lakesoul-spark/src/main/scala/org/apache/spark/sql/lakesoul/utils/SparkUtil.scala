@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.utils
 
-import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, MetaUtils}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression

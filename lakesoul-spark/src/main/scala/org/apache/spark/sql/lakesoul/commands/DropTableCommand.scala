@@ -9,7 +9,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Expression, PredicateHelper}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.lakesoul.{PartitionFilter, Snapshot, SnapshotManagement}
 
 import java.util.concurrent.TimeUnit

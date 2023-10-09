@@ -5,12 +5,13 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.spark.sql.catalyst.expressions.And
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 //import org.apache.spark.sql.lakesoul.actions.AddFile
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Literal, NamedExpression, PredicateHelper}

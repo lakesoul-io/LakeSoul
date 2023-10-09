@@ -5,7 +5,7 @@
 package org.apache.spark.sql.execution.datasources.v2.merge
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaVersion}
 
 import java.util.{Locale, OptionalLong, TimeZone}
 import org.apache.hadoop.conf.Configuration
@@ -28,7 +28,7 @@ import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.lakesoul._
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo, TimestampFormatter}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, SparkSession}

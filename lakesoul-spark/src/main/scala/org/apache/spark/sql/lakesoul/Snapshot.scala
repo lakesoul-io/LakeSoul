@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.PartitionInfoScala
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.execution.datasources.FileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -15,7 +16,7 @@ import org.apache.spark.sql.lakesoul.utils._
 
 
 class Snapshot(table_info: TableInfo,
-               partition_info_arr: Array[PartitionInfo],
+               partition_info_arr: Array[PartitionInfoScala],
                is_first_commit: Boolean = false
               ) {
   private var partitionDesc: String = ""
@@ -53,7 +54,7 @@ class Snapshot(table_info: TableInfo,
 
   def isFirstCommit: Boolean = is_first_commit
 
-  def getPartitionInfoArray: Array[PartitionInfo] = partition_info_arr
+  def getPartitionInfoArray: Array[PartitionInfoScala] = partition_info_arr
 
   override def toString: String = table_info + partition_info_arr.mkString(",")
 }

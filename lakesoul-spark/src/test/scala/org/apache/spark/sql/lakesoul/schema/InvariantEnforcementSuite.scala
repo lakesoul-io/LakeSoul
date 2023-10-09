@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.schema
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkException
@@ -11,7 +12,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.schema.Invariants.{ArbitraryExpression, NotNull, PersistedExpression}
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types._
 import org.junit.runner.RunWith

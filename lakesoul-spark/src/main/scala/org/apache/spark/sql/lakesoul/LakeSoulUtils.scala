@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
@@ -18,7 +19,7 @@ import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils

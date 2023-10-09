@@ -4,10 +4,10 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{DataOperation, MetaUtils}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, DataOperation, MetaUtils}
 import org.apache.spark.sql.catalyst.analysis.{Resolver, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionFilterInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.{PartitionFilterInfo, SparkUtil}
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 
@@ -38,7 +38,7 @@ object PartitionFilter {
       DataOperation.getTableDataInfo(partitionArray)
     } else {
       val partitionRangeValues = partitionsForScan(snapshot, filters).map(_.range_value).toSet
-      val partitionInfo =partitionArray.filter(p => partitionRangeValues.contains(p.range_value))
+      val partitionInfo = partitionArray.filter(p => partitionRangeValues.contains(p.range_value))
       DataOperation.getTableDataInfo(partitionInfo)
     }
   }

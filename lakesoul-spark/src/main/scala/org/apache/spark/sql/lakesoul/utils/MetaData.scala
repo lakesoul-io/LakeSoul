@@ -5,35 +5,22 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.{CommitState, CommitType}
+import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, DataFileInfo, PartitionInfoScala}
 import com.fasterxml.jackson.annotation.JsonIgnore
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.execution.datasources.BucketingUtils
 import org.apache.spark.sql.types.{DataType, StructType}
 
 import java.util.UUID
 
 case class MetaInfo(table_info: TableInfo,
-                    partitionInfoArray: Array[PartitionInfo],
+                    partitionInfoArray: Array[PartitionInfoScala],
                     dataCommitInfo: Array[DataCommitInfo],
                     commit_type: CommitType,
                     commit_id: String = "",
                     query_id: String = "",
                     batch_id: Long = -1L,
-                    readPartitionInfo: Array[PartitionInfo] = null)
+                    readPartitionInfo: Array[PartitionInfoScala] = null)
 
-//range_value -> partition_desc
-case class PartitionInfo(table_id: String,
-                         range_value: String,
-                         version: Int = -1,
-                         read_files: Array[UUID] = Array.empty[UUID],
-                         expression: String = "",
-                         commit_op: String = ""
-                        ) {
-  override def toString: String = {
-    s"partition info: {\ntable_name: $table_id,\nrange_value: $range_value}"
-  }
-}
 
 case class Format(provider: String = "parquet",
                   options: Map[String, String] = Map.empty)
@@ -102,25 +89,6 @@ case class TableInfo(namespace: String,
   }
 
   lazy val format: Format = Format()
-}
-
-//file_exist_cols col1,col2.col3
-case class DataFileInfo(
-                         range_partitions: String,
-                         path: String,
-                         file_op: String,
-                         size: Long,
-                         modification_time: Long = -1L,
-                         file_exist_cols: String = ""
-                       ) {
-  lazy val range_version: String = range_partitions + "-" + file_exist_cols
-
-  lazy val file_bucket_id: Int = BucketingUtils
-    .getBucketId(new Path(path).getName)
-    .getOrElse(sys.error(s"Invalid bucket file $path"))
-
-  //trans to files which need to delete
-  def expire(deleteTime: Long): DataFileInfo = this.copy(modification_time = deleteTime)
 }
 
 //single file info

@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.schema
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.Path
 
 import java.io.File
@@ -12,7 +13,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException}
 import org.apache.spark.sql.test.{SQLTestUtils, SharedSparkSession}
 import org.apache.spark.sql.types.StructType
@@ -39,7 +40,7 @@ class CaseSensitivitySuite extends QueryTest
   }
 
   private def getPartitionValues(allFiles: Dataset[DataFileInfo], colName: String): Array[String] = {
-   allFiles.select(col(s"range_partitions")).distinct().as[String].collect()
+    allFiles.select(col(s"range_partitions")).distinct().as[String].collect()
   }
 
 

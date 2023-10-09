@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaVersion, PartitionInfoScala}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.cleanOldCommitOpDiskData
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -17,7 +17,6 @@ import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, Data
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, PartitionInfo}
 import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
@@ -39,11 +38,11 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
 
   def filterPartitionNeedCompact(spark: SparkSession,
                                  force: Boolean,
-                                 partitionInfo: PartitionInfo): Boolean = {
+                                 partitionInfo: PartitionInfoScala): Boolean = {
     partitionInfo.read_files.length >= 1
   }
 
-  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfo]): Unit = {
+  def executeCompaction(spark: SparkSession, tc: TransactionCommit, files: Seq[DataFileInfo], readPartitionInfo: Array[PartitionInfoScala]): Unit = {
     if (readPartitionInfo.forall(p => p.commit_op.equals("CompactionCommit") && p.read_files.length == 1)) {
       logInfo("=========== All Partitions Have Compacted, This Operation Will Cancel!!! ===========")
       return
