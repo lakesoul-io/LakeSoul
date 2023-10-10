@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, sources}
@@ -17,7 +18,7 @@ import org.apache.spark.sql.execution.datasources.v2.merge.{MultiPartitionMergeB
 import org.apache.spark.sql.execution.datasources.v2.parquet.{EmptyParquetScan, NativeParquetScan, ParquetScan, StreamParquetScan}
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulFileIndexV2, LakeSoulUtils}
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType

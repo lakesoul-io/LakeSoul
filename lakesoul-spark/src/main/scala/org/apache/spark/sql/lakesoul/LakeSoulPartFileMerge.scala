@@ -4,12 +4,12 @@
 
 package org.apache.spark.sql.lakesoul
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
-import org.apache.spark.sql.lakesoul.exception.{MetaRerunException}
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
+import org.apache.spark.sql.lakesoul.exception.MetaRerunException
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import scala.collection.JavaConversions._

@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.{MetaCommit, MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaCommit, MetaUtils, MetaVersion}
 
 import java.util.Locale
 import org.apache.spark.rdd.RDD
@@ -16,7 +16,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.sources.{BaseRelation, Filter, InsertableRelation, PrunedFilteredScan}
 import org.apache.spark.sql.lakesoul.commands.WriteIntoTable
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.lakesoul.{LakeSoulOptions, SnapshotManagement}
 import org.apache.spark.sql.types.StructType
 

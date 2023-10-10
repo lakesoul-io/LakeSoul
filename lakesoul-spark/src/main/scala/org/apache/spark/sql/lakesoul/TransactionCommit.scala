@@ -208,7 +208,7 @@ trait Transaction extends TransactionalWrite with Logging {
     scan
   }
 
-  def getCompactionPartitionFiles(partitionInfo: PartitionInfo): Seq[DataFileInfo] = {
+  def getCompactionPartitionFiles(partitionInfo: PartitionInfoScala): Seq[DataFileInfo] = {
     val files = DataOperation.getSinglePartitionDataInfo(partitionInfo)
 
     readFiles ++= files
@@ -228,7 +228,7 @@ trait Transaction extends TransactionalWrite with Logging {
     */
   def commit(addFiles: Seq[DataFileInfo],
              expireFiles: Seq[DataFileInfo],
-             readPartitionInfo: Array[PartitionInfo]): Unit = {
+             readPartitionInfo: Array[PartitionInfoScala]): Unit = {
     commit(addFiles, expireFiles, "", -1, readPartitionInfo)
   }
 
@@ -237,7 +237,7 @@ trait Transaction extends TransactionalWrite with Logging {
              expireFiles: Seq[DataFileInfo],
              query_id: String = "", //for streaming commit
              batch_id: Long = -1L,
-             readPartitionInfo: Array[PartitionInfo] = null): Unit = {
+             readPartitionInfo: Array[PartitionInfoScala] = null): Unit = {
     snapshotManagement.lockInterruptibly {
       assert(!committed, "Transaction already committed.")
       if (isFirstCommit) {
@@ -265,7 +265,7 @@ trait Transaction extends TransactionalWrite with Logging {
 
       val add_file_arr_buf = new ArrayBuffer[DataCommitInfo]()
 
-      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfo]()
+      val add_partition_info_arr_buf = new ArrayBuffer[PartitionInfoScala]()
 
       val commit_type = commitType.getOrElse(CommitType("append")).name
       if (commit_type.equals(CommitType("update").name)) {
@@ -302,7 +302,7 @@ trait Transaction extends TransactionalWrite with Logging {
               System.currentTimeMillis(),
               filter_files.toArray
             )
-            add_partition_info_arr_buf += PartitionInfo(
+            add_partition_info_arr_buf += PartitionInfoScala(
               table_id = tableInfo.table_id,
               range_value = range_key,
               read_files = Array(addUUID)
@@ -323,7 +323,7 @@ trait Transaction extends TransactionalWrite with Logging {
               System.currentTimeMillis(),
               changeFiles.toArray
             )
-            add_partition_info_arr_buf += PartitionInfo(
+            add_partition_info_arr_buf += PartitionInfoScala(
               table_id = tableInfo.table_id,
               range_value = range_key,
               read_files = Array(addUUID)

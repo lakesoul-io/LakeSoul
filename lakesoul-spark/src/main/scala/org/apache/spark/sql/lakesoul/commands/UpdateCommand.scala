@@ -4,13 +4,13 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, If, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.functions.input_file_name
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.lakesoul.{LakeSoulUtils, SnapshotManagement, TransactionCommit}
 import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}

@@ -405,11 +405,11 @@ public class FlinkUtil {
             List<String> partitionDescs = remainingPartitions.stream()
                     .map(DBUtil::formatPartitionDesc)
                     .collect(Collectors.toList());
-            List<PartitionInfo> partitionInfos = new ArrayList<>();
+            List<PartitionInfoScala> partitionInfos = new ArrayList<>();
             for (String partitionDesc : partitionDescs) {
                 partitionInfos.add(MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, ""));
             }
-            PartitionInfo[] ptinfos = partitionInfos.toArray(new PartitionInfo[0]);
+            PartitionInfoScala[] ptinfos = partitionInfos.toArray(new PartitionInfoScala[0]);
             return DataOperation.getTableDataInfo(ptinfos);
         }
     }
@@ -433,8 +433,8 @@ public class FlinkUtil {
     }
 
     public static DataFileInfo[] getSinglePartitionDataFileInfo(TableInfo tif, String partitionDesc) {
-        PartitionInfo partitionInfo = MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, "");
-        return DataOperation.getTableDataInfo(new PartitionInfo[]{partitionInfo});
+        PartitionInfoScala partitionInfo = MetaVersion.getSinglePartitionInfo(tif.getTableId(), partitionDesc, "");
+        return DataOperation.getTableDataInfo(new PartitionInfoScala[]{partitionInfo});
     }
 
     public static int[] getFieldPositions(String[] fields, List<String> allFields) {

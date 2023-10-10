@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion, PartitionInfoScala}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
 import org.apache.hadoop.fs.Path
@@ -15,7 +15,7 @@ import org.apache.spark.sql.lakesoul.LakeSoulOptions.ReadType
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulSQLConf, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.{PartitionInfo, SparkUtil, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 
 import java.io.File
@@ -48,7 +48,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
     val table_id = "table_" + UUID.randomUUID().toString
     val table_info = TableInfo(table_namespace, Some(table_path), table_id)
     val partition_arr = Array(
-      PartitionInfo(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 0)
+      PartitionInfoScala(table_id, MetaUtils.DEFAULT_RANGE_PARTITION_VALUE, 0)
     )
     new Snapshot(table_info, partition_arr, true)
   }

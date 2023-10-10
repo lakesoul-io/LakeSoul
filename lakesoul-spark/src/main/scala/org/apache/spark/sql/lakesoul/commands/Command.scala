@@ -5,12 +5,12 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.expressions.{Expression, SubqueryExpression}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.lakesoul.TransactionCommit
 import org.apache.spark.sql.lakesoul.sources.LakeSoulBaseRelation
-import org.apache.spark.sql.lakesoul.utils.DataFileInfo
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 
 /**

@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.MetaUtils
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaUtils}
 
 import java.net.URI
 import java.util.UUID
@@ -14,7 +14,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, DateFormatter, PartitionUtils, TimestampFormatter}
+import org.apache.spark.sql.lakesoul.utils.{DateFormatter, PartitionUtils, TimestampFormatter}
 import org.apache.spark.sql.types.StringType
 
 import scala.collection.mutable.ArrayBuffer
@@ -119,7 +119,7 @@ class DelayedCommitProtocol(jobId: String,
 
         val filePath = new Path(new URI(f._2))
         val stat = fs.getFileStatus(filePath)
-        DataFileInfo(MetaUtils.getPartitionKeyFromList(f._1),fs.makeQualified(filePath).toString, "add", stat.getLen, stat.getModificationTime)
+        DataFileInfo(MetaUtils.getPartitionKeyFromList(f._1), fs.makeQualified(filePath).toString, "add", stat.getLen, stat.getModificationTime)
       }
 
       new TaskCommitMessage(statuses)

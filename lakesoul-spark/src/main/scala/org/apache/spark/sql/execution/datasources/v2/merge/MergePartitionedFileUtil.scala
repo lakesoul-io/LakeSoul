@@ -4,11 +4,12 @@
 
 package org.apache.spark.sql.execution.datasources.v2.merge
 
+import com.dmetasoul.lakesoul.meta.DataFileInfo
 import org.apache.hadoop.fs.{BlockLocation, FileStatus, LocatedFileStatus, Path}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.utils.{DataFileInfo, TableInfo}
+import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.types.StructType
 
 object MergePartitionedFileUtil {
