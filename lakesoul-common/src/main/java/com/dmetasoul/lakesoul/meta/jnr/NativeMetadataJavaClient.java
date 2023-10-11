@@ -64,10 +64,10 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     public NativeMetadataJavaClient() {
-        this(5000L, 1 << 12, 1 << 16);
+        this(5000L, 1 << 12);
     }
 
-    public NativeMetadataJavaClient(long timeout, int bufferSize, int largeBufferSize) {
+    public NativeMetadataJavaClient(long timeout, int bufferSize) {
         this.timeout = timeout;
         libLakeSoulMetaData = JnrLoader.get();
         booleanCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
@@ -245,15 +245,15 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                             preparedStatement,
                             queryType,
                             String.join(PARAM_DELIM, params)
-//                            queryType < DAO_TYPE_QUERY_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address()
                     );
                     Integer len = queryFuture.get(timeout, TimeUnit.MILLISECONDS);
                     if (len < 0) return null;
+                    Integer lenWithTail = len + 1;
 
                     Pointer buffer = fixedBuffer;
-                    if (len > fixedBuffer.size()) {
-                        if (len > mutableBuffer.size()) {
-                            mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(len);
+                    if (lenWithTail > fixedBuffer.size()) {
+                        if (lenWithTail > mutableBuffer.size()) {
+                            mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(lenWithTail);
                         }
                         buffer = mutableBuffer;
                     }
@@ -335,11 +335,13 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     Pointer buffer = fixedBuffer;
                     if (bytes.length < fixedBuffer.size())
                         fixedBuffer.put(0, bytes, 0, bytes.length);
-                    else if (bytes.length < mutableBuffer.size())
+                    else if (bytes.length < mutableBuffer.size()) {
                         mutableBuffer.put(0, bytes, 0, bytes.length);
-                    else {
+                        buffer = mutableBuffer;
+                    } else {
                         mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bytes.length);
                         mutableBuffer.put(0, bytes, 0, bytes.length);
+                        buffer = mutableBuffer;
                     }
 
                     getLibLakeSoulMetaData().execute_insert(

@@ -7,10 +7,12 @@
 extern crate core;
 
 use core::ffi::c_ptrdiff_t;
+use std::io::Write;
 use std::ptr::NonNull;
 use std::ffi::{c_char, c_uchar, CString, CStr};
 
 use lakesoul_metadata::{Runtime, Builder, Client, PreparedStatementMap};
+use prost::bytes::BufMut;
 use proto::proto::entity;
 use prost::Message;
 
@@ -185,7 +187,6 @@ pub extern "C" fn execute_query(
     prepared: NonNull<Result<PreparedStatement>>,
     query_type: i32,
     joined_string: *const c_char,
-    // addr: c_ptrdiff_t,
 ) -> NonNull<Result<BytesResult>> {
     let runtime = unsafe {NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()};
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref()};
@@ -218,25 +219,22 @@ pub extern "C" fn export_bytes_result(
     len: i32,
     addr: c_ptrdiff_t,
 ) {
-    let bytes = unsafe {NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<u8>).as_ref()};
+    let len = len as usize;
+    let bytes = unsafe {NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut()};
 
-    if bytes.len() != len as usize {
+    if bytes.len() != len {
         callback( false, CString::new("Size of buffer and result mismatch at export_bytes_result.").unwrap().into_raw());
         return;
     }
+    bytes.push(0u8);
+    bytes.shrink_to_fit();
     
-    let addr = addr as *mut  c_uchar;
-    let _ = bytes
-        .iter()
-        .enumerate()
-        .map(
-            |(idx, byte)| 
-            unsafe{std::ptr::write::<c_uchar>(addr.wrapping_add(idx), *byte)})
-        .collect::<Vec<_>>();
+    let dst = unsafe {
+        std::slice::from_raw_parts_mut(addr as *mut u8, len + 1)
+    };
+    let mut writer = dst.writer();
+    let _ = writer.write_all(bytes.as_slice());
     
-    unsafe{
-        std::ptr::write::<c_uchar>(addr.wrapping_add(len as usize), 0u8)
-    }
     callback( true, CString::new("").unwrap().into_raw());
 }
 
