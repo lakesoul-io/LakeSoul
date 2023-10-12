@@ -13,7 +13,7 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
  * Run with following commands with local minio env:
  *
  * mvn package -Prelease-linux-x86-64 -pl lakesoul-spark -am -DskipTests
- * docker run --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars bitnami/spark:3.3.1 spark-submit --driver-memory 4g --jars /opt/spark/work-dir/jars/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT.jar --class org.apache.spark.sql.lakesoul.benchmark.io.ParquetScanBenchmark /opt/spark/work-dir/jars/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar --localtest
+ * docker run --cpus=1 --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars bitnami/spark:3.3.1 spark-submit --driver-memory 4g --jars /opt/spark/work-dir/jars/lakesoul-spark-2.4.0-spark-3.3-SNAPSHOT.jar --class org.apache.spark.sql.lakesoul.benchmark.io.ParquetScanBenchmark /opt/spark/work-dir/jars/lakesoul-spark-2.4.0-spark-3.3-SNAPSHOT-tests.jar --localtest
  */
 object ParquetScanBenchmark {
   def main(args: Array[String]): Unit = {
@@ -44,7 +44,7 @@ object ParquetScanBenchmark {
 
     var bucketName = "lakesoul-test-bucket"
     if (args.length >= 1 && args(0) == "--localtest") {
-      builder.config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+      builder.config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
         .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.access.key", "minioadmin1")
         .config("spark.hadoop.fs.s3a.secret.key", "minioadmin1")
