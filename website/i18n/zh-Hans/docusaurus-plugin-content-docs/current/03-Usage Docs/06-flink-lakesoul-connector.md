@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 :::tip
 该功能于 2.3.0 版本起提供。
 
-2.3.0 版本适配的是 Flink 1.14，2.4.0 版本起升级到了 Flink 1.17。
+2.3.0 版本适配的是 Flink 1.14，2.4.1 版本起升级到了 Flink 1.17。
 :::
 
 LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可以使用 Flink 的 DataStream API， Table API 或 SQL 来执行对 LakeSoul 数据的读写，读和写均支持流式和批式两种模式。在 Flink 流式读、写时君支持 Flink Changelog Stream 语义。
@@ -18,14 +18,14 @@ LakeSoul 提供了 Flink Connector，实现了 Flink Dynamic Table 接口，可�
 
 设置 LakeSoul 元数据，请参考 [设置 Spark/Flink 工程/作业](../03-Usage%20Docs/02-setup-spark.md)
 
-Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.4.0-flink-1.17.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
+Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.4.1-flink-1.17.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
 
 为了使用 Flink 创建 LakeSoul 表，推荐使用 Flink SQL Client，支持直接使用 Flink SQL 命令操作 LakeSoul 表，本文档中 Flink SQL 是在 Flink SQL Client 界面直接输入语句；Table API 需要在 Java 项目中编写使用。
 
 切换到 Flink 文件夹下，执行命令开启 SQL Client 客户端。
 ```bash
 # 启动 Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.17.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.4.1-flink-1.17.jar
 ```
 
 ## 2. DDL

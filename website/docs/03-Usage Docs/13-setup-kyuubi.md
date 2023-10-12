@@ -20,7 +20,7 @@ LakeSoul implements Flink/Spark Connector.We could use Spark/Flink SQL queries t
 | Kyuubi | 1.8  |
 | Spark  | 3.3  |
 | Flink  | 1.17 |
-| LakeSoul | 2.4.0 |
+| LakeSoul | 2.4.1 |
 | Java     | 1.8 |
 
 The operating environment is Linux, and Spark, Flink, and Kyuubi have been installed. It is recommended to use Hadoop Yarn to run the Kyuubi Engine. Also, you could start local spark/flink cluster.
@@ -31,7 +31,7 @@ The operating environment is Linux, and Spark, Flink, and Kyuubi have been insta
 
 ### 1. Dependencies
 
-Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar
+Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.1/lakesoul-flink-2.4.1-flink-1.17.jar
 
 And put the jar file under `$FLINK_HOME/lib`.
 
@@ -74,7 +74,7 @@ More details about Flink SQL with LakeSoul refer to : [Flink Lakesoul Connector]
 
 ### 1. Dependencies
 
-Download LakeSoul Spark Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-spark-2.4.0-spark-3.3.jar
+Download LakeSoul Spark Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.1/lakesoul-spark-2.4.1-spark-3.3.jar
 
 And put the jar file under `$SPARK_HOME/jars`. 
 

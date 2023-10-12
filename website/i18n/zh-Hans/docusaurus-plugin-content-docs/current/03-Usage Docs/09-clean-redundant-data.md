@@ -88,7 +88,7 @@ LakeSoul 提供了一个清理过期数据的 Spark 作业实现，会扫描元�
     --executor-cores 1 \
     --num-executors 20 \
     --class com.dmetasoul.lakesoul.spark.clean.CleanExpiredData \
-    jars/lakesoul-spark-2.4.0-spark-3.3.jar 
+    jars/lakesoul-spark-2.4.1-spark-3.3.jar 
 
 ```
 :::tip
