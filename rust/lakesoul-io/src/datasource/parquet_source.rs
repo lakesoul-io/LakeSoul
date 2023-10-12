@@ -282,6 +282,7 @@ impl TableProvider for LakeSoulParquetProvider {
 #[derive(Debug, Clone)]
 struct LakeSoulParquetScanExec {
     projections: Vec<usize>,
+    origin_schema: SchemaRef,
     projected_schema: SchemaRef,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     default_column_value: Arc<HashMap<String, String>>,
@@ -300,12 +301,17 @@ impl LakeSoulParquetScanExec {
     ) -> Self {
         Self {
             projections: projections.unwrap().clone(),
+            origin_schema: schema.clone(),
             projected_schema: project_schema(&schema.clone(), projections).unwrap(),
             inputs,
             default_column_value,
             merge_operators,
             primary_keys,
         }
+    }
+
+    fn origin_schema(&self) -> SchemaRef {
+        self.origin_schema.clone()
     }
 }
 
@@ -363,7 +369,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
             _context.session_config().batch_size())?;
 
         let result = ProjectionStream {
-            expr: self.projections.iter().map(|&idx| datafusion::physical_expr::expressions::col(self.schema().field(idx).name(), &self.schema().clone()).unwrap()).collect::<Vec<_>>(),
+            expr: self.projections.iter().map(|&idx| datafusion::physical_expr::expressions::col(self.origin_schema().field(idx).name(), &self.schema().clone()).unwrap()).collect::<Vec<_>>(),
             schema: self.projected_schema.clone(),
             input: merged_stream, 
         };
