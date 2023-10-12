@@ -6,9 +6,9 @@ package com.dmetasoul.lakesoul.meta.jnr;
 
 public class NativeUtils {
 
-    public static boolean NATIVE_METADATA_QUERY_ENABLED = false;
+    public static boolean NATIVE_METADATA_QUERY_ENABLED = true;
 
-    public static boolean NATIVE_METADATA_UPDATE_ENABLED = false;
+    public static boolean NATIVE_METADATA_UPDATE_ENABLED = true;
 
     public static int NATIVE_METADATA_MAX_RETRY_ATTEMPTS = 3;
 

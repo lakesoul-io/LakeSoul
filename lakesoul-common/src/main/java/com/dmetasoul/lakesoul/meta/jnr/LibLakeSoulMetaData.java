@@ -21,7 +21,11 @@ public interface LibLakeSoulMetaData {
 
     void free_tokio_postgres_client(Pointer client);
 
-    void execute_query(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts, @LongLong long addr);
+    Pointer execute_query(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
+
+    void export_bytes_result(BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
+
+    void free_bytes_result(Pointer bytes);
 
     void execute_update(IntegerCallback integerCallback, Pointer runtime, Pointer client, Pointer prepared, Integer type, String texts);
 

@@ -33,15 +33,12 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(NativeMetadataJavaClient.class);
 
     private long timeout;
-    private long bufferSize;
-
-    private long largeBufferSize;
 
     private Pointer tokioPostgresClient = null;
 
-    private Pointer sharedBuffer = null;
+    private Pointer fixedBuffer = null;
 
-    private Pointer largeSharedBuffer = null;
+    private Pointer mutableBuffer = null;
 
     private Pointer tokioRuntime = null;
 
@@ -67,19 +64,19 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     public NativeMetadataJavaClient() {
-        this(5000L, 1 << 12, 1 << 16);
+        this(5000L, 1 << 12);
     }
 
-    public NativeMetadataJavaClient(long timeout, int bufferSize, int largeBufferSize) {
+    public NativeMetadataJavaClient(long timeout, int bufferSize) {
         this.timeout = timeout;
         libLakeSoulMetaData = JnrLoader.get();
         booleanCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
         stringCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
         integerCallbackObjectReferenceManager = Runtime.getRuntime(libLakeSoulMetaData).newObjectReferenceManager();
-        this.bufferSize = bufferSize;
-        this.largeBufferSize = largeBufferSize;
-        sharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
-        largeSharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(largeBufferSize);
+
+        fixedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
+        mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
+
         lock = new ReentrantReadWriteLock();
         initialize();
     }
@@ -234,35 +231,59 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             int retryCounter = NATIVE_METADATA_MAX_RETRY_ATTEMPTS;
             while (retryCounter >= 0) {
                 try {
-                    final CompletableFuture<Integer> future = new CompletableFuture<>();
-                    getLibLakeSoulMetaData().execute_query(
+                    final CompletableFuture<Integer> queryFuture = new CompletableFuture<>();
+                    Pointer queryResult = getLibLakeSoulMetaData().execute_query(
                             new ReferencedIntegerCallback((result, msg) -> {
                                 if (msg.isEmpty()) {
-                                    future.complete(result);
+                                    queryFuture.complete(result);
                                 } else {
-                                    future.completeExceptionally(new SQLException(msg));
+                                    queryFuture.completeExceptionally(new SQLException(msg));
                                 }
                             }, getIntegerCallbackObjectReferenceManager()),
                             tokioRuntime,
                             tokioPostgresClient,
                             preparedStatement,
                             queryType,
-                            String.join(PARAM_DELIM, params),
-                            queryType < DAO_TYPE_QUERY_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address()
+                            String.join(PARAM_DELIM, params)
                     );
-                    Integer len = future.get(timeout, TimeUnit.MILLISECONDS);
+                    Integer len = queryFuture.get(timeout, TimeUnit.MILLISECONDS);
                     if (len < 0) return null;
+                    Integer lenWithTail = len + 1;
+
+                    Pointer buffer = fixedBuffer;
+                    if (lenWithTail > fixedBuffer.size()) {
+                        if (lenWithTail > mutableBuffer.size()) {
+                            mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(lenWithTail);
+                        }
+                        buffer = mutableBuffer;
+                    }
+                    final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
+                    getLibLakeSoulMetaData().export_bytes_result(
+                            new ReferencedBooleanCallback((result, msg) -> {
+                                if (msg.isEmpty()) {
+                                    importFuture.complete(result);
+                                } else {
+                                    importFuture.completeExceptionally(new SQLException(msg));
+                                }
+                            }, getbooleanCallbackObjectReferenceManager()),
+                            queryResult,
+                            len,
+                            buffer.address()
+                    );
+                    Boolean b = importFuture.get(timeout, TimeUnit.MILLISECONDS);
+                    if (!b) return null;
+
                     byte[] bytes = new byte[len];
-                    if (queryType < DAO_TYPE_QUERY_LIST_OFFSET)
-                        sharedBuffer.get(0, bytes, 0, len);
-                    else
-                        largeSharedBuffer.get(0, bytes, 0, len);
-                    return JniWrapper.parseFrom(bytes);
+                    buffer.get(0, bytes, 0, len);
+                    JniWrapper jniWrapper = JniWrapper.parseFrom(bytes);
+                    getLibLakeSoulMetaData().free_bytes_result(queryResult);
+                    return jniWrapper;
+
                 } catch (InvalidProtocolBufferException | InterruptedException | ExecutionException e) {
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 } catch (TimeoutException e) {
@@ -270,7 +291,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         LOG.error("Execute Query {} with {} timeout", queryType, params);
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 }
@@ -281,11 +302,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         return null;
     }
 
-    private void enlargeBufferAndTimeout() {
-        bufferSize *= 2;
-        largeBufferSize *= 2;
-        sharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bufferSize);
-        largeSharedBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(largeBufferSize);
+    private void enlargeTimeout() {
         timeout += 5000L;
     }
 
@@ -315,10 +332,17 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     final CompletableFuture<Integer> future = new CompletableFuture<>();
 
                     byte[] bytes = jniWrapper.toByteArray();
-                    if (insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET)
-                        sharedBuffer.put(0, bytes, 0, bytes.length);
-                    else
-                        largeSharedBuffer.put(0, bytes, 0, bytes.length);
+                    Pointer buffer = fixedBuffer;
+                    if (bytes.length < fixedBuffer.size())
+                        fixedBuffer.put(0, bytes, 0, bytes.length);
+                    else if (bytes.length < mutableBuffer.size()) {
+                        mutableBuffer.put(0, bytes, 0, bytes.length);
+                        buffer = mutableBuffer;
+                    } else {
+                        mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(bytes.length);
+                        mutableBuffer.put(0, bytes, 0, bytes.length);
+                        buffer = mutableBuffer;
+                    }
 
                     getLibLakeSoulMetaData().execute_insert(
                             new ReferencedIntegerCallback((result, msg) -> {
@@ -332,7 +356,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                             tokioPostgresClient,
                             preparedStatement,
                             insertType,
-                            insertType < DAO_TYPE_TRANSACTION_INSERT_LIST_OFFSET ? sharedBuffer.address() : largeSharedBuffer.address(),
+                            buffer.address(),
                             bytes.length
                     );
                     return future.get(timeout, TimeUnit.MILLISECONDS);
@@ -340,7 +364,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 } catch (TimeoutException e) {
@@ -348,7 +372,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         LOG.error("Execute Insert {} with {} timeout", insertType, jniWrapper);
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 }
@@ -386,7 +410,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 } catch (TimeoutException e) {
@@ -394,7 +418,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         LOG.error("Execute Update {} with {} timeout", updateType, params);
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 }
@@ -434,7 +458,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     if (retryCounter == 0) {
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 } catch (TimeoutException e) {
@@ -442,7 +466,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         LOG.error("Execute QueryScalar {} with {} timeout", queryScalarType, params);
                         throw new RuntimeException(e);
                     } else {
-                        enlargeBufferAndTimeout();
+                        enlargeTimeout();
                         retryCounter--;
                     }
                 }

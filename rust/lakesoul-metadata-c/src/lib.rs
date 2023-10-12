@@ -7,10 +7,12 @@
 extern crate core;
 
 use core::ffi::c_ptrdiff_t;
+use std::io::Write;
 use std::ptr::NonNull;
 use std::ffi::{c_char, c_uchar, CString, CStr};
 
 use lakesoul_metadata::{Runtime, Builder, Client, PreparedStatementMap};
+use prost::bytes::BufMut;
 use proto::proto::entity;
 use prost::Message;
 
@@ -62,6 +64,12 @@ pub struct TokioPostgresClient {
 pub struct TokioRuntime {
     private: [u8; 0],
 }
+
+#[repr(C)]
+pub struct BytesResult {
+    private: [u8; 0],
+}
+
 
 fn convert_to_opaque_raw<F, T>(obj: F) -> *mut T {
     Box::into_raw(Box::new(obj)) as *mut T
@@ -179,8 +187,7 @@ pub extern "C" fn execute_query(
     prepared: NonNull<Result<PreparedStatement>>,
     query_type: i32,
     joined_string: *const c_char,
-    addr: c_ptrdiff_t,
-){
+) -> NonNull<Result<BytesResult>> {
     let runtime = unsafe {NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()};
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref()};
     let prepared = unsafe {NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut()};
@@ -194,23 +201,48 @@ pub extern "C" fn execute_query(
     );
     match result {
         Ok(u8_vec) => {
-            let addr = addr as *mut  c_uchar;
-            let _ = u8_vec
-                .iter()
-                .enumerate()
-                .map(
-                    |(idx, byte)| 
-                    unsafe{std::ptr::write::<c_uchar>(addr.wrapping_add(idx), *byte)})
-                .collect::<Vec<_>>();
             let len = u8_vec.len();
-            unsafe{std::ptr::write::<c_uchar>(addr.wrapping_add(len), 0u8)}
             callback( len as i32, CString::new("").unwrap().into_raw());
+            convert_to_nonnull(Result::<BytesResult>::new::<Vec<u8>>(u8_vec))
         }
         Err(e) => {
-            callback(0, CString::new(e.to_string().as_str()).unwrap().into_raw());
+            callback(-1 , CString::new(e.to_string().as_str()).unwrap().into_raw());
+            convert_to_nonnull(Result::<BytesResult>::new::<Vec<u8>>(vec![]))
         }
     }
 }
+
+#[no_mangle]
+pub extern "C" fn export_bytes_result(
+    callback: extern "C" fn(bool, *const c_char),
+    bytes: NonNull<Result<BytesResult>>,
+    len: i32,
+    addr: c_ptrdiff_t,
+) {
+    let len = len as usize;
+    let bytes = unsafe {NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut()};
+
+    if bytes.len() != len {
+        callback( false, CString::new("Size of buffer and result mismatch at export_bytes_result.").unwrap().into_raw());
+        return;
+    }
+    bytes.push(0u8);
+    bytes.shrink_to_fit();
+    
+    let dst = unsafe {
+        std::slice::from_raw_parts_mut(addr as *mut u8, len + 1)
+    };
+    let mut writer = dst.writer();
+    let _ = writer.write_all(bytes.as_slice());
+    
+    callback( true, CString::new("").unwrap().into_raw());
+}
+
+#[no_mangle]
+pub extern "C" fn free_bytes_result(bytes: NonNull<Result<BytesResult>>) {
+    from_nonnull(bytes).free::<Vec<u8>>();
+}
+
 
 #[no_mangle]
 pub extern "C" fn clean_meta_for_test(
