@@ -12,8 +12,8 @@ def from_lakesoul(table_name,
                   partitions=None,
                   retain_partition_columns=False,
                   namespace='default'):
-    import lakesoul.arrow
-    arrow_dataset = lakesoul.arrow.lakesoul_dataset(
+    from ..arrow import lakesoul_dataset
+    arrow_dataset = lakesoul_dataset(
         table_name,
         batch_size=batch_size,
         thread_count=thread_count,
