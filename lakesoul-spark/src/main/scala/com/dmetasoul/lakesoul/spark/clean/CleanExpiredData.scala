@@ -10,13 +10,16 @@ import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
 import org.apache.hadoop.fs.Path
 
-import java.time.{LocalDateTime, Period, ZoneOffset}
+import java.time.{LocalDateTime, Period, ZoneId}
 
 object CleanExpiredData {
 
   private val conn = DBConnector.getConn
+  var serverTimeZone = ""
 
   def main(args: Array[String]): Unit = {
+    val parameter = ParametersTool.fromArgs(args)
+    serverTimeZone = parameter.get("server.time.zone", serverTimeZone)
 
     val spark: SparkSession = SparkSession.builder
       .getOrCreate()
@@ -210,11 +213,11 @@ object CleanExpiredData {
   }
 
   def getExpiredDateZeroTimeStamp(days: Int): Long = {
-    val currentTime = LocalDateTime.now()
+    val currentTime = LocalDateTime.now(ZoneId.of(serverTimeZone))
     val period = Period.ofDays(days)
     val timeLine = currentTime.minus(period)
-    val zeroTime = timeLine.toLocalDate.atStartOfDay()
-    val expiredDateTimestamp = zeroTime.toInstant(ZoneOffset.UTC).toEpochMilli
+    val zeroTime = timeLine.toLocalDate.atStartOfDay(ZoneId.of(serverTimeZone))
+    val expiredDateTimestamp = zeroTime.toInstant().toEpochMilli
     expiredDateTimestamp
   }
 }

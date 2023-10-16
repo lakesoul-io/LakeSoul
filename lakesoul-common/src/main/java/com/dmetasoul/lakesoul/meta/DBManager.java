@@ -200,7 +200,7 @@ public class DBManager {
         if (StringUtils.isNotBlank(partitionDesc)) {
             deleteSinglePartitionMetaInfo(tableId, partitionDesc, utcMills, fileOps, deleteFilePathList);
         } else {
-            List<String> allPartitionDesc = partitionInfoDao.getAllPartitionDescByTableId(tableId);
+            List<String> allPartitionDesc = getTableAllPartitionDesc(tableId);
             allPartitionDesc.forEach(partition -> deleteSinglePartitionMetaInfo(tableId, partition, utcMills, fileOps,
                     deleteFilePathList));
         }
@@ -880,6 +880,10 @@ public class DBManager {
             newProperties.put("domain", originProperties.get("domain"));
         }
         namespaceDao.updatePropertiesByNamespace(namespace, newProperties.toJSONString());
+    }
+
+    public List<String> getTableAllPartitionDesc(String tableId) {
+        return partitionInfoDao.getAllPartitionDescByTableId(tableId);
     }
 
     public void deleteNamespace(String namespace) {
