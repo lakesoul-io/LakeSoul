@@ -14,7 +14,6 @@ pub use datafusion::error::{DataFusionError, Result};
 
 use datafusion::prelude::SessionContext;
 
-
 use core::pin::Pin;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::StreamExt;
@@ -23,8 +22,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::datasource::parquet_source::{prune_filter_and_execute, LakeSoulParquetProvider};
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
-use crate::datasource::parquet_source::{LakeSoulParquetProvider, prune_filter_and_execute};
 
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
@@ -55,7 +54,13 @@ impl LakeSoulReader {
             let source = source.build_with_context(&self.sess_ctx).await.unwrap();
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
-            let stream = prune_filter_and_execute(dataframe, schema.clone(), self.config.filter_strs.clone(), self.config.batch_size).await?;
+            let stream = prune_filter_and_execute(
+                dataframe,
+                schema.clone(),
+                self.config.filter_strs.clone(),
+                self.config.batch_size,
+            )
+            .await?;
             self.schema = Some(schema.clone());
             self.stream = Some(stream);
 

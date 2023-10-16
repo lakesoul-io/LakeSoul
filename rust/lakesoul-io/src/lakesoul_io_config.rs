@@ -310,7 +310,7 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
-        .with_parquet_pruning(false)
+        .with_parquet_pruning(true)
         .with_prefetch(config.prefetch_size);
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
