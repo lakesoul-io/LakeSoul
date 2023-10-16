@@ -11,11 +11,12 @@ import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
 import org.apache.hadoop.fs.Path
 
 import java.time.{LocalDateTime, Period, ZoneId}
+import java.util.TimeZone
 
 object CleanExpiredData {
 
   private val conn = DBConnector.getConn
-  var serverTimeZone = ""
+  var serverTimeZone = TimeZone.getDefault.getID
 
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
