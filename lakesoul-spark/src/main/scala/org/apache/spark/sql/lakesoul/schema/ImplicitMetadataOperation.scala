@@ -12,6 +12,7 @@ import org.apache.spark.sql.lakesoul.utils.{PartitionUtils, SparkUtil, TableInfo
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.arrow.ArrowUtils
 
 
 /**
@@ -144,7 +145,7 @@ trait ImplicitMetadataOperation extends Logging {
           namespace = table_info.namespace,
           table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
           table_id = table_info.table_id,
-          table_schema = dataSchema.json,
+          table_schema = ArrowUtils.toArrowSchema(dataSchema).toJson,
           range_column = normalizedRangePartitionCols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
           hash_column = normalizedHashPartitionCols.mkString(LAKESOUL_HASH_PARTITION_SPLITTER),
           bucket_num = realHashBucketNum,
@@ -153,14 +154,14 @@ trait ImplicitMetadataOperation extends Logging {
     }
     else if (isOverwriteMode && canOverwriteSchema && isNewSchema) {
       val newTableInfo = tc.tableInfo.copy(
-        table_schema = dataSchema.json
+        table_schema = ArrowUtils.toArrowSchema(dataSchema).toJson
       )
 
       tc.updateTableInfo(newTableInfo)
     } else if (isNewSchema && canMergeSchema) {
       logInfo(s"New merged schema: ${mergedSchema.treeString}")
 
-      tc.updateTableInfo(tc.tableInfo.copy(table_schema = mergedSchema.json))
+      tc.updateTableInfo(tc.tableInfo.copy(table_schema = ArrowUtils.toArrowSchema(mergedSchema).toJson))
     } else if (isNewSchema) {
       val errorBuilder = new MetadataMismatchErrorBuilder
       if (isNewSchema) {

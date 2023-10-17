@@ -5,15 +5,15 @@
 package org.apache.spark.sql.arrow
 
 import scala.collection.JavaConverters._
-
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
+import java.util
 
 private[sql] object ArrowUtils {
 
@@ -70,21 +70,27 @@ private[sql] object ArrowUtils {
   }
 
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
-  def toArrowField(
-      name: String, dt: DataType, nullable: Boolean, timeZoneId: String): Field = {
+  def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String, metadata: util.Map[String, String] = null): Field = {
+
     dt match {
       case ArrayType(elementType, containsNull) =>
-        val fieldType = new FieldType(nullable, ArrowType.List.INSTANCE, null)
+        val fieldType = new FieldType(nullable, ArrowType.List.INSTANCE, null, metadata)
         new Field(name, fieldType,
-          Seq(toArrowField("element", elementType, containsNull, timeZoneId)).asJava)
+          Seq(toArrowField("element", elementType, containsNull, timeZoneId, metadata)).asJava)
       case StructType(fields) =>
-        val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null)
+        val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null, metadata)
         new Field(name, fieldType,
           fields.map { field =>
-            toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
+            val comment = field.getComment
+            val child_metadata = if (comment.isDefined) {
+              val map = new util.HashMap[String, String]
+              map.put("spark_comment", comment.get)
+              map
+            } else null
+            toArrowField(field.name, field.dataType, field.nullable, timeZoneId, child_metadata)
           }.toSeq.asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
-        val mapType = new FieldType(nullable, new ArrowType.Map(false), null)
+        val mapType = new FieldType(nullable, new ArrowType.Map(false), null, metadata)
         // Note: Map Type struct can not be null, Struct Type key field can not be null
         new Field(name, mapType,
           Seq(toArrowField(MapVector.DATA_VECTOR_NAME,
@@ -94,7 +100,7 @@ private[sql] object ArrowUtils {
             nullable = false,
             timeZoneId)).asJava)
       case dataType =>
-        val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null)
+        val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null, metadata)
         new Field(name, fieldType, Seq.empty[Field].asJava)
     }
   }
@@ -113,7 +119,11 @@ private[sql] object ArrowUtils {
       case ArrowType.Struct.INSTANCE =>
         val fields = field.getChildren().asScala.map { child =>
           val dt = fromArrowField(child)
-          StructField(child.getName, dt, child.isNullable)
+          val comment = child.getMetadata.get("spark_comment")
+          if (comment == null)
+            StructField(child.getName, dt, child.isNullable)
+          else
+            StructField(child.getName, dt, child.isNullable).withComment(comment)
         }
         StructType(fields.toSeq)
       case arrowType => fromArrowType(arrowType)
@@ -121,16 +131,26 @@ private[sql] object ArrowUtils {
   }
 
   /** Maps schema from Spark to Arrow. NOTE: timeZoneId required for TimestampType in StructType */
-  def toArrowSchema(schema: StructType, timeZoneId: String): Schema = {
+  def toArrowSchema(schema: StructType, timeZoneId: String = "UTC"): Schema = {
     new Schema(schema.map { field =>
-      toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
+      val comment = field.getComment
+      val metadata = if (comment.isDefined) {
+        val map = new util.HashMap[String, String]
+        map.put("spark_comment", comment.get)
+        map
+      } else null
+      toArrowField(field.name, field.dataType, field.nullable, timeZoneId, metadata)
     }.asJava)
   }
 
   def fromArrowSchema(schema: Schema): StructType = {
     StructType(schema.getFields.asScala.map { field =>
       val dt = fromArrowField(field)
-      StructField(field.getName, dt, field.isNullable)
+      val comment = field.getMetadata.get("spark_comment")
+      if (comment == null)
+        StructField(field.getName, dt, field.isNullable)
+      else
+        StructField(field.getName, dt, field.isNullable).withComment(comment)
     }.toSeq)
   }
 

@@ -8,6 +8,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableHandle;
@@ -16,8 +17,12 @@ import com.facebook.presto.lakesoul.util.PrestoUtil;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.google.common.collect.ImmutableList;
+import org.apache.arrow.c.ArrowSchema;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.types.StructType;
 
+import java.io.IOException;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -72,9 +77,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         TableInfo tableInfo = dbManager.getTableInfoByTableId(((LakeSoulTableHandle) table).getId());
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
-                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
+        if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+            try {
+                arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            StructType struct = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        }
         HashMap<String, ColumnHandle> allColumns = new HashMap<>();
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
@@ -119,9 +132,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             throw new RuntimeException("no such table: " + handle.getNames());
         }
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
-                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
+        if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+            try {
+                arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            StructType struct = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        }
 
         List<ColumnMetadata> columns = new LinkedList<>();
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
@@ -162,9 +183,19 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             throw new RuntimeException("no such table: " + table.getNames());
         }
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
-                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
+        if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+            try {
+                arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            StructType struct = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        }
+
         HashMap<String, ColumnHandle> map = new HashMap<>();
         String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
@@ -191,9 +222,17 @@ public class LakeSoulMetadata implements ConnectorMetadata {
             throw new RuntimeException("no such table: " + handle.getTableHandle().getNames());
         }
 
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableInfo.getTableSchema());
-        org.apache.arrow.vector.types.pojo.Schema arrowSchema =
-                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
+        if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+            try {
+                arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            StructType struct = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        }
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             Map<String, Object> properties = new HashMap<>();
             for (Map.Entry<String, String> entry : field.getMetadata().entrySet()) {
