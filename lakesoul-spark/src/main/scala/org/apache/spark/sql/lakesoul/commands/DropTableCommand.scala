@@ -27,12 +27,12 @@ object DropTableCommand {
     val table_id = tableInfo.table_id
     val table_path = tableInfo.table_path_s
     val short_table_name = tableInfo.short_table_name
-    MetaVersion.deleteTableInfo(table_path.get, table_id, table_namespace)
+    SparkMetaVersion.deleteTableInfo(table_path.get, table_id, table_namespace)
     if (short_table_name.isDefined) {
-      MetaVersion.deleteShortTableName(short_table_name.get, table_path.get, table_namespace)
+      SparkMetaVersion.deleteShortTableName(short_table_name.get, table_path.get, table_namespace)
     }
     TimeUnit.SECONDS.sleep(WAIT_TIME)
-    MetaVersion.dropPartitionInfoByTableId(table_id)
+    SparkMetaVersion.dropPartitionInfoByTableId(table_id)
     DataOperation.dropDataInfoData(table_id)
     val path = new Path(table_path.get)
     val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
@@ -65,7 +65,7 @@ object DropPartitionCommand extends PredicateHelper {
 
   def dropPartition(table_name: String, table_id: String, range_value: String): Unit = {
     //just add partition version with non-value snapshot;not delete related datainfo for SCD
-    MetaVersion.dropPartitionInfoByRangeId(table_id, range_value)
+    SparkMetaVersion.dropPartitionInfoByRangeId(table_id, range_value)
   }
 
 
@@ -76,7 +76,7 @@ object CleanupPartitionDataCommand extends PredicateHelper {
     val tableInfo = snapshot.getTableInfo
     val table_id = tableInfo.table_id
     val table_path = tableInfo.table_path_s
-    val deleteFiles = MetaVersion.cleanMetaUptoTime(table_id, partitionDesc, endTime)
+    val deleteFiles = SparkMetaVersion.cleanMetaUptoTime(table_id, partitionDesc, endTime)
     if (null != deleteFiles && deleteFiles.length > 0) {
       val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
       val path = new Path(table_path.get)

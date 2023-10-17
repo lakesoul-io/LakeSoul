@@ -241,7 +241,7 @@ trait Transaction extends TransactionalWrite with Logging {
     snapshotManagement.lockInterruptibly {
       assert(!committed, "Transaction already committed.")
       if (isFirstCommit) {
-        MetaVersion.createNewTable(
+        SparkMetaVersion.createNewTable(
           tableInfo.namespace,
           table_path,
           if (shortTableName.isDefined) shortTableName.get else "",

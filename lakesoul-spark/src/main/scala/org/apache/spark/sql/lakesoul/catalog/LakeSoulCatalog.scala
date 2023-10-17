@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -90,7 +90,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
         if (LakeSoulSourceUtils.isLakeSoulTableExists(ident.name())) Some(ident.name()) else None)
     } else {
       (Option(properties.get("location")),
-        Option(MetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._2))
+        Option(SparkMetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._2))
     }
     val storage = DataSource.buildStorageFormatFromOptions(tableProperties.toMap)
       .copy(locationUri = location.map(CatalogUtils.stringToURI))
@@ -130,7 +130,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
       case _ => identifier
     }
     if (isPathIdentifier(ident)) {
-      val tableInfo = MetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
+      val tableInfo = SparkMetaVersion.getTableInfo(ident.namespace().mkString("."), ident.name())
       if (tableInfo == null) {
         throw new NoSuchTableException(ident)
       }
@@ -141,7 +141,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
         Some(Identifier.of(ident.namespace(), tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString)).toString)
       )
     } else if (isNameIdentifier(ident)) {
-      val tablePath = MetaVersion.getTablePathFromShortTableName(ident.name, ident.namespace().mkString("."))
+      val tablePath = SparkMetaVersion.getTablePathFromShortTableName(ident.name, ident.namespace().mkString("."))
       if (tablePath == null) {
         throw new NoSuchTableException(ident)
       }
@@ -497,7 +497,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
   // Namespace
   //=============
 
-  override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]):Unit = {
+  override def createNamespace(namespaces: Array[String], metadata: util.Map[String, String]): Unit = {
     LakeSoulCatalog.createNamespace(namespaces)
   }
 
@@ -580,9 +580,9 @@ trait SupportsPathIdentifier extends TableCatalog {
   protected def isNameIdentifier(ident: Identifier): Boolean = {
     ident.namespace() match {
       case Array() =>
-        MetaVersion.isShortTableNameExists(ident.name())._1
+        SparkMetaVersion.isShortTableNameExists(ident.name())._1
       case _ =>
-        MetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._1
+        SparkMetaVersion.isShortTableNameExists(ident.name(), ident.namespace().mkString("."))._1
     }
   }
 
@@ -613,14 +613,14 @@ object LakeSoulCatalog {
   }
 
   def listTables(namespaces: Array[String]): Array[Identifier] = {
-    MetaVersion.listTables(namespaces).asScala.map(tablePath => {
-      val tableInfo = MetaVersion.getTableInfo(tablePath)
+    SparkMetaVersion.listTables(namespaces).asScala.map(tablePath => {
+      val tableInfo = SparkMetaVersion.getTableInfo(tablePath)
       Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString))
     }).toArray
   }
 
   def createNamespace(namespace: Array[String]): Unit = {
-    MetaVersion.createNamespace(namespace.mkString("."))
+    SparkMetaVersion.createNamespace(namespace.mkString("."))
   }
 
 
@@ -638,25 +638,25 @@ object LakeSoulCatalog {
   }
 
   def listNamespaces(): Array[Array[String]] = {
-    MetaVersion.listNamespaces().map(namespace=>namespace.split("\\."))
+    SparkMetaVersion.listNamespaces().map(namespace => namespace.split("\\."))
   }
 
   def namespaceExists(namespace: Array[String]): Boolean = {
-    MetaVersion.isNamespaceExists(namespace.mkString("."))
+    SparkMetaVersion.isNamespaceExists(namespace.mkString("."))
   }
 
   def dropNamespace(namespace: Array[String]): Boolean = {
-    MetaVersion.dropNamespaceByNamespace(namespace.mkString("."))
+    SparkMetaVersion.dropNamespaceByNamespace(namespace.mkString("."))
     if (isCurrentNamespace(namespace)) {
       useNamespace(Array("default"))
     }
     true
   }
 
-//  just for test
-  def cleanMeta():Unit ={
-    MetaVersion.cleanMeta()
+  //  just for test
+  def cleanMeta(): Unit = {
+    SparkMetaVersion.cleanMeta()
   }
 
-  final val CATALOG_NAME:String = "lakesoul"
+  final val CATALOG_NAME: String = "lakesoul"
 }

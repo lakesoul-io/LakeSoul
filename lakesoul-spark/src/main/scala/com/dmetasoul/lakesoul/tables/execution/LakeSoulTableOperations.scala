@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.tables.execution
 
 import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{setCompactionExpiredDays, setTableDataExpiredDays, cancelTableDataExpiredDays, cancelCompactionExpiredDays}
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedAttribute}
@@ -208,7 +208,7 @@ trait LakeSoulTableOperations extends AnalysisHelper {
     val snapshot = snapshotManagement.snapshot
     val tableInfo = snapshot.getTableInfo
 
-    if (!MetaVersion.isTableIdExists(tableInfo.table_path_s.get, tableInfo.table_id)) {
+    if (!SparkMetaVersion.isTableIdExists(tableInfo.table_path_s.get, tableInfo.table_id)) {
       LakeSoulErrors.tableNotFoundException(tableInfo.table_path_s.get, tableInfo.table_id)
     }
     DropTableCommand.run(snapshot)
