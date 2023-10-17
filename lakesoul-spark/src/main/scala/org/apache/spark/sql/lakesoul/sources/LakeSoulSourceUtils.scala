@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.sources
 
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaCommit, MetaUtils, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaCommit, MetaUtils, SparkMetaVersion}
 
 import java.util.Locale
 import org.apache.spark.rdd.RDD
@@ -31,15 +31,15 @@ object LakeSoulSourceUtils {
 
   def isLakeSoulTableExists(path: String): Boolean = {
     val table_name = path
-    MetaVersion.isTableExists(table_name)
+    SparkMetaVersion.isTableExists(table_name)
   }
 
   def isLakeSoulShortTableNameExists(shortName: String): Boolean = {
-    MetaVersion.isShortTableNameExists(shortName)._1
+    SparkMetaVersion.isShortTableNameExists(shortName)._1
   }
 
   def isLakeSoulShortTableNameExists(shortName: String, namespace: String): Boolean = {
-    MetaVersion.isShortTableNameExists(shortName, namespace)._1
+    SparkMetaVersion.isShortTableNameExists(shortName, namespace)._1
   }
 
   /** Check whether this table is a lakesoul table based on information from the Catalog. */
@@ -48,7 +48,7 @@ object LakeSoulSourceUtils {
   }
 
   def getLakeSoulPathByTableIdentifier(table: TableIdentifier): Option[String] = {
-    MetaVersion.isShortTableNameExists(table.table,
+    SparkMetaVersion.isShortTableNameExists(table.table,
       table.database.getOrElse(LakeSoulCatalog.showCurrentNamespace()(0))) match {
       case (true, path) => Some(path)
       case _ => None

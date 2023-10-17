@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{MetaVersion, StreamingRecord}
+import com.dmetasoul.lakesoul.meta.{SparkMetaVersion, StreamingRecord}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.streaming.MemoryStream
@@ -170,7 +170,7 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           (1, 1000), (2, 2000), (3, 3000))
 
         val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
+        val tableInfo = SparkMetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.hash_column.equals("id")
           && tableInfo.range_column.isEmpty
           && tableInfo.bucket_num == 2)
@@ -237,7 +237,7 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           (1, 1000), (2, 2000), (3, 3000))
 
         val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
+        val tableInfo = SparkMetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.range_column.equals("id")
           && tableInfo.hash_column.isEmpty
           && tableInfo.bucket_num == -1)
@@ -285,7 +285,7 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
           (1, 1, 1000), (2, 2, 2000), (3, 3, 3000))
 
         val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(outputDir.getCanonicalPath)).toString)
-        val tableInfo = MetaVersion.getTableInfo(snapshotManagement.table_path)
+        val tableInfo = SparkMetaVersion.getTableInfo(snapshotManagement.table_path)
         assert(tableInfo.range_column.equals("range")
           && tableInfo.hash_column.equals("hash")
           && tableInfo.bucket_num == 2)

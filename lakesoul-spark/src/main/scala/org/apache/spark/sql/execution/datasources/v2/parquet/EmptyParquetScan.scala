@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
@@ -27,15 +27,15 @@ import java.util.TimeZone
 import scala.collection.JavaConverters.mapAsScalaMapConverter
 
 case class EmptyParquetScan(sparkSession: SparkSession,
-                             hadoopConf: Configuration,
-                             fileIndex: LakeSoulFileIndexV2,
-                             dataSchema: StructType,
-                             readDataSchema: StructType,
-                             readPartitionSchema: StructType,
-                             pushedFilters: Array[Filter],
-                             options: CaseInsensitiveStringMap,
-                             partitionFilters: Seq[Expression] = Seq.empty,
-                             dataFilters: Seq[Expression] = Seq.empty) extends FileScan with MicroBatchStream{
+                            hadoopConf: Configuration,
+                            fileIndex: LakeSoulFileIndexV2,
+                            dataSchema: StructType,
+                            readDataSchema: StructType,
+                            readPartitionSchema: StructType,
+                            pushedFilters: Array[Filter],
+                            options: CaseInsensitiveStringMap,
+                            partitionFilters: Seq[Expression] = Seq.empty,
+                            dataFilters: Seq[Expression] = Seq.empty) extends FileScan with MicroBatchStream {
   override def isSplitable(path: Path): Boolean = true
 
   val snapshotManagement: SnapshotManagement = fileIndex.snapshotManagement
@@ -86,11 +86,11 @@ case class EmptyParquetScan(sparkSession: SparkSession,
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = this
 
   override def latestOffset: Offset = {
-    val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC,""))
+    val endTimestamp = SparkMetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
     LongOffset(endTimestamp)
   }
 
-  override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition]  = {
+  override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
     snapshotManagement.updateSnapshotForVersion(options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""), start.toString.toLong, end.toString.toLong, ReadType.INCREMENTAL_READ)
     partitions.toArray
   }

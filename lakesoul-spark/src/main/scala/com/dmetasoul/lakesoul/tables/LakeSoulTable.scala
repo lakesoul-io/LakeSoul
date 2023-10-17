@@ -5,7 +5,7 @@
 package com.dmetasoul.lakesoul.tables
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import com.dmetasoul.lakesoul.tables.execution.LakeSoulTableOperations
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -24,283 +24,283 @@ import scala.collection.JavaConverters._
 class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   extends LakeSoulTableOperations with Logging {
   /**
-   * Apply an alias to the LakeSoulTableRel. This is similar to `Dataset.as(alias)` or
-   * SQL `tableName AS alias`.
-   *
-   */
+    * Apply an alias to the LakeSoulTableRel. This is similar to `Dataset.as(alias)` or
+    * SQL `tableName AS alias`.
+    *
+    */
   def as(alias: String): LakeSoulTable = new LakeSoulTable(df.as(alias), snapshotManagement)
 
   /**
-   * Apply an alias to the LakeSoulTableRel. This is similar to `Dataset.as(alias)` or
-   * SQL `tableName AS alias`.
-   *
-   */
+    * Apply an alias to the LakeSoulTableRel. This is similar to `Dataset.as(alias)` or
+    * SQL `tableName AS alias`.
+    *
+    */
   def alias(alias: String): LakeSoulTable = as(alias)
 
 
   /**
-   * Get a DataFrame (that is, Dataset[Row]) representation of this LakeSoulTableRel.
-   *
-   */
+    * Get a DataFrame (that is, Dataset[Row]) representation of this LakeSoulTableRel.
+    *
+    */
   def toDF: Dataset[Row] = df
 
 
   /**
-   * Delete data from the table that match the given `condition`.
-   *
-   * @param condition Boolean SQL expression
-   */
+    * Delete data from the table that match the given `condition`.
+    *
+    * @param condition Boolean SQL expression
+    */
   def delete(condition: String): Unit = {
     delete(functions.expr(condition))
   }
 
   /**
-   * Delete data from the table that match the given `condition`.
-   *
-   * @param condition Boolean SQL expression
-   */
+    * Delete data from the table that match the given `condition`.
+    *
+    * @param condition Boolean SQL expression
+    */
   def delete(condition: Column): Unit = {
     executeDelete(Some(condition.expr))
   }
 
   /**
-   * Delete data from the table.
-   *
-   */
+    * Delete data from the table.
+    *
+    */
   def delete(): Unit = {
     executeDelete(None)
   }
 
 
   /**
-   * Update rows in the table based on the rules defined by `set`.
-   *
-   * Scala example to increment the column `data`.
-   * {{{
-   *    import org.apache.spark.sql.functions._
-   *
-   *    lakeSoulTable.update(Map("data" -> col("data") + 1))
-   * }}}
-   *
-   * @param set rules to update a row as a Scala map between target column names and
-   *            corresponding update expressions as Column objects.
-   */
+    * Update rows in the table based on the rules defined by `set`.
+    *
+    * Scala example to increment the column `data`.
+    * {{{
+    *    import org.apache.spark.sql.functions._
+    *
+    *    lakeSoulTable.update(Map("data" -> col("data") + 1))
+    * }}}
+    *
+    * @param set rules to update a row as a Scala map between target column names and
+    *            corresponding update expressions as Column objects.
+    */
   def update(set: Map[String, Column]): Unit = {
     executeUpdate(set, None)
   }
 
   /**
-   * Update rows in the table based on the rules defined by `set`.
-   *
-   * Java example to increment the column `data`.
-   * {{{
-   *    import org.apache.spark.sql.Column;
-   *    import org.apache.spark.sql.functions;
-   *
-   *    lakeSoulTable.update(
-   *      new HashMap<String, Column>() {{
-   *        put("data", functions.col("data").plus(1));
-   *      }}
-   *    );
-   * }}}
-   *
-   * @param set rules to update a row as a Java map between target column names and
-   *            corresponding update expressions as Column objects.
-   */
+    * Update rows in the table based on the rules defined by `set`.
+    *
+    * Java example to increment the column `data`.
+    * {{{
+    *    import org.apache.spark.sql.Column;
+    *    import org.apache.spark.sql.functions;
+    *
+    *    lakeSoulTable.update(
+    *      new HashMap<String, Column>() {{
+    *        put("data", functions.col("data").plus(1));
+    *      }}
+    *    );
+    * }}}
+    *
+    * @param set rules to update a row as a Java map between target column names and
+    *            corresponding update expressions as Column objects.
+    */
   def update(set: java.util.Map[String, Column]): Unit = {
     executeUpdate(set.asScala.toMap, None)
   }
 
   /**
-   * Update data from the table on the rows that match the given `condition`
-   * based on the rules defined by `set`.
-   *
-   * Scala example to increment the column `data`.
-   * {{{
-   *    import org.apache.spark.sql.functions._
-   *
-   *    lakeSoulTable.update(
-   *      col("date") > "2018-01-01",
-   *      Map("data" -> col("data") + 1))
-   * }}}
-   *
-   * @param condition boolean expression as Column object specifying which rows to update.
-   * @param set       rules to update a row as a Scala map between target column names and
-   *                  corresponding update expressions as Column objects.
-   */
+    * Update data from the table on the rows that match the given `condition`
+    * based on the rules defined by `set`.
+    *
+    * Scala example to increment the column `data`.
+    * {{{
+    *    import org.apache.spark.sql.functions._
+    *
+    *    lakeSoulTable.update(
+    *      col("date") > "2018-01-01",
+    *      Map("data" -> col("data") + 1))
+    * }}}
+    *
+    * @param condition boolean expression as Column object specifying which rows to update.
+    * @param set       rules to update a row as a Scala map between target column names and
+    *                  corresponding update expressions as Column objects.
+    */
   def update(condition: Column, set: Map[String, Column]): Unit = {
     executeUpdate(set, Some(condition))
   }
 
   /**
-   * Update data from the table on the rows that match the given `condition`
-   * based on the rules defined by `set`.
-   *
-   * Java example to increment the column `data`.
-   * {{{
-   *    import org.apache.spark.sql.Column;
-   *    import org.apache.spark.sql.functions;
-   *
-   *    lakeSoulTable.update(
-   *      functions.col("date").gt("2018-01-01"),
-   *      new HashMap<String, Column>() {{
-   *        put("data", functions.col("data").plus(1));
-   *      }}
-   *    );
-   * }}}
-   *
-   * @param condition boolean expression as Column object specifying which rows to update.
-   * @param set       rules to update a row as a Java map between target column names and
-   *                  corresponding update expressions as Column objects.
-   */
+    * Update data from the table on the rows that match the given `condition`
+    * based on the rules defined by `set`.
+    *
+    * Java example to increment the column `data`.
+    * {{{
+    *    import org.apache.spark.sql.Column;
+    *    import org.apache.spark.sql.functions;
+    *
+    *    lakeSoulTable.update(
+    *      functions.col("date").gt("2018-01-01"),
+    *      new HashMap<String, Column>() {{
+    *        put("data", functions.col("data").plus(1));
+    *      }}
+    *    );
+    * }}}
+    *
+    * @param condition boolean expression as Column object specifying which rows to update.
+    * @param set       rules to update a row as a Java map between target column names and
+    *                  corresponding update expressions as Column objects.
+    */
   def update(condition: Column, set: java.util.Map[String, Column]): Unit = {
     executeUpdate(set.asScala.toMap, Some(condition))
   }
 
   /**
-   * Update rows in the table based on the rules defined by `set`.
-   *
-   * Scala example to increment the column `data`.
-   * {{{
-   *    lakeSoulTable.updateExpr(Map("data" -> "data + 1")))
-   * }}}
-   *
-   * @param set rules to update a row as a Scala map between target column names and
-   *            corresponding update expressions as SQL formatted strings.
-   */
+    * Update rows in the table based on the rules defined by `set`.
+    *
+    * Scala example to increment the column `data`.
+    * {{{
+    *    lakeSoulTable.updateExpr(Map("data" -> "data + 1")))
+    * }}}
+    *
+    * @param set rules to update a row as a Scala map between target column names and
+    *            corresponding update expressions as SQL formatted strings.
+    */
   def updateExpr(set: Map[String, String]): Unit = {
     executeUpdate(toStrColumnMap(set), None)
   }
 
   /**
-   * Update rows in the table based on the rules defined by `set`.
-   *
-   * Java example to increment the column `data`.
-   * {{{
-   *    lakeSoulTable.updateExpr(
-   *      new HashMap<String, String>() {{
-   *        put("data", "data + 1");
-   *      }}
-   *    );
-   * }}}
-   *
-   * @param set rules to update a row as a Java map between target column names and
-   *            corresponding update expressions as SQL formatted strings.
-   */
+    * Update rows in the table based on the rules defined by `set`.
+    *
+    * Java example to increment the column `data`.
+    * {{{
+    *    lakeSoulTable.updateExpr(
+    *      new HashMap<String, String>() {{
+    *        put("data", "data + 1");
+    *      }}
+    *    );
+    * }}}
+    *
+    * @param set rules to update a row as a Java map between target column names and
+    *            corresponding update expressions as SQL formatted strings.
+    */
   def updateExpr(set: java.util.Map[String, String]): Unit = {
     executeUpdate(toStrColumnMap(set.asScala.toMap), None)
   }
 
   /**
-   * Update data from the table on the rows that match the given `condition`,
-   * which performs the rules defined by `set`.
-   *
-   * Scala example to increment the column `data`.
-   * {{{
-   *    lakeSoulTable.update(
-   *      "date > '2018-01-01'",
-   *      Map("data" -> "data + 1"))
-   * }}}
-   *
-   * @param condition boolean expression as SQL formatted string object specifying
-   *                  which rows to update.
-   * @param set       rules to update a row as a Scala map between target column names and
-   *                  corresponding update expressions as SQL formatted strings.
-   */
+    * Update data from the table on the rows that match the given `condition`,
+    * which performs the rules defined by `set`.
+    *
+    * Scala example to increment the column `data`.
+    * {{{
+    *    lakeSoulTable.update(
+    *      "date > '2018-01-01'",
+    *      Map("data" -> "data + 1"))
+    * }}}
+    *
+    * @param condition boolean expression as SQL formatted string object specifying
+    *                  which rows to update.
+    * @param set       rules to update a row as a Scala map between target column names and
+    *                  corresponding update expressions as SQL formatted strings.
+    */
   def updateExpr(condition: String, set: Map[String, String]): Unit = {
     executeUpdate(toStrColumnMap(set), Some(functions.expr(condition)))
   }
 
   /**
-   * Update data from the table on the rows that match the given `condition`,
-   * which performs the rules defined by `set`.
-   *
-   * Java example to increment the column `data`.
-   * {{{
-   *    lakeSoulTable.update(
-   *      "date > '2018-01-01'",
-   *      new HashMap<String, String>() {{
-   *        put("data", "data + 1");
-   *      }}
-   *    );
-   * }}}
-   *
-   * @param condition boolean expression as SQL formatted string object specifying
-   *                  which rows to update.
-   * @param set       rules to update a row as a Java map between target column names and
-   *                  corresponding update expressions as SQL formatted strings.
-   */
+    * Update data from the table on the rows that match the given `condition`,
+    * which performs the rules defined by `set`.
+    *
+    * Java example to increment the column `data`.
+    * {{{
+    *    lakeSoulTable.update(
+    *      "date > '2018-01-01'",
+    *      new HashMap<String, String>() {{
+    *        put("data", "data + 1");
+    *      }}
+    *    );
+    * }}}
+    *
+    * @param condition boolean expression as SQL formatted string object specifying
+    *                  which rows to update.
+    * @param set       rules to update a row as a Java map between target column names and
+    *                  corresponding update expressions as SQL formatted strings.
+    */
   def updateExpr(condition: String, set: java.util.Map[String, String]): Unit = {
     executeUpdate(toStrColumnMap(set.asScala.toMap), Some(functions.expr(condition)))
   }
 
 
   /**
-   * Upsert LakeSoul table with source dataframe.
-   *
-   * Example:
-   * {{{
-   *   lakeSoulTable.upsert(sourceDF)
-   *   lakeSoulTable.upsert(sourceDF, "range_col1='a' and range_col2='b'")
-   * }}}
-   *
-   * @param source    source dataframe
-   * @param condition you can define a condition to filter LakeSoul data
-   */
+    * Upsert LakeSoul table with source dataframe.
+    *
+    * Example:
+    * {{{
+    *   lakeSoulTable.upsert(sourceDF)
+    *   lakeSoulTable.upsert(sourceDF, "range_col1='a' and range_col2='b'")
+    * }}}
+    *
+    * @param source    source dataframe
+    * @param condition you can define a condition to filter LakeSoul data
+    */
   def upsert(source: DataFrame, condition: String = ""): Unit = {
     executeUpsert(this, source, condition)
   }
 
   /**
-   * Upsert LakeSoul join table with delta dataframe from a dimension table.
-   *
-   * Example:
-   * {{{
-   *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"))
-   *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"), Seq("range1=1", "range2=2")
-   * }}}
-   *
-   * @param deltaDF       delta dataframe from a dimension table
-   * @param joinKey       used to join with fact table
-   * @param partitionDesc used to join with data in specific range partition
-   * @param condition     you can define a condition to filter LakeSoul data
-   */
+    * Upsert LakeSoul join table with delta dataframe from a dimension table.
+    *
+    * Example:
+    * {{{
+    *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"))
+    *   lakeSoulTable.upsertOnJoinKey(deltaDF, Seq("uuid"), Seq("range1=1", "range2=2")
+    * }}}
+    *
+    * @param deltaDF       delta dataframe from a dimension table
+    * @param joinKey       used to join with fact table
+    * @param partitionDesc used to join with data in specific range partition
+    * @param condition     you can define a condition to filter LakeSoul data
+    */
   def upsertOnJoinKey(deltaDF: DataFrame, joinKey: Seq[String], partitionDesc: Seq[String] = Seq.empty[String], condition: String = ""): Unit = {
     executeUpsertOnJoinKey(deltaDF, joinKey, partitionDesc, condition)
   }
 
   /**
-   * Upsert LakeSoul join table with delta dataframe from fact table.
-   *
-   * Example:
-   * {{{
-   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"))
-   *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"), Seq(Seq("range1=1","range2=2")))
-   * }}}
-   *
-   * @param deltaDF            delta dataframe from fact table(join table)
-   * @param tablePaths         paths of dimension tables which need to join with deltaDf
-   * @param tablePartitionDesc used to join with data in specific range partition
-   * @param condition          you can define a condition to filter LakeSoul data
-   */
+    * Upsert LakeSoul join table with delta dataframe from fact table.
+    *
+    * Example:
+    * {{{
+    *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"))
+    *   lakeSoulTable.joinWithTablePathsAndUpsert(deltaDF, Seq("s3://lakesoul/dimension_table"), Seq(Seq("range1=1","range2=2")))
+    * }}}
+    *
+    * @param deltaDF            delta dataframe from fact table(join table)
+    * @param tablePaths         paths of dimension tables which need to join with deltaDf
+    * @param tablePartitionDesc used to join with data in specific range partition
+    * @param condition          you can define a condition to filter LakeSoul data
+    */
   def joinWithTablePathsAndUpsert(deltaDF: DataFrame, tablePaths: Seq[String], tablePartitionDesc: Seq[Seq[String]] = Seq.empty[Seq[String]], condition: String = ""): Unit = {
     executeJoinWithTablePathsAndUpsert(deltaDF, tablePaths, tablePartitionDesc, condition)
   }
 
   /**
-   * Upsert LakeSoul join table with delta dataframe from fact table.
-   *
-   * Example:
-   * {{{
-   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name"))
-   *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name""), Seq(Seq("range1=1","range2=2")))
-   * }}}
-   *
-   * @param deltaDF            left table delta dataframe
-   * @param tableNames         names of dimension tables which need to join with deltaDf
-   * @param tablePartitionDesc used to join with data in specific range partition
-   * @param condition          you can define a condition to filter LakeSoul data
-   */
+    * Upsert LakeSoul join table with delta dataframe from fact table.
+    *
+    * Example:
+    * {{{
+    *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name"))
+    *   lakeSoulTable.joinWithTableNamesAndUpsert(deltaDF, Seq("dimension_table_name""), Seq(Seq("range1=1","range2=2")))
+    * }}}
+    *
+    * @param deltaDF            left table delta dataframe
+    * @param tableNames         names of dimension tables which need to join with deltaDf
+    * @param tablePartitionDesc used to join with data in specific range partition
+    * @param condition          you can define a condition to filter LakeSoul data
+    */
   def joinWithTableNamesAndUpsert(deltaDF: DataFrame, tableNames: Seq[String], tablePartitionDesc: Seq[Seq[String]] = Seq.empty[Seq[String]], condition: String = ""): Unit = {
     executeJoinWithTableNamesAndUpsert(deltaDF, tableNames, tablePartitionDesc, condition)
   }
@@ -414,7 +414,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
   }
 
   def rollbackPartition(partitionValue: String, toVersionNum: Int): Unit = {
-    MetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id, partitionValue, toVersionNum)
+    SparkMetaVersion.rollbackPartitionInfoByVersion(snapshotManagement.getTableInfoOnly.table_id, partitionValue, toVersionNum)
   }
 
   def rollbackPartition(partitionValue: String, toTime: String, timeZoneID: String = ""): Unit = {
@@ -422,7 +422,7 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       if (timeZoneID.equals("") || !TimeZone.getAvailableIDs.contains(timeZoneID)) TimeZone.getDefault
       else TimeZone.getTimeZone(timeZoneID)
     val endTime = TimestampFormatter.apply(timeZone).parse(toTime) / 1000
-    val version = MetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, partitionValue, endTime)
+    val version = SparkMetaVersion.getLastedVersionUptoTime(snapshotManagement.getTableInfoOnly.table_id, partitionValue, endTime)
     if (version < 0) {
       println("No version found in Table before time")
     } else {
@@ -443,13 +443,13 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
 
 object LakeSoulTable {
   /**
-   * Create a LakeSoulTableRel for the data at the given `path`.
-   *
-   * Note: This uses the active SparkSession in the current thread to read the table data. Hence,
-   * this throws error if active SparkSession has not been set, that is,
-   * `SparkSession.getActiveSession()` is empty.
-   *
-   */
+    * Create a LakeSoulTableRel for the data at the given `path`.
+    *
+    * Note: This uses the active SparkSession in the current thread to read the table data. Hence,
+    * this throws error if active SparkSession has not been set, that is,
+    * `SparkSession.getActiveSession()` is empty.
+    *
+    */
   def forPath(path: String): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
@@ -459,14 +459,14 @@ object LakeSoulTable {
   }
 
   /**
-   * uncache all or one table from snapshotmanagement
-   * partiton time travel needs to clear snapshot version info to avoid conflict with other read tasks
-   * for example
-   * LakeSoulTable.forPath(tablePath,"range=range1",0).toDF.show()
-   * LakeSoulTable.uncached(tablePath)
-   *
-   * @param path
-   */
+    * uncache all or one table from snapshotmanagement
+    * partiton time travel needs to clear snapshot version info to avoid conflict with other read tasks
+    * for example
+    * LakeSoulTable.forPath(tablePath,"range=range1",0).toDF.show()
+    * LakeSoulTable.uncached(tablePath)
+    *
+    * @param path
+    */
   def uncached(path: String = ""): Unit = {
     if (path.equals("")) {
       SnapshotManagement.clearCache()
@@ -482,9 +482,9 @@ object LakeSoulTable {
 
 
   /**
-   * Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
-   *
-   */
+    * Create a LakeSoulTableRel for the data at the given `path` with time travel of one paritition .
+    *
+    */
   def forPath(path: String, partitionDesc: String, partitionVersion: Int): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
@@ -494,7 +494,7 @@ object LakeSoulTable {
   }
 
   /** Snapshot Query to endTime
-   */
+    */
   def forPathSnapshot(path: String, partitionDesc: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
@@ -504,7 +504,7 @@ object LakeSoulTable {
   }
 
   /** Incremental Query from startTime to now
-   */
+    */
   def forPathIncremental(path: String, partitionDesc: String, startTime: String, endTime: String, timeZone: String = ""): LakeSoulTable = {
     val sparkSession = SparkSession.getActiveSession.getOrElse {
       throw new IllegalArgumentException("Could not find active SparkSession")
@@ -514,8 +514,8 @@ object LakeSoulTable {
   }
 
   /**
-   * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
-   */
+    * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
+    */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
     val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
@@ -561,12 +561,12 @@ object LakeSoulTable {
 
 
   /**
-   * Create a LakeSoulTableRel using the given table name using the given SparkSession.
-   *
-   * Note: This uses the active SparkSession in the current thread to read the table data. Hence,
-   * this throws error if active SparkSession has not been set, that is,
-   * `SparkSession.getActiveSession()` is empty.
-   */
+    * Create a LakeSoulTableRel using the given table name using the given SparkSession.
+    *
+    * Note: This uses the active SparkSession in the current thread to read the table data. Hence,
+    * this throws error if active SparkSession has not been set, that is,
+    * `SparkSession.getActiveSession()` is empty.
+    */
   def forName(tableOrViewName: String): LakeSoulTable = {
     forName(tableOrViewName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
   }
@@ -579,14 +579,14 @@ object LakeSoulTable {
   }
 
   /**
-   * Create a LakeSoulTableRel using the given table or view name using the given SparkSession.
-   */
+    * Create a LakeSoulTableRel using the given table or view name using the given SparkSession.
+    */
   def forName(sparkSession: SparkSession, tableName: String): LakeSoulTable = {
     forName(sparkSession, tableName, LakeSoulCatalog.showCurrentNamespace().mkString("."))
   }
 
   def forName(sparkSession: SparkSession, tableName: String, namespace: String): LakeSoulTable = {
-    val (exists, tablePath) = MetaVersion.isShortTableNameExists(tableName, namespace)
+    val (exists, tablePath) = SparkMetaVersion.isShortTableNameExists(tableName, namespace)
     if (exists) {
       new LakeSoulTable(sparkSession.table(s"$namespace.$tableName"),
         SnapshotManagement(tablePath, namespace))

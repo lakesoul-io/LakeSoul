@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul
 
-import com.dmetasoul.lakesoul.meta.{MetaUtils, MetaVersion, PartitionInfoScala}
+import com.dmetasoul.lakesoul.meta.{MetaUtils, SparkMetaVersion, PartitionInfoScala}
 import com.google.common.cache.{CacheBuilder, RemovalNotification}
 import javolution.util.ReentrantLock
 import org.apache.hadoop.fs.Path
@@ -35,8 +35,8 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   def snapshot: Snapshot = currentSnapshot
 
   private def createSnapshot: Snapshot = {
-    val table_info = MetaVersion.getTableInfo(table_namespace, table_path)
-    val partition_info_arr = MetaVersion.getAllPartitionInfo(table_info.table_id)
+    val table_info = SparkMetaVersion.getTableInfo(table_namespace, table_path)
+    val partition_info_arr = SparkMetaVersion.getAllPartitionInfo(table_info.table_id)
 
     if (table_info.table_schema.isEmpty) {
       throw LakeSoulErrors.schemaNotSetException
@@ -83,7 +83,7 @@ class SnapshotManagement(path: String, namespace: String) extends Logging {
   //get table info only
   def getTableInfoOnly: TableInfo = {
     if (LakeSoulSourceUtils.isLakeSoulTableExists(table_path)) {
-      MetaVersion.getTableInfo(table_path)
+      SparkMetaVersion.getTableInfo(table_path)
     } else {
       val table_id = "table_" + UUID.randomUUID().toString
       TableInfo(table_namespace, Some(table_path), table_id)

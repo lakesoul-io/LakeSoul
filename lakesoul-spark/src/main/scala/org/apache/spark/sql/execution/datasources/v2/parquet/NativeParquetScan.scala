@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.execution.datasources.v2.parquet
 
-import com.dmetasoul.lakesoul.meta.MetaVersion
+import com.dmetasoul.lakesoul.meta.SparkMetaVersion
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
@@ -74,7 +74,7 @@ case class NativeParquetScan(
     } else {
       val timeZoneID = options.getOrDefault(LakeSoulOptions.TIME_ZONE, TimeZone.getDefault.getID)
       val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(options.get(LakeSoulOptions.READ_START_TIME))
-      val latestTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+      val latestTimestamp = SparkMetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
       if (startTime / 1000 < latestTimestamp) {
         LongOffset(startTime / 1000)
       } else {
@@ -92,7 +92,7 @@ case class NativeParquetScan(
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = this
 
   override def latestOffset: Offset = {
-    val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+    val endTimestamp = SparkMetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
     LongOffset(endTimestamp + 1)
   }
 

@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaVersion, PartitionInfoScala}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion, PartitionInfoScala}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.cleanOldCommitOpDiskData
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -157,7 +157,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       })
     } else {
 
-      val allInfo = MetaVersion.getAllPartitionInfo(snapshotManagement.getTableInfoOnly.table_id)
+      val allInfo = SparkMetaVersion.getAllPartitionInfo(snapshotManagement.getTableInfoOnly.table_id)
       val partitionsNeedCompact = allInfo
         .filter(filterPartitionNeedCompact(sparkSession, force, _))
 
