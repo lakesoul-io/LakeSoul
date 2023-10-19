@@ -9,7 +9,9 @@ import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
@@ -19,6 +21,7 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkGlobalCommitta
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.spark.sql.arrow.ArrowUtils;
 import org.apache.spark.sql.arrow.DataTypeCastUtils;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
@@ -116,9 +119,11 @@ public class LakeSoulSinkGlobalCommitter
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             boolean isCdc = identity.useCDC;
-            StructType msgSchema = FlinkUtil.toSparkSchema(identity.rowType, isCdc ? Optional.of(
+            Schema msgSchema = FlinkUtil.toArrowSchema(identity.rowType, isCdc ? Optional.of(
                     identity.cdcColumn) :
                     Optional.empty());
+            StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
+
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
             LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
             if (tableInfo == null) {
@@ -137,7 +142,7 @@ public class LakeSoulSinkGlobalCommitter
                         properties.put(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT);
                     }
                 }
-                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.json(),
+                dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
                         properties, partition);
             } else {
                 DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
@@ -149,11 +154,17 @@ public class LakeSoulSinkGlobalCommitter
                         !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
-                StructType origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+                StructType origSchema = null;
+                if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
+                    Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+                    origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
+                } else {
+                    origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
+                }
                 scala.Tuple3<String, Object, StructType>
                         equalOrCanCastTuple3 =
                         DataTypeCastUtils.checkSchemaEqualOrCanCast(origSchema,
-                                msgSchema,
+                                ArrowUtils.fromArrowSchema(msgSchema),
                                 identity.partitionKeyList,
                                 identity.primaryKeys);
                 String equalOrCanCast = equalOrCanCastTuple3._1();
@@ -162,9 +173,9 @@ public class LakeSoulSinkGlobalCommitter
                 if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
                             origSchema.json(),
-                            msgSchema.json());
+                            msgSchema.toJson());
                     if (logicallyDropColumn) {
-                        List<String> droppedColumn = DataTypeCastUtils.getDroppedColumn(origSchema, msgSchema);
+                        List<String> droppedColumn = DataTypeCastUtils.getDroppedColumn(origSchema, sparkSchema);
                         if (droppedColumn.size() > 0) {
                             LOG.warn("Dropping Column {} Logically", droppedColumn);
                             dbManager.logicallyDropColumn(tableInfo.getTableId(), droppedColumn);
@@ -172,7 +183,7 @@ public class LakeSoulSinkGlobalCommitter
                                 dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
                             }
                         } else {
-                            dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                            dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
                         }
                     } else {
                         LOG.info("Changing table schema: {}, {}, {}, {}, {}, {}",
@@ -182,7 +193,7 @@ public class LakeSoulSinkGlobalCommitter
                                 msgSchema,
                                 identity.useCDC,
                                 identity.cdcColumn);
-                        dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.json());
+                        dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
                         if (JSONObject.parseObject(tableInfo.getProperties()).containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
                             dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
                         }

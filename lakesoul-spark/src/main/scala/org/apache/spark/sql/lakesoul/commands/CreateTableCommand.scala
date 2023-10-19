@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.arrow.ArrowUtils
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
@@ -167,7 +168,7 @@ case class CreateTableCommand(var table: CatalogTable,
           assertPathEmpty(sparkSession, tableWithLocation)
           // This is a user provided schema.
           // Doesn't come from a query, Follow nullability invariants.
-          val newTableInfo = getProvidedTableInfo(tc, table, table.schema.json)
+          val newTableInfo = getProvidedTableInfo(tc, table, ArrowUtils.toArrowSchema(table.schema).toJson)
 
           tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
         } else {

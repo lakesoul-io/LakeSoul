@@ -124,7 +124,7 @@ public class LakeSoulCatalog implements Catalog {
         List<String> tables = listTables(databaseName);
         if (!tables.isEmpty()) {
             if (cascade) {
-                for (String table: tables) {
+                for (String table : tables) {
                     try {
                         dropTable(new ObjectPath(databaseName, table), true);
                     } catch (TableNotExistException e) {
@@ -207,7 +207,7 @@ public class LakeSoulCatalog implements Catalog {
             dbManager.deleteShortTableName(tableInfo.getTableName(), tableName, tablePath.getDatabaseName());
             dbManager.deleteDataCommitInfo(tableId);
             dbManager.deletePartitionInfoByTableId(tableId);
-            if(FlinkUtil.isTable(tableInfo)){
+            if (FlinkUtil.isTable(tableInfo)) {
                 Path path = new Path(tableInfo.getTablePath());
                 try {
                     path.getFileSystem().delete(path, true);
@@ -274,7 +274,7 @@ public class LakeSoulCatalog implements Catalog {
         }
         String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
         String qualifiedPath = "";
-        String sparkSchema = FlinkUtil.toSparkSchema(schema, cdcColumn).json();
+        String sparkSchema = FlinkUtil.toArrowSchema(schema, cdcColumn).toJson();
         List<String> partitionKeys = Collections.emptyList();
         if (table instanceof ResolvedCatalogTable) {
             partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
@@ -284,7 +284,7 @@ public class LakeSoulCatalog implements Catalog {
             } else {
                 String flinkWarehouseDir = GlobalConfiguration.loadConfiguration().get(FLINK_WAREHOUSE_DIR);
                 if (null != flinkWarehouseDir) {
-                   path = String.join("/", flinkWarehouseDir, tablePath.getDatabaseName(), tablePath.getObjectName());
+                    path = String.join("/", flinkWarehouseDir, tablePath.getDatabaseName(), tablePath.getObjectName());
                 }
             }
             try {
@@ -298,9 +298,9 @@ public class LakeSoulCatalog implements Catalog {
         }
         if (table instanceof ResolvedCatalogView) {
             tableOptions.put(LAKESOUL_VIEW.key(), "true");
-            tableOptions.put(LAKESOUL_VIEW_TYPE.key(),LAKESOUL_VIEW_TYPE.defaultValue());
-            tableOptions.put(VIEW_ORIGINAL_QUERY,((ResolvedCatalogView) table).getOriginalQuery());
-            tableOptions.put(VIEW_EXPANDED_QUERY,((ResolvedCatalogView) table).getExpandedQuery());
+            tableOptions.put(LAKESOUL_VIEW_TYPE.key(), LAKESOUL_VIEW_TYPE.defaultValue());
+            tableOptions.put(VIEW_ORIGINAL_QUERY, ((ResolvedCatalogView) table).getOriginalQuery());
+            tableOptions.put(VIEW_EXPANDED_QUERY, ((ResolvedCatalogView) table).getExpandedQuery());
         }
         String json = JSON.toJSONString(tableOptions);
         JSONObject properties = JSON.parseObject(json);

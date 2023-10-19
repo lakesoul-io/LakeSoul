@@ -223,7 +223,7 @@ impl TableProvider for LakeSoulParquetProvider {
             let df = DataFrame::new(_state.clone(), self.plans[i].clone());
             let df = _filters
                 .iter()
-                .fold(df, |df, f| df.clone().filter(f.clone()).unwrap_or(df.clone()));
+                .fold(df, |df, f| df.clone().filter(f.clone()).unwrap_or(df));
             let df_schema = Arc::new(df.schema().clone());
             let projected_cols = schema_intersection(df_schema, projected_schema.clone(), &self.config.primary_keys);
             let df = if projected_cols.is_empty() {
@@ -290,7 +290,7 @@ impl LakeSoulParquetScanExec {
         Self {
             projections: projections.unwrap().clone(),
             origin_schema: schema.clone(),
-            projected_schema: project_schema(&schema.clone(), projections).unwrap(),
+            projected_schema: project_schema(&schema, projections).unwrap(),
             inputs,
             default_column_value,
             merge_operators,
@@ -357,7 +357,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
                 .map(|&idx| {
                     datafusion::physical_expr::expressions::col(
                         self.origin_schema().field(idx).name(),
-                        &self.schema().clone(),
+                        &self.schema(),
                     )
                     .unwrap()
                 })
@@ -385,8 +385,8 @@ pub fn merge_stream(
     let merge_stream = if primary_keys.is_empty() {
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             streams,
-            schema.clone(),
-            default_column_value.clone(),
+            schema,
+            default_column_value,
         ))
     } else {
         let merge_schema: SchemaRef = Arc::new(Schema::new(
@@ -416,7 +416,7 @@ pub fn merge_stream(
             .collect();
         let merge_stream = SortedStreamMerger::new_from_streams(
             streams,
-            merge_schema.clone(),
+            merge_schema,
             primary_keys.iter().map(String::clone).collect(),
             batch_size,
             merge_ops,
@@ -424,8 +424,8 @@ pub fn merge_stream(
         .unwrap();
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             vec![Box::pin(merge_stream)],
-            schema.clone(),
-            default_column_value.clone(),
+            schema,
+            default_column_value,
         ))
     };
     Ok(merge_stream)
