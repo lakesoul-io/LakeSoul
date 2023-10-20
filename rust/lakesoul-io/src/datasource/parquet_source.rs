@@ -160,12 +160,12 @@ impl LakeSoulParquetProvider {
     pub(crate) async fn create_physical_plan(
         &self,
         projections: Option<&Vec<usize>>,
-        schema: SchemaRef,
+        full_schema: SchemaRef,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(LakeSoulParquetScanExec::new(
             projections,
-            schema,
+            full_schema,
             inputs,
             Arc::new(self.config.default_column_value.clone()),
             Arc::new(self.config.merge_operators.clone()),
@@ -242,7 +242,7 @@ impl TableProvider for LakeSoulParquetProvider {
             inputs.push(phycical_plan);
         }
 
-        let physical_schema = SchemaRef::new(Schema::new(
+        let full_schema = SchemaRef::new(Schema::new(
             self.get_full_schema()
                 .fields()
                 .iter()
@@ -263,7 +263,7 @@ impl TableProvider for LakeSoulParquetProvider {
                 .collect::<Vec<_>>(),
         ));
 
-        self.create_physical_plan(projections, physical_schema, inputs).await
+        self.create_physical_plan(projections, full_schema, inputs).await
     }
 }
 
@@ -271,7 +271,8 @@ impl TableProvider for LakeSoulParquetProvider {
 struct LakeSoulParquetScanExec {
     projections: Vec<usize>,
     origin_schema: SchemaRef,
-    projected_schema: SchemaRef,
+    target_schema_with_pks: SchemaRef,
+    target_schema: SchemaRef,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
@@ -281,16 +282,30 @@ struct LakeSoulParquetScanExec {
 impl LakeSoulParquetScanExec {
     fn new(
         projections: Option<&Vec<usize>>,
-        schema: SchemaRef,
+        full_schema: SchemaRef,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
         default_column_value: Arc<HashMap<String, String>>,
         merge_operators: Arc<HashMap<String, String>>,
         primary_keys: Arc<Vec<String>>,
     ) -> Self {
+         let target_schema_with_pks = if let Some(proj) = projections {
+            let mut proj_with_pks = proj.clone();
+            for idx in 0..primary_keys.len() {
+                let field_idx = full_schema.index_of(primary_keys[idx].as_str()).unwrap();
+                if !projections.unwrap().contains(&field_idx) {
+                    proj_with_pks.push(field_idx);
+                }
+            }
+            project_schema(&full_schema, Some(&proj_with_pks)).unwrap()
+        } else {
+            full_schema.clone()
+        };
+        
         Self {
             projections: projections.unwrap().clone(),
-            origin_schema: schema.clone(),
-            projected_schema: project_schema(&schema, projections).unwrap(),
+            origin_schema: full_schema.clone(),
+            target_schema_with_pks,
+            target_schema: project_schema(&full_schema, projections).unwrap(),
             inputs,
             default_column_value,
             merge_operators,
@@ -315,7 +330,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.projected_schema.clone()
+        self.target_schema.clone()
     }
 
     fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
@@ -343,7 +358,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
         }
         let merged_stream = merge_stream(
             stream_init_futs,
-            self.schema(),
+            self.target_schema_with_pks.clone(),
             self.primary_keys.clone(),
             self.default_column_value.clone(),
             self.merge_operators.clone(),
@@ -362,7 +377,7 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
                     .unwrap()
                 })
                 .collect::<Vec<_>>(),
-            schema: self.projected_schema.clone(),
+            schema: self.target_schema.clone(),
             input: merged_stream,
         };
 
@@ -432,17 +447,15 @@ pub fn merge_stream(
 }
 
 fn schema_intersection(df_schema: DFSchemaRef, schema: SchemaRef, primary_keys: &[String]) -> Vec<Expr> {
-    schema
+    df_schema
         .fields()
         .iter()
-        .filter_map(|field| match df_schema.field_with_name(None, field.name()) {
-            // datafusion's select is case sensitive, but col will transform field name to lower case
-            // so we use Column::new_unqualified instead
-            Ok(df_field) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
-            _ if primary_keys.contains(field.name()) => {
-                Some(Column(datafusion::common::Column::new_unqualified(field.name())))
-            }
-            _ => None,
+        .filter_map(|df_field| match schema.field_with_name(df_field.name()) {
+                // datafusion's select is case sensitive, but col will transform field name to lower case
+                // so we use Column::new_unqualified instead
+                Ok(_) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
+                _ if primary_keys.contains(df_field.name()) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
+                _ => None
         })
         .collect()
 }

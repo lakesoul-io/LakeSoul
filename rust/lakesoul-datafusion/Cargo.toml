@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-datafusion"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lakesoul-io = { path = "../lakesoul-io" }
+lakesoul-metadata = { path = "../lakesoul-metadata" }
+proto = { path = "../proto" }
+prost = "0.11"

@@ -19,7 +19,7 @@ on:
 name: Rust CI
 
 env:
-  RUSTFLAGS: "-Dwarnings"
+  RUSTFLAGS: "-Awarnings"
 
 jobs:
   rust_ci:

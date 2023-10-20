@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [workspace]
-members = ["lakesoul-metadata", "lakesoul-metadata-c", "proto", "lakesoul-io", "lakesoul-io-c"]
+members = ["lakesoul-metadata", "lakesoul-metadata-c", "proto", "lakesoul-io", "lakesoul-io-c", "lakesoul-datafusion"]
 resolver = "2"
 
 [profile.release]

@@ -167,11 +167,11 @@ impl ExecutionPlan for ReceiverStreamExec {
 
 impl MultiPartAsyncWriter {
     pub async fn try_new(mut config: LakeSoulIOConfig) -> Result<Self> {
-        if config.files.len() != 1 {
+        if config.files.is_empty() {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
         let sess_ctx = create_session_context(&mut config)?;
-        let file_name = &config.files[0];
+        let file_name = &config.files.last().unwrap();
 
         // local style path should have already been handled in create_session_context,
         // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
