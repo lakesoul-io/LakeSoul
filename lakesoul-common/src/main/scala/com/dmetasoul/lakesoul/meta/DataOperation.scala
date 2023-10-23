@@ -158,21 +158,40 @@ object DataOperation {
 
   def getSinglePartitionDataInfo(table_id: String, partition_desc: String, startTimestamp: Long,
                                  endTimestamp: Long, readType: String): ArrayBuffer[DataFileInfo] = {
-    if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ) || readType
-      .equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
+    val files_all_partitions_buf = new ArrayBuffer[DataFileInfo]()
+    if (readType.equals(LakeSoulOptions.ReadType.SNAPSHOT_READ)) {
       if (null == partition_desc || "".equals(partition_desc)) {
-        val partitions = dbManager.getAllPartitionInfo(table_id)
-        val files_all_partitions_buf = new ArrayBuffer[DataFileInfo]()
+        val partitions = dbManager.getTableAllPartitionDesc(table_id)
         partitions.forEach(partition => {
-          val preVersionTimestamp = dbManager
-            .getLastedVersionTimestampUptoTime(table_id, partition.getPartitionDesc, startTimestamp)
-          files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition.getPartitionDesc,
-            preVersionTimestamp, endTimestamp)
+          val version = dbManager.getLastedVersionUptoTime(table_id, partition, endTimestamp)
+          files_all_partitions_buf ++= getSinglePartitionDataInfo(table_id, partition, version)
+        })
+        files_all_partitions_buf
+      } else {
+        val version = dbManager.getLastedVersionUptoTime(table_id, partition_desc, endTimestamp)
+        getSinglePartitionDataInfo(table_id, partition_desc, version)
+      }
+    } else if (readType.equals(LakeSoulOptions.ReadType.INCREMENTAL_READ)) {
+      if (null == partition_desc || "".equals(partition_desc)) {
+        val partitions = dbManager.getTableAllPartitionDesc(table_id)
+        partitions.forEach(partition => {
+          val preVersionTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition, startTimestamp)
+          if (preVersionTimestamp == 0) {
+            val version = dbManager.getLastedVersionUptoTime(table_id, partition, endTimestamp)
+            files_all_partitions_buf ++= getSinglePartitionDataInfo(table_id, partition, version)
+          } else {
+            files_all_partitions_buf ++= getSinglePartitionIncrementalDataInfos(table_id, partition, preVersionTimestamp, endTimestamp)
+          }
         })
         files_all_partitions_buf
       } else {
         val preVersionTimestamp = dbManager.getLastedVersionTimestampUptoTime(table_id, partition_desc, startTimestamp)
-        getSinglePartitionIncrementalDataInfos(table_id, partition_desc, preVersionTimestamp, endTimestamp)
+        if (preVersionTimestamp == 0) {
+          val version = dbManager.getLastedVersionUptoTime(table_id, partition_desc, endTimestamp)
+          getSinglePartitionDataInfo(table_id, partition_desc, version)
+        } else {
+          getSinglePartitionIncrementalDataInfos(table_id, partition_desc, preVersionTimestamp, endTimestamp)
+        }
       }
     } else {
       val version = dbManager.getLastedVersionUptoTime(table_id, partition_desc, endTimestamp)
