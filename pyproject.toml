@@ -42,10 +42,12 @@ include = ["lakesoul*"]
 torch = ["torch>=1.11"]
 pandas = ["pandas>=1.4"]
 datasets = ["datasets>=2.14"]
+ray = ["ray>=2.7"]
 all = [
     "torch>=1.11",
     "pandas>=1.4",
     "datasets>=2.14",
+    "ray>=2.7",
 ]
 
 [tool.cibuildwheel]
