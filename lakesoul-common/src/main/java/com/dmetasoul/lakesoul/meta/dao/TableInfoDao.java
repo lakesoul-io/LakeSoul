@@ -34,7 +34,8 @@ public class TableInfoDao {
         String sql = String.format("select * from table_info where table_id = '%s'", tableId);
         return getTableInfo(sql);
     }
-    public List<TableInfo> selectByNamespace(String namespace){
+
+    public List<TableInfo> selectByNamespace(String namespace) {
         String sql = String.format("select * from table_info where table_namespace='%s'", namespace);
         return getTableInfos(sql);
     }
@@ -105,6 +106,7 @@ public class TableInfoDao {
         }
         return tableInfo;
     }
+
     private List<TableInfo> getTableInfos(String sql) {
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -283,5 +285,13 @@ public class TableInfoDao {
                 .setTableNamespace(rs.getString("table_namespace"))
                 .setDomain(rs.getString("domain"))
                 .build();
+    }
+
+    public static boolean isArrowKindSchema(String schema) {
+        return schema.charAt(schema.indexOf('"') + 1) == 'f';
+    }
+
+    public static boolean isSparkKindSchema(String schema) {
+        return schema.charAt(schema.indexOf('"') + 1) == 't';
     }
 }

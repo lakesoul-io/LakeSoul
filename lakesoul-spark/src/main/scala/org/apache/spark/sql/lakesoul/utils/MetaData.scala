@@ -5,9 +5,12 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.dao.TableInfoDao
 import com.dmetasoul.lakesoul.meta.{CommitState, CommitType, DataFileInfo, PartitionInfoScala}
 import com.fasterxml.jackson.annotation.JsonIgnore
+import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.arrow.ArrowUtils
 import org.apache.spark.sql.types.{DataType, StructType}
 
 import java.util.UUID
@@ -46,8 +49,14 @@ case class TableInfo(namespace: String,
   //full table schema which contains partition columns
   @JsonIgnore
   lazy val schema: StructType =
-  Option(table_schema).map { s =>
-    DataType.fromJson(s).asInstanceOf[StructType]
+  Option(table_schema).map { s => {
+    // latest version: from arrow schema json
+    if (TableInfoDao.isArrowKindSchema(s))
+      ArrowUtils.fromArrowSchema(Schema.fromJSON(s))
+    else
+    // old version: from spark struct datatype
+      DataType.fromJson(s).asInstanceOf[StructType]
+  }
   }.getOrElse(StructType.apply(Nil))
 
   //range partition columns

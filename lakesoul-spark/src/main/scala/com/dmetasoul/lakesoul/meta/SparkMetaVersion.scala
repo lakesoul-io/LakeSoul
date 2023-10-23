@@ -9,11 +9,10 @@ import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 
 import java.util
-import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
-object MetaVersion {
+object SparkMetaVersion {
 
   val dbManager = new DBManager()
 

@@ -69,7 +69,7 @@ object MetaCommit extends Logging {
 
     var result = addDataInfo(meta_info)
     if (result) {
-      result = MetaVersion.dbManager.commitData(info.build, changeSchema, commit_type)
+      result = SparkMetaVersion.dbManager.commitData(info.build, changeSchema, commit_type)
     } else {
       throw LakeSoulErrors.failCommitDataFile()
     }
@@ -80,7 +80,7 @@ object MetaCommit extends Logging {
         MetaUtils.MAX_COMMIT_ATTEMPTS)
     }
     if (result && changeSchema) {
-      MetaVersion.dbManager.updateTableSchema(table_info.table_id, table_schema)
+      SparkMetaVersion.dbManager.updateTableSchema(table_info.table_id, table_schema)
     }
   }
 
@@ -111,7 +111,7 @@ object MetaCommit extends Logging {
       metaDataCommitInfo.setTimestamp(dataCommitInfo.modification_time)
       metaDataCommitInfoList.add(metaDataCommitInfo.build)
     }
-    MetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
+    SparkMetaVersion.dbManager.batchCommitDataCommitInfo(metaDataCommitInfoList)
   }
 
 }

@@ -8,7 +8,10 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.meta.*;
+import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
@@ -30,6 +33,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import org.apache.hadoop.fs.permission.FsAction;
@@ -70,6 +74,75 @@ public class FlinkUtil {
 
     public static String getRangeValue(CatalogPartitionSpec cps) {
         return "Null";
+    }
+
+    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
+        List<Field> fields = new ArrayList<>();
+        String cdcColName = null;
+        if (cdcColumn.isPresent()) {
+            cdcColName = cdcColumn.get();
+            Field cdcField = ArrowUtils.toArrowField(cdcColName, new VarCharType(false, 16));
+            fields.add(cdcField);
+        }
+
+        for (RowType.RowField field : rowType.getFields()) {
+            String name = field.getName();
+            if (name.equals(SORT_FIELD)) continue;
+
+            LogicalType logicalType = field.getType();
+            Field arrowField = ArrowUtils.toArrowField(name, logicalType);
+            if (name.equals(cdcColName)) {
+                if (!arrowField.toString().equals(fields.get(0).toString())) {
+                    throw new CatalogException(CDC_CHANGE_COLUMN +
+                            "=" +
+                            cdcColName +
+                            "has an invalid field of" +
+                            field +
+                            "," +
+                            CDC_CHANGE_COLUMN +
+                            " require field of " +
+                            fields.get(0).toString());
+                }
+            } else {
+                fields.add(arrowField);
+            }
+        }
+        return new org.apache.arrow.vector.types.pojo.Schema(fields);
+    }
+
+    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tsc, Optional<String> cdcColumn) throws CatalogException {
+        List<Field> fields = new ArrayList<>();
+        String cdcColName = null;
+        if (cdcColumn.isPresent()) {
+            cdcColName = cdcColumn.get();
+            Field cdcField = ArrowUtils.toArrowField(cdcColName, new VarCharType(false, 16));
+            fields.add(cdcField);
+        }
+
+        for (int i = 0; i < tsc.getFieldCount(); i++) {
+            String name = tsc.getFieldName(i).get();
+            DataType dt = tsc.getFieldDataType(i).get();
+            if (name.equals(SORT_FIELD)) continue;
+
+            LogicalType logicalType = dt.getLogicalType();
+            Field arrowField = ArrowUtils.toArrowField(name, logicalType);
+            if (name.equals(cdcColName)) {
+                if (!arrowField.toString().equals(fields.get(0).toString())) {
+                    throw new CatalogException(CDC_CHANGE_COLUMN +
+                            "=" +
+                            cdcColName +
+                            "has an invalid field of" +
+                            arrowField +
+                            "," +
+                            CDC_CHANGE_COLUMN +
+                            " require field of " +
+                            fields.get(0).toString());
+                }
+            } else {
+                fields.add(arrowField);
+            }
+        }
+        return new org.apache.arrow.vector.types.pojo.Schema(fields);
     }
 
     public static StructType toSparkSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
@@ -220,10 +293,18 @@ public class FlinkUtil {
         String tableSchema = tableInfo.getTableSchema();
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
 
-        StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
-        org.apache.arrow.vector.types.pojo.Schema
-                arrowSchema =
-                org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
+        System.out.println(tableSchema);
+        if (TableInfoDao.isArrowKindSchema(tableSchema)) {
+            try {
+                arrowSchema = org.apache.arrow.vector.types.pojo.Schema.fromJSON(tableSchema);
+            } catch (IOException e) {
+                throw new CatalogException(e);
+            }
+        } else {
+            StructType struct = (StructType) org.apache.spark.sql.types.DataType.fromJson(tableSchema);
+            arrowSchema = org.apache.spark.sql.arrow.ArrowUtils.toArrowSchema(struct, ZoneId.of("UTC").toString());
+        }
         RowType rowType = ArrowUtils.fromArrowSchema(arrowSchema);
         Builder bd = Schema.newBuilder();
 

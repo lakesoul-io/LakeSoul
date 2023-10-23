@@ -5,7 +5,7 @@
 package org.apache.spark.sql.execution.datasources.v2.merge
 
 import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_FILE_EXISTS_COLUMN_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion}
 
 import java.util.{Locale, OptionalLong, TimeZone}
 import org.apache.hadoop.conf.Configuration
@@ -343,7 +343,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
     } else {
       val timeZoneID = options.getOrDefault(LakeSoulOptions.TIME_ZONE, TimeZone.getDefault.getID)
       val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(options.get(LakeSoulOptions.READ_START_TIME))
-      val latestTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+      val latestTimestamp = SparkMetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
       if (startTime / 1000 < latestTimestamp) {
         LongOffset(startTime / 1000)
       } else {
@@ -361,7 +361,7 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
   override def toMicroBatchStream(checkpointLocation: String): MicroBatchStream = this
 
   override def latestOffset: Offset = {
-    val endTimestamp = MetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
+    val endTimestamp = SparkMetaVersion.getLastedTimestamp(snapshotManagement.getTableInfoOnly.table_id, options.getOrDefault(LakeSoulOptions.PARTITION_DESC, ""))
     LongOffset(endTimestamp + 1)
   }
 

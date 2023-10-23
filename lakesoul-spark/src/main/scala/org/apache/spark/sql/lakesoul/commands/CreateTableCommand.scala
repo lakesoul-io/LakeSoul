@@ -5,10 +5,11 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, MetaVersion}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
+import org.apache.spark.sql.arrow.ArrowUtils
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
@@ -115,7 +116,7 @@ case class CreateTableCommand(var table: CatalogTable,
     val tc = snapshotManagement.startTransaction()
 
     val shortTableName = table.identifier.table
-    if (MetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
+    if (SparkMetaVersion.isShortTableNameExists(shortTableName, table.database)._1) {
       throw LakeSoulErrors.tableExistsException(shortTableName)
     } else {
       tc.setShortTableName(shortTableName)
@@ -167,7 +168,7 @@ case class CreateTableCommand(var table: CatalogTable,
           assertPathEmpty(sparkSession, tableWithLocation)
           // This is a user provided schema.
           // Doesn't come from a query, Follow nullability invariants.
-          val newTableInfo = getProvidedTableInfo(tc, table, table.schema.json)
+          val newTableInfo = getProvidedTableInfo(tc, table, ArrowUtils.toArrowSchema(table.schema).toJson)
 
           tc.commit(Seq.empty[DataFileInfo], Seq.empty[DataFileInfo], newTableInfo)
         } else {
