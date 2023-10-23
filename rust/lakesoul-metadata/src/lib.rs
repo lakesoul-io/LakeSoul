@@ -217,7 +217,7 @@ fn get_prepared_statement(
                 // Select PartitionInfo
                 DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
                     "select table_id, partition_desc, version, commit_op, snapshot, expression, domain 
-                    from partition_info from partition_info 
+                    from partition_info
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
                 DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
                     "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (
@@ -1287,7 +1287,7 @@ pub fn execute_query_scalar(
             });
             match result {
                 Ok(Some(row)) => {
-                    let ts = row.get::<_, Option<i64>>(0);
+                    let ts = row.get::<_, Option<i32>>(0);
                     match ts {
                         Some(ts) => Ok(Some(format!("{}", ts))),
                         None => Ok(None)
