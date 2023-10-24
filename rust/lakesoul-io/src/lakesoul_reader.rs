@@ -117,6 +117,16 @@ impl SyncSendableMutableLakeSoulReader {
         })
     }
 
+    pub fn next_rb_blocked(&self) -> Option<std::result::Result<RecordBatch, DataFusionError>> {
+        let inner_reader = self.get_inner_reader();
+        let runtime = self.get_runtime();
+        runtime.block_on(async move {
+            let reader = inner_reader.borrow();
+            let mut reader = reader.lock().await;
+            reader.next_rb().await
+        })
+    }
+
     pub fn get_schema(&self) -> Option<SchemaRef> {
         self.schema.clone()
     }

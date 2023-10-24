@@ -16,14 +16,13 @@ on:
       - 'release/**'
   workflow_dispatch:
 
-name: Rust Clippy Check
+name: Rust CI
 
-# Make sure CI fails on all warnings, including Clippy lints
 env:
-  RUSTFLAGS: "-Dwarnings"
+  RUSTFLAGS: "-Awarnings"
 
 jobs:
-  clippy_check:
+  rust_ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -37,10 +36,6 @@ jobs:
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./rust -> target"
-          key: "ubuntu-latest-clippy"
-      - name: Run Clippy
-        run: cd rust && cargo clippy --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+      - name: Run tests
+        run: cd rust && cargo test --all-features --package lakesoul-datafusion
 

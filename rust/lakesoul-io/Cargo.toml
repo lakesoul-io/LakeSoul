@@ -32,6 +32,7 @@ bytes = "1.4.0"
 hdrs = { git = "https://github.com/lakesoul-io/hdrs.git", branch = "main", features = ["async_file"], optional = true }
 lazy_static = "1.4.0"
 chrono = "0.4"
+serde_json = { version = "1.0"}
 
 [features]
 hdfs = ["dep:hdrs"]

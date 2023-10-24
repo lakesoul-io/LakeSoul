@@ -1531,6 +1531,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakesoul-datafusion"
+version = "0.1.0"
+dependencies = [
+ "lakesoul-io",
+ "lakesoul-metadata",
+ "prost",
+ "proto",
+]
+
+[[package]]
 name = "lakesoul-io"
 version = "2.3.0"
 dependencies = [
@@ -1554,6 +1564,7 @@ dependencies = [
  "parquet",
  "rand",
  "serde",
+ "serde_json",
  "smallvec",
  "tempfile",
  "tokio",

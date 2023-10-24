@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![feature(io_error_other)]
-#![feature(split_array)]
 use std::collections::HashMap;
 use std::str::FromStr;
 
