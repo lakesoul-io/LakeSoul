@@ -22,4 +22,5 @@ prost = "0.11"
 num_enum = "0.5.1"
 uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"]}
 serde_json = { version = "1.0"}
+url = "2.4.1"
 

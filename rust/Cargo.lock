@@ -1534,10 +1534,13 @@ dependencies = [
 name = "lakesoul-datafusion"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures",
  "lakesoul-io",
  "lakesoul-metadata",
  "prost",
  "proto",
+ "uuid",
 ]
 
 [[package]]
@@ -1598,6 +1601,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-postgres",
+ "url",
  "uuid",
 ]
 
