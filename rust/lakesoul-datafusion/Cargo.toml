@@ -14,3 +14,6 @@ lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 proto = { path = "../proto" }
 prost = "0.11"
+async-trait = "0.1"
+futures = "0.3"
+uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"]}
