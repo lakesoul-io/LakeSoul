@@ -24,6 +24,27 @@ env:
 jobs:
   rust_ci:
     runs-on: ubuntu-latest
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -32,6 +53,11 @@ jobs:
           toolchain: nightly-2023-05-20
           components: clippy
           default: true
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client-14
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:

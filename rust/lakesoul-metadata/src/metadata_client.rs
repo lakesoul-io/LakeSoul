@@ -19,23 +19,36 @@ pub struct MetaDataClient {
     prepared: PreparedStatementMap,
 }
 
+impl Default for MetaDataClient {
+    fn default() -> Self {
+        Self::from_config(
+            "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test".to_string()
+        )
+    }
+}
+
 impl MetaDataClient {
     pub fn from_env() -> Self{
-        let config_path = env::var("lakesoul_home").expect("lakesoul_home should be configured");
-        let config = fs::read_to_string(config_path).expect("");
-        let config_map = config.split('\n').filter_map(|property| {
-            property.find('=').map(|idx| property.split_at(idx + 1))
-        }).collect::<HashMap<_, _>>();
-        let url = Url::parse(&config_map.get("lakesoul.pg.url=").expect("")[5..]).unwrap();
-        Self::from_config(
-            format!(
-                "host={} port={} dbname={} user={} password={}", 
-                url.host_str().unwrap(), 
-                url.port().unwrap(), 
-                url.path_segments().unwrap().next().unwrap(),
-                config_map.get("lakesoul.pg.username=").unwrap(), 
-                config_map.get("lakesoul.pg.password=").unwrap())
-        )
+        match env::var("lakesoul_home") {
+            Ok(config_path) => {
+                let config = fs::read_to_string(&config_path).unwrap_or_else(|_| panic!("Fails at reading config file {}", &config_path));
+                let config_map = config.split('\n').filter_map(|property| {
+                    property.find('=').map(|idx| property.split_at(idx + 1))
+                }).collect::<HashMap<_, _>>();
+                let url = Url::parse(&config_map.get("lakesoul.pg.url=").unwrap_or(&"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")[5..]).unwrap();
+                Self::from_config(
+                    format!(
+                        "host={} port={} dbname={} user={} password={}", 
+                        url.host_str().unwrap(), 
+                        url.port().unwrap(), 
+                        url.path_segments().unwrap().next().unwrap(),
+                        config_map.get("lakesoul.pg.username=").unwrap_or(&"lakesoul_test"), 
+                        config_map.get("lakesoul.pg.password=").unwrap_or(&"lakesoul_test"))
+                )
+            }
+            Err(_) => MetaDataClient::default()
+        }
+        
     }
 
     pub fn from_config(config: String) -> Self {

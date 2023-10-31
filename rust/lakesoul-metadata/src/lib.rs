@@ -14,6 +14,9 @@ pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{NoTls, Client, Statement};
 use postgres_types::{ToSql, FromSql};
 
+mod metadata_client;
+pub use metadata_client::MetaDataClient;
+
 pub const DAO_TYPE_QUERY_ONE_OFFSET : i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET : i32 = 100;
 pub const DAO_TYPE_INSERT_ONE_OFFSET : i32 = 200;
@@ -216,7 +219,7 @@ fn get_prepared_statement(
                 // Select PartitionInfo
                 DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
                     "select table_id, partition_desc, version, commit_op, snapshot, expression, domain 
-                    from partition_info  
+                    from partition_info
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
                 DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
                     "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (
