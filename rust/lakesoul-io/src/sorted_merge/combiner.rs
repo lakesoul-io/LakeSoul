@@ -200,7 +200,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     fn get_mut_current_sort_key_range(&mut self) -> &mut SortKeyBatchRanges {
-        Arc::get_mut(&mut self.current_sort_key_range).unwrap()
+        Arc::make_mut(&mut self.current_sort_key_range)
     }
 }
 
