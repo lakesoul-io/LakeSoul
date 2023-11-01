@@ -74,6 +74,20 @@ pub struct LakeSoulIOConfig {
     pub(crate) default_fs: String,
 }
 
+impl LakeSoulIOConfig {
+    pub fn schema(&self) -> SchemaRef {
+        self.schema.0.clone()
+    }
+
+    pub fn primary_keys_slice(&self) -> &[String] {
+        &self.primary_keys
+    }
+
+    pub fn files_slice(&self) -> &[String] {
+        &self.files
+    }
+}
+
 #[derive(Derivative, Debug)]
 #[derivative(Clone, Default)]
 pub struct LakeSoulIOConfigBuilder {

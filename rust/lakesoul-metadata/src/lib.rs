@@ -14,6 +14,9 @@ pub use tokio::runtime::{Builder, Runtime};
 pub use tokio_postgres::{NoTls, Client, Statement};
 use postgres_types::{ToSql, FromSql};
 
+mod metadata_client;
+pub use metadata_client::MetaDataClient;
+
 pub const DAO_TYPE_QUERY_ONE_OFFSET : i32 = 0;
 pub const DAO_TYPE_QUERY_LIST_OFFSET : i32 = 100;
 pub const DAO_TYPE_INSERT_ONE_OFFSET : i32 = 200;
