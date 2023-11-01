@@ -31,7 +31,7 @@ use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
-use std::io::ErrorKind::ResourceBusy;
+use std::io::ErrorKind::AddrInUse;
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::AsyncWrite;
@@ -89,7 +89,7 @@ impl Write for InMemBuf {
         let mut v = self
             .0
             .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(ResourceBusy))?;
+            .map_err(|_| std::io::Error::from(AddrInUse))?;
         v.extend(buf);
         Ok(buf.len())
     }
@@ -104,7 +104,7 @@ impl Write for InMemBuf {
         let mut v = self
             .0
             .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(ResourceBusy))?;
+            .map_err(|_| std::io::Error::from(AddrInUse))?;
         v.extend(buf);
         Ok(())
     }

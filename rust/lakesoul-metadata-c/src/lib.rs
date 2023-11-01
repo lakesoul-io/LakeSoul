@@ -11,7 +11,7 @@ use std::io::Write;
 use std::ptr::NonNull;
 use std::ffi::{c_char, c_uchar, CString, CStr};
 
-use lakesoul_metadata::{Runtime, Builder, Client, PreparedStatementMap};
+use lakesoul_metadata::{Runtime, Builder, Client, PreparedStatementMap, MetaDataClient};
 use prost::bytes::BufMut;
 use proto::proto::entity;
 use prost::Message;
@@ -244,6 +244,7 @@ pub extern "C" fn free_bytes_result(bytes: NonNull<Result<BytesResult>>) {
 }
 
 
+
 #[no_mangle]
 pub extern "C" fn clean_meta_for_test(
     callback: extern "C" fn(i32, *const c_char),
@@ -313,4 +314,15 @@ pub extern "C" fn create_prepared_statement() -> NonNull<Result<PreparedStatemen
 #[no_mangle]
 pub extern "C" fn free_prepared_statement(prepared: NonNull<Result<PreparedStatement>>) {
     from_nonnull(prepared).free::<PreparedStatementMap>();
+}
+
+#[no_mangle]
+pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<Result<MetaDataClient>> {
+    let client = MetaDataClient::from_env();
+    convert_to_nonnull(Result::<MetaDataClient>::new(client))
+}
+
+#[no_mangle]
+pub extern "C" fn free_lakesoul_metadata_client(prepared: NonNull<Result<MetaDataClient>>) {
+    from_nonnull(prepared).free::<MetaDataClient>();
 }

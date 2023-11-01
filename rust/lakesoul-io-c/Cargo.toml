@@ -19,6 +19,8 @@ serde = { version = "1.0", default-features = false, features = ["derive", "std"
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]
+simd = ["lakesoul-io/simd"]
+default = []
 
 [build-dependencies]
 cbindgen = "0.24.0"
