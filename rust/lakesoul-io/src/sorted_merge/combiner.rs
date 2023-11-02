@@ -200,7 +200,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
     }
 
     fn get_mut_current_sort_key_range(&mut self) -> &mut SortKeyBatchRanges {
-        unsafe { Arc::get_mut_unchecked(&mut self.current_sort_key_range) }
+        Arc::make_mut(&mut self.current_sort_key_range)
     }
 }
 

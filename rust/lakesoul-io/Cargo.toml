@@ -8,7 +8,7 @@ version = "2.3.0"
 edition = "2021"
 
 [dependencies]
-datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-27-parquet-prefetch", features = ["simd"] }
+datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-27-parquet-prefetch"}
 object_store = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["aws"] }
 
 tokio-stream = "0.1.9"
@@ -16,9 +16,9 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"]}
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
-arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["prettyprint", "simd"] }
+arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["prettyprint"] }
 arrow-schema = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["serde"] }
-arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["simd", "chrono-tz"] }
+arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["chrono-tz"] }
 arrow-buffer = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred" }
 parquet = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-42-parquet-bufferred", features = ["async", "arrow"] }
 futures = "0.3"
@@ -36,6 +36,8 @@ serde_json = { version = "1.0"}
 
 [features]
 hdfs = ["dep:hdrs"]
+simd = ["datafusion/simd", "arrow/simd", "arrow-array/simd"]
+default = []
 
 [dev-dependencies]
 tempfile = "3.3.0"

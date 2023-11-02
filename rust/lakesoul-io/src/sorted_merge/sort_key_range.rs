@@ -188,7 +188,7 @@ impl Clone for SortKeyArrayRange {
 }
 
 // Multiple ranges with same sorted primary key from variant source record_batch. These ranges will be merged into ONE row of target record_batch finnally.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column
     pub(crate) sort_key_array_ranges: Vec<SmallVec<[SortKeyArrayRange; 4]>>,

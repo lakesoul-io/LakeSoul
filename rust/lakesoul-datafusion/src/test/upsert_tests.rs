@@ -14,7 +14,7 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use lakesoul_io::datafusion::prelude::SessionContext;
     use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-    use lakesoul_io::tokio::runtime::{Builder};
+    use lakesoul_io::tokio::runtime::Builder;
     use lakesoul_io::arrow;
     use lakesoul_io::arrow::array::{ArrayRef, Int32Array};
     use lakesoul_io::arrow::datatypes::{Schema, SchemaRef, Field};
