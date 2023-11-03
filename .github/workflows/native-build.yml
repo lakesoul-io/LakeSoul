@@ -41,6 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./rust -> target"
+          env-vars: "JAVA_HOME"
       - uses: actions-rs/cargo@v1
         with:
           use-cross: true
@@ -117,6 +118,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./rust -> target"
+          env-vars: "JAVA_HOME"
       - uses: actions-rs/cargo@v1
         with:
           command: build
