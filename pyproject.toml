@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lakesoul"
-version = "1.0.0b0"
+version = "1.0.0b1"
 authors = [
   { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
