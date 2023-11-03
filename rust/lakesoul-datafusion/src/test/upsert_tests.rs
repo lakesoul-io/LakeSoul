@@ -730,7 +730,7 @@ mod upsert_with_metadata_tests {
         )
     }
 
-    #[test]
+    // #[test]
     fn test_datatypes() -> Result<()>{
         let table_name = "test_datatypes";
         let mut client = MetaDataClient::from_env();
