@@ -41,12 +41,13 @@ include = ["lakesoul*"]
 [project.optional-dependencies]
 torch = ["torch>=1.11"]
 pandas = ["pandas>=1.4"]
-datasets = ["datasets>=2.14"]
+datasets = ["datasets>=2.14", "urllib3<2,>=1.21.1"]
 ray = ["ray>=2.7"]
 all = [
     "torch>=1.11",
     "pandas>=1.4",
     "datasets>=2.14",
+    "urllib3<2,>=1.21.1",
     "ray>=2.7",
 ]
 
