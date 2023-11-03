@@ -35,7 +35,7 @@ class LakeSoulWheelDockerBuilder(object):
         file_path = os.path.join(site_path, 'cibuildwheel', 'oci_container.py')
         with io.open(file_path) as fin:
             text = fin.read()
-        pattern = r'^( +network_args = \["--network=host"])$\n\n( +)(shell_args = \[)'
+        pattern = r'^( +network_args = \["--network=host"])$\n\n( +)(.+)'
         match = re.search(pattern, text, re.M)
         if match is None:
             return
@@ -73,7 +73,7 @@ class LakeSoulWheelDockerBuilder(object):
                 py_path = os.path.join(dir_path, 'bin', 'python')
                 args = [py_path, '-m', 'pip', 'install', '--upgrade', 'pip']
                 subprocess.check_call(args)
-                args = [py_path, '-m', 'pip', 'install', 'cibuildwheel~=2.15']
+                args = [py_path, '-m', 'pip', 'install', 'cibuildwheel==2.16.2']
                 subprocess.check_call(args)
                 self._patch_cibuildwheel(dir_path)
                 yield dir_path
