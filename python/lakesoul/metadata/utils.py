@@ -6,37 +6,95 @@ import json
 import pyarrow
 
 
-def to_arrow_field(spark_field_json):
-    spark_type = spark_field_json['type']
-    arrow_type = None
-    if spark_type == 'long':
-        arrow_type = pyarrow.int64()
-    elif spark_type == 'integer':
-        arrow_type = pyarrow.int32()
-    elif spark_type == 'string':
-        arrow_type = pyarrow.utf8()
-    elif spark_type == 'float':
-        arrow_type = pyarrow.float32()
-    elif spark_type == 'double':
-        arrow_type = pyarrow.float64()
-    elif spark_type == "binary":
-        arrow_type = pyarrow.binary()
-    elif spark_type.startswith("decimal"):
-        arrow_type = pyarrow.decimal128(38)
-    elif spark_type == 'struct':
-        fields = spark_field_json['fields']
-        arrow_fields = []
-        for field in fields:
-            arrow_fields.append(to_arrow_field(field))
-        arrow_type = pyarrow.struct(arrow_fields)
+def to_arrow_type(arrow_type_json):
+    if isinstance(arrow_type_json, str):
+        if arrow_type_json == 'Boolean':
+            return pyarrow.bool_()
+        elif arrow_type_json == 'Date32':
+            return pyarrow.date32()
+        elif arrow_type_json == 'Date64':
+            return pyarrow.date64()
+        elif arrow_type_json == 'Int8':
+            return pyarrow.int8()
+        elif arrow_type_json == 'Int16':
+            return pyarrow.int16()
+        elif arrow_type_json == 'Int32':
+            return pyarrow.int32()
+        elif arrow_type_json == 'Int64':
+            return pyarrow.int64()
+        elif arrow_type_json == 'UInt8':
+            return pyarrow.uint8()
+        elif arrow_type_json == 'UInt16':
+            return pyarrow.uint16()
+        elif arrow_type_json == 'UInt32':
+            return pyarrow.uint32()
+        elif arrow_type_json == 'UInt64':
+            return pyarrow.uint64()
+        elif arrow_type_json == 'String':
+            return pyarrow.string()
+        elif arrow_type_json == 'Utf8':
+            return pyarrow.utf8()
+        elif arrow_type_json == 'LargeUtf8':
+            return pyarrow.large_utf8()
+        elif arrow_type_json == 'Float32':
+            return pyarrow.float32()
+        elif arrow_type_json == 'Float64':
+            return pyarrow.float64()
+        elif arrow_type_json == "Binary":
+            return pyarrow.binary()
+        elif arrow_type_json == "LargeBinary":
+            return pyarrow.large_binary()
+        elif arrow_type_json == "Null":
+            return pyarrow.null()
+    elif isinstance(arrow_type_json, dict):
+        if 'Decimal128' in arrow_type_json:
+            return pyarrow.decimal128(arrow_type_json['Decimal128'][0], arrow_type_json['Decimal128'][1])
+        elif 'Decimal256' in arrow_type_json:
+            return pyarrow.decimal256(arrow_type_json['Decimal256'][0], arrow_type_json['Decimal256'][1])
+        elif 'Interval' in arrow_type_json:
+            if arrow_type_json['Interval'] == 'DayTime':
+                return pyarrow.month_day_nano_interval()
+            elif arrow_type_json['Interval'] == 'YearMonth':
+                return pyarrow.month_day_nano_interval()
+        elif 'List' in arrow_type_json:
+            return pyarrow.list_(to_arrow_type(arrow_type_json['List']['data_type']))
+        elif 'FixedSizeList' in arrow_type_json:
+            return pyarrow.list_(to_arrow_type(arrow_type_json['FixedSizeList'][0]['data_type']),
+                                 arrow_type_json['FixedSizeList'][1])
+        elif 'Dictionary' in arrow_type_json:
+            return pyarrow.dictionary(arrow_type_json['Dictionary'][0], arrow_type_json['Dictionary'][1])
+        elif 'FixedSizeBinary' in arrow_type_json:
+            return pyarrow.binary(arrow_type_json['FixedSizeBinary'])
+        elif 'Map' in arrow_type_json:
+            return pyarrow.map_(to_arrow_type(arrow_type_json['Map'][0]['data_type']['Struct'][0]['data_type']),
+                                to_arrow_type(arrow_type_json['Map'][0]['data_type']['Struct'][1]['data_type']),
+                                arrow_type_json['Map'][1])
+        elif 'Struct' in arrow_type_json:
+            arrow_fields = []
+            for field in arrow_type_json['Struct']:
+                arrow_fields.append(to_arrow_field(field))
+            return pyarrow.struct(arrow_fields)
+        elif 'Time32' in arrow_type_json:
+            return pyarrow.time32('ms' if arrow_type_json['Time32'] == 'Millisecond' else 's')
+        elif 'Time64' in arrow_type_json:
+            return pyarrow.time64('us' if arrow_type_json['Time64'] == 'Microsecond' else 'ns')
+        elif 'Timestamp' in arrow_type_json:
+            unit = arrow_type_json['Timestamp'][0]
+            unit = 's' if unit == 'Second' else 'ms' if unit == 'Millisecond' else 'us' if unit == 'Microsecond' else 'ns'
+            return pyarrow.timestamp(unit, arrow_type_json['Timestamp'][1])
     else:
-        raise IOError("Not supported spark type " + str(spark_type))
-    return pyarrow.field(spark_field_json['name'], arrow_type, spark_field_json['nullable'])
+        raise IOError("Not supported spark type " + str(arrow_type_json))
 
 
-def to_arrow_schema(spark_schema_str, exclude_columns=None):
+def to_arrow_field(arrow_field_json):
+    return pyarrow.field(arrow_field_json['name'], to_arrow_type(arrow_field_json['data_type']),
+                         arrow_field_json['nullable'])
+
+
+def to_arrow_schema(schema_json_str, exclude_columns=None):
     exclude_columns = frozenset(exclude_columns or frozenset())
-    fields = json.loads(spark_schema_str)['fields']
+    _json = json.loads(schema_json_str)
+    fields = json.loads(schema_json_str)['fields']
     arrow_fields = []
     for field in fields:
         if field['name'] in exclude_columns:

@@ -527,10 +527,12 @@ mod upsert_with_metadata_tests {
     use std::path::PathBuf;
     use std::time::SystemTime;
     
+    use lakesoul_io::{arrow, datafusion, tokio, serde_json};
 
+    use lakesoul_io::arrow::array::*;
+    use lakesoul_io::arrow::datatypes::{DataType, i256, GenericBinaryType, Int32Type};
     use lakesoul_io::datasource::parquet_source::EmptySchemaProvider;
     use lakesoul_io::serde_json::json;
-    use lakesoul_io::{arrow, datafusion, tokio, serde_json};
 
     use arrow::util::pretty::print_batches;
     use arrow::datatypes::{Schema, SchemaRef, Field};
@@ -618,12 +620,20 @@ mod upsert_with_metadata_tests {
             range_keys.split(',')
                 .collect::<Vec<&str>>()
                 .iter()
-                .map(|str|str.to_string())
+                .filter_map(|str| if str.is_empty() { 
+                        None 
+                    } else {
+                        Some(str.to_string())
+                })
                 .collect::<Vec<String>>(), 
             hash_keys.split(',')
                 .collect::<Vec<&str>>()
                 .iter()
-                .map(|str|str.to_string())
+                .filter_map(|str| if str.is_empty() { 
+                        None 
+                    } else {
+                        Some(str.to_string())
+                })
                 .collect::<Vec<String>>()
         )
     }
@@ -717,6 +727,130 @@ mod upsert_with_metadata_tests {
                 "| 20201102 | 4    | 4     |",
                 "+----------+------+-------+",
             ]
+        )
+    }
+
+    // #[test]
+    fn test_datatypes() -> Result<()>{
+        let table_name = "test_datatypes";
+        let mut client = MetaDataClient::from_env();
+        // let mut client = MetaDataClient::from_config("host=127.0.0.1 port=5433 dbname=test_lakesoul_meta user=yugabyte password=yugabyte".to_string());
+        client.meta_cleanup()?;
+
+        let iter = vec![
+            ("Boolean", Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef, true),
+            ("Binary", Arc::new(BinaryArray::from_vec(vec![&[1u8], &[2u8, 3u8]])) as ArrayRef, true),
+
+            ("Date32", Arc::new(Date32Array::from(vec![1, -2])) as ArrayRef, true),
+            ("Date64", Arc::new(Date64Array::from(vec![1, -2])) as ArrayRef, true),
+            ("Decimal128", Arc::new(Decimal128Array::from(vec![1, -2])) as ArrayRef, true),
+            ("Decimal256", Arc::new(Decimal256Array::from(vec![Some(i256::default()), None])) as ArrayRef, true),
+
+            // ParquetError(ArrowError("Converting Duration to parquet not supported"))
+            // ("DurationMicrosecond", Arc::new(DurationMicrosecondArray::from(vec![1])) as ArrayRef, true),
+            // ("DurationMillisecond", Arc::new(DurationMillisecondArray::from(vec![1])) as ArrayRef, true),
+
+            // ("Float16", Arc::new(Float16Array::from(vec![1.0])) as ArrayRef, true),
+
+            ("FixedSizeBinary", Arc::new(FixedSizeBinaryArray::from(vec![&[1u8][..], &[2u8][..]])) as ArrayRef, true),
+            ("FixedSizeList", Arc::new(FixedSizeListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    Some(vec![Some(0), Some(1), Some(2)]),
+                    None,
+                    // Some(vec![Some(3), None, Some(5)]),
+                    // Some(vec![Some(6), Some(7)]),
+                ], 3)) as ArrayRef, true),
+
+            ("Float32", Arc::new(Float32Array::from(vec![1.0, -1.0])) as ArrayRef, true),
+            ("Float64", Arc::new(Float64Array::from(vec![1.0, -1.0])) as ArrayRef, true),
+
+
+            ("Int8", Arc::new(Int8Array::from(vec![1i8, -2i8])) as ArrayRef, true),
+            ("Int8Dictionary", Arc::new(Int8DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("Int16", Arc::new(Int16Array::from(vec![1i16, -2i16])) as ArrayRef, true),
+            ("Int16Dictionary", Arc::new(Int16DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("Int32", Arc::new(Int32Array::from(vec![1i32, -2i32])) as ArrayRef, true),
+            ("Int32Dictionary", Arc::new(Int32DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("Int64", Arc::new(Int64Array::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("Int64Dictionary", Arc::new(Int64DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+
+            ("IntervalDayTime", Arc::new(IntervalDayTimeArray::from(vec![1, 2])) as ArrayRef, true),
+            // ParquetError(NYI("Attempting to write an Arrow interval type MonthDayNano to parquet that is not yet implemented"))
+            //("IntervalMonthDayNano", Arc::new(IntervalMonthDayNanoArray::from(vec![1])) as ArrayRef, true),
+            ("IntervalYearMonth", Arc::new(IntervalYearMonthArray::from(vec![1, 2])) as ArrayRef, true),
+
+            ("Map", Arc::new({
+                let string_builder = StringBuilder::new();
+                let int_builder = Int32Builder::with_capacity(4);
+
+                // Construct `[{"joe": 1}, {"blogs": 2, "foo": 4}]`
+                let mut builder = MapBuilder::new(None, string_builder, int_builder);
+
+                builder.keys().append_value("joe");
+                builder.values().append_value(1);
+                builder.append(true).unwrap();
+
+                builder.keys().append_value("blogs");
+                builder.values().append_value(2);
+                builder.keys().append_value("foo");
+                builder.values().append_value(4);
+                builder.append(true).unwrap();
+
+                builder.finish()
+                }) as ArrayRef, true),
+
+            ("Null", Arc::new(NullArray::new(2)) as ArrayRef, true),
+
+            ("LargeBinary", Arc::new(LargeBinaryArray::from_vec(vec![&[1u8], &[2u8, 3u8]])) as ArrayRef, true),
+            ("LargeString", Arc::new(LargeStringArray::from(vec!["1", ""])) as ArrayRef, true),
+
+            ("List", Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    Some(vec![Some(0), Some(1), Some(2)]),
+                    None,
+                    // Some(vec![Some(3), None, Some(5)]),
+                    // Some(vec![Some(6), Some(7)]),
+                ])) as ArrayRef, true),
+            
+            // ParquetError(ArrowError("Converting RunEndEncodedType to parquet not supported"))
+            // ("Run", Arc::new(RunArray::<Int32Type>::from_iter([Some("a"), None])) as ArrayRef, true),
+
+            ("String", Arc::new(StringArray::from(vec!["1", ""])) as ArrayRef, true),
+            ("Struct", Arc::new(StructArray::from(vec![
+                    (
+                        Arc::new(Field::new("b", DataType::Boolean, false)),
+                        Arc::new(BooleanArray::from(vec![false, true])) as ArrayRef,
+                    ),
+                    (
+                        Arc::new(Field::new("c", DataType::Int32, false)),
+                        Arc::new(Int32Array::from(vec![42, 31])) as ArrayRef,
+                    ),
+                ])) as ArrayRef, true),
+            
+            ("Time32Millisecond", Arc::new(Time32MillisecondArray::from(vec![1i32, -2i32])) as ArrayRef, true),
+            ("Time32Second", Arc::new(Time32SecondArray::from(vec![1i32, -2i32])) as ArrayRef, true),
+            ("Time64Microsecond", Arc::new(Time64MicrosecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("Time64Nanosecond", Arc::new(Time64NanosecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("TimestampMicrosecond", Arc::new(TimestampMicrosecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("TimestampMillisecond", Arc::new(TimestampMillisecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("TimestampNanosecond", Arc::new(TimestampNanosecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+            ("TimestampSecond", Arc::new(TimestampSecondArray::from(vec![1i64, -2i64])) as ArrayRef, true),
+
+            ("UInt8", Arc::new(UInt8Array::from(vec![1u8, 2u8])) as ArrayRef, true),
+            ("UInt8Dictionary", Arc::new(UInt8DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("UInt16", Arc::new(UInt16Array::from(vec![1u16, 2u16])) as ArrayRef, true),
+            ("UInt16Dictionary", Arc::new(UInt16DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("UInt32", Arc::new(UInt32Array::from(vec![1u32, 2u32])) as ArrayRef, true),
+            ("UInt32Dictionary", Arc::new(UInt32DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+            ("UInt64", Arc::new(UInt64Array::from(vec![1u64, 2u64])) as ArrayRef, true),
+            ("UInt64Dictionary", Arc::new(UInt64DictionaryArray::from_iter([Some("a"), None])) as ArrayRef, true),
+        ];
+        let batch = RecordBatch::try_from_iter_with_nullable(iter).unwrap();
+        init_table(
+            batch,
+            // create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]]),
+             table_name, 
+            //  vec!["range".to_string(), "hash".to_string()],
+            vec![],
+             &mut client,
         )
     }
 }
