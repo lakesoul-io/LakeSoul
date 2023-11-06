@@ -193,6 +193,22 @@ public class DBManager {
         return partitionInfoDao.getLastedVersionTimestampUptoTime(tableId, partitionDesc, utcMills);
     }
 
+    public List<String> deleteMetaPartitionInfo(String tableId, String partitionDesc) {
+        List<DataFileOp> fileOps = new ArrayList<>();
+        List<String> deleteFilePathList = new ArrayList<>();
+        deleteSinglePartitionMetaInfo(tableId, partitionDesc, fileOps, deleteFilePathList);
+        return deleteFilePathList;
+    }
+
+    public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc,
+                                              List<DataFileOp> fileOps, List<String> deleteFilePathList) {
+        List<PartitionInfo> singlePartitionAllVersionList = getOnePartitionVersions(tableId, partitionDesc);
+        Set<Uuid> snapshotList = new HashSet<>();
+        getSnapshotAndFilePathInfo(tableId, partitionDesc, fileOps, deleteFilePathList, singlePartitionAllVersionList, snapshotList);
+        partitionInfoDao.deleteByTableIdAndPartitionDesc(tableId, partitionDesc);
+        dataCommitInfoDao.deleteByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList.stream().collect(Collectors.toList()));
+    }
+
 
     public List<String> getDeleteFilePath(String tableId, String partitionDesc, long utcMills) {
         List<DataFileOp> fileOps = new ArrayList<>();
@@ -210,14 +226,19 @@ public class DBManager {
     public void deleteSinglePartitionMetaInfo(String tableId, String partitionDesc, long utcMills,
                                               List<DataFileOp> fileOps, List<String> deleteFilePathList) {
         List<PartitionInfo> filterPartitionInfo = getFilterPartitionInfo(tableId, partitionDesc, utcMills);
-        List<Uuid> snapshotList = new ArrayList<>();
+        Set<Uuid> snapshotList = new HashSet<>();
+        getSnapshotAndFilePathInfo(tableId, partitionDesc, fileOps, deleteFilePathList, filterPartitionInfo, snapshotList);
+        partitionInfoDao.deletePreviousVersionPartition(tableId, partitionDesc, utcMills);
+        dataCommitInfoDao.deleteByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList.stream().collect(Collectors.toList()));
+    }
+
+    private void getSnapshotAndFilePathInfo(String tableId, String partitionDesc, List<DataFileOp> fileOps, List<String> deleteFilePathList,
+                         List<PartitionInfo> filterPartitionInfo, Set<Uuid> snapshotList) {
         filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshotList()));
         List<DataCommitInfo> filterDataCommitInfo =
-                dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
+                dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList.stream().collect(Collectors.toList()));
         filterDataCommitInfo.forEach(dataCommitInfo -> fileOps.addAll(dataCommitInfo.getFileOpsList()));
         fileOps.forEach(fileOp -> deleteFilePathList.add(fileOp.getPath()));
-        partitionInfoDao.deletePreviousVersionPartition(tableId, partitionDesc, utcMills);
-        dataCommitInfoDao.deleteByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList);
     }
 
     public List<PartitionInfo> getFilterPartitionInfo(String tableId, String partitionDesc, long utcMills) {

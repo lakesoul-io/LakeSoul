@@ -36,6 +36,26 @@ public class DDLSuite extends AbstractTestBase {
         tEnv.executeSql("SHOW VIEWS");
     }
 
+    /**
+     * flink 1.17 flink sql cannot parse 'drop partition' semantics
+     */
+//    @Test
+//    public void dropTablePartition() throws ExecutionException, InterruptedException {
+//        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+//        createDropPartitionTable(tEnv);
+//        tEnv.executeSql(
+//                        "INSERT INTO user_info VALUES" +
+//                                "(1, 'Bob', 90, TO_DATE('1995-10-01'))," +
+//                                "(2, 'Alice', 80, TO_DATE('1995-10-01')), " +
+//                                "(3, 'Jack', 75,  TO_DATE('1995-10-15'))," +
+//                                "(3, 'Amy', 95,  TO_DATE('1995-10-10')), " +
+//                                "(5, 'Tom', 75,  TO_DATE('1995-10-01'))," +
+//                                "(4, 'Mike', 70, TO_DATE('1995-10-02'))")
+//                .await();
+//        tEnv.executeSql("select * from user_info").print();
+//        tEnv.executeSql("alter table user_info drop partition `date`='1995-10-01'");
+//    }
+
     @Test
     public void alterTableNotSupported() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
@@ -98,10 +118,24 @@ public class DDLSuite extends AbstractTestBase {
         tEnvs.executeSql(createUserSql);
     }
 
-
     private void createLakeSoulSourceTableViewUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
         String createUserSql = "create view if not exists user_info_view as select * from user_info";
         tEnvs.executeSql("DROP view if exists user_info_view");
+        tEnvs.executeSql(createUserSql);
+    }
+
+    private void createDropPartitionTable(TableEnvironment tEnvs) {
+        String createUserSql = "create table user_info (" +
+                "    order_id INT PRIMARY KEY NOT ENFORCED, " +
+                "    name STRING, " +
+                "    score FLOAT, " +
+                "   `date` DATE" +
+                ") PARTITIONED BY (`date`) WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'path'='" + getTempDirUri("/lakeSource/user") +
+                "' )";
+        tEnvs.executeSql("DROP TABLE if exists user_info");
         tEnvs.executeSql(createUserSql);
     }
 }

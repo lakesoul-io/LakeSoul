@@ -235,8 +235,8 @@ object SparkMetaVersion {
     dbManager.deletePartitionInfoByTableId(table_id)
   }
 
-  def dropPartitionInfoByRangeId(table_id: String, range_value: String): Unit = {
-    dbManager.deletePartitionInfoByTableAndPartition(table_id, range_value)
+  def dropPartitionInfoByRangeId(table_id: String, range_value: String): List[String] = {
+    dbManager.deleteMetaPartitionInfo(table_id, range_value).asScala.toList
   }
 
   def deleteShortTableName(short_table_name: String, table_name: String): Unit = {

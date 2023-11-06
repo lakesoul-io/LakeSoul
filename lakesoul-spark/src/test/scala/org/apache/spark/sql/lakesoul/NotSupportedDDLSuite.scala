@@ -95,6 +95,15 @@ abstract class NotSupportedDDLBase extends QueryTest
     assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
   }
 
+  private def assertUnsupportedOperationException(query: String, messages: String*): Unit = {
+    val allErrMessages = "operation not allowed" +: "does not support" +: "is not supported" +: messages
+    val e = intercept[UnsupportedOperationException] {
+      sql(query)
+    }
+    println(e.getMessage().toLowerCase(Locale.ROOT))
+    assert(allErrMessages.exists(err => e.getMessage.toLowerCase(Locale.ROOT).contains(err)))
+  }
+
   test("bucketing is not supported for lakesoul tables") {
     withTable("tbl") {
       assertUnsupported(
@@ -118,13 +127,8 @@ abstract class NotSupportedDDLBase extends QueryTest
   }
 
   test("ALTER TABLE ADD PARTITION") {
-    assertUnsupported(s"ALTER TABLE $partitionedTableName ADD PARTITION (p1=3)",
-      "can not alter partitions")
-  }
-
-  test("ALTER TABLE DROP PARTITION") {
-    assertUnsupported(s"ALTER TABLE $partitionedTableName DROP PARTITION (p1=2)",
-      "can not alter partitions")
+    assertUnsupportedOperationException(s"ALTER TABLE $partitionedTableName ADD PARTITION (p1=3)",
+      "cannot create partition")
   }
 
   test("ALTER TABLE RECOVER PARTITIONS") {
