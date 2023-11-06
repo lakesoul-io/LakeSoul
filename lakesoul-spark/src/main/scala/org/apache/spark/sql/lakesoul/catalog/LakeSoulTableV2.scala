@@ -4,8 +4,13 @@
 
 package org.apache.spark.sql.lakesoul.catalog
 
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_PARTITION_DESC_KV_DELIM, LAKESOUL_RANGE_PARTITION_SPLITTER}
+import com.dmetasoul.lakesoul.meta.{PartitionInfoScala, SparkMetaVersion}
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.ResolvePartitionSpec
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogUtils}
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.connector.catalog._
 import org.apache.spark.sql.connector.expressions.{FieldReference, IdentityTransform, Transform}
@@ -20,6 +25,8 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SparkSession}
 
+import java.util
+import java.util.concurrent.ConcurrentHashMap
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
@@ -29,7 +36,7 @@ case class LakeSoulTableV2(spark: SparkSession,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
-  extends Table with SupportsWrite with SupportsRead {
+  extends Table with SupportsWrite with SupportsRead with SupportsPartitionManagement {
 
   val path: Path = SparkUtil.makeQualifiedTablePath(path_orig)
 
@@ -64,6 +71,9 @@ case class LakeSoulTableV2(spark: SparkSession,
     .getOrElse(s"lakesoul.`${snapshotManagement.table_path}`")
 
   private lazy val snapshot: Snapshot = snapshotManagement.snapshot
+
+  private val mapTablePartitionSpec: util.Map[InternalRow, PartitionInfoScala] =
+    new ConcurrentHashMap[InternalRow, PartitionInfoScala]()
 
   override def schema(): StructType =
     StructType(snapshot.getTableInfo.data_schema ++ snapshot.getTableInfo.range_partition_schema)
@@ -141,6 +151,74 @@ case class LakeSoulTableV2(spark: SparkSession,
     SparkUtil.createRelation(partitionPredicates, snapshotManagement, spark)
   }
 
+  override def partitionSchema(): StructType = {
+    snapshot.getTableInfo.range_partition_schema
+  }
+
+  override def createPartition(ident: InternalRow, properties: util.Map[String, String]): Unit = {
+    throw new UnsupportedOperationException(
+      "Cannot create partition: partitions are created implicitly when inserting new rows into LakeSoul tables")
+  }
+
+  override def dropPartition(ident: InternalRow): Boolean = {
+    if (mapTablePartitionSpec.containsKey(ident)) {
+      val partitionInfoScala = mapTablePartitionSpec.get(ident)
+      val deleteFilePaths = SparkMetaVersion.dropPartitionInfoByRangeId(partitionInfoScala.table_id, partitionInfoScala.range_value)
+      if (null != deleteFilePaths && deleteFilePaths.length > 0) {
+        val sessionHadoopConf = SparkSession.active.sessionState.newHadoopConf()
+        val fs = path.getFileSystem(sessionHadoopConf)
+        for (item <- deleteFilePaths) {
+          fs.delete(new Path(item), true)
+        }
+      }
+      mapTablePartitionSpec.remove(ident)
+      true
+    } else {
+      false
+    }
+  }
+
+  override def replacePartitionMetadata(ident: InternalRow, properties: util.Map[String, String]): Unit = {
+    throw new UnsupportedOperationException(
+      "Cannot replace partition metadata: LakeSoul table partitions do not support metadata")
+  }
+
+  override def loadPartitionMetadata(ident: InternalRow): util.Map[String, String] = {
+    throw new UnsupportedOperationException(
+      "Cannot load partition metadata: LakeSoul table partitions do not support metadata")
+  }
+
+  override def listPartitionIdentifiers(names: Array[String], ident: InternalRow): Array[InternalRow] = {
+    assert(names.length == ident.numFields,
+      s"Number of partition names (${names.length}) must be equal to " +
+        s"the number of partition values (${ident.numFields}).")
+    val schema = partitionSchema
+    assert(names.forall(fieldName => schema.fieldNames.contains(fieldName)),
+      s"Some partition names ${names.mkString("[", ", ", "]")} don't belong to " +
+        s"the partition schema '${schema.sql}'.")
+    val indexes = names.map(schema.fieldIndex)
+    val dataTypes = names.map(schema(_).dataType)
+    val currentRow = new GenericInternalRow(new Array[Any](names.length))
+    val partitionInfoArray = snapshot.getPartitionInfoArray
+
+    partitionInfoArray.foreach(partition => {
+      val range_value = partition.range_value
+      val map = range_value.split(LAKESOUL_RANGE_PARTITION_SPLITTER).map(p => {
+        val strings = p.split(LAKESOUL_PARTITION_DESC_KV_DELIM)
+        strings(0) -> strings(1)
+      }).toMap
+      val row = ResolvePartitionSpec.convertToPartIdent(map, schema)
+      mapTablePartitionSpec.put(row, partition)
+    })
+
+    val ss = mapTablePartitionSpec.keySet().asScala.filter { key =>
+      for (i <- 0 until names.length) {
+        currentRow.values(i) = key.get(indexes(i), dataTypes(i))
+      }
+      currentRow == ident
+    }.toArray
+    ss
+  }
 
 }
 

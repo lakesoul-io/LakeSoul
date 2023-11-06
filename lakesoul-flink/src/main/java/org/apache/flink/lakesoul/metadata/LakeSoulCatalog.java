@@ -332,13 +332,9 @@ public class LakeSoulCatalog implements Catalog {
         }
         TableInfo tableInfo =
                 dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
-        List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
-        HashSet<String> partitions = new HashSet<>(100);
-        for (PartitionInfo pif : allPartitionInfo) {
-            partitions.add(pif.getPartitionDesc());
-        }
+        List<String> tableAllPartitionDesc = dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
         ArrayList<CatalogPartitionSpec> al = new ArrayList<>(100);
-        for (String item : partitions) {
+        for (String item : tableAllPartitionDesc) {
             if (null == item || "".equals(item)) {
                 throw new CatalogException("partition not exist");
             } else {
@@ -421,7 +417,22 @@ public class LakeSoulCatalog implements Catalog {
     @Override
     public void dropPartition(ObjectPath tablePath, CatalogPartitionSpec catalogPartitionSpec, boolean ignoreIfExists)
             throws CatalogException {
-        throw new CatalogException("not supported now");
+
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tablePath.getObjectName(), tablePath.getDatabaseName());
+        if (tableInfo == null) {
+            throw new CatalogException(tablePath + " does not exist");
+        }
+        String partitionDesc = DBUtil.formatPartitionDesc(catalogPartitionSpec.getPartitionSpec());
+        List<String> deleteFilePath = dbManager.deleteMetaPartitionInfo(tableInfo.getTableId(), partitionDesc);
+        deleteFilePath.forEach(filePath -> {
+            Path path = new Path(filePath);
+            try {
+                path.getFileSystem().delete(path, true);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
     @Override

@@ -1214,7 +1214,7 @@ pub fn execute_update(
 
             let statement = format!(
                 "delete from data_commit_info 
-                where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id in commit_id in ({}) ", uuid_str_list);
+                where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id in ({}) ", uuid_str_list);
 
             runtime.block_on(async{
                 let statement = client.prepare(&statement).await?;
