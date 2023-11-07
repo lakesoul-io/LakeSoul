@@ -44,7 +44,7 @@ class NativeMetadataClient:
         self._bool = False
 
         def callback(bool, msg):
-            print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
+            #print("create connection callback: status={} msg={}".format(bool, msg.decode("utf-8")))
             if not bool:
                 message = "fail to initialize lakesoul.metadata.native_client.NativeMetadataClient"
                 raise RuntimeError(message)
@@ -89,12 +89,11 @@ class NativeMetadataClient:
         joined_params = PARAM_DELIM.join(params).encode("utf-8")
 
         def execute_query_callback(len, msg):
-            print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
+            #print("execute_query query_type={} callback: len={} msg={}".format(query_type, len, msg.decode("utf-8")))
             self._query_result_len = len
 
         def export_bytes_result_callback(bool, msg):
-            print(
-                "export_bytes_result callback: bool={} msg={}".format(query_type, bool, msg.decode("utf-8")))
+            #print("export_bytes_result callback: bool={} msg={}".format(query_type, bool, msg.decode("utf-8")))
             self._bool = bool
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:

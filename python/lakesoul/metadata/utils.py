@@ -225,5 +225,5 @@ def to_arrow_schema(schema_json_str, exclude_columns=None):
         if field['name'] in exclude_columns:
             continue
         arrow_fields.append(to_arrow_field(field))
-    print(arrow_fields)
+    #print(arrow_fields)
     return pyarrow.schema(arrow_fields)
