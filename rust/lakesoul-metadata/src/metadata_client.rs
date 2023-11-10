@@ -6,7 +6,6 @@ use std::{collections::HashMap, vec, env, fs};
 
 use proto::proto::entity::{TablePathId, TableNameId, TableInfo, PartitionInfo, JniWrapper, DataCommitInfo, MetaInfo, CommitOp, self};
 use prost::Message;
-use tokio::runtime::{Runtime, Builder};
 use tokio_postgres::Client;
 
 use url::Url;
@@ -183,7 +182,7 @@ impl MetaDataClient {
                 return Ok(());
             }
             None => {
-                let _ = self.insert_data_commit_info(&data_commit_info);
+                self.insert_data_commit_info(&data_commit_info).await?;
             }
             _ => {}
         };

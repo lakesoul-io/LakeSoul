@@ -424,10 +424,7 @@ pub async fn execute_query(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    let statement = match get_prepared_statement(client, prepared, &query_type).await {
-        Ok(statement) => statement,
-        Err(err) => return Err(LakeSoulMetaDataError::from(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -818,10 +815,7 @@ pub async fn execute_insert(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
     }
     let insert_type = DaoType::try_from(insert_type).unwrap();
-    let statement = match get_prepared_statement(client, prepared, &insert_type).await {
-        Ok(statement) => statement,
-        Err(err) => return Err(LakeSoulMetaDataError::from(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &insert_type).await?;
 
     let result = match insert_type {
         DaoType::InsertNamespace if wrapper.namespace.len() == 1  => {
@@ -1080,10 +1074,7 @@ pub async fn execute_update(
         return Err(LakeSoulMetaDataError::from(std::io::ErrorKind::InvalidInput))
     }
     let update_type = DaoType::try_from(update_type).unwrap();
-    let statement = match get_prepared_statement( client, prepared, &update_type).await {
-        Ok(statement) => statement,
-        Err(err) => return Err(LakeSoulMetaDataError::from(err))
-    };
+    let statement = get_prepared_statement( client, prepared, &update_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -1194,10 +1185,7 @@ pub async fn execute_query_scalar(
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    let statement = match get_prepared_statement(client, prepared, &query_type).await {
-        Ok(statement) => statement,
-        Err(err) => return Err(LakeSoulMetaDataError::from(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)

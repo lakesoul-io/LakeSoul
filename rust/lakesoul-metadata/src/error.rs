@@ -4,9 +4,6 @@
 
 use std::{result, sync::Arc, error::Error, io, fmt::{Display, Formatter}, num};
 
-use num_enum::{TryFromPrimitiveError, TryFromPrimitive};
-
-
 /// Result type for operations that could result in an [LakeSoulMetaDataError]
 pub type Result<T, E = LakeSoulMetaDataError> = result::Result<T, E>;
 
