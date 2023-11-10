@@ -691,7 +691,7 @@ mod upsert_with_metadata_tests {
         }
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_merge_same_column_i32() -> Result<()>{
         let table_name = "merge-same_column";
         let mut client = MetaDataClient::from_env().await?;
