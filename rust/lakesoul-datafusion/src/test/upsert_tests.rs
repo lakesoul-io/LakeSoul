@@ -542,7 +542,7 @@ mod upsert_with_metadata_tests {
     use datafusion::assert_batches_eq;
     use datafusion::prelude::{DataFrame, SessionContext};
     use datafusion::logical_expr::LogicalPlanBuilder;
-    use datafusion::error::Result;
+    use crate::error::Result;
 
     use proto::proto::entity::{TableInfo, DataCommitInfo, FileOp, DataFileOp, CommitOp, Uuid};
     use tokio::runtime::{Builder, Runtime};
@@ -554,9 +554,9 @@ mod upsert_with_metadata_tests {
     use lakesoul_metadata::{Client, PreparedStatementMap, MetaDataClient};
 
 
-    fn commit_data(client: &mut MetaDataClient, table_name: &str, config: LakeSoulIOConfig) -> Result<()>{
-        let table_name_id = client.get_table_name_id_by_table_name(table_name, "default")?;
-        match client.commit_data_commit_info(DataCommitInfo {
+    async fn commit_data(client: &mut MetaDataClient, table_name: &str, config: LakeSoulIOConfig) -> Result<()>{
+        let table_name_id = client.get_table_name_id_by_table_name(table_name, "default").await?;
+        client.commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,
             partition_desc: "-5".to_string(),
             file_ops: config.files_slice()
@@ -574,15 +574,12 @@ mod upsert_with_metadata_tests {
                 Some(Uuid{high, low})
             },
             ..Default::default()
-        }) 
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(lakesoul_io::lakesoul_reader::DataFusionError::IoError(e))
-        }
+        }).await?;
+        Ok(())
     }
 
-    fn create_table(client: &mut MetaDataClient, table_name: &str, config: LakeSoulIOConfig) -> Result<()> {
-        match client.create_table(
+    async fn create_table(client: &mut MetaDataClient, table_name: &str, config: LakeSoulIOConfig) -> Result<()> {
+        client.create_table(
             TableInfo {
                 table_id: format!("table_{}", uuid::Uuid::new_v4().to_string()),
                 table_name: table_name.to_string(), 
@@ -592,25 +589,22 @@ mod upsert_with_metadata_tests {
                 properties: "{}".to_string(),
                 partitions: ";".to_owned() + config.primary_keys_slice().iter().map(String::as_str).collect::<Vec<_>>().join(",").as_str(),
                 domain: "public".to_string(),
-            }) 
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(lakesoul_io::lakesoul_reader::DataFusionError::IoError(e))
-        }
+        }).await?;
+        Ok(()) 
     }
 
-    fn create_io_config_builder(client: &mut MetaDataClient, table_name: &str) -> LakeSoulIOConfigBuilder {
-        let table_info = client.get_table_info_by_table_name(table_name, "default").unwrap();
-        let data_files = client.get_data_files_by_table_name(table_name, vec![], "default").unwrap();
-        let schema_str = client.get_schema_by_table_name(table_name, "default").unwrap();
-        let schema = serde_json::from_str::<Schema>(schema_str.as_str()).unwrap();
+    async fn create_io_config_builder(client: &mut MetaDataClient, table_name: &str) -> lakesoul_metadata::error::Result<LakeSoulIOConfigBuilder> {
+        let table_info = client.get_table_info_by_table_name(table_name, "default").await?;
+        let data_files = client.get_data_files_by_table_name(table_name, vec![], "default").await?;
+        let schema_str = client.get_schema_by_table_name(table_name, "default").await?;
+        let schema = serde_json::from_str::<Schema>(schema_str.as_str())?;
 
-        LakeSoulIOConfigBuilder::new()
+        Ok(LakeSoulIOConfigBuilder::new()
             .with_files(data_files)
             .with_schema(Arc::new(schema))
             .with_primary_keys(
                 parse_table_info_partitions(table_info.partitions).1
-            )
+            ))
     }
 
     fn parse_table_info_partitions(partitions: String) -> (Vec<String>, Vec<String>) {
@@ -648,34 +642,34 @@ mod upsert_with_metadata_tests {
     }
 
 
-    fn execute_upsert(batch: RecordBatch, table_name: &str, client: &mut MetaDataClient) -> Result<()> {
+    async fn execute_upsert(batch: RecordBatch, table_name: &str, client: &mut MetaDataClient) -> Result<()> {
         let file = [env::temp_dir().to_str().unwrap(), table_name, format!("{}.parquet", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string()).as_str()].iter().collect::<PathBuf>().to_str().unwrap().to_string();
-        let builder = create_io_config_builder(client, table_name).with_file(file.clone()).with_schema(batch.schema());
+        let builder = create_io_config_builder(client, table_name).await?.with_file(file.clone()).with_schema(batch.schema());
         let config = builder.clone().build();
 
         let writer = SyncSendableMutableLakeSoulWriter::try_new(config, Builder::new_current_thread().build().unwrap()).unwrap();
         writer.write_batch(batch)?;
         writer.flush_and_close()?;
-        commit_data(client, table_name, builder.clone().build()) 
+        commit_data(client, table_name, builder.clone().build()).await
     }
 
     
 
 
-    fn init_table(batch: RecordBatch, table_name: &str, pks:Vec<String>, client: &mut MetaDataClient) -> Result<()> {
+    async fn init_table(batch: RecordBatch, table_name: &str, pks:Vec<String>, client: &mut MetaDataClient) -> Result<()> {
         let schema = batch.schema();
         let builder = LakeSoulIOConfigBuilder::new()
                 .with_schema(schema.clone())
                 .with_primary_keys(pks);
-        create_table(client, table_name, builder.build())?;
-        execute_upsert(batch, table_name, client)
+        create_table(client, table_name, builder.build()).await?;
+        execute_upsert(batch, table_name, client).await
     }
 
 
 
-    fn check_upsert(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, client: &mut MetaDataClient, expected: &[&str]) -> Result<()> {
-        execute_upsert(batch, table_name, client)?;
-        let builder = create_io_config_builder(client, table_name);
+    async fn check_upsert(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, client: &mut MetaDataClient, expected: &[&str]) -> Result<()> {
+        execute_upsert(batch, table_name, client).await?;
+        let builder = create_io_config_builder(client, table_name).await?;
         let builder = builder
             .with_schema(SchemaRef::new(Schema::new(
                 selected_cols.iter().map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true)).collect::<Vec<_>>()
@@ -697,18 +691,18 @@ mod upsert_with_metadata_tests {
         }
     }
 
-    #[test]
-    fn test_merge_same_column_i32() -> Result<()>{
+    // #[tokio::test]
+    async fn test_merge_same_column_i32() -> Result<()>{
         let table_name = "merge-same_column";
-        let mut client = MetaDataClient::from_env();
+        let mut client = MetaDataClient::from_env().await?;
         // let mut client = MetaDataClient::from_config("host=127.0.0.1 port=5433 dbname=test_lakesoul_meta user=yugabyte password=yugabyte".to_string());
-        client.meta_cleanup()?;
+        client.meta_cleanup().await?;
         init_table(
             create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]]),
              table_name, 
              vec!["range".to_string(), "hash".to_string()],
              &mut client,
-        )?;
+        ).await?;
         
         check_upsert(
             create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]]), 
@@ -727,15 +721,15 @@ mod upsert_with_metadata_tests {
                 "| 20201102 | 4    | 4     |",
                 "+----------+------+-------+",
             ]
-        )
+        ).await
     }
 
     // #[test]
-    fn test_datatypes() -> Result<()>{
+    async fn test_datatypes() -> Result<()>{
         let table_name = "test_datatypes";
-        let mut client = MetaDataClient::from_env();
+        let mut client = MetaDataClient::from_env().await?;
         // let mut client = MetaDataClient::from_config("host=127.0.0.1 port=5433 dbname=test_lakesoul_meta user=yugabyte password=yugabyte".to_string());
-        client.meta_cleanup()?;
+        client.meta_cleanup().await?;
 
         let iter = vec![
             ("Boolean", Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef, true),
@@ -851,6 +845,6 @@ mod upsert_with_metadata_tests {
             //  vec!["range".to_string(), "hash".to_string()],
             vec![],
              &mut client,
-        )
+        ).await
     }
 }

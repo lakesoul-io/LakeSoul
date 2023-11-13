@@ -111,13 +111,14 @@ pub extern "C" fn execute_insert(
 
     let raw_parts = unsafe {std::slice::from_raw_parts(addr as *const u8, len as usize)};
     let wrapper = entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
-    let result = lakesoul_metadata::execute_insert(
-        runtime,
-        client,
-        prepared,
-        insert_type,
-        wrapper
-    );
+    let result = runtime.block_on(async {
+        lakesoul_metadata::execute_insert(
+            client,
+            prepared,
+            insert_type,
+            wrapper
+        ).await
+    });
     match result {
         Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
         Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw())
@@ -137,13 +138,14 @@ pub extern "C" fn execute_update(
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_mut()};
     let prepared = unsafe {NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut()};
 
-    let result = lakesoul_metadata::execute_update(
-        runtime,
-        client,
-        prepared,
-        update_type,
-        string_from_ptr(joined_string),
-    );
+    let result = runtime.block_on(async {
+        lakesoul_metadata::execute_update(
+            client,
+            prepared,
+            update_type,
+            string_from_ptr(joined_string),
+        ).await
+    });
     match result {
         Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
         Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw())
@@ -163,13 +165,14 @@ pub extern "C" fn execute_query_scalar(
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_mut()};
     let prepared = unsafe {NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut()};
 
-    let result = lakesoul_metadata::execute_query_scalar(
-        runtime,
-        client,
-        prepared,
-        update_type,
-        string_from_ptr(joined_string),
-    );
+    let result = runtime.block_on(async {
+        lakesoul_metadata::execute_query_scalar(
+            client,
+            prepared,
+            update_type,
+            string_from_ptr(joined_string),
+        ).await
+    });
     match result {
         Ok(Some(result)) => callback(CString::new(result.as_str()).unwrap().into_raw(), CString::new("").unwrap().into_raw()),
         Ok(None) => callback(CString::new("").unwrap().into_raw(), CString::new("").unwrap().into_raw()),
@@ -192,13 +195,14 @@ pub extern "C" fn execute_query(
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref()};
     let prepared = unsafe {NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut()};
     
-    let result = lakesoul_metadata::execute_query(
-        runtime,
-        client,
-        prepared,
-        query_type,
-        string_from_ptr(joined_string),
-    );
+    let result = runtime.block_on(async {
+        lakesoul_metadata::execute_query(
+            client,
+            prepared,
+            query_type,
+            string_from_ptr(joined_string),
+        ).await
+    });
     match result {
         Ok(u8_vec) => {
             let len = u8_vec.len();
@@ -253,9 +257,9 @@ pub extern "C" fn clean_meta_for_test(
 ) {
     let runtime = unsafe {NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()};
     let client = unsafe {NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref()};
-    let result = lakesoul_metadata::clean_meta_for_test(
-        runtime,
-        client);
+    let result = runtime.block_on(async{
+        lakesoul_metadata::clean_meta_for_test(client).await
+    });
     match result {
         Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
         Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw())
@@ -286,8 +290,12 @@ pub extern "C" fn create_tokio_postgres_client(
 ) -> NonNull<Result<TokioPostgresClient>> {
     let config = string_from_ptr(config); 
     let runtime = unsafe {NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref()};
+
+    let result = runtime.block_on(async{
+        lakesoul_metadata::create_connection(config).await
+    });
     
-     let result = match lakesoul_metadata::create_connection(runtime, config) {
+    let result = match result {
         Ok(client) => {
             callback(true, CString::new("").unwrap().into_raw());
             Result::<TokioPostgresClient>::new(client)

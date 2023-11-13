@@ -3,18 +3,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![feature(io_error_other)]
-use std::collections::HashMap;
+
+mod metadata_client;
+pub mod error;
+
+use std::{collections::HashMap, io::ErrorKind};
 use std::str::FromStr;
 
+use error::{LakeSoulMetaDataError, Result};
 use proto::proto::entity;
 use prost::Message;
 
 pub use tokio::runtime::{Builder, Runtime};
 
+use tokio::spawn;
 pub use tokio_postgres::{NoTls, Client, Statement};
 use postgres_types::{ToSql, FromSql};
 
-mod metadata_client;
 pub use metadata_client::MetaDataClient;
 
 pub const DAO_TYPE_QUERY_ONE_OFFSET : i32 = 0;
@@ -155,16 +160,15 @@ pub enum DaoType{
 pub type PreparedStatementMap = HashMap<DaoType, Statement>;
 
 
-fn get_prepared_statement(
-    runtime: &Runtime,
+async fn get_prepared_statement(
     client: &Client,
     prepared :&mut PreparedStatementMap,
     dao_type: &DaoType,
-) -> Result<Statement, tokio_postgres::Error> {
+) -> Result<Statement> {
     if let Some(statement) = prepared.get(dao_type) {
         Ok(statement.clone())
     } else {
-        let result = runtime.block_on(async {
+        let result = {
             let statement = match dao_type {
                 // Select Namespace
                 DaoType::SelectNamespaceByNamespace => 
@@ -398,34 +402,29 @@ fn get_prepared_statement(
 
             };
             client.prepare(statement).await
-        });
+        };
         match result {
             Ok(statement) => {
                 prepared.insert(*dao_type, statement.clone());
                 Ok(statement)
             }
-            Err(err) => Err(err)
+            Err(err) => Err(LakeSoulMetaDataError::from(err))
         }
     }
 }
 
-
-pub fn execute_query(
-    runtime: &Runtime,
+pub async fn execute_query(
     client: &Client,
     prepared: &mut PreparedStatementMap,
     query_type: i32, 
     joined_string: String, 
-) -> Result<Vec<u8>, std::io::Error> {
+) -> Result<Vec<u8>> {
     if query_type >= DAO_TYPE_INSERT_ONE_OFFSET {
         eprintln!("Invalid query_type_index: {:?}", query_type);
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    let statement = match get_prepared_statement(runtime, client, prepared, &query_type) {
-        Ok(statement) => statement,
-        Err(err) => return Err(convert_to_io_error(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -437,95 +436,77 @@ pub fn execute_query(
     let rows = match query_type {
         DaoType::ListNamespaces | 
         DaoType::ListAllTablePath if params.len() == 1 && params[0].is_empty() => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[]).await
-            });
+            let result = client.query(&statement, &[]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListTableNameByNamespace if params.len() == 1 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0]]).await
-            });
+            let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::SelectNamespaceByNamespace |
         DaoType::SelectTableInfoByTableId |
         DaoType::SelectTablePathIdByTablePath |
         DaoType::SelectTableInfoByTablePath if params.len() == 1 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0]]).await
-            });
+            let result = client.query_opt(&statement, &[&params[0]]).await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListPartitionByTableId |
         DaoType::ListAllPathTablePathByNamespace if params.len() == 1 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0]]).await
-            });
+            let result = client.query(&statement, &[&params[0]]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::SelectOnePartitionVersionByTableIdAndDesc |
         DaoType::ListPartitionByTableIdAndDesc if params.len() == 2 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0], &params[1]]).await
-            });
+            let result = client.query(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::SelectTableNameIdByTableName |
         DaoType::SelectTableInfoByTableNameAndNameSpace |
         DaoType::SelectTableInfoByIdAndTablePath if params.len() == 2 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1]]).await
-            });
+            let result = client.query_opt(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId if params.len() == 3 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1], &uuid::Uuid::from_str(&params[2]).unwrap()]).await
-            });
+            let result = client.query_opt(&statement, &[&params[0], &params[1], &uuid::Uuid::from_str(&params[2])?]).await;
             match result {
                 Ok(Some(row)) => vec![row],
                 Ok(None) => vec![],
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::SelectPartitionVersionByTableIdAndDescAndVersion if params.len() == 3 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0], &params[1], &i32::from_str(&params[2]).unwrap()]).await
-            });
+            let result = client.query(&statement, &[&params[0], &params[1], &i32::from_str(&params[2])?]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListCommitOpsBetweenVersions |
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange if params.len() == 4 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0], &params[1], &i32::from_str(&params[2]).unwrap(), &i32::from_str(&params[3]).unwrap()]).await
-            });
+            let result = client.query(&statement, &[&params[0], &params[1], &i32::from_str(&params[2])?, &i32::from_str(&params[3])?]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListPartitionDescByTableIdAndParList if params.len() == 2 => {
@@ -539,36 +520,34 @@ pub fn execute_query(
                 where table_id = $1::TEXT and partition_desc in ({}) 
                 group by table_id,partition_desc) t 
                 left join partition_info m on t.table_id = m.table_id and t.partition_desc = m.partition_desc and t.max = m.version", partitions);
-            let result = runtime.block_on(async{
+            let result = {
                 let statement = client.prepare(&statement).await?;
                 client.query(&statement, &[&params[0]]).await
-            });
+            };
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange if params.len() == 4 => {
-            let result = runtime.block_on(async{
-                client.query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2]).unwrap(), &i64::from_str(&params[3]).unwrap()]).await
-            });
+            let result = client.query(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?, &i64::from_str(&params[3])?]).await;
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList if params.len() == 3 => {
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
                 eprintln!("Invalid params of query_type={:?}, params={:?}", query_type, params);
-                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));    
+                return Err(LakeSoulMetaDataError::from(std::io::Error::from(std::io::ErrorKind::InvalidInput)));    
             }
             let uuid_num = concated_uuid.len() / 32;
             let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
             let mut idx = 0;
             for _ in 0..uuid_num {
-                let high = u64::from_str_radix(&concated_uuid[idx..idx+16], 16).unwrap();
-                let low = u64::from_str_radix(&concated_uuid[idx+16..idx+32], 16).unwrap();
+                let high = u64::from_str_radix(&concated_uuid[idx..idx+16], 16)?;
+                let low = u64::from_str_radix(&concated_uuid[idx+16..idx+32], 16)?;
                 uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
                 idx += 32;
             }
@@ -584,18 +563,18 @@ pub fn execute_query(
                 and commit_id in ({}) 
                 order by position(commit_id::text in '{}')", uuid_str_list, uuid_list_str);
 
-            let result = runtime.block_on(async{
+            let result = {
                 let statement = client.prepare(&statement).await?;
                 client.query(&statement, &[&params[0], &params[1]]).await
-            });
+            };
             match result {
                 Ok(rows) => rows,
-                Err(e) => return Err(convert_to_io_error(e)),
+                Err(e) => return Err(LakeSoulMetaDataError::from(e)),
             }
         }
         _ => {
             eprintln!("Invalid params num of query_type={:?}, params={:?}", query_type, params);
-            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
     
@@ -631,7 +610,7 @@ pub fn execute_query(
         DaoType::ListCommitOpsBetweenVersions => ResultType::PartitionInfoWithOnlyCommitOp,
         _ => {
             eprintln!("Invalid query_type={:?} when parsing query result type", query_type);
-            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
         }
     };
 
@@ -825,85 +804,73 @@ pub fn execute_query(
 }
 
 
-pub fn execute_insert(
-    runtime: &Runtime,
+pub async fn execute_insert(
     client: &mut Client,
     prepared: &mut PreparedStatementMap,
     insert_type: i32, 
     wrapper: entity::JniWrapper,
-) -> Result<i32, std::io::Error> {
+) -> Result<i32> {
     if !(DAO_TYPE_INSERT_ONE_OFFSET..DAO_TYPE_QUERY_SCALAR_OFFSET).contains(&insert_type){
         eprintln!("Invalid insert_type_index: {:?}", insert_type);
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
     }
     let insert_type = DaoType::try_from(insert_type).unwrap();
-    let statement = match get_prepared_statement(runtime, client, prepared, &insert_type) {
-        Ok(statement) => statement,
-        Err(err) => return Err(convert_to_io_error(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &insert_type).await?;
 
     let result = match insert_type {
         DaoType::InsertNamespace if wrapper.namespace.len() == 1  => {
             let namespace = wrapper.namespace.get(0).unwrap();
             let properties:serde_json::Value = serde_json::from_str(&namespace.properties)?;
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &namespace.namespace,
-                        &properties,
-                        &namespace.comment,
-                        &namespace.domain,
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &namespace.namespace,
+                    &properties,
+                    &namespace.comment,
+                    &namespace.domain,
+                ]
+            ).await
         }
         DaoType::InsertTableInfo if wrapper.table_info.len() == 1=> {
             let table_info = wrapper.table_info.get(0).unwrap();
             let properties:serde_json::Value = serde_json::from_str(&table_info.properties)?;
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &table_info.table_id,
-                        &table_info.table_name,
-                        &table_info.table_path,
-                        &table_info.table_schema,
-                        &properties,
-                        &table_info.partitions,
-                        &table_info.table_namespace,
-                        &table_info.domain,
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &table_info.table_id,
+                    &table_info.table_name,
+                    &table_info.table_path,
+                    &table_info.table_schema,
+                    &properties,
+                    &table_info.partitions,
+                    &table_info.table_namespace,
+                    &table_info.domain,
+                ]
+            ).await
         }
         DaoType::InsertTableNameId if wrapper.table_name_id.len() == 1 => {
             let table_name_id = wrapper.table_name_id.get(0).unwrap();
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &table_name_id.table_id,
-                        &table_name_id.table_name,
-                        &table_name_id.table_namespace,
-                        &table_name_id.domain,
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &table_name_id.table_id,
+                    &table_name_id.table_name,
+                    &table_name_id.table_namespace,
+                    &table_name_id.domain,
+                ]
+            ).await
         }
         DaoType::InsertTablePathId if wrapper.table_path_id.len() == 1 => {
             let table_path_id = wrapper.table_path_id.get(0).unwrap();
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &table_path_id.table_id,
-                        &table_path_id.table_path,
-                        &table_path_id.table_namespace,
-                        &table_path_id.domain,
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &table_path_id.table_id,
+                    &table_path_id.table_path,
+                    &table_path_id.table_namespace,
+                    &table_path_id.domain,
+                ]
+            ).await
         }
         DaoType::InsertPartitionInfo if wrapper.partition_info.len() == 1 =>{
             let partition_info = wrapper.partition_info.get(0).unwrap();
@@ -911,21 +878,18 @@ pub fn execute_insert(
                 .iter()
                 .map(|_uuid| uuid::Uuid::from_u64_pair(_uuid.high, _uuid.low))
                 .collect::<Vec<uuid::Uuid>>();
-        
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &partition_info.table_id,
-                        &partition_info.partition_desc,
-                        &partition_info.version,
-                        &partition_info.commit_op().as_str_name(),
-                        &snapshot,
-                        &partition_info.expression,
-                        &partition_info.domain
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &partition_info.table_id,
+                    &partition_info.partition_desc,
+                    &partition_info.version,
+                    &partition_info.commit_op().as_str_name(),
+                    &snapshot,
+                    &partition_info.expression,
+                    &partition_info.domain
+                ]
+            ).await
         }
         DaoType::InsertDataCommitInfo if wrapper.data_commit_info.len() == 1 =>{
             let data_commit_info = wrapper.data_commit_info.get(0).unwrap();
@@ -936,26 +900,24 @@ pub fn execute_insert(
             let commit_id = data_commit_info.commit_id.as_ref().unwrap();
             let _uuid = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
         
-            runtime.block_on(async{
-                client.execute(
-                    &statement,
-                    &[
-                        &data_commit_info.table_id,
-                        &data_commit_info.partition_desc,
-                        &_uuid,
-                        &file_ops,
-                        &data_commit_info.commit_op().as_str_name(),
-                        &data_commit_info.timestamp,
-                        &data_commit_info.committed,
-                        &data_commit_info.domain
-                    ]
-                ).await
-            })
+            client.execute(
+                &statement,
+                &[
+                    &data_commit_info.table_id,
+                    &data_commit_info.partition_desc,
+                    &_uuid,
+                    &file_ops,
+                    &data_commit_info.commit_op().as_str_name(),
+                    &data_commit_info.timestamp,
+                    &data_commit_info.committed,
+                    &data_commit_info.domain
+                ]
+            ).await
         }
         DaoType::TransactionInsertPartitionInfo => { 
             let partition_info_list = wrapper.partition_info;
-            let result = runtime.block_on(async{
-                let transaction = client.transaction().await.unwrap();
+            let result = {
+                let transaction = client.transaction().await?;
                 let prepared = transaction.prepare("insert into partition_info(
                         table_id, 
                         partition_desc,
@@ -968,7 +930,7 @@ pub fn execute_insert(
                     values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)").await;
                 let statement = match prepared {
                     Ok(statement) => statement,
-                    Err(e) => return Err(e)
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e))
                 };
 
                 for i in 0..partition_info_list.len() {
@@ -994,8 +956,8 @@ pub fn execute_insert(
                     if let Some(e) = result.err() {
                         eprintln!("transaction insert error, err = {:?}", e);
                         return match transaction.rollback().await{
-                            Ok(()) => Ok(0u64),
-                            Err(e) => Err(e)
+                            Ok(()) => Ok(0i32),
+                            Err(e) => Err(LakeSoulMetaDataError::from(e))
                         };
                     };
 
@@ -1008,8 +970,8 @@ pub fn execute_insert(
                         if let Some(e) = result.err() {
                             eprintln!("update committed error, err = {:?}", e);
                             return match transaction.rollback().await{
-                                Ok(()) => Ok(0u64),
-                                Err(e) => Err(e)
+                                Ok(()) => Ok(0i32),
+                                Err(e) => Err(LakeSoulMetaDataError::from(e))
                             };
                         }
                     };
@@ -1018,18 +980,18 @@ pub fn execute_insert(
                     Ok(()) => Ok(partition_info_list.len() as u64),
                     Err(e) => Err(e)
                 }
-            });
+            };
             match result {
                 Ok(count) => Ok(count),
                 Err(e) => {
-                    return Err(convert_to_io_error(e))
+                    return Err(LakeSoulMetaDataError::from(e))
                 }
             }
         }
         DaoType::TransactionInsertDataCommitInfo => { 
             let data_commit_info_list = wrapper.data_commit_info;
-            let result = runtime.block_on(async{
-                let transaction = client.transaction().await.unwrap();
+            let result = {
+                let transaction = client.transaction().await?;
                 let prepared = transaction.prepare("insert into data_commit_info(
                         table_id, 
                         partition_desc,
@@ -1043,7 +1005,7 @@ pub fn execute_insert(
                     values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)").await;
                 let statement = match prepared {
                     Ok(statement) => statement,
-                    Err(e) => return Err(e)
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e))
                 };
 
                 for i in 0..data_commit_info_list.len() {
@@ -1072,8 +1034,8 @@ pub fn execute_insert(
                     if let Some(e) = result.err() {
                         eprintln!("transaction insert error, err = {:?}", e);
                         return match transaction.rollback().await{
-                            Ok(()) => Ok(0u64),
-                            Err(e) => Err(e)
+                            Ok(()) => Ok(0i32),
+                            Err(e) => Err(LakeSoulMetaDataError::from(e))
                         };
                     };
 
@@ -1082,41 +1044,37 @@ pub fn execute_insert(
                     Ok(()) => Ok(data_commit_info_list.len() as u64),
                     Err(e) => Err(e)
                 }
-            });
+            };
             match result {
                 Ok(count) => Ok(count),
                 Err(e) => {
-                    return Err(convert_to_io_error(e))
+                    return Err(LakeSoulMetaDataError::from(e))
                 }
             }
         }
         _ => {
             eprintln!("InvalidInput of type={:?}: {:?}", insert_type, wrapper);
-            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
         }
     };
     match result {
         Ok(count) => Ok(count as i32),
-        Err(e) => Err(convert_to_io_error(e)),
+        Err(e) => Err(LakeSoulMetaDataError::from(e)),
     }
 }
 
-pub fn execute_update(
-    runtime: &Runtime,
+pub async fn execute_update(
     client: &mut Client,
     prepared: &mut PreparedStatementMap,
     update_type: i32, 
     joined_string: String, 
-) -> Result<i32, std::io::Error> {
+) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
         eprintln!("Invalid update_type_index: {:?}", update_type);
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        return Err(LakeSoulMetaDataError::from(std::io::ErrorKind::InvalidInput))
     }
     let update_type = DaoType::try_from(update_type).unwrap();
-    let statement = match get_prepared_statement(runtime, client, prepared, &update_type) {
-        Ok(statement) => statement,
-        Err(err) => return Err(convert_to_io_error(err))
-    };
+    let statement = get_prepared_statement( client, prepared, &update_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -1131,37 +1089,25 @@ pub fn execute_update(
         DaoType::DeleteDataCommitInfoByTableId |
         DaoType::DeleteTableNameIdByTableId |
         DaoType::DeleteTablePathIdByTableId |
-        DaoType::DeleteTablePathIdByTablePath if params.len() == 1 => {
-            runtime.block_on(async{
-                client.execute(&statement, &[&params[0]]).await
-            })
-        }
+        DaoType::DeleteTablePathIdByTablePath if params.len() == 1 => 
+            client.execute(&statement, &[&params[0]]).await,
         DaoType::DeleteTableInfoByIdAndPath |
         DaoType::DeleteTableNameIdByTableNameAndNamespace |
         DaoType::DeletePartitionInfoByTableIdAndPartitionDesc |
-        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc if params.len() == 2 => {
-            runtime.block_on(async{
-                client.execute(&statement, &[&params[0], &params[1]]).await
-            })
-        }
+        DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc if params.len() == 2 => 
+                client.execute(&statement, &[&params[0], &params[1]]).await,
         DaoType::UpdateTableInfoPropertiesById |
         DaoType::UpdateNamespacePropertiesByNamespace if params.len() == 2 => {
-            let properties:serde_json::Value = serde_json::from_str(&params[1]).unwrap();
-            runtime.block_on(async{
-                client.execute(&statement, &[&params[0], &properties]).await
-            })
+            let properties:serde_json::Value = serde_json::from_str(&params[1])?;
+            client.execute(&statement, &[&params[0], &properties]).await
         }
         DaoType::DeletePreviousVersionPartition if params.len() == 3 => {
-            let ts = i64::from_str(&params[2]).unwrap();
-            runtime.block_on(async{
-                client.execute(&statement, &[&params[0], &params[1], &ts]).await
-            })
+            let ts = i64::from_str(&params[2])?;
+            client.execute(&statement, &[&params[0], &params[1], &ts]).await
         }
         DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId if params.len() == 3 => {
-            let commit_id:uuid::Uuid = uuid::Uuid::from_str(&params[2]).unwrap();
-            runtime.block_on(async{
-                client.execute(&statement, &[&params[0], &params[1], &commit_id]).await
-            })
+            let commit_id:uuid::Uuid = uuid::Uuid::from_str(&params[2])?;
+            client.execute(&statement, &[&params[0], &params[1], &commit_id]).await
         }
         DaoType::UpdateTableInfoById if params.len() == 4 => {
             let mut statement = "update table_info set ".to_owned(); 
@@ -1185,27 +1131,25 @@ pub fn execute_update(
                 filter_params.push(params[3].clone());
             }
             statement += " where table_id = $1::TEXT";
-            runtime.block_on(async{
-                match idx {
-                    3 => client.execute(&statement, &[&params[0], &filter_params[0]]).await,
-                    4 => client.execute(&statement, &[&params[0], &filter_params[0], &filter_params[1]]).await,
-                    5 => client.execute(&statement, &[&params[0], &filter_params[0], &filter_params[1], &filter_params[2]]).await,
-                    _ => todo!(),
-                }
-            })
+            match idx {
+                3 => client.execute(&statement, &[&params[0], &filter_params[0]]).await,
+                4 => client.execute(&statement, &[&params[0], &filter_params[0], &filter_params[1]]).await,
+                5 => client.execute(&statement, &[&params[0], &filter_params[0], &filter_params[1], &filter_params[2]]).await,
+                _ => todo!(),
+            }
         }
         DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList if params.len() == 3 => {
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
                 eprintln!("Invalid params of update_type={:?}, params={:?}", update_type, params);
-                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));    
+                return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));    
             }
             let uuid_num = concated_uuid.len() / 32;
             let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
             let mut idx = 0;
             for _ in 0..uuid_num {
-                let high = u64::from_str_radix(&concated_uuid[idx..idx+16], 16).unwrap();
-                let low = u64::from_str_radix(&concated_uuid[idx+16..idx+32], 16).unwrap();
+                let high = u64::from_str_radix(&concated_uuid[idx..idx+16], 16)?;
+                let low = u64::from_str_radix(&concated_uuid[idx+16..idx+32], 16)?;
                 uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
                 idx += 32;
             }
@@ -1216,38 +1160,32 @@ pub fn execute_update(
                 "delete from data_commit_info 
                 where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id in ({}) ", uuid_str_list);
 
-            runtime.block_on(async{
-                let statement = client.prepare(&statement).await?;
-                client.execute(&statement, &[&params[0], &params[1]]).await
-            })
+            let statement = client.prepare(&statement).await?;
+            client.execute(&statement, &[&params[0], &params[1]]).await
         }
         _ => {
             eprintln!("InvalidInput of type={:?}: {:?}", update_type, params);
-            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
         }
     };
     match result {
         Ok(count) => Ok(count as i32),
-        Err(e) => Err(convert_to_io_error(e)),
+        Err(e) => Err(LakeSoulMetaDataError::from(e)),
     }
 }
 
-pub fn execute_query_scalar(
-    runtime: &Runtime,
+pub async fn execute_query_scalar(
     client: &mut Client,
     prepared: &mut PreparedStatementMap,
     query_type: i32, 
     joined_string: String, 
-) -> Result<Option<String>, std::io::Error> {
+) -> Result<Option<String>, LakeSoulMetaDataError> {
     if !(DAO_TYPE_QUERY_SCALAR_OFFSET..DAO_TYPE_UPDATE_OFFSET).contains(&query_type){
         eprintln!("Invalid update_scalar_type_index: {:?}", query_type);
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
     }
     let query_type = DaoType::try_from(query_type).unwrap();
-    let statement = match get_prepared_statement(runtime, client, prepared, &query_type) {
-        Ok(statement) => statement,
-        Err(err) => return Err(convert_to_io_error(err))
-    };
+    let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = joined_string
         .split(PARAM_DELIM)
@@ -1258,9 +1196,7 @@ pub fn execute_query_scalar(
 
     match query_type {
         DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc if params.len() == 1 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0]]).await
-            });
+            let result = client.query_opt(&statement, &[&params[0]]).await;
             match result {
                 Ok(Some(row)) => {
                     let ts = row.get::<_, Option<i64>>(0);
@@ -1269,24 +1205,21 @@ pub fn execute_query_scalar(
                         None => Ok(None)
                     }
                 }
-                Err(e) =>  Err(convert_to_io_error(e)),
+                Err(e) =>  Err(LakeSoulMetaDataError::from(e)),
                 Ok(None) => Ok(None),
             }
         }
         DaoType::GetLatestTimestampFromPartitionInfo if params.len() == 2 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1]]).await
-            });
+            let result = client.query_opt(&statement, &[&params[0], &params[1]]).await;
             match result {
                 Ok(Some(row)) => Ok(Some(format!("{}",row.get::<_, i64>(0)))),
                 Ok(None) => Ok(None),
-                Err(e) =>  Err(convert_to_io_error(e))
+                Err(e) =>  Err(LakeSoulMetaDataError::from(e))
             }
         }
         DaoType::GetLatestVersionUpToTimeFromPartitionInfo if params.len() == 3 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2]).unwrap()]).await
-            });
+            let result = 
+                client.query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?]).await;
             match result {
                 Ok(Some(row)) => {
                     let ts = row.get::<_, Option<i32>>(0);
@@ -1295,14 +1228,13 @@ pub fn execute_query_scalar(
                         None => Ok(None)
                     }
                 }
-                Err(e) =>  Err(convert_to_io_error(e)),
+                Err(e) =>  Err(LakeSoulMetaDataError::from(e)),
                 Ok(None) => Ok(None),
             }
         }
         DaoType::GetLatestVersionTimestampUpToTimeFromPartitionInfo if params.len() == 3 => {
-            let result = runtime.block_on(async{
-                client.query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2]).unwrap()]).await
-            });
+            let result = 
+                client.query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?]).await;
             match result {
                 Ok(Some(row)) => {
                     let ts = row.get::<_, Option<i64>>(0);
@@ -1311,59 +1243,47 @@ pub fn execute_query_scalar(
                         None => Ok(None)
                     }
                 }
-                Err(e) =>  Err(convert_to_io_error(e)),
+                Err(e) =>  Err(LakeSoulMetaDataError::from(e)),
                 Ok(None) => Ok(None),
             }
         }
         
         _ => {
             eprintln!("InvalidInput of type={:?}: {:?}", query_type, params);
-            Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput))
         }
     }
 }
 
-pub fn clean_meta_for_test(
-    runtime: &Runtime,
+pub async fn clean_meta_for_test(
     client: &Client
-) ->Result<i32, std::io::Error> {
-    let result = runtime.block_on(async{
+) ->Result<i32> {
+    let result = 
         client.batch_execute("delete from namespace;
             delete from data_commit_info;
             delete from table_info;
             delete from table_path_id;
             delete from table_name_id;
-            delete from partition_info;").await
-    });
+            delete from partition_info;").await;
     match result {
         Ok(_) => Ok(0i32),
-        Err(e) => Err(convert_to_io_error(e)),
+        Err(e) => Err(LakeSoulMetaDataError::from(e)),
     }
 }
 
-fn convert_to_io_error(err:tokio_postgres::Error) -> std::io::Error {
-    let msg = err.to_string();
-    match err.into_source() {
-        Some(source) => std::io::Error::other(source),
-        None => std::io::Error::other(msg)
-    }
-}
-
-pub fn create_connection(
-    runtime: &Runtime,
+pub async fn create_connection(
     config: String
-) -> Result<Client, std::io::Error> {    
-    let (client, connection) = match runtime.block_on(async {
-        tokio_postgres::connect(config.as_str(), NoTls).await
-    }) {
-        Ok((client, connection))=>(client, connection),
-        Err(e)=>{
-            eprintln!("{}", e);
-            return Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
-        }
+) -> Result<Client> {    
+    let (client, connection) = 
+        match tokio_postgres::connect(config.as_str(), NoTls).await {
+            Ok((client, connection))=>(client, connection),
+            Err(e)=>{
+                eprintln!("{}", e);
+                return Err(LakeSoulMetaDataError::from(ErrorKind::ConnectionRefused))
+            }
     };
 
-    runtime.spawn(async move {
+    spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("connection error: {}", e);
         }

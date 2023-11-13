@@ -4,3 +4,5 @@
 
 #[cfg(test)]
 mod test;
+
+mod error;
