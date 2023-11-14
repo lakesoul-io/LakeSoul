@@ -733,7 +733,7 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_merge_same_column_with_timestamp_type_i64_time(){
+    fn test_merge_same_column_with_timestamp_type_i32_time(){
         let dt1=NaiveDate::from_ymd_opt(1000, 6, 14).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
         let dt2=NaiveDate::from_ymd_opt(1582, 6, 15).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
         let dt3=NaiveDate::from_ymd_opt(1900, 6, 16).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
@@ -750,7 +750,7 @@ mod upsert_with_io_config_tests {
             table_name, 
             vec!["range".to_string(), "hash".to_string()]);
         check_upsert_i32_and_timestamp(
-            create_batch_i64(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]]), 
+            create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]]), 
             table_name, 
             vec!["range", "hash", "value", "timestamp"],
             None,
@@ -770,7 +770,7 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_merge_different_columns_with_timestamp_type_i64_time(){
+    fn test_merge_different_columns_with_timestamp_type_i32_time(){
         let dt1=NaiveDate::from_ymd_opt(1000, 6, 14).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
         let _dt2=NaiveDate::from_ymd_opt(1582, 6, 15).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
         let dt3=NaiveDate::from_ymd_opt(1900, 6, 16).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
