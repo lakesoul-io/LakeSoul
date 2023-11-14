@@ -7,7 +7,8 @@ mod upsert_with_io_config_tests {
     use std::env;
     use std::path::PathBuf;
     use std::time::SystemTime;
-    
+    use chrono::naive::NaiveDate;
+
     use lakesoul_io::arrow::record_batch::RecordBatch;
     use lakesoul_io::arrow::util::pretty::print_batches;
     use lakesoul_io::datafusion::assert_batches_eq;
@@ -16,10 +17,11 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
     use lakesoul_io::tokio::runtime::Builder;
     use lakesoul_io::arrow;
-    use lakesoul_io::arrow::array::{ArrayRef, Int32Array};
-    use lakesoul_io::arrow::datatypes::{Schema, SchemaRef, Field};
+    use lakesoul_io::arrow::array::{ArrayRef, Int32Array,TimestampMicrosecondArray};
+    use lakesoul_io::arrow::datatypes::{Schema, SchemaRef, Field,TimestampMicrosecondType, TimeUnit};
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+    use lakesoul_io::arrow::array::Int64Array;
 
     
     fn init_table(batch: RecordBatch, table_name: &str, pks:Vec<String>) -> LakeSoulIOConfigBuilder {
@@ -79,6 +81,42 @@ mod upsert_with_io_config_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
+    fn create_batch_i32_and_timestamp(names: Vec<&str>, values: Vec<&[i32]>, timestamp:Vec<i64>) -> RecordBatch {
+        let mut values = values
+            .into_iter()
+            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
+            .collect::<Vec<ArrayRef>>();
+        let timestamp = Arc::new(TimestampMicrosecondArray::from(timestamp)) as ArrayRef;
+        values.push(timestamp);
+        let iter = names.into_iter().zip(values).map(|(name, array)| (name, array, true)).collect::<Vec<_>>();
+        RecordBatch::try_from_iter_with_nullable(iter).unwrap()
+    }
+
+    fn check_upsert_i32_and_timestamp(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, builder: LakeSoulIOConfigBuilder, expected: &[&str]) -> LakeSoulIOConfigBuilder {
+        let builder = execute_upsert(batch, table_name, builder.clone());
+        let builder = builder
+            .with_schema(SchemaRef::new(Schema::new(
+                selected_cols.iter().map(|col| 
+                if *col=="timestamp"{
+                    Field::new(*col, arrow::datatypes::DataType::Timestamp(TimeUnit::Microsecond, None), true)
+                }else{
+                    Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                }
+            ).collect::<Vec<_>>()
+            )));
+        let builder = if let Some(filters) = filters {
+            builder.with_filter_str(filters)
+        } else {
+            builder
+        };
+        let config = builder.clone().build();
+
+        let mut reader = SyncSendableMutableLakeSoulReader::new(LakeSoulReader::new(config).unwrap(), Builder::new_current_thread().build().unwrap());
+        let _ = reader.start_blocked();
+        let result = reader.next_rb_blocked();
+        assert_batches_eq!(expected, &[result.unwrap().unwrap()]);
+        builder
+    }
     
     #[test]
     fn test_merge_same_column_i32() {
@@ -514,6 +552,256 @@ mod upsert_with_io_config_tests {
                 "|     |",
                 "|     |",
                 "+-----+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        check_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(noteq(range, null), eq(range, 20201102))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+-----+",
+                "| range    | hash1 | hash2 | value | name | age |",
+                "+----------+-------+-------+-------+------+-----+",
+                "| 20201102 | 1     | 12    | 1     |      |     |",
+                "| 20201102 | 3     | 32    | 3     |      |     |",
+                "| 20201102 | 4     | 42    | 4     |      |     |",
+                "+----------+-------+-------+-------+------+-----+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]),  
+            table_name, 
+            builder);
+        check_upsert(
+            create_batch_i32(vec!["range", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[12, 22, 32], &[11, 22, 33], &[1, 2, 3]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(noteq(range, null), eq(range, 20201102))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+-----+",
+                "| range    | hash1 | hash2 | value | name | age |",
+                "+----------+-------+-------+-------+------+-----+",
+                "| 20201102 | 1     | 12    | 1     | 11   |     |",
+                "| 20201102 | 2     | 22    |       | 22   |     |",
+                "| 20201102 | 3     | 32    | 3     | 33   |     |",
+                "| 20201102 | 4     | 42    | 4     |      |     |",
+                "+----------+-------+-------+-------+------+-----+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]),  
+            table_name, 
+            builder);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[12, 22, 32], &[11, 22, 33], &[1, 2, 3]]),  
+            table_name, 
+            builder);
+        check_upsert(
+            create_batch_i32(vec!["range", "age", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[4567, 2345, 3456], &[42, 22, 32], &[456, 234, 345], &[4, 2, 3]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(and(noteq(range, null), eq(range, 20201102)), noteq(value, null))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+------+",
+                "| range    | hash1 | hash2 | value | name | age  |",
+                "+----------+-------+-------+-------+------+------+",
+                "| 20201102 | 1     | 12    | 1     | 11   |      |",
+                "| 20201102 | 3     | 32    | 3     | 345  | 3456 |",
+                "| 20201102 | 4     | 42    | 4     | 456  | 4567 |",
+                "+----------+-------+-------+-------+------+------+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        check_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(noteq(range, null), eq(range, 20201102))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+-----+",
+                "| range    | hash1 | hash2 | value | name | age |",
+                "+----------+-------+-------+-------+------+-----+",
+                "| 20201102 | 1     | 12    | 1     |      |     |",
+                "| 20201102 | 3     | 32    | 3     |      |     |",
+                "| 20201102 | 4     | 42    | 4     |      |     |",
+                "+----------+-------+-------+-------+------+-----+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]),  
+            table_name, 
+            builder);
+        check_upsert(
+            create_batch_i32(vec!["range", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[12, 22, 32], &[11, 22, 33], &[1, 2, 3]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(noteq(range, null), eq(range, 20201102))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+-----+",
+                "| range    | hash1 | hash2 | value | name | age |",
+                "+----------+-------+-------+-------+------+-----+",
+                "| 20201102 | 1     | 12    | 1     | 11   |     |",
+                "| 20201102 | 2     | 22    |       | 22   |     |",
+                "| 20201102 | 3     | 32    | 3     | 33   |     |",
+                "| 20201102 | 4     | 42    | 4     |      |     |",
+                "+----------+-------+-------+-------+------+-----+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32(){
+        let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value", "name", "age"], vec![&[20201101, 20201101], &[1, 2], &[1, 2], &[1, 2], &[1, 2],&[1, 2]]),
+            table_name, 
+            vec!["range".to_string(), "hash1".to_string(),"hash2".to_string()]);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash1", "hash2", "value"], vec![&[20201102, 20201102, 20201102], &[1, 3, 4], &[12, 32, 42], &[1, 3, 4]]),  
+            table_name, 
+            builder);
+        let builder = execute_upsert(
+            create_batch_i32(vec!["range", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[12, 22, 32], &[11, 22, 33], &[1, 2, 3]]),  
+            table_name, 
+            builder);
+        check_upsert(
+            create_batch_i32(vec!["range", "age", "hash2", "name", "hash1"], vec![&[20201102, 20201102, 20201102], &[4567, 2345, 3456], &[42, 22, 32], &[456, 234, 345], &[4, 2, 3]]), 
+            table_name, 
+            vec!["range", "hash1", "hash2", "value", "name", "age"],
+            Some("and(and(noteq(range, null), eq(range, 20201102)), noteq(value, null))".to_string()),
+            builder.clone(), 
+            &[
+                "+----------+-------+-------+-------+------+------+",
+                "| range    | hash1 | hash2 | value | name | age  |",
+                "+----------+-------+-------+-------+------+------+",
+                "| 20201102 | 1     | 12    | 1     | 11   |      |",
+                "| 20201102 | 3     | 32    | 3     | 345  | 3456 |",
+                "| 20201102 | 4     | 42    | 4     | 456  | 4567 |",
+                "+----------+-------+-------+-------+------+------+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_same_column_with_timestamp_type_i32_time(){
+        let dt1=NaiveDate::from_ymd_opt(1000, 6, 14).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let dt2=NaiveDate::from_ymd_opt(1582, 6, 15).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let dt3=NaiveDate::from_ymd_opt(1900, 6, 16).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let dt4=NaiveDate::from_ymd_opt(2018, 6, 17).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        
+        let val1=dt1.timestamp_micros();
+        let val2=dt2.timestamp_micros();
+        let val3=dt3.timestamp_micros();
+        let val4=dt4.timestamp_micros();
+
+        let table_name = "test_merge_same_column_with_timestamp_type_i64_time";
+        let builder = init_table(
+            create_batch_i32_and_timestamp(vec!["range", "hash", "value", "timestamp"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]], vec![val1, val2, val3, val4]),
+            table_name, 
+            vec!["range".to_string(), "hash".to_string()]);
+        check_upsert_i32_and_timestamp(
+            create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]]), 
+            table_name, 
+            vec!["range", "hash", "value", "timestamp"],
+            None,
+            builder.clone(), 
+            &[
+                "+----------+------+-------+----------------------------+",
+                "| range    | hash | value | timestamp                  |",
+                "+----------+------+-------+----------------------------+",
+                "| 20201101 | 1    | 11    | 1000-06-14T08:28:53.123456 |",
+                "| 20201101 | 2    | 2     | 1582-06-15T08:28:53.123456 |",
+                "| 20201101 | 3    | 33    | 1900-06-16T08:28:53.123456 |",
+                "| 20201101 | 4    | 44    |                            |",
+                "| 20201102 | 4    | 4     | 2018-06-17T08:28:53.123456 |",
+                "+----------+------+-------+----------------------------+",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_different_columns_with_timestamp_type_i32_time(){
+        let dt1=NaiveDate::from_ymd_opt(1000, 6, 14).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let _dt2=NaiveDate::from_ymd_opt(1582, 6, 15).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let dt3=NaiveDate::from_ymd_opt(1900, 6, 16).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        let dt4=NaiveDate::from_ymd_opt(2018, 6, 17).unwrap().and_hms_micro_opt(8, 28, 53, 123456).unwrap();
+        
+        let val1=dt1.timestamp_micros();
+        let _val2=_dt2.timestamp_micros();
+        let val3=dt3.timestamp_micros();
+        let val4=dt4.timestamp_micros();
+
+        let table_name = "merge_different_columns_with_timestamp_type_i32_time";
+        let builder = init_table(
+            create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]]),
+            table_name, 
+            vec!["range".to_string(), "hash".to_string()]);
+        check_upsert_i32_and_timestamp(
+            create_batch_i32_and_timestamp(vec!["range", "hash", "name", "timestamp"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]],vec![val1, val3, val4]), 
+            table_name, 
+            vec!["range", "hash", "value", "name", "timestamp"],
+            None,
+            builder.clone(), 
+            &[
+                "+----------+------+-------+------+----------------------------+",
+                "| range    | hash | value | name | timestamp                  |",
+                "+----------+------+-------+------+----------------------------+",
+                "| 20201101 | 1    | 1     | 11   | 1000-06-14T08:28:53.123456 |",
+                "| 20201101 | 2    | 2     |      |                            |",
+                "| 20201101 | 3    | 3     | 33   | 1900-06-16T08:28:53.123456 |",
+                "| 20201101 | 4    |       | 44   | 2018-06-17T08:28:53.123456 |",
+                "| 20201102 | 4    | 4     |      |                            |",
+                "+----------+------+-------+------+----------------------------+",
             ]
         );
     }
