@@ -17,8 +17,8 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
     use lakesoul_io::tokio::runtime::Builder;
     use lakesoul_io::arrow;
-    use lakesoul_io::arrow::array::{ArrayRef, Int32Array};
-    use lakesoul_io::arrow::datatypes::{Schema, SchemaRef, Field};
+    use lakesoul_io::arrow::array::{ArrayRef, Int32Array,TimestampMicrosecondArray};
+    use lakesoul_io::arrow::datatypes::{Schema, SchemaRef, Field,TimestampMicrosecondType, TimeUnit};
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
     use lakesoul_io::arrow::array::Int64Array;
@@ -81,20 +81,28 @@ mod upsert_with_io_config_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_i64(names: Vec<&str>, values: Vec<&[i64]>) -> RecordBatch {
-        let values = values
+    fn create_batch_i32_and_timestamp(names: Vec<&str>, values: Vec<&[i32]>, timestamp:Vec<i64>) -> RecordBatch {
+        let mut values = values
             .into_iter()
-            .map(|vec| Arc::new(Int64Array::from(Vec::from(vec))) as ArrayRef)
+            .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
             .collect::<Vec<ArrayRef>>();
+        let timestamp = Arc::new(TimestampMicrosecondArray::from(timestamp)) as ArrayRef;
+        values.push(timestamp);
         let iter = names.into_iter().zip(values).map(|(name, array)| (name, array, true)).collect::<Vec<_>>();
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn check_upsert_i64(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, builder: LakeSoulIOConfigBuilder, expected: &[&str]) -> LakeSoulIOConfigBuilder {
+    fn check_upsert_i32_and_timestamp(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, builder: LakeSoulIOConfigBuilder, expected: &[&str]) -> LakeSoulIOConfigBuilder {
         let builder = execute_upsert(batch, table_name, builder.clone());
         let builder = builder
             .with_schema(SchemaRef::new(Schema::new(
-                selected_cols.iter().map(|col| Field::new(*col, arrow::datatypes::DataType::Int64, true)).collect::<Vec<_>>()
+                selected_cols.iter().map(|col| 
+                if *col=="timestamp"{
+                    Field::new(*col, arrow::datatypes::DataType::Timestamp(TimeUnit::Microsecond, None), true)
+                }else{
+                    Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                }
+            ).collect::<Vec<_>>()
             )));
         let builder = if let Some(filters) = filters {
             builder.with_filter_str(filters)
@@ -738,25 +746,25 @@ mod upsert_with_io_config_tests {
 
         let table_name = "test_merge_same_column_with_timestamp_type_i64_time";
         let builder = init_table(
-            create_batch_i64(vec!["range", "hash", "value", "timestamp"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4], &[val1, val2, val3, val4]]),
+            create_batch_i32_and_timestamp(vec!["range", "hash", "value", "timestamp"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]], vec![val1, val2, val3, val4]),
             table_name, 
             vec!["range".to_string(), "hash".to_string()]);
-        check_upsert_i64(
+        check_upsert_i32_and_timestamp(
             create_batch_i64(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]]), 
             table_name, 
             vec!["range", "hash", "value", "timestamp"],
             None,
             builder.clone(), 
             &[
-                "+----------+------+-------+--------------------+",
-                "| range    | hash | value | timestamp          |",
-                "+----------+------+-------+--------------------+",
-                "| 20201101 | 1    | 11    | -30596023866876544 |",
-                "| 20201101 | 2    | 2     | -12229803066876544 |",
-                "| 20201101 | 3    | 33    | -2194615866876544  |",
-                "| 20201101 | 4    | 44    |                    |",
-                "| 20201102 | 4    | 4     | 1529224133123456   |",
-                "+----------+------+-------+--------------------+",
+                "+----------+------+-------+----------------------------+",
+                "| range    | hash | value | timestamp                  |",
+                "+----------+------+-------+----------------------------+",
+                "| 20201101 | 1    | 11    | 1000-06-14T08:28:53.123456 |",
+                "| 20201101 | 2    | 2     | 1582-06-15T08:28:53.123456 |",
+                "| 20201101 | 3    | 33    | 1900-06-16T08:28:53.123456 |",
+                "| 20201101 | 4    | 44    |                            |",
+                "| 20201102 | 4    | 4     | 2018-06-17T08:28:53.123456 |",
+                "+----------+------+-------+----------------------------+",
             ]
         );
     }
@@ -778,22 +786,22 @@ mod upsert_with_io_config_tests {
             create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]]),
             table_name, 
             vec!["range".to_string(), "hash".to_string()]);
-        check_upsert_i64(
-            create_batch_i64(vec!["range", "hash", "name", "timestamp"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44], &[val1, val3, val4]]), 
+        check_upsert_i32_and_timestamp(
+            create_batch_i32_and_timestamp(vec!["range", "hash", "name", "timestamp"], vec![&[20201101, 20201101, 20201101], &[1, 3, 4], &[11, 33, 44]],vec![val1, val3, val4]), 
             table_name, 
             vec!["range", "hash", "value", "name", "timestamp"],
             None,
             builder.clone(), 
             &[
-                "+----------+------+-------+------+--------------------+",
-                "| range    | hash | value | name | timestamp          |",
-                "+----------+------+-------+------+--------------------+",
-                "| 20201101 | 1    | 1     | 11   | -30596023866876544 |",
-                "| 20201101 | 2    | 2     |      |                    |",
-                "| 20201101 | 3    | 3     | 33   | -2194615866876544  |",
-                "| 20201101 | 4    |       | 44   | 1529224133123456   |",
-                "| 20201102 | 4    | 4     |      |                    |",
-                "+----------+------+-------+------+--------------------+",
+                "+----------+------+-------+------+----------------------------+",
+                "| range    | hash | value | name | timestamp                  |",
+                "+----------+------+-------+------+----------------------------+",
+                "| 20201101 | 1    | 1     | 11   | 1000-06-14T08:28:53.123456 |",
+                "| 20201101 | 2    | 2     |      |                            |",
+                "| 20201101 | 3    | 3     | 33   | 1900-06-16T08:28:53.123456 |",
+                "| 20201101 | 4    |       | 44   | 2018-06-17T08:28:53.123456 |",
+                "| 20201102 | 4    | 4     |      |                            |",
+                "+----------+------+-------+------+----------------------------+",
             ]
         );
     }
