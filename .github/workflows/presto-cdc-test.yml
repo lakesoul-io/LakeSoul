@@ -143,7 +143,7 @@ jobs:
           python3 3_add_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 30s
+          sleep 60s
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
@@ -156,7 +156,7 @@ jobs:
         run: |
           cd ./script/benchmark
           python3 4_update_data.py
-          sleep 30s
+          sleep 60s
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
@@ -171,7 +171,7 @@ jobs:
           python3 6_drop_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
-          sleep 30s
+          sleep 60s
       - name: "[Check] Mysql cdc data accuracy verification task"
         run: |
           cd ./script/benchmark
