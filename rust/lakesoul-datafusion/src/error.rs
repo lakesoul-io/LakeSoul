@@ -4,7 +4,7 @@
 
 use std::{error::Error, sync::Arc, result, fmt::Display};
 
-use lakesoul_io::lakesoul_reader::DataFusionError;
+use lakesoul_io::lakesoul_reader::{DataFusionError, ArrowError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 
 
@@ -21,6 +21,9 @@ pub type GenericError = Box<dyn Error + Send + Sync>;
 pub enum LakeSoulError {
     MetaDataError(LakeSoulMetaDataError),
     DataFusionError(DataFusionError),
+    ArrowError(ArrowError),
+    JsonError(json::Error),
+    Internal(String),
 }
 
 impl From<LakeSoulMetaDataError> for LakeSoulError {
@@ -35,11 +38,23 @@ impl From<DataFusionError> for LakeSoulError {
     }
 }
 
+impl From<ArrowError> for LakeSoulError {
+    fn from(err: ArrowError) -> Self {
+        Self::ArrowError(err)
+    }
+}
+
 impl Display for LakeSoulError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             LakeSoulError::MetaDataError(ref desc) => write!(f, "metadata error: {desc}"),
             LakeSoulError::DataFusionError(ref desc) => write!(f, "DataFusion error: {desc}"),
+            LakeSoulError::JsonError(ref desc) => write!(f, "json error: {desc}"),
+            LakeSoulError::ArrowError(ref desc) => write!(f, "arrow error: {desc}"),
+            LakeSoulError::Internal(ref desc) => {
+                write!(f, "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
+                    code and we would welcome that you file an bug report in our issue tracker")
+            }
         }
     }
 }
@@ -49,6 +64,9 @@ impl Error for LakeSoulError {
         match self {
             LakeSoulError::MetaDataError(e) => Some(e),
             LakeSoulError::DataFusionError(e) => Some(e),
+            LakeSoulError::JsonError(e) => Some(e),
+            LakeSoulError::ArrowError(e) => Some(e),
+            LakeSoulError::Internal(_) => None,
         }
     }
 }

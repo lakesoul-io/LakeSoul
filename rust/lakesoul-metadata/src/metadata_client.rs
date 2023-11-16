@@ -2,10 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ops::DerefMut;
+use std::sync::Arc;
 use std::{collections::HashMap, vec, env, fs};
 
 use proto::proto::entity::{TablePathId, TableNameId, TableInfo, PartitionInfo, JniWrapper, DataCommitInfo, MetaInfo, CommitOp, self};
 use prost::Message;
+use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use url::Url;
@@ -14,9 +17,12 @@ use crate::{execute_insert, PreparedStatementMap, DaoType, create_connection, cl
 use crate::error::Result;
 
 pub struct MetaDataClient {
-    client: Client,
-    prepared: PreparedStatementMap,
+    client: Arc<Mutex<Client>>,
+    prepared: Arc<Mutex<PreparedStatementMap>>,
+    max_retry: usize,
 }
+
+pub type MetaDataClientRef = Arc<MetaDataClient>;
 
 impl MetaDataClient {
     pub async fn from_env() -> Result<Self> {
@@ -45,16 +51,21 @@ impl MetaDataClient {
     }
 
     pub async fn from_config(config: String) -> Result<Self> {
-        let client = create_connection(config).await?;
-        let prepared = PreparedStatementMap::new();
+        Self::from_config_and_max_retry(config, 3).await
+    }
+
+    pub async fn from_config_and_max_retry(config: String, max_retry: usize) -> Result<Self> {
+        let client = Arc::new(Mutex::new(create_connection(config).await?));
+        let prepared = Arc::new(Mutex::new(PreparedStatementMap::new()));
         Ok(Self {
             client,
-            prepared
+            prepared,
+            max_retry
         })
     }
 
     pub async fn create_table(
-        &mut self, 
+        &self, 
         table_info: TableInfo
     ) -> Result<()> {
         self.insert_table_path_id(&table_path_id_from_table_info(&table_info)).await?;
@@ -63,40 +74,57 @@ impl MetaDataClient {
         Ok(())
     }
 
-    async fn execute_insert(&mut self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
-        execute_insert(&mut self.client, &mut self.prepared, insert_type, wrapper).await
+    async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
+        for times in 0..self.max_retry {
+            match execute_insert(self.client.lock().await.deref_mut(), self.prepared.lock().await.deref_mut(), insert_type, wrapper.clone()).await {
+                Ok(count) => return Ok(count),
+                Err(_) if times < self.max_retry => {
+                    continue
+                }
+                Err(e) => return Err(e)
+            };
+        }
+        Ok(0)
     }
 
-    async fn execute_query(&mut self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
-        let encoded = execute_query( &self.client, &mut self.prepared, query_type, joined_string).await?;
-        Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?)
+    async fn execute_query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
+        for times in 0..self.max_retry {
+            match execute_query( self.client.lock().await.deref_mut(), self.prepared.lock().await.deref_mut(), query_type, joined_string.clone()).await {
+                Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
+                Err(_) if times < self.max_retry => {
+                    continue
+                }
+                Err(e) => return Err(e)
+            };
+        }
+        Ok(Default::default())
     }
 
-    async fn insert_table_info(&mut self, table_info: &TableInfo) -> Result<i32> {
+    async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
         self.execute_insert(DaoType::InsertTableInfo as i32, JniWrapper{table_info: vec![table_info.clone()], ..Default::default()}).await
     }
 
-    async fn insert_table_name_id(&mut self, table_name_id: &TableNameId) -> Result<i32>{
+    async fn insert_table_name_id(&self, table_name_id: &TableNameId) -> Result<i32>{
         self.execute_insert(DaoType::InsertTableNameId as i32, JniWrapper{table_name_id: vec![table_name_id.clone()], ..Default::default()}).await
     }
 
-    async fn insert_table_path_id(&mut self, table_path_id: &TablePathId) -> Result<i32>{
+    async fn insert_table_path_id(&self, table_path_id: &TablePathId) -> Result<i32>{
         self.execute_insert(DaoType::InsertTablePathId as i32, JniWrapper{table_path_id: vec![table_path_id.clone()], ..Default::default()}).await
     }
 
-    async fn insert_data_commit_info(&mut self, data_commit_info: &DataCommitInfo) -> Result<i32> {
+    async fn insert_data_commit_info(&self, data_commit_info: &DataCommitInfo) -> Result<i32> {
         self.execute_insert(DaoType::InsertDataCommitInfo as i32, JniWrapper{data_commit_info: vec![data_commit_info.clone()], ..Default::default()}).await
     }
 
-    async fn transaction_insert_partition_info(&mut self, partition_info_list: Vec<PartitionInfo>) -> Result<i32> {
+    async fn transaction_insert_partition_info(&self, partition_info_list: Vec<PartitionInfo>) -> Result<i32> {
         self.execute_insert(DaoType::TransactionInsertPartitionInfo as i32, JniWrapper { partition_info: partition_info_list, ..Default::default()}).await
     }
 
-    pub async fn meta_cleanup(&mut self) -> Result<i32> {
-        clean_meta_for_test(&self.client).await
+    pub async fn meta_cleanup(&self) -> Result<i32> {
+        clean_meta_for_test(self.client.lock().await.deref_mut()).await
     }
 
-    pub async fn commit_data(&mut self, meta_info: MetaInfo, commit_op: CommitOp) -> Result<()> {
+    pub async fn commit_data(&self, meta_info: MetaInfo, commit_op: CommitOp) -> Result<()> {
         let table_info = meta_info.table_info.unwrap();
         if !table_info.table_name.is_empty() {
             // todo: updateTableShortName
@@ -163,7 +191,7 @@ impl MetaDataClient {
         }
     }
 
-    async fn get_cur_partition_map(&mut self, table_id: &str, partition_desc_list: &[String]) -> Result<HashMap<String, PartitionInfo>> {
+    async fn get_cur_partition_map(&self, table_id: &str, partition_desc_list: &[String]) -> Result<HashMap<String, PartitionInfo>> {
         Ok(self.get_partition_info_by_table_id_and_partition_list(table_id, partition_desc_list).await?
             .iter()
             .map(|partition_info|(partition_info.partition_desc.clone(), partition_info.clone()))
@@ -171,7 +199,7 @@ impl MetaDataClient {
         )
     }
 
-    pub async fn commit_data_commit_info(&mut self, data_commit_info: DataCommitInfo) -> Result<()> {
+    pub async fn commit_data_commit_info(&self, data_commit_info: DataCommitInfo) -> Result<()> {
         let table_id = &data_commit_info.table_id;
         let partition_desc = &data_commit_info.partition_desc;
         let commit_op = data_commit_info.commit_op;
@@ -202,25 +230,27 @@ impl MetaDataClient {
         }, CommitOp::from_i32(commit_op).unwrap()).await
     }
 
-    pub fn get_table_domain(&mut self, _table_id: &str) -> Result<String> {
+    pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
+        // todo: get property table_domain
         Ok("public".to_string())
     }
 
-    pub async fn get_table_name_id_by_table_name(&mut self, table_name: &str, namespace: &str) -> Result<TableNameId> {
+    pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
         match self.execute_query(DaoType::SelectTableNameIdByTableName as i32, [table_name, namespace].join(PARAM_DELIM)).await {
             Ok(wrapper) => Ok(wrapper.table_name_id[0].clone()),
             Err(err) => Err(err)
         }
     }
 
-    pub async fn get_table_info_by_table_name(&mut self, table_name: &str, namespace: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableInfo> {
         match self.execute_query(DaoType::SelectTableInfoByTableNameAndNameSpace as i32, [table_name, namespace].join(PARAM_DELIM)).await {
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::Internal(format!("Table '{}' not found", table_name))),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err)
         }
     }
 
-    pub async fn get_table_info_by_table_id(&mut self, table_id: &str) -> Result<TableInfo> {
+    pub async fn get_table_info_by_table_id(&self, table_id: &str) -> Result<TableInfo> {
         match self.execute_query(DaoType::SelectTableInfoByTableId as i32, table_id.to_string()).await {
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err)
@@ -228,7 +258,7 @@ impl MetaDataClient {
     }
 
 
-    pub async fn get_data_files_by_table_name(&mut self, table_name: &str, partitions: Vec<(&str, &str)>, namespace: &str) -> Result<Vec<String>> {
+    pub async fn get_data_files_by_table_name(&self, table_name: &str, partitions: Vec<(&str, &str)>, namespace: &str) -> Result<Vec<String>> {
         let partition_filter = partitions
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -259,7 +289,7 @@ impl MetaDataClient {
         Ok(data_commit_info_list)
     }
 
-    async fn get_data_commit_info_of_single_partition(&mut self, partition_info: &PartitionInfo) -> Result<Vec<DataCommitInfo>> {
+    async fn get_data_commit_info_of_single_partition(&self, partition_info: &PartitionInfo) -> Result<Vec<DataCommitInfo>> {
         let table_id = &partition_info.table_id;
         let partition_desc = &partition_info.partition_desc;
         let joined_commit_id = &partition_info.snapshot
@@ -274,19 +304,19 @@ impl MetaDataClient {
         }
     }
 
-    pub async fn get_schema_by_table_name(&mut self, table_name: &str, namespace: &str) -> Result<String> {
+    pub async fn get_schema_by_table_name(&self, table_name: &str, namespace: &str) -> Result<String> {
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
         Ok(table_info.table_schema)
     }
 
-    pub async fn get_all_partition_info(&mut self, table_id: &str) -> Result<Vec<PartitionInfo>> {
+    pub async fn get_all_partition_info(&self, table_id: &str) -> Result<Vec<PartitionInfo>> {
         match self.execute_query(DaoType::ListPartitionByTableId as i32, table_id.to_string()).await {
             Ok(wrapper) => Ok(wrapper.partition_info),
             Err(e) => Err(e),
         }
     }
 
-    pub async fn get_single_data_commit_info(&mut self, table_id: &str, partition_desc: &str, commit_id: &str) -> Result<Option<DataCommitInfo>> {
+    pub async fn get_single_data_commit_info(&self, table_id: &str, partition_desc: &str, commit_id: &str) -> Result<Option<DataCommitInfo>> {
         match self.execute_query(DaoType::SelectOneDataCommitInfoByTableIdAndPartitionDescAndCommitId as i32, [table_id, partition_desc, commit_id].join(PARAM_DELIM)).await {
             Ok(wrapper) => Ok(if wrapper.data_commit_info.is_empty() {
                 None
@@ -297,7 +327,7 @@ impl MetaDataClient {
         }
     }
 
-    pub async fn get_partition_info_by_table_id_and_partition_list(&mut self, table_id: &str, partition_desc_list: &[String]) -> Result<Vec<PartitionInfo>> {
+    pub async fn get_partition_info_by_table_id_and_partition_list(&self, table_id: &str, partition_desc_list: &[String]) -> Result<Vec<PartitionInfo>> {
         match self.execute_query(DaoType::ListPartitionDescByTableIdAndParList as i32, [table_id, partition_desc_list.join(PARTITION_DESC_DELIM).as_str()].join(PARAM_DELIM)).await {
             Ok(wrapper) => Ok(wrapper.partition_info),
             Err(e) => Err(e),

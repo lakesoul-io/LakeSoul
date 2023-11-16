@@ -189,6 +189,20 @@ impl LakeSoulIOConfigBuilder {
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
     }
+
+    pub fn schema(&self) -> SchemaRef {
+        self.config.schema()
+    }
+
+    pub fn primary_keys_slice(&self) -> &[String] {
+        self.config.primary_keys_slice()
+    }
+}
+
+impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
+     fn from(val: LakeSoulIOConfig) -> Self {
+         LakeSoulIOConfigBuilder { config: val }
+     }
 }
 
 /// First check envs for credentials, region and endpoint.

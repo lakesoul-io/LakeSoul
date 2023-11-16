@@ -2,8 +2,4 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(test)]
-mod test;
-mod catalog;
-mod error;
-mod serialize;
+pub mod arrow_java;

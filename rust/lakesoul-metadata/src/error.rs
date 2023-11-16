@@ -24,6 +24,7 @@ pub enum LakeSoulMetaDataError {
     ProstDecodeError(prost::DecodeError),
     ProstEncodeError(prost::EncodeError),
     Other(GenericError),
+    Internal(String),
 }
 
 impl From<tokio_postgres::Error> for LakeSoulMetaDataError {
@@ -92,6 +93,11 @@ impl Display for LakeSoulMetaDataError {
             LakeSoulMetaDataError::Other(ref desc) => {
                 write!(f, "Other error: {desc}")
             }
+            LakeSoulMetaDataError::Internal(ref desc) => {
+                write!(f, "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
+                    code and we would welcome that you file an bug report in our issue tracker")
+            }
+
         }
     }
 }
@@ -107,6 +113,7 @@ impl Error for LakeSoulMetaDataError {
             LakeSoulMetaDataError::ProstDecodeError(e) => Some(e),
             LakeSoulMetaDataError::ProstEncodeError(e) => Some(e),
             LakeSoulMetaDataError::Other(e) => Some(e.as_ref()),
+            LakeSoulMetaDataError::Internal(_) => None,
         }
     }
 }
