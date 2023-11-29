@@ -9,6 +9,7 @@ import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
+import io.debezium.time.MicroDuration;
 import io.debezium.data.Enum;
 import io.debezium.data.EnumSet;
 import io.debezium.data.Envelope;
@@ -42,10 +43,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
@@ -61,6 +59,8 @@ public class LakeSoulRecordConvert implements Serializable {
     final boolean useCDC;
 
     List<String> partitionFields;
+
+    List<RecordPreAndScale> decimalPreAndScalelist = new ArrayList<>();
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, Collections.emptyList());
@@ -240,6 +240,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new VarCharType(nullable, Integer.MAX_VALUE);
             case Time.SCHEMA_NAME:
             case MicroTime.SCHEMA_NAME:
+            case MicroDuration.SCHEMA_NAME:
+                return new BigIntType(nullable);
             case NanoTime.SCHEMA_NAME:
                 return new BigIntType(nullable);
             case Timestamp.SCHEMA_NAME:
@@ -258,6 +260,11 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTimestamp.SCHEMA_NAME:
                 return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
             case Geometry.LOGICAL_NAME:
+            case VariableScaleDecimal.LOGICAL_NAME:
+                int precision = decimalPreAndScalelist.get(0).precision;
+                int scale = decimalPreAndScalelist.get(0).scale;
+                decimalPreAndScalelist.remove(0);
+                return new DecimalType(nullable, precision, scale);
             case Point.LOGICAL_NAME:
                 paras = fieldSchema.field("wkb").schema().parameters();
                 int byteLen = Integer.MAX_VALUE;
@@ -432,6 +439,12 @@ public class LakeSoulRecordConvert implements Serializable {
             case ZonedTimestamp.SCHEMA_NAME:
                 writeUTCTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
+            case VariableScaleDecimal.LOGICAL_NAME:
+                writeDecimal(writer,index,fieldValue,fieldSchema);
+                break;
+            case MicroDuration.SCHEMA_NAME:
+                writeLong(writer,index,fieldValue);
+                break;
             // Geometry and Point can not support now
 //            case Geometry.LOGICAL_NAME:
 //                Object object = convertToGeometry(fieldValue, fieldSchema);
@@ -482,8 +495,8 @@ public class LakeSoulRecordConvert implements Serializable {
                 bigDecimal = new BigDecimal(dbzObj.toString());
             }
         }
-        Map<String, String> paras = schema.parameters();
-        return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
+        decimalPreAndScalelist.add(new RecordPreAndScale(bigDecimal.precision(), bigDecimal.scale()));
+        return DecimalData.fromBigDecimal(bigDecimal, bigDecimal.precision(), bigDecimal.scale());
     }
 
     public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
@@ -651,6 +664,14 @@ public class LakeSoulRecordConvert implements Serializable {
         } else {
             throw new UnsupportedOperationException(
                     "Unsupported BYTES value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+    static class RecordPreAndScale{
+        int precision;
+        int scale;
+        public RecordPreAndScale(int precision, int scale) {
+            this.precision = precision;
+            this.scale = scale;
         }
     }
 }

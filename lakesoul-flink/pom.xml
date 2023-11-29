@@ -121,11 +121,20 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
-
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
-            <version>2.3.0</version>
+            <version>2.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-oracle-cdc</artifactId>
+            <version>2.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-connector-base</artifactId>
+            <version>1.17.1</version>
         </dependency>
 
         <dependency>
@@ -518,6 +527,8 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
+                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
+                            <include>com.ververica:flink-connector-base</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
@@ -576,6 +587,19 @@ SPDX-License-Identifier: Apache-2.0
                             <excludes>
                                 <exclude>org/apache/flink/shaded/guava30/**</exclude>
                                 <exclude>META-INF/maven/com.google.guava/**</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
+                            <artifact>com.ververica:flink-sql-connector-oracle-cdc</artifact>
+                            <excludes>
+                                <exclude>com/ververica/cdc/connectors/oracle/source/utils/OracleConnectionUtils.class</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
+                            <artifact>com.ververica:flink-connector-base</artifact>
+                            <excludes>
+                                <exclude>com/ververica/cdc/connectors/base/relational/JdbcSourceEventDispatcher.class</exclude>
+                                <exclude>com/ververica/cdc/connectors/base/utils/SourceRecordUtils.class</exclude>
                             </excludes>
                         </filter>
                         <filter>
