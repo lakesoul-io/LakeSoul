@@ -40,6 +40,7 @@ public class OracleCdc {
         String passWord = parameter.get(SOURCE_DB_PASSWORD.key());
         String[] schemaList = parameter.get(SOURCE_DB_SCHEMALIST.key()).split(",");
         String host = parameter.get(SOURCE_DB_HOST.key());
+        int splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(),SOURCE_DB_SPLIT_SIZE.defaultValue());
         int port = parameter.getInt(SOURCE_DB_PORT.key(), OracleDBManager.DEFAULT_ORACLE_PORT);
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
         String serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
@@ -99,6 +100,7 @@ public class OracleCdc {
 
         Properties debeziumProperties = new Properties();
         debeziumProperties.setProperty("log.mining.strategy", "online_catalog");
+        debeziumProperties.setProperty("log.mining.continuous.mine","true");
         JdbcIncrementalSource<BinarySourceRecord> oracleChangeEventSource =
                 new OracleSourceBuilder()
                         .hostname(host)
@@ -112,6 +114,7 @@ public class OracleCdc {
                         .includeSchemaChanges(true) // output the schema changes as well
                         .startupOptions(StartupOptions.initial())
                         .debeziumProperties(debeziumProperties)
+                        .splitSize(splitSize)
                         .build();
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
@@ -121,6 +124,6 @@ public class OracleCdc {
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Oracle Source");
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmSink = builder.buildLakeSoulDMLSink(stream);
-        env.execute();
+        env.execute("LakeSoul CDC Sink From MySQL Database" + dbName);
     }
 }

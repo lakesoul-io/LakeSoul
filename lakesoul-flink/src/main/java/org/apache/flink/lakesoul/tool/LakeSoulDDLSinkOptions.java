@@ -58,5 +58,10 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .defaultValue("")
             .withDescription("list of source database excluded tables. Comma-Separated string");
 
+    public static final ConfigOption<Integer> SOURCE_DB_SPLIT_SIZE = ConfigOptions
+            .key("source_db.splitSize")
+            .intType()
+            .defaultValue(1024)
+            .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
 
 }
