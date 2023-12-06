@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#![feature(io_error_other)]
-
 mod metadata_client;
 pub mod error;
 

@@ -2,8 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(test)]
-mod test;
+
 mod catalog;
 mod error;
 mod serialize;
+mod planner;
+mod lakesoul_table;
+mod datasource;
+
+#[cfg(test)]
+mod test;

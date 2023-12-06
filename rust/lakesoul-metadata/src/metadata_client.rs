@@ -250,6 +250,15 @@ impl MetaDataClient {
         }
     }
 
+    pub async fn get_table_info_by_table_path(&self, table_path: &str) -> Result<TableInfo> {
+        match self.execute_query(DaoType::SelectTablePathIdByTablePath as i32, table_path.to_string()).await {
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::Internal(format!("Table '{}' not found", table_path))),
+            Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
+            Err(err) => Err(err)
+        }
+    }
+
+
     pub async fn get_table_info_by_table_id(&self, table_id: &str) -> Result<TableInfo> {
         match self.execute_query(DaoType::SelectTableInfoByTableId as i32, table_id.to_string()).await {
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),

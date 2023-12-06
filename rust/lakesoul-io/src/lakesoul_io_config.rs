@@ -6,6 +6,7 @@ use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -33,10 +34,16 @@ impl Default for IOSchema {
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
+    // root dir path of files
+    pub(crate) prefix: String,
     // files to read or write
     pub(crate) files: Vec<String>,
     // primary key column names
     pub(crate) primary_keys: Vec<String>,
+    // range partitions column names
+    pub(crate) range_partitions: Vec<String>,
+    // number of hash bucket
+    pub(crate) hash_bucket_num: usize,
     // selecting columns
     pub(crate) columns: Vec<String>,
     // auxiliary sorting columns
@@ -105,6 +112,11 @@ impl LakeSoulIOConfigBuilder {
         }
     }
 
+    pub fn with_prefix(mut self, prefix: String) -> Self {
+        self.config.prefix = prefix;
+        self
+    }
+
     pub fn with_file(mut self, file: String) -> Self {
         self.config.files.push(file);
         self
@@ -122,6 +134,16 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_primary_keys(mut self, pks: Vec<String>) -> Self {
         self.config.primary_keys = pks;
+        self
+    }
+
+    pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
+        self.config.range_partitions = range_partitions;
+        self
+    }
+
+    pub fn with_hash_bucket_num(mut self, hash_bucket_num: usize) -> Self {
+        self.config.hash_bucket_num = hash_bucket_num;
         self
     }
 
@@ -344,10 +366,14 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
 }
 
 pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionContext> {
+    create_session_context_with_planner(config, None)
+}
+
+pub fn create_session_context_with_planner(config: &mut LakeSoulIOConfig, planner: Option<Arc<dyn QueryPlanner + Send + Sync>>) -> Result<SessionContext> {
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
-        .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size);
+        .with_parquet_pruning(true);
+        // .with_prefetch(config.prefetch_size);
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
@@ -378,7 +404,14 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     config.files = normalized_filenames;
 
     // create session context
-    Ok(SessionContext::with_config_rt(sess_conf, Arc::new(runtime)))
+    let state = if let Some(planner) = planner {
+        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
+            .with_query_planner(planner)
+    } else {
+        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
+    };
+        
+    Ok(SessionContext::new_with_state(state))
 }
 
 #[cfg(test)]

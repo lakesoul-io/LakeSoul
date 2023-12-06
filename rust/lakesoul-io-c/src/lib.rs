@@ -13,9 +13,9 @@ use std::slice;
 use std::sync::Arc;
 
 pub use arrow::array::StructArray;
-use arrow::array::{Array, ArrayData};
+use arrow::array::Array;
 use arrow::datatypes::Schema;
-use arrow::ffi::ArrowArray;
+use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
@@ -585,9 +585,8 @@ pub extern "C" fn write_record_batch(
         (array_addr as *mut FFI_ArrowArray).copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
         let mut ffi_schema = FFI_ArrowSchema::empty();
         (schema_addr as *mut FFI_ArrowSchema).copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
-        let array = ArrowArray::new(ffi_array, ffi_schema);
         let result_fn = move || {
-            let array_data = ArrayData::try_from(array)?;
+            let array_data = from_ffi(ffi_array, &ffi_schema)?;
             let struct_array = StructArray::from(array_data);
             let rb = RecordBatch::from(struct_array);
             writer.as_ref().write_batch(rb)?;

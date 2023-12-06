@@ -18,20 +18,26 @@ use futures::{Stream, StreamExt};
 impl ProjectionStream {
     fn batch_project(&self, batch: &RecordBatch) -> Result<RecordBatch> {
         // records time on drop
+        // let _timer = self.baseline_metrics.elapsed_compute().timer();
         let arrays = self
             .expr
             .iter()
-            .map(|expr| expr.evaluate(batch))
-            .map(|r| r.map(|v| v.into_array(batch.num_rows())))
+            .map(|expr| {
+                expr.evaluate(batch)
+                    .and_then(|v| v.into_array(batch.num_rows()))
+            })
             .collect::<Result<Vec<_>>>()?;
 
         if arrays.is_empty() {
-            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-            RecordBatch::try_new_with_options(self.schema.clone(), arrays, &options).map_err(Into::into)
+            let options =
+                RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+            RecordBatch::try_new_with_options(self.schema.clone(), arrays, &options)
+                .map_err(Into::into)
         } else {
             RecordBatch::try_new(self.schema.clone(), arrays).map_err(Into::into)
         }
     }
+
 }
 
 /// Projection iterator
