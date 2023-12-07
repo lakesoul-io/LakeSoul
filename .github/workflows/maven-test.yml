@@ -242,7 +242,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: beyondstorage/setup-hdfs@master
         with:
-          hdfs-version: '3.3.2'
+          hdfs-version: '3.3.6'
       - name: Modify HDFS User Group Mapping
         run: |
           sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
@@ -398,7 +398,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: beyondstorage/setup-hdfs@master
         with:
-          hdfs-version: '3.3.2'
+          hdfs-version: '3.3.6'
       - name: Modify HDFS User Group Mapping
         run: |
           sed -i '/^<\/configuration>/i <property><name>hadoop.user.group.static.mapping.overrides</name><value>admin1=domain1;user1=domain1;user2=domain1;admin2=domain2</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml

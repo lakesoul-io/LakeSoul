@@ -9,8 +9,8 @@ import com.esotericsoftware.kryo.Serializer;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import io.fury.Fury;
-import io.fury.Language;
 import io.fury.ThreadLocalFury;
+import io.fury.config.Language;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.binary.BinaryFormat;
@@ -78,10 +78,13 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
     }
 
     @Override public void write(Kryo kryo, Output output, BinarySourceRecord object) {
-        fury.getCurrentFury().serializeJavaObject(output, object);
+        fury.execute(f -> {
+            f.serializeJavaObject(output, object);
+            return 0;
+        });
     }
 
     @Override public BinarySourceRecord read(Kryo kryo, Input input, Class<BinarySourceRecord> type) {
-        return fury.getCurrentFury().deserializeJavaObject(input, BinarySourceRecord.class);
+        return fury.execute(f -> f.deserializeJavaObject(input, BinarySourceRecord.class));
     }
 }
