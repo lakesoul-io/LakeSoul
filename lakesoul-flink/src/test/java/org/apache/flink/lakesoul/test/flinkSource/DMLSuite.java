@@ -138,9 +138,8 @@ public class DMLSuite extends AbstractTestBase {
         } catch (Throwable e) {
             System.out.println("Unsupported DELETE SQL");
         }
-        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
         String testSelect = "select * from user_info";
-        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        TableImpl flinkTable = (TableImpl) tEnv.sqlQuery(testSelect);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 95]"});
     }

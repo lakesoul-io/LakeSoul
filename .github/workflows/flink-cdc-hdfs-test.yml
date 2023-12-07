@@ -88,7 +88,7 @@ jobs:
           cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/benchmark/work-dir
       - uses: beyondstorage/setup-hdfs@master
         with:
-          hdfs-version: '3.3.2'
+          hdfs-version: '3.3.6'
       - name: Modify HDFS Host
         run: |
           sed -i 's/localhost/172.17.0.1/g' $HADOOP_HOME/etc/hadoop/core-site.xml
