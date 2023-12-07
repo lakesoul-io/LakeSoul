@@ -86,6 +86,10 @@ impl LakeSoulIOConfig {
     pub fn files_slice(&self) -> &[String] {
         &self.files
     }
+
+    pub fn aux_sort_cols_slice(&self) -> &[String] {
+        &self.aux_sort_cols
+    }
 }
 
 #[derive(Derivative, Debug)]
@@ -196,6 +200,10 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn primary_keys_slice(&self) -> &[String] {
         self.config.primary_keys_slice()
+    }
+
+    pub fn aux_sort_cols_slice(&self) -> &[String] {
+        self.config.aux_sort_cols_slice()
     }
 }
 
