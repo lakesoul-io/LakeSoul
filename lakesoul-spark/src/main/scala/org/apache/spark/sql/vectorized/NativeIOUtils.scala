@@ -6,6 +6,7 @@ package org.apache.spark.sql.vectorized
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase
 import com.dmetasoul.lakesoul.meta.DBUtil
+import io.glutenproject.vectorized.ArrowWritableColumnVector
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.permission.{FsAction, FsPermission}
@@ -46,8 +47,11 @@ object NativeIOUtils{
       .toArray
   }
 
-  private def asArrowColumnVector(vector: ValueVector): org.apache.spark.sql.arrow.ArrowColumnVector = {
-    new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
+  private def asArrowColumnVector(vector: ValueVector): ArrowWritableColumnVector = {
+    //    new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
+    val vec = new ArrowWritableColumnVector(vector, null, 0, vector.getValueCapacity, false);
+    vec.setValueCount(vector.getValueCount)
+    vec
   }
 
   private def asColumnVector(vector: ValueVector): ColumnVector = {

@@ -4,6 +4,7 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
+import io.glutenproject.memory.arrowalloc.ArrowBufferAllocators;
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
@@ -34,7 +35,7 @@ public class NativeIOBase implements AutoCloseable {
 
     protected final ObjectReferenceManager<IntegerCallback> intReferenceManager;
 
-    protected BufferAllocator allocator;
+//    protected BufferAllocator allocator;
 
     protected CDataDictionaryProvider provider;
 
@@ -43,7 +44,8 @@ public class NativeIOBase implements AutoCloseable {
     }
 
     public NativeIOBase(String allocatorName) {
-        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
+//        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
+//        this.allocator = ArrowBufferAllocators.contextInstance();
         this.provider = new CDataDictionaryProvider();
 
         libLakeSoulIO = JnrLoader.get();
@@ -76,9 +78,9 @@ public class NativeIOBase implements AutoCloseable {
 
     public void setSchema(Schema schema) {
         assert ioConfigBuilder != null;
-        ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
+        ArrowSchema ffiSchema = ArrowSchema.allocateNew(ArrowBufferAllocators.contextInstance());
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
-        Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
+        Data.exportSchema(ArrowBufferAllocators.contextInstance(), schema, tmpProvider, ffiSchema);
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
@@ -130,10 +132,10 @@ public class NativeIOBase implements AutoCloseable {
             provider.close();
             provider = null;
         }
-        if (allocator != null) {
-            allocator.close();
-            allocator = null;
-        }
+//        if (allocator != null) {
+//            allocator.close();
+//            allocator = null;
+//        }
     }
 
     public static final class BooleanCallback implements LibLakeSoulIO.BooleanCallback {
@@ -202,7 +204,7 @@ public class NativeIOBase implements AutoCloseable {
 
 
     public BufferAllocator getAllocator() {
-        return allocator;
+        return ArrowBufferAllocators.contextInstance();
     }
 
     public CDataDictionaryProvider getProvider() {

@@ -175,6 +175,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     @Override
     public void close() throws IOException {
+        closeCurrentBatch();
         if (columnarBatch != null) {
             columnarBatch.close();
             columnarBatch = null;
@@ -332,7 +333,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
      * Advances to the next batch of rows. Returns false if there are no more.
      */
     public boolean nextBatch() throws IOException {
-        closeCurrentBatch();
+//        closeCurrentBatch();
         if (nativeReader.hasNext()) {
             VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
             if (nextVectorSchemaRoot == null) {

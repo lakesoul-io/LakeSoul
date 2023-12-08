@@ -60,6 +60,7 @@ SPDX-License-Identifier: Apache-2.0
         <log4j.version>2.17.2</log4j.version>
         <local.scope>provided</local.scope>
         <spark.version>3.3.1</spark.version>
+        <scala.version>2.12.15</scala.version>
     </properties>
 
     <distributionManagement>

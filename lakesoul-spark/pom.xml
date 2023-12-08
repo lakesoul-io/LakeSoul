@@ -20,8 +20,6 @@ SPDX-License-Identifier: Apache-2.0
     <version>2.4.0-spark-3.3-SNAPSHOT</version>
 
     <properties>
-        <scala.version>2.12.10</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.2.14</scalatest.version>
         <kafka.client.version>3.3.1</kafka.client.version>
         <schema.registry.version>7.3.1</schema.registry.version>
@@ -205,6 +203,62 @@ SPDX-License-Identifier: Apache-2.0
                 <exclusion>
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>backends-velox</artifactId>
+            <version>1.1.0-SNAPSHOT</version>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>backends-velox</artifactId>
+            <version>1.1.0-SNAPSHOT</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>1.1.0-SNAPSHOT</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>spark-sql_2.12</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>1.1.0-SNAPSHOT</version>
+            <scope>test</scope>
+            <classifier>tests</classifier>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>spark-sql_2.12</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
+            <version>1.1.0-SNAPSHOT</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.spark</groupId>
+                    <artifactId>spark-sql_2.12</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -452,22 +506,22 @@ SPDX-License-Identifier: Apache-2.0
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.flatbuf</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.flatbuf</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.memory</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.memory</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.util</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.util</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.vector</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>
-                        </relocation>
+<!--                        <relocation>-->
+<!--                            <pattern>org.apache.arrow.flatbuf</pattern>-->
+<!--                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.flatbuf</shadedPattern>-->
+<!--                        </relocation>-->
+<!--                        <relocation>-->
+<!--                            <pattern>org.apache.arrow.memory</pattern>-->
+<!--                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.memory</shadedPattern>-->
+<!--                        </relocation>-->
+<!--                        <relocation>-->
+<!--                            <pattern>org.apache.arrow.util</pattern>-->
+<!--                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.util</shadedPattern>-->
+<!--                        </relocation>-->
+<!--                        <relocation>-->
+<!--                            <pattern>org.apache.arrow.vector</pattern>-->
+<!--                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>-->
+<!--                        </relocation>-->
                         <relocation>
                             <pattern>com.google.protobuf</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>

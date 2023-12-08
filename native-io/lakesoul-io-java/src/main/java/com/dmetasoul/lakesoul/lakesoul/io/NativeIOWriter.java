@@ -4,6 +4,7 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
+import io.glutenproject.memory.arrowalloc.ArrowBufferAllocators;
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
@@ -53,9 +54,9 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
     }
 
     public void write(VectorSchemaRoot batch) throws IOException {
-        ArrowArray array = ArrowArray.allocateNew(allocator);
-        ArrowSchema schema = ArrowSchema.allocateNew(allocator);
-        Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
+        ArrowArray array = ArrowArray.allocateNew(ArrowBufferAllocators.contextInstance());
+        ArrowSchema schema = ArrowSchema.allocateNew(ArrowBufferAllocators.contextInstance());
+        Data.exportVectorSchemaRoot(ArrowBufferAllocators.contextInstance(), batch, provider, array, schema);
         AtomicReference<String> errMsg = new AtomicReference<>();
         BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
             array.close();

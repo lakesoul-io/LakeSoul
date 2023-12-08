@@ -44,24 +44,25 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     override def hasNext: Boolean = {
       if (!finished) {
         clean()
-        val p = Promise[Option[VectorSchemaRoot]]()
-        vsrFuture = p.future
+        val p = Promise[Option[Int]]()
+//        vsrFuture = p.future
         val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val provider = new CDataDictionaryProvider
         reader.nextBatch((rowCount, err) => {
           if (rowCount > 0) {
-            try {
-              val root: VectorSchemaRoot = {
-                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
-              }
-              if (root.getSchema.getFields.isEmpty) {
-                root.setRowCount(rowCount)
-              }
-              p.success(Some(root))
-            } catch {
-              case e: Throwable => p.failure(e)
-            }
+            p.success(Some(rowCount))
+//            try {
+//              val root: VectorSchemaRoot = {
+//                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+//              }
+//              if (root.getSchema.getFields.isEmpty) {
+//                root.setRowCount(rowCount)
+//              }
+//              p.success(Some(root))
+//            } catch {
+//              case e: Throwable => p.failure(e)
+//            }
           } else {
             if (err == null) {
               p.success(None)
@@ -73,7 +74,18 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
         try {
           Await.result(p.future, timeout milli) match {
-            case Some(_) => true
+            case Some(rowCount) => {
+              val root: VectorSchemaRoot = {
+                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
+              }
+              if (root.getSchema.getFields.isEmpty) {
+                root.setRowCount(rowCount)
+              }
+              val rootPromise = Promise[Option[VectorSchemaRoot]]
+              vsrFuture = rootPromise.future
+              rootPromise.success(Some(root))
+              true
+            }
             case _ => false
           }
         } catch {
@@ -91,6 +103,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
           consumerSchema.close()
         }
       } else {
+        clean()
         false
       }
     }
@@ -99,7 +112,9 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
       if (ex.isDefined) {
         throw ex.get
       }
-      Await.result(vsrFuture, timeout milli)
+      val vsr = Await.result(vsrFuture, timeout milli)
+      vsrFuture = null
+      vsr
     }
 
     private def finish(): Unit = {
