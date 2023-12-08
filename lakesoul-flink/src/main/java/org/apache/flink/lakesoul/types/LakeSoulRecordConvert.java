@@ -435,10 +435,10 @@ public class LakeSoulRecordConvert implements Serializable {
                 writeUTCTimeStamp(writer, index, fieldValue, fieldSchema);
                 break;
             case VariableScaleDecimal.LOGICAL_NAME:
-                writeDecimal(writer,index,fieldValue,fieldSchema);
+                writeDecimal(writer, index, fieldValue, fieldSchema);
                 break;
             case MicroDuration.SCHEMA_NAME:
-                writeLong(writer,index,fieldValue);
+                writeLong(writer, index, fieldValue);
                 break;
             // Geometry and Point can not support now
 //            case Geometry.LOGICAL_NAME:

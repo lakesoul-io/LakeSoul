@@ -27,7 +27,7 @@ public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
             .stringType()
             .noDefaultValue()
             .withDescription("source database access password");
-    public static final ConfigOption<String> SOURCE_DB_SCHEMALIST = ConfigOptions
+    public static final ConfigOption<String> SOURCE_DB_SCHEMA_LIST = ConfigOptions
             .key("source_db.schemaList")
             .stringType()
             .noDefaultValue()
