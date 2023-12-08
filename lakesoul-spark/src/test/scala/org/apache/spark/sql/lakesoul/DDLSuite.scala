@@ -8,6 +8,7 @@ import com.dmetasoul.lakesoul.meta.DBManager
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.plans.logical.CallStatement
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.schema.InvariantViolationException
@@ -414,6 +415,14 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
+  test("Call Statement") {
+    withTable("lakesoul_test") {
+            val call = spark.sessionState.sqlParser.parsePlan("CALL cat.system.func(c1 => 'name=name1', c2 => map('2',3), c3 => true,c4 => TIMESTAMP '2013-01-01',c5=>3L,c6=>1.0D,c7=>ARRAY(1,3))")
+            val s = call.asInstanceOf[CallStatement]
+            assert(s.args.length == 7)
+    }
+  }
+
   test("DESCRIBE TABLE for partitioned table") {
     withTempDir { dir =>
       withTable("lakesoul_test") {
@@ -432,6 +441,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
       }
     }
   }
+
 
   test("ALTER TABLE with data CHANGE COLUMN from bigint to string") {
     withTempDir { dir =>
