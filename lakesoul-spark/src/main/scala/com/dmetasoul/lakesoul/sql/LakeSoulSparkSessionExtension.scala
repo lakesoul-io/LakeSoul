@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.sql
 
 import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.catalyst.parser.extensions.LakeSoulSparkSqlExtensionsParser
 import org.apache.spark.sql.lakesoul.rules._
 
 /**
@@ -59,11 +60,8 @@ import org.apache.spark.sql.lakesoul.rules._
 class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
 
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    //    extensions.injectParser { (session, parser) =>
-    //      new LakeSoulSqlParser(parser)
-    //    }
 
-
+    extensions.injectParser{ case (_,parser) => new LakeSoulSparkSqlExtensionsParser(parser)}
     extensions.injectResolutionRule { session =>
       ExtractMergeOperator(session)
     }
@@ -103,7 +101,9 @@ class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     extensions.injectResolutionRule { session =>
       ProcessCDCTableMergeOnRead(session.sessionState.conf)
     }
-
+    extensions.injectResolutionRule { session =>
+      ProcessCall(session)
+    }
     extensions.injectPlannerStrategy { session =>
       SetPartitionAndOrdering(session)
     }

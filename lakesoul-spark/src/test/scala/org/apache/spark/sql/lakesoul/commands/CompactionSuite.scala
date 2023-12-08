@@ -130,7 +130,51 @@ class CompactionSuite extends QueryTest
 
     })
   }
+  test("compaction with call - simple condition") {
+    withTempDir(file => {
+      val tableName = file.getCanonicalPath
 
+      val df1 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
+        .toDF("range", "hash", "value")
+      val df2 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
+        .toDF("range", "hash", "name")
+
+      df1.write
+        .option("rangePartitions", "range")
+        .option("hashPartitions", "hash")
+        .option("hashBucketNum", "2")
+        .format("lakesoul")
+        .save(tableName)
+
+      withSQLConf("spark.dmetasoul.lakesoul.schema.autoMerge.enabled" -> "true") {
+        LakeSoulTable.forPath(tableName).upsert(df2)
+      }
+
+      val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
+
+      val rangeInfo = SparkUtil.allDataInfo(sm.snapshot).filter(_.range_partitions.equals("range=1"))
+
+      assert(!rangeInfo.groupBy(_.file_bucket_id).forall(_._2.length == 1))
+
+      /* usage for call compaction
+      * call LakeSoulTable.compaction(condition=>map('range',1),tablePath=>'file://path')
+      * call LakeSoulTable.compaction(condition=>map('range',1),tableName=>'lakesoul')
+      * call LakeSoulTable.compaction(tableName=>'lakesoul',hiveTableName=>'hive')
+      * call LakeSoulTable.compaction(tableName=>'lakesoul',cleanOld=>true)
+      */
+      sql("call LakeSoulTable.compaction(condition=>map('range',1),tablePath=>'" + tableName + "')")
+      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(_.range_partitions.equals("range=1"))
+        .groupBy(_.file_bucket_id).forall(_._2.length == 1)
+      )
+
+      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(!_.range_partitions.equals("range=1"))
+        .groupBy(_.file_bucket_id).forall(_._2.length != 1)
+      )
+
+    })
+  }
 
   test("compaction with condition - multi partitions should failed") {
     withTempDir(file => {
