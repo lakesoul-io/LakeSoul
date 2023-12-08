@@ -156,7 +156,7 @@ impl LakeSoulParquetSink {
     fn table_info(&self) -> Arc<TableInfo> {
         self.table_info.clone()
     }
-    
+
 }
 
 #[async_trait]

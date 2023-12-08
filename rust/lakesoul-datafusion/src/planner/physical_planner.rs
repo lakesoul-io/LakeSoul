@@ -53,13 +53,13 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
             }) => {
                 let name = table_name.table();
                 // let schema = session_state.schema_for_ref(table_name)?;
-                let table = LakeSoulTable::for_name(name).await.unwrap();
-                match table.as_sink_provider(session_state).await {
+                let lakesoul_table = LakeSoulTable::for_name(name).await.unwrap();
+                match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
                         let builder = LogicalPlanBuilder::from(input.deref().clone());
                         
-                        let builder = if table.primary_keys().is_empty() {
-                            if !table
+                        let builder = if lakesoul_table.primary_keys().is_empty() {
+                            if !lakesoul_table
                                 .schema()
                                 .logically_equivalent_names_and_types(&Schema::from(input.schema().as_ref()))
                             {
@@ -71,7 +71,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                             builder
                         } else {
-                            let sort_exprs = create_sort_exprs(table.primary_keys());
+                            let sort_exprs = create_sort_exprs(lakesoul_table.primary_keys());
                             builder.sort(sort_exprs)?
                         };
 

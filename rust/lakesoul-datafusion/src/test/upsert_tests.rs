@@ -1220,37 +1220,6 @@ mod upsert_with_metadata_tests {
         lakesoul_table.execute_upsert(record_batch).await
     }
 
-    async fn check_upsert_print(table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, client: MetaDataClientRef, expected: &[&str]) -> Result<()> {
-        let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
-        let builder = create_io_config_builder(client, None, false).await?;
-        let sess_ctx = create_session_context(&mut builder.clone().build())?;
-        
-        
-        let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
-        let schema = SchemaRef::new(dataframe.schema().into());
-
-        let dataframe = if let Some(f) = filters {
-            dataframe.filter(Parser::parse(f.clone(), schema))?
-        } else {
-            dataframe
-        };
-
-        let dataframe = if selected_cols.is_empty() {
-            dataframe
-        } else {
-            dataframe.select_columns(&selected_cols)?
-        };
-
-        let result = dataframe
-            // .explain(true, false)?
-            .collect()
-            .await?;
-
-        // print_batches(&result);
-        assert_batches_eq!(expected, &result);
-        Ok(())
-    }
-
     async fn check_upsert_debug(batch: RecordBatch, table_name: &str, selected_cols: Vec<&str>, filters: Option<String>, client: MetaDataClientRef, expected: &[&str]) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;

@@ -29,9 +29,9 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
 }
 
 
-pub(crate) fn create_sort_exprs(pks: &[String]) -> Vec<Expr> {
-    pks
+pub(crate) fn create_sort_exprs(colunms: &[String]) -> Vec<Expr> {
+    colunms
         .iter()
-        .map(|pk| col(pk).sort(true, true))
+        .map(|column| col(column).sort(true, true))
         .collect()
 }

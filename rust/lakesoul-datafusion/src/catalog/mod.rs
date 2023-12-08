@@ -29,7 +29,7 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
         TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_name: table_name.to_string(), 
-            table_path: [env::temp_dir().to_str().unwrap(), table_name].iter().collect::<PathBuf>().to_str().unwrap().to_string(),
+            table_path: format!("{}default/{}", env::temp_dir().to_str().unwrap(), table_name),
             table_schema: serde_json::to_string::<ArrowJavaSchema>(&config.schema().into()).unwrap(),
             table_namespace: "default".to_string(),
             properties: "{}".to_string(),
