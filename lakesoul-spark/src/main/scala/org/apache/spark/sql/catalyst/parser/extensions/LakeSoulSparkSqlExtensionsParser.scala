@@ -120,7 +120,9 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
   }
 
 
-  override def parseQuery(sqlText: String): LogicalPlan = ???
+  override def parseQuery(sqlText: String): LogicalPlan = {
+    delegate.parseQuery(sqlText)
+  }
 
 
   private def isLakeSoulCommand(sqlText: String): Boolean = {
