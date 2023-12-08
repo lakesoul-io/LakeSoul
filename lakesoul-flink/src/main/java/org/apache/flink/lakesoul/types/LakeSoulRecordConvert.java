@@ -60,8 +60,6 @@ public class LakeSoulRecordConvert implements Serializable {
 
     List<String> partitionFields;
 
-    List<RecordPreAndScale> decimalPreAndScalelist = new ArrayList<>();
-
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, Collections.emptyList());
     }
@@ -261,10 +259,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
             case Geometry.LOGICAL_NAME:
             case VariableScaleDecimal.LOGICAL_NAME:
-                int precision = decimalPreAndScalelist.get(0).precision;
-                int scale = decimalPreAndScalelist.get(0).scale;
-                decimalPreAndScalelist.remove(0);
-                return new DecimalType(nullable, precision, scale);
+                return new DecimalType(nullable, 38, 30);
             case Point.LOGICAL_NAME:
                 paras = fieldSchema.field("wkb").schema().parameters();
                 int byteLen = Integer.MAX_VALUE;
@@ -495,8 +490,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 bigDecimal = new BigDecimal(dbzObj.toString());
             }
         }
-        decimalPreAndScalelist.add(new RecordPreAndScale(bigDecimal.precision(), bigDecimal.scale()));
-        return DecimalData.fromBigDecimal(bigDecimal, bigDecimal.precision(), bigDecimal.scale());
+        return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
     }
 
     public void writeDecimal(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
@@ -664,14 +658,6 @@ public class LakeSoulRecordConvert implements Serializable {
         } else {
             throw new UnsupportedOperationException(
                     "Unsupported BYTES value type: " + dbzObj.getClass().getSimpleName());
-        }
-    }
-    static class RecordPreAndScale{
-        int precision;
-        int scale;
-        public RecordPreAndScale(int precision, int scale) {
-            this.precision = precision;
-            this.scale = scale;
         }
     }
 }
