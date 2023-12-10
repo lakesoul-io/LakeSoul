@@ -73,7 +73,7 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
           }
         }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
         try {
-          Await.result(p.future, timeout milli) match {
+          Await.result(p.future, 1000000 milli) match {
             case Some(rowCount) => {
               val root: VectorSchemaRoot = {
                 Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)

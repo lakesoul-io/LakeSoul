@@ -6,6 +6,7 @@ package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter
 import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils
+import io.glutenproject.memory.arrowalloc.ArrowBufferAllocators
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
@@ -34,8 +35,9 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   nativeIOWriter.initializeWriter()
 
-  val allocator: BufferAllocator =
-    ArrowMemoryUtils.rootAllocator.newChildAllocator("toBatchIterator", 0, Long.MaxValue)
+//  val allocator: BufferAllocator =
+//    ArrowMemoryUtils.rootAllocator.newChildAllocator("toBatchIterator", 0, Long.MaxValue)
+  val allocator: BufferAllocator = ArrowBufferAllocators.contextInstance
 
   private val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
