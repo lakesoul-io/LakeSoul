@@ -86,7 +86,6 @@ impl LakeSoulListingTable {
                     .with_file_extension(".parquet")
                     .with_table_partition_cols(table_partition_cols)
                     .with_insert_mode(datafusion::datasource::listing::ListingTableInsertMode::AppendNewFiles);
-
                 let prefix = ListingTableUrl::parse_create_local_if_not_exists(lakesoul_io_config.prefix.clone(), true)?;
                 
                 ListingTableConfig::new(prefix)
