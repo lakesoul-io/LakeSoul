@@ -109,7 +109,7 @@ class LakeSoulSparkSessionExtension extends (SparkSessionExtensions => Unit) {
     }
 
     extensions.injectColumnar { session =>
-      PostInjectColumnar(session)
+      GlutenCompatPostInjectColumnar(session)
     }
   }
 }

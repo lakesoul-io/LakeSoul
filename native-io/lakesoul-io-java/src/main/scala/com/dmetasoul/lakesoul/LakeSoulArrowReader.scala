@@ -38,31 +38,19 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
   val iterator = new BatchIterator
 
   class BatchIterator extends Iterator[Option[VectorSchemaRoot]] {
-    private var vsrFuture: Future[Option[VectorSchemaRoot]] = _
+    private var vsr: Option[VectorSchemaRoot] = _
     var finished = false
 
     override def hasNext: Boolean = {
       if (!finished) {
         clean()
         val p = Promise[Option[Int]]()
-//        vsrFuture = p.future
         val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val provider = new CDataDictionaryProvider
         reader.nextBatch((rowCount, err) => {
           if (rowCount > 0) {
             p.success(Some(rowCount))
-//            try {
-//              val root: VectorSchemaRoot = {
-//                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
-//              }
-//              if (root.getSchema.getFields.isEmpty) {
-//                root.setRowCount(rowCount)
-//              }
-//              p.success(Some(root))
-//            } catch {
-//              case e: Throwable => p.failure(e)
-//            }
           } else {
             if (err == null) {
               p.success(None)
@@ -73,20 +61,17 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
           }
         }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
         try {
-          Await.result(p.future, 1000000 milli) match {
-            case Some(rowCount) => {
+          Await.result(p.future, timeout milli) match {
+            case Some(rowCount) =>
               val root: VectorSchemaRoot = {
                 Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
               }
-              if (root.getSchema.getFields.isEmpty) {
-                root.setRowCount(rowCount)
-              }
-              val rootPromise = Promise[Option[VectorSchemaRoot]]
-              vsrFuture = rootPromise.future
-              rootPromise.success(Some(root))
+              root.setRowCount(rowCount)
+              vsr = Some(root)
               true
-            }
-            case _ => false
+            case _ =>
+              vsr = None
+              false
           }
         } catch {
           case e: java.util.concurrent.TimeoutException =>
@@ -112,8 +97,6 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
       if (ex.isDefined) {
         throw ex.get
       }
-      val vsr = Await.result(vsrFuture, timeout milli)
-      vsrFuture = null
       vsr
     }
 
@@ -124,10 +107,11 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
     }
 
     def clean(): Unit = {
-      if (vsrFuture != null && vsrFuture.isCompleted) {
-        vsrFuture.value match {
-          case Some(Success(Some(batch))) =>
-            batch.close()
+      if (vsr != null) {
+        vsr match {
+          case Some(root) =>
+            root.close()
+            vsr = None
           case _ =>
         }
       }

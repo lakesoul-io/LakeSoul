@@ -4,12 +4,10 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
-import io.glutenproject.memory.arrowalloc.ArrowBufferAllocators;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import jnr.ffi.Pointer;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
-import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
@@ -83,9 +81,9 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     }
 
     private Schema getReaderSchema() {
-        ArrowSchema ffiSchema = ArrowSchema.allocateNew(ArrowBufferAllocators.contextInstance());
+        ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
         libLakeSoulIO.lakesoul_reader_get_schema(reader, ffiSchema.memoryAddress());
-        Schema schema = Data.importSchema(ArrowBufferAllocators.contextInstance(), ffiSchema, provider);
+        Schema schema = Data.importSchema(allocator, ffiSchema, provider);
         ffiSchema.close();
         return schema;
     }
