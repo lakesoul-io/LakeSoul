@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use datafusion::common::{DFSchemaRef, Statistics, ToDFSchema};
+use datafusion::common::{DFSchemaRef, ToDFSchema};
 use datafusion::datasource::{provider_as_source, TableProvider};
 use datafusion::error::Result;
 use datafusion::execution::context::{SessionState, TaskContext};
@@ -33,92 +33,7 @@ use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
 use crate::transform::uniform_schema;
 
-#[derive(Clone, Debug)]
-pub struct EmptySchemaProvider {
-    count: usize,
-    empty_schema: SchemaRef,
-}
-
-impl EmptySchemaProvider {
-    pub fn new(count: usize) -> Self {
-        EmptySchemaProvider {
-            count,
-            empty_schema: SchemaRef::new(Schema::new(Vec::<Field>::new())),
-        }
-    }
-}
-
-#[async_trait]
-impl TableProvider for EmptySchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.empty_schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _state: &SessionState,
-        _projections: Option<&Vec<usize>>,
-        // filters and limit can be used here to inject some push-down operations if needed
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(EmptySchemaScanExec {
-            count: self.count,
-            empty_schema: self.empty_schema.clone(),
-        }))
-    }
-}
-
-#[derive(Debug)]
-pub struct EmptySchemaScanExec {
-    count: usize,
-    empty_schema: SchemaRef,
-}
-
-impl ExecutionPlan for EmptySchemaScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.empty_schema.clone()
-    }
-
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![]
-    }
-
-    fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(self)
-    }
-
-    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        Ok(Box::pin(EmptySchemaStream::new(
-            _context.session_config().batch_size(),
-            self.count,
-        )))
-    }
-
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
-    }
-}
+use super::empty_schema::EmptySchemaProvider;
 
 #[derive(Clone, Debug)]
 pub struct LakeSoulParquetProvider {
@@ -134,6 +49,11 @@ impl LakeSoulParquetProvider {
             plans: vec![],
             full_schema: SchemaRef::new(Schema::empty()),
         }
+    }
+
+    pub async fn build(&self) -> Result<Self> {
+        let context = SessionContext::default();
+        self.build_with_context(&context).await
     }
 
     pub async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
@@ -384,9 +304,6 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
         Ok(Box::pin(result))
     }
 
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
-    }
 }
 
 pub fn merge_stream(
@@ -446,18 +363,17 @@ pub fn merge_stream(
     Ok(merge_stream)
 }
 
-fn schema_intersection(df_schema: DFSchemaRef, schema: SchemaRef, primary_keys: &[String]) -> Vec<Expr> {
-    df_schema
-        .fields()
-        .iter()
-        .filter_map(|df_field| match schema.field_with_name(df_field.name()) {
-                // datafusion's select is case sensitive, but col will transform field name to lower case
-                // so we use Column::new_unqualified instead
-                Ok(_) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
-                _ if primary_keys.contains(df_field.name()) => Some(Column(datafusion::common::Column::new_unqualified(df_field.name()))),
-                _ => None
-        })
-        .collect()
+fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef, primary_keys: &[String]) -> Vec<Expr> {
+    let mut exprs = primary_keys.iter().map(|pk| Column(datafusion::common::Column::new_unqualified(pk))).collect::<Vec<_>>();
+    for field in request_schema.fields() {
+        if primary_keys.contains(field.name()) {
+            continue;
+        }
+        if df_schema.field_with_unqualified_name(field.name()).is_ok() {
+            exprs.push(Column(datafusion::common::Column::new_unqualified(field.name())));
+        }
+    }
+    exprs
 }
 
 pub async fn prune_filter_and_execute(

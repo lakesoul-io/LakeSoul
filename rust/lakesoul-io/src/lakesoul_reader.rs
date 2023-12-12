@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use atomic_refcell::AtomicRefCell;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -22,7 +23,9 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::datasource::parquet_source::{prune_filter_and_execute, LakeSoulParquetProvider};
+use crate::datasource::file_format::LakeSoulParquetFormat;
+use crate::datasource::listing::LakeSoulListingTable;
+use crate::datasource::parquet_source::prune_filter_and_execute;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
 pub struct LakeSoulReader {
@@ -50,8 +53,10 @@ impl LakeSoulReader {
                 "LakeSoulReader has wrong number of file".to_string(),
             ))
         } else {
-            let source = LakeSoulParquetProvider::from_config(self.config.clone());
-            let source = source.build_with_context(&self.sess_ctx).await.unwrap();
+            // let source = LakeSoulParquetProvider::from_config(self.config.clone());
+            // let source = source.build_with_context(&self.sess_ctx).await.unwrap();
+            let file_format = Arc::new(LakeSoulParquetFormat::new(Arc::new(ParquetFormat::new()), self.config.clone()));
+            let source = LakeSoulListingTable::new_with_config_and_format(&self.sess_ctx.state(), self.config.clone(), file_format, false).await?;
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
             let stream = prune_filter_and_execute(

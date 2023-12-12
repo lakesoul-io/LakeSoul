@@ -195,7 +195,7 @@ impl SortedStreamMerger {
                         self.initialized[idx] = true;
                         let cols = self.column_expressions[idx]
                             .iter()
-                            .map(|expr| Ok(expr.evaluate(&batch)?.into_array(batch.num_rows())))
+                            .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
                             .collect::<Result<Vec<_>>>()?;
                         let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,

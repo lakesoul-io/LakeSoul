@@ -10,16 +10,25 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+datafusion = { workspace = true }
+object_store = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 proto = { path = "../proto" }
-prost = "0.11"
-async-trait = "0.1"
-futures = "0.3"
-uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"]}
+prost = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
 chrono = { version = "0.4", features = ["unstable-locales"] }
 json = "0.12"
-serde = { version = "1.0", features = ["derive", "std", "rc"]}
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.2"
