@@ -8,7 +8,10 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.lakesoul.test.LakeSoulSQLCommandTest
 import org.apache.spark.sql.test.SharedSparkSession
+import org.junit.runner.RunWith
+import org.scalatestplus.junit.JUnitRunner
 
+@RunWith(classOf[JUnitRunner])
 class LakeSoulGlutenCompatSuite
   extends QueryTest
     with SharedSparkSession
@@ -32,6 +35,20 @@ class LakeSoulGlutenCompatSuite
     df.write
       .mode("overwrite")
       .format("lakesoul")
+      .option("rangePartitions","date")
+      .save(tablePath)
+    val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
+    checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+  }
+
+  test("lakesoul write scan - pk") {
+    val tablePath = "file:///tmp/lakesoul/test"
+    val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+    df.write
+      .mode("overwrite")
+      .format("lakesoul")
+      .option("hashPartitions","id")
+      .option("hashBucketNum","2")
       .option("rangePartitions","date")
       .save(tablePath)
     val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")

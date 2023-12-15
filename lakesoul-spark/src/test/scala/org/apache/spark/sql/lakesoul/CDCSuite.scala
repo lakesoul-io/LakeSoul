@@ -35,7 +35,7 @@ class CDCSuite
     val session = new LakeSoulTestSparkSession(sparkConf)
     session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
-    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
+    session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, value = true)
     session.sparkContext.setLogLevel("ERROR")
 
     session

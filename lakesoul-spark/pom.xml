@@ -273,6 +273,14 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
         </dependency>
 
+        <!-- for test only. we don't rely on gluten during package and runtime -->
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>backends-velox</artifactId>
+            <version>1.1.0</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <profiles>
