@@ -521,7 +521,6 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
-                            <include>com.ververica:flink-connector-base</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
