@@ -136,6 +136,24 @@ public class LakeSoulSinkOptions {
             .defaultValue(null)
             .withDescription("flink_warehouse_dir");
 
+    public static final ConfigOption<String> SOURCE_DB_SCHEMA_LIST = ConfigOptions
+            .key("source_db.schemaList")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("source database schemaList");
+
+    public static final ConfigOption<String> SOURCE_DB_SCHEMA_TABLES = ConfigOptions
+            .key("source_db.schema_tables")
+            .stringType()
+            .defaultValue("")
+            .withDescription("list tables of a schema");
+
+    public static final ConfigOption<Integer> SOURCE_DB_SPLIT_SIZE = ConfigOptions
+            .key("source_db.splitSize")
+            .intType()
+            .defaultValue(1024)
+            .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
+
 }
 
 
