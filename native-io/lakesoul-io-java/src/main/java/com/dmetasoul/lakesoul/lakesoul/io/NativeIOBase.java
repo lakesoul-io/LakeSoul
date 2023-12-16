@@ -4,15 +4,15 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
+import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import jnr.ffi.ObjectReferenceManager;
 import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
-import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -38,12 +38,15 @@ public class NativeIOBase implements AutoCloseable {
 
     protected CDataDictionaryProvider provider;
 
+    protected boolean hasExternalAllocator;
+
     public static boolean isNativeIOLibExist() {
         return JnrLoader.get() != null;
     }
 
     public NativeIOBase(String allocatorName) {
         this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
+        this.hasExternalAllocator = false;
         this.provider = new CDataDictionaryProvider();
 
         libLakeSoulIO = JnrLoader.get();
@@ -54,6 +57,11 @@ public class NativeIOBase implements AutoCloseable {
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
         setBatchSize(8192);
         setThreadNum(2);
+    }
+
+    public void setExternalAllocator(BufferAllocator allocator) {
+        this.allocator = allocator;
+        this.hasExternalAllocator = true;
     }
 
     public void addFile(String file) {
@@ -131,7 +139,8 @@ public class NativeIOBase implements AutoCloseable {
             provider = null;
         }
         if (allocator != null) {
-            allocator.close();
+            if (!hasExternalAllocator)
+                allocator.close();
             allocator = null;
         }
     }
