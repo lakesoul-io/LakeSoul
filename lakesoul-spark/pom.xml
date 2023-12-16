@@ -26,6 +26,7 @@ SPDX-License-Identifier: Apache-2.0
         <avro.version>1.11.0</avro.version>
         <mysql.version>8.0.30</mysql.version>
         <jackson.yaml.version>2.12.7</jackson.yaml.version>
+        <gluten.version>1.1.0</gluten.version>
         <local.scope>provided</local.scope>
         <test.fork.count>2</test.fork.count>
     </properties>
@@ -277,10 +278,46 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>io.glutenproject</groupId>
             <artifactId>backends-velox</artifactId>
-            <version>1.1.0</version>
+            <version>${gluten.version}</version>
             <scope>test</scope>
         </dependency>
-
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+            </exclusions>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+            </exclusions>
+            <classifier>tests</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-data</artifactId>
+            <version>${gluten.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
+            <version>${gluten.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <profiles>

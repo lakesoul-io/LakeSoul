@@ -6,7 +6,9 @@ package org.apache.spark.sql.lakesoul.rules
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.merge.MergeDeltaParquetScan
 import org.apache.spark.sql.execution.{ColumnarRule, ColumnarToRowExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.GlutenUtils
 
@@ -18,10 +20,15 @@ import org.apache.spark.sql.vectorized.GlutenUtils
  */
 case class GlutenCompatPostInjectColumnar(session: SparkSession) extends ColumnarRule {
 
+  private def isLakeSoulScan(scan: Scan): Boolean = {
+    scan.getClass.getSimpleName.contains("NativeParquetScan") ||
+      scan.isInstanceOf[MergeDeltaParquetScan]
+  }
+
   private def transform(plan: SparkPlan): SparkPlan = plan match {
     case UnaryExecNode(plan, ColumnarToRowExec(scan: BatchScanExec))
         if plan.getClass.getName == "io.glutenproject.execution.RowToVeloxColumnarExec" &&
-          scan.scan.getClass.getSimpleName.contains("Native")
+          isLakeSoulScan(scan.scan)
       => scan
     case p =>
       p.withNewChildren(p.children.map(transform))

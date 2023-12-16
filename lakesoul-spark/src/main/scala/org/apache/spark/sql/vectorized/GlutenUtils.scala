@@ -18,11 +18,18 @@ object GlutenUtils {
   lazy val isGlutenEnabled: Boolean =
     SparkContext.getActive.exists(_.getConf.get("spark.plugins", "").contains("io.glutenproject.GlutenPlugin"))
 
-  private lazy val glutenAllocator: BufferAllocator = {
+  private lazy val getGlutenAllocatorMethod: Method = {
+    val cls = Class.forName("io.glutenproject.memory.arrowalloc.ArrowBufferAllocators")
+    cls.getDeclaredMethod("contextInstance")
+  }
+
+  /**
+   * This cannot be lazy because gluten's allocator
+   * is associated with each of Spark's context
+   */
+  private def getGlutenAllocator: BufferAllocator = {
     if (isGlutenEnabled) {
-      val cls = Class.forName("io.glutenproject.memory.arrowalloc.ArrowBufferAllocators")
-      val m: Method = cls.getDeclaredMethod("contextInstance")
-      m.invoke(null).asInstanceOf[BufferAllocator]
+      getGlutenAllocatorMethod.invoke(null).asInstanceOf[BufferAllocator]
     } else {
       null
     }
@@ -30,7 +37,7 @@ object GlutenUtils {
 
   def setArrowAllocator(io: NativeIOBase): Unit = {
     if (isGlutenEnabled) {
-      io.setExternalAllocator(glutenAllocator)
+      io.setExternalAllocator(getGlutenAllocator)
     }
   }
 
