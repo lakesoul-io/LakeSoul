@@ -312,12 +312,13 @@ SPDX-License-Identifier: Apache-2.0
             <version>${gluten.version}</version>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>spark-sql-columnar-shims-spark33</artifactId>
-            <version>${gluten.version}</version>
-            <scope>test</scope>
-        </dependency>
+        <!-- currently this jar is missing on maven repo -->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>spark-sql-columnar-shims-spark33</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>test</scope>-->
+<!--        </dependency>-->
     </dependencies>
 
     <profiles>

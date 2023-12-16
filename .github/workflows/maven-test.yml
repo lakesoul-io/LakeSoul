@@ -179,10 +179,6 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
-          export SPARK_SUBMIT_OPTS="--illegal-access=permit -Dio.netty.tryReflectionSetAccessible=true "
-          wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/spark-sql-columnar-shims-spark33-1.1.0.tar.gz
-          tar xf spark-sql-columnar-shims-spark33-1.1.0.tar.gz
-          mvn install:install-file -Dfile=spark-sql-columnar-shims-spark33-1.1.0.jar -DpomFile=spark-sql-columnar-shims-spark33-1.1.0.pom
           mvn -B test -pl lakesoul-spark -am -Pcross-build -Pparallel-test --file pom.xml -Dtest='!UpdateScalaSuite,!AlterTableByNameSuite,!ReadSuite,!UpdateSQLSuite,!ParquetNativeFilterSuite,!DeleteScalaSuite,!DeleteSQLSuite,!ParquetV2FilterSuite,!ParquetScanSuite,!UpsertSuiteBase,!RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
