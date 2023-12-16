@@ -30,28 +30,32 @@ class LakeSoulGlutenCompatSuite
   import testImplicits._
 
   test("lakesoul write scan - nopk") {
-    val tablePath = "file:///tmp/lakesoul/test"
-    val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
-    df.write
-      .mode("overwrite")
-      .format("lakesoul")
-      .option("rangePartitions","date")
-      .save(tablePath)
-    val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
-    checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+    withTempDir(dir => {
+      val tablePath = dir.getCanonicalPath
+      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      df.write
+        .mode("overwrite")
+        .format("lakesoul")
+        .option("rangePartitions","date")
+        .save(tablePath)
+      val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
+      checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+    })
   }
 
   test("lakesoul write scan - pk") {
-    val tablePath = "file:///tmp/lakesoul/test"
-    val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
-    df.write
-      .mode("overwrite")
-      .format("lakesoul")
-      .option("hashPartitions","id")
-      .option("hashBucketNum","2")
-      .option("rangePartitions","date")
-      .save(tablePath)
-    val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
-    checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+    withTempDir(dir => {
+      val tablePath = dir.getCanonicalPath
+      val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+      df.write
+        .mode("overwrite")
+        .format("lakesoul")
+        .option("hashPartitions","id")
+        .option("hashBucketNum","2")
+        .option("rangePartitions","date")
+        .save(tablePath)
+      val dfRead = spark.read.format("lakesoul").load(tablePath).select("date", "id", "name")
+      checkAnswer(dfRead, Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date", "id", "name"))
+    })
   }
 }
