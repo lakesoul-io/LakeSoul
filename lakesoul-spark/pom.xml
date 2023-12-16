@@ -20,14 +20,13 @@ SPDX-License-Identifier: Apache-2.0
     <version>2.4.0-spark-3.3-SNAPSHOT</version>
 
     <properties>
-        <scala.version>2.12.10</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
         <scalatest.version>3.2.14</scalatest.version>
         <kafka.client.version>3.3.1</kafka.client.version>
         <schema.registry.version>7.3.1</schema.registry.version>
         <avro.version>1.11.0</avro.version>
         <mysql.version>8.0.30</mysql.version>
         <jackson.yaml.version>2.12.7</jackson.yaml.version>
+        <gluten.version>1.1.0</gluten.version>
         <local.scope>provided</local.scope>
         <test.fork.count>2</test.fork.count>
     </properties>
@@ -275,6 +274,51 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
         </dependency>
 
+        <!-- for test only. we don't rely on gluten during package and runtime -->
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>backends-velox</artifactId>
+            <version>${gluten.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+            </exclusions>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-core</artifactId>
+            <version>${gluten.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.glutenproject</groupId>
+                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
+                </exclusion>
+            </exclusions>
+            <classifier>tests</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.glutenproject</groupId>
+            <artifactId>gluten-data</artifactId>
+            <version>${gluten.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- currently this jar is missing on maven repo -->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>spark-sql-columnar-shims-spark33</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>test</scope>-->
+<!--        </dependency>-->
     </dependencies>
 
     <profiles>
@@ -454,19 +498,19 @@ SPDX-License-Identifier: Apache-2.0
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.flatbuf</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.flatbuf</shadedPattern>
+                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.flatbuf</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.memory</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.memory</shadedPattern>
+                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.memory</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.util</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.util</shadedPattern>
+                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.util</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.arrow.vector</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow.vector</shadedPattern>
+                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.vector</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.google.protobuf</pattern>

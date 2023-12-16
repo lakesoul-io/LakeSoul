@@ -9,8 +9,8 @@ import com.dmetasoul.lakesoul.meta.DBUtil
 import org.apache.arrow.vector.{ValueVector, VectorSchemaRoot}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.permission.{FsAction, FsPermission}
-import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.fs.s3a.S3AFileSystem
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hdfs.DistributedFileSystem
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.parquet.hadoop.ParquetInputFormat
@@ -46,12 +46,12 @@ object NativeIOUtils{
       .toArray
   }
 
-  private def asArrowColumnVector(vector: ValueVector): org.apache.spark.sql.arrow.ArrowColumnVector = {
-    new org.apache.spark.sql.arrow.ArrowColumnVector(vector)
+  private def asArrowColumnVector(vector: ValueVector): ColumnVector = {
+    GlutenUtils.createArrowColumnVector(vector)
   }
 
   private def asColumnVector(vector: ValueVector): ColumnVector = {
-    asArrowColumnVector(vector).asInstanceOf[ColumnVector]
+    asArrowColumnVector(vector)
   }
 
   def getNativeIOOptions(taskAttemptContext: TaskAttemptContext, file: Path): NativeIOOptions = {
