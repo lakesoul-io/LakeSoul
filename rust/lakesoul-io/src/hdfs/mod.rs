@@ -11,7 +11,7 @@ use bytes::Bytes;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
-use futures::TryStreamExt;
+// use futures::TryStreamExt;
 use hdrs::Client;
 use object_store::path::Path;
 use object_store::Error::Generic;
@@ -24,7 +24,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
-use tokio_util::io::ReaderStream;
+// use tokio_util::io::ReaderStream;
 
 pub struct Hdfs {
     client: Arc<Client>,
@@ -141,24 +141,27 @@ impl ObjectStore for Hdfs {
         }
     }
 
-    async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
-        let path = add_leading_slash(location);
-        let async_file = self
-            .client
-            .open_file()
-            .read(true)
-            .async_open(path.as_str())
-            .await
-            .map_err(|e| Generic {
-                store: "hdfs",
-                source: Box::new(e),
-            })?;
-        let reader_stream = ReaderStream::new(async_file.compat());
-        Ok(GetResult::Stream(Box::pin(reader_stream.map_err(|e| Generic {
-            store: "hdfs",
-            source: Box::new(e),
-        }))))
-    }
+    // async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
+    //     let path = add_leading_slash(location);
+    //     let async_file = self
+    //         .client
+    //         .open_file()
+    //         .read(true)
+    //         .async_open(path.as_str())
+    //         .await
+    //         .map_err(|e| Generic {
+    //             store: "hdfs",
+    //             source: Box::new(e),
+    //         })?;
+    //     let reader_stream = ReaderStream::new(async_file.compat());
+    //     Ok(GetResult{
+    //         payload: GetResultPayload::Stream(Box::pin(reader_stream.map_err(|e| Generic {
+    //             store: "hdfs",
+    //             source: Box::new(e),
+    //             }))),
+    //         meta: 
+    //     })
+    // }
 
     async fn get_opts(&self, location: &Path, _options: GetOptions) -> object_store::Result<GetResult> {
         self.get(location).await

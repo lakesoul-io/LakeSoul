@@ -3,33 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod insert_tests {
-    use std::ops::Deref;
-    use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::SystemTime;
 
-    use lakesoul_io::arrow::array::*;
-    use lakesoul_io::arrow::datatypes::{Int32Type, i256};
-    use lakesoul_io::arrow::util::pretty::print_batches;
-    use lakesoul_io::datafusion::dataframe;
-    use lakesoul_io::datafusion::logical_expr::{LogicalPlan, DmlStatement, LogicalPlanBuilder};
-    use lakesoul_io::datafusion::prelude::DataFrame;
-    use lakesoul_io::datasource::parquet_source::LakeSoulParquetProvider;
+    use arrow::array::*;
+    use arrow::datatypes::{Int32Type, i256};
     use lakesoul_io::filter::parser::Parser;
-    use lakesoul_io::lakesoul_reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-    use lakesoul_io::{arrow, datafusion, tokio};
     use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfigBuilder, create_session_context};
     use datafusion::assert_batches_eq;
-    use tokio::runtime::{Runtime, Builder};
     use arrow::{record_batch::RecordBatch, 
         array::{Int32Array, ArrayRef}, 
         datatypes::{SchemaRef, Schema, Field, DataType}
     };
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
-    use crate::catalog::lakesoul_source::LakeSoulSourceProvider;
+    use crate::lakesoul_table::LakeSoulTable;
     use crate::{error::Result, catalog::{create_table, create_io_config_builder}};
-    use crate::catalog::lakesoul_sink::LakeSoulSinkProvider;
 
     async fn init_table(client: MetaDataClientRef, schema: SchemaRef, table_name: &str) -> Result<()> {
         let builder = LakeSoulIOConfigBuilder::new()
@@ -47,35 +35,9 @@ mod insert_tests {
     }
 
 
-    async fn do_insert(client: MetaDataClientRef, record_batch: RecordBatch, table_name: &str) -> Result<()> {
-        let builder = create_io_config_builder(client, None).await?;
-        let sess_ctx = create_session_context(&mut builder.clone().build())?;
-        
-        let provider = LakeSoulSinkProvider::new(table_name).await?;
-        sess_ctx.register_table(table_name, Arc::new(provider)).unwrap();
-
-        let num_rows = record_batch.num_rows();
-        let schema = record_batch.schema();
-        let logical_plan = LogicalPlanBuilder::insert_into(
-            sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(), 
-            table_name.to_string(), 
-            &schema.deref())?
-            .build()?;
-        let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
-        
-        let results = dataframe
-            // .explain(true, false)?
-            .collect()
-            .await?;
-
-        assert_batches_eq!(&[
-            "+-----------+",
-            "| row_count |",
-            "+-----------+",
-            format!("| {:<10}|", num_rows).as_str(),
-            "+-----------+",
-            ], &results);
-        Ok(())
+    async fn do_insert(record_batch: RecordBatch, table_name: &str) -> Result<()> {
+        let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
+        lakesoul_table.execute_upsert(record_batch).await
     }
 
     async fn check_insert(
@@ -85,11 +47,12 @@ mod insert_tests {
         filters: Option<String>, 
         expected: &[&str]
     ) -> Result<()> {
-        let builder = create_io_config_builder(client, None).await?;
+        let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
+
+        let builder = create_io_config_builder(client, None, false).await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
         
-        let provider = LakeSoulSourceProvider::new(table_name).await?;
-        let dataframe = sess_ctx.read_table(Arc::new(provider))?;
+        let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
         let schema = SchemaRef::new(dataframe.schema().into());
 
         let dataframe = if let Some(f) = filters {
@@ -133,9 +96,8 @@ mod insert_tests {
             table_name,
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
-            table_name,).await?;
+            table_name).await?;
         check_insert(
             client.clone(),
             table_name,
@@ -163,7 +125,6 @@ mod insert_tests {
             table_name,
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
             table_name,).await?;
         check_insert(
@@ -194,7 +155,6 @@ mod insert_tests {
             vec!["id"]
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
             table_name,).await?;
         check_insert(
@@ -224,9 +184,8 @@ mod insert_tests {
             table_name,
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
-            table_name,).await?;
+            table_name).await?;
         check_insert(
             client.clone(),
             table_name,
@@ -254,9 +213,8 @@ mod insert_tests {
             vec!["id"]
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
-            table_name,).await?;
+            table_name).await?;
         check_insert(
             client.clone(),
             table_name,
@@ -285,12 +243,10 @@ mod insert_tests {
             table_name,
         ).await?;
         do_insert(
-            client.clone(),
             record_batch,
             table_name,).await?;
         // todo: should do_insert_overwrite 
         do_insert(
-            client.clone(),
             create_batch_i32(vec!["id", "data"], vec![&[4, 5, 6], &[4, 5, 6]]),
             table_name,).await?;
         check_insert(
@@ -320,10 +276,10 @@ mod insert_tests {
             table_name,
         ).await?;
         match do_insert(
-            client.clone(),
             record_batch,
             table_name).await {
                 Err(e) => {
+                    dbg!(&e);
                     Ok(())
                 }
                 Ok(()) => Err(crate::error::LakeSoulError::Internal("InsertInto should fail when missing columns".to_string()))
@@ -344,10 +300,10 @@ mod insert_tests {
             table_name,
         ).await?;
         match do_insert(
-            client.clone(),
             record_batch,
             table_name).await {
                 Err(e) => {
+                    dbg!(&e);
                     Ok(())
                 }
                 Ok(()) => Err(crate::error::LakeSoulError::Internal("InsertInto should fails when an extra column is present but can evolve schema".to_string()))
@@ -472,7 +428,7 @@ mod insert_tests {
             record_batch.schema(),
             table_name, 
         ).await?;
-        do_insert(client.clone(), record_batch, table_name).await?;
+        do_insert(record_batch, table_name).await?;
         check_insert(client.clone(), table_name, vec![], None, &[
             "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------+-----------------------------------------------------------------------------+----------------------------------------------------------------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
             "| Boolean | Binary | Date32     | Date64              | Decimal128    | Decimal256   | FixedSizeBinary | FixedSizeList | Float32 | Float64 | Int8 | Int16 | Int32 | Int64 | Map                | Null | LargeBinary | LargeString | List      | String | Struct            | Time32Millisecond                                                           | Time32Second                                                           | Time64Microsecond                                                           | Time64Nanosecond                                                           | TimestampMicrosecond       | TimestampMillisecond    | TimestampNanosecond           | TimestampSecond     | UInt8 | UInt16 | UInt32 | UInt64 |",

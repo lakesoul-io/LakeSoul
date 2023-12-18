@@ -8,7 +8,8 @@ use lakesoul_metadata::MetaDataClient;
 
 mod insert_tests;
 mod upsert_tests;
-// mod update_tests;
+// mod compaction_tests;
+// mod streaming_tests;
 
 #[ctor::ctor]
 fn init()  {

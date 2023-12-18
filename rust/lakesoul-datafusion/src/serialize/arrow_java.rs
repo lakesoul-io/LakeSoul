@@ -4,8 +4,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use lakesoul_io::arrow::datatypes::{FieldRef, Field, Fields, DataType, TimeUnit, SchemaRef, Schema};
-use lakesoul_io::serde_json;
+use arrow::datatypes::{FieldRef, Field, Fields, DataType, TimeUnit, SchemaRef, Schema};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "name")]

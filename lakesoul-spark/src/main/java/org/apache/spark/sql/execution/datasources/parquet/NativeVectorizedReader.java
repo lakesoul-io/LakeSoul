@@ -25,10 +25,7 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.vectorized.ColumnVector;
-import org.apache.spark.sql.vectorized.ColumnarBatch;
-import org.apache.spark.sql.vectorized.NativeIOOptions;
-import org.apache.spark.sql.vectorized.NativeIOUtils;
+import org.apache.spark.sql.vectorized.*;
 
 import java.io.IOException;
 import java.time.ZoneId;
@@ -175,6 +172,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
 
     @Override
     public void close() throws IOException {
+        closeCurrentBatch();
         if (columnarBatch != null) {
             columnarBatch.close();
             columnarBatch = null;
@@ -229,6 +227,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     private void recreateNativeReader() throws IOException {
         close();
         NativeIOReader reader = new NativeIOReader();
+        GlutenUtils.setArrowAllocator(reader);
         for (String path : filePathList) {
             reader.addFile(path);
         }

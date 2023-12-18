@@ -18,7 +18,7 @@ use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
-use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, DisplayAs, DisplayFormatType};
 use datafusion::prelude::SessionContext;
 use datafusion_common::DataFusionError;
 use datafusion_common::DataFusionError::Internal;
@@ -130,6 +130,12 @@ impl Debug for ReceiverStreamExec {
     }
 }
 
+impl DisplayAs for ReceiverStreamExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "ReceiverStreamExec")
+    }
+}
+
 impl ExecutionPlan for ReceiverStreamExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -160,9 +166,6 @@ impl ExecutionPlan for ReceiverStreamExec {
         Ok(builder.build())
     }
 
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
-    }
 }
 
 impl MultiPartAsyncWriter {
