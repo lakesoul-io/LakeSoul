@@ -3,7 +3,7 @@ package org.apache.flink.lakesoul.tool;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 
-public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions{
+public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
 
     public static final ConfigOption<String> TARGET_DB_URL = ConfigOptions
             .key("target_db.url")
@@ -65,9 +65,14 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions{
             .defaultValue(1)
             .withDescription("parallelism settings for out-of-the-lake");
 
-    public static final ConfigOption<Boolean> BATHC_STREAM_SINK =ConfigOptions
+    public static final ConfigOption<Boolean> BATHC_STREAM_SINK = ConfigOptions
             .key("use_batch")
             .booleanType()
             .defaultValue(true)
             .withDescription("batch or stream for out-of-lake");
+
+    public static final ConfigOption<String> DORIS_FENODES = ConfigOptions
+            .key("doris.fenodes")
+            .stringType()
+            .defaultValue("127.0.0.1:8030");
 }

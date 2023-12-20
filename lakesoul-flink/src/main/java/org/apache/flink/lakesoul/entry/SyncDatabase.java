@@ -18,10 +18,7 @@ import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
@@ -40,8 +37,9 @@ public class SyncDatabase {
         String password = parameter.get(TARGET_DB_PASSWORD.key());
         int sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
         boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
-        int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
+        //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
 
+        String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
@@ -50,10 +48,13 @@ public class SyncDatabase {
         switch (targeSyncName) {
             case "mysql":
                 xsyncToMysql(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
+                break;
             case "postgres":
                 xsyncToPg(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
+                break;
             case "doris":
-                xsyncToDoris(env, true, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, replicationNum);
+                xsyncToDoris(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, fenodes);
+                break;
             default:
                 throw new RuntimeException("not supported the database: " + targeSyncName);
         }
@@ -170,6 +171,40 @@ public class SyncDatabase {
         return jsonObject.getString("hashPartitions");
     }
 
+    public static String getColumns(String[] fieldNames, DataType[] fieldTypes, String pk) {
+        String[] names = new String[fieldNames.length];
+        StringBuilder columns = new StringBuilder();
+        for (int i = 0; i < fieldNames.length; i++) {
+            if (fieldTypes[i].getLogicalType() instanceof VarCharType && pk.contains(fieldNames[i])) {
+                names[i] = "CAST(" + fieldNames[i] + " AS CHAR(85)) " + fieldNames[i];
+            } else {
+                names[i] = fieldNames[i];
+            }
+            columns.append(names[i]);
+            if (i < fieldNames.length - 1) {
+                columns.append(", ");
+            }
+        }
+        return columns.toString();
+    }
+
+    public static String tableFields(Connection conn, String tableName) throws SQLException {
+        DatabaseMetaData databaseMetaData = conn.getMetaData();
+        ResultSet specificResultSet = databaseMetaData.getColumns(null, "%", tableName, "%");
+        String columnName2;
+        String columnType2;
+        StringBuilder createSql = new StringBuilder();
+        while (specificResultSet.next()) {
+            columnName2 = specificResultSet.getString("COLUMN_NAME");
+            columnType2 = specificResultSet.getString("TYPE_NAME");
+            createSql.append(columnName2).append(" ").append(columnType2);
+            if (!specificResultSet.isLast()) {
+                createSql.append(",");
+            }
+        }
+        return createSql.toString();
+    }
+
     public static void xsyncToPg(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
         if (bathXync) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
@@ -183,6 +218,8 @@ public class SyncDatabase {
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         tEnvs.useCatalog("lakeSoul");
         tEnvs.useDatabase(sourceDatabase);
+        String jdbcUrl = url + targetDatabase;
+        Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
 
         TableResult schemaResult = tEnvs.executeSql(
                 "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
@@ -193,10 +230,7 @@ public class SyncDatabase {
         String[] stringFieldsTypes = getPgFieldsTypes(fieldTypes, fieldNames, tablePk);
 
         String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
-        String newUrl = url + targetDatabase;
-        Connection conn = DriverManager.getConnection(newUrl, username, password);
         Statement statement = conn.createStatement();
-
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
         String createCatalog = "create catalog postgres_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
@@ -253,7 +287,7 @@ public class SyncDatabase {
         conn.close();
     }
 
-    public static void xsyncToDoris(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName, int replicationNum) throws SQLException {
+    public static void xsyncToDoris(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName, String fenodes) throws SQLException {
         if (batchXync) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
@@ -264,32 +298,14 @@ public class SyncDatabase {
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        tEnvs.useCatalog("lakeSoul");
-        tEnvs.useDatabase(sourceDatabase);
+        String jdbcUrl = url + targetDatabase;
+        Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        String sql = String.format(
+                "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s')",
+                targetTableName, tableFields(conn, targetTableName), "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
+        tEnvs.executeSql(sql);
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul." + sourceDatabase + "." + sourceTableName);
 
-        TableResult schemaResult = tEnvs.executeSql(
-                "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
-
-        String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
-        DataType[] fieldTypes = schemaResult.getTableSchema().getFieldDataTypes();
-        String tablePk = getTablePk(sourceDatabase, sourceTableName);
-        String[] stringFieldsTypes = getDorisFieldTypes(fieldTypes, fieldNames, tablePk);
-
-        String createTableSql = dorisCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk, replicationNum);
-        String newUrl = url + targetDatabase;
-        Connection conn = DriverManager.getConnection(newUrl, username, password);
-        Statement statement = conn.createStatement();
-
-        // Create the target table in Doris
-        statement.executeUpdate(createTableSql);
-        String createCatalog = "create catalog doris_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
-                "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
-        // Move data from LakeSoul to Doris
-        tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO doris_catalog." + targetDatabase + "." + targetTableName +
-                " SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
-        tEnvs.executeSql(insertQuery);
-        statement.close();
         conn.close();
     }
 }
