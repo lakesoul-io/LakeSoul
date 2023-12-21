@@ -98,9 +98,6 @@ public class LakeSoulPartitionReader implements PartitionReader<LakeSoulPartitio
         if (lakesoulArrowReader == null) return null;
 
         currentVSR = lakesoulArrowReader.nextResultVectorSchemaRoot();
-        if (this.currentVSR == null) {
-            throw new IOException("nextVectorSchemaRoot not ready");
-        }
         curRecordId = 0;
         return ArrowUtils.createArrowReader(currentVSR, this.schema);
     }

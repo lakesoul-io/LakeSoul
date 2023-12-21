@@ -37,7 +37,7 @@ object GlutenUtils {
 
   def setArrowAllocator(io: NativeIOBase): Unit = {
     if (isGlutenEnabled) {
-      io.setExternalAllocator(getGlutenAllocator)
+      io.setExternalAllocator(getGlutenAllocator.newChildAllocator("gluten", 32 * 1024 * 1024, Long.MaxValue))
     }
   }
 

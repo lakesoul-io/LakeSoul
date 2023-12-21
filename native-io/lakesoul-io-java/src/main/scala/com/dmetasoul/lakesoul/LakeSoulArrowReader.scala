@@ -18,86 +18,45 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
   var ex: Option[Throwable] = None
 
-  def next(): Option[VectorSchemaRoot] = iterator.next()
+  def next(): VectorSchemaRoot = iterator.next()
 
   def hasNext: Boolean = {
-    val result = iterator.hasNext
-    result
+    iterator.hasNext
   }
 
   def nextResultVectorSchemaRoot(): VectorSchemaRoot = {
-    val result = next()
-    result match {
-      case Some(vsr) =>
-        vsr
-      case _ =>
-        null
-    }
+    next()
   }
 
   val iterator = new BatchIterator
 
-  class BatchIterator extends Iterator[Option[VectorSchemaRoot]] {
-    private var vsr: Option[VectorSchemaRoot] = _
+  class BatchIterator extends Iterator[VectorSchemaRoot] {
     var finished = false
+    val provider = new CDataDictionaryProvider
+    val root: VectorSchemaRoot = VectorSchemaRoot.create(reader.getSchema, reader.getAllocator)
 
     override def hasNext: Boolean = {
       if (!finished) {
-        clean()
-        val p = Promise[Option[Int]]()
-        val consumerSchema = ArrowSchema.allocateNew(reader.getAllocator)
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
-        val provider = new CDataDictionaryProvider
-        reader.nextBatch((rowCount, err) => {
-          if (rowCount > 0) {
-            p.success(Some(rowCount))
-          } else {
-            if (err == null) {
-              p.success(None)
-              finish()
-            } else {
-              p.failure(new IOException(err))
-            }
-          }
-        }, consumerSchema.memoryAddress, consumerArray.memoryAddress)
+        val rowCount = reader.nextBatchBlocked(consumerArray.memoryAddress());
         try {
-          Await.result(p.future, timeout milli) match {
-            case Some(rowCount) =>
-              val root: VectorSchemaRoot = {
-                Data.importVectorSchemaRoot(reader.getAllocator, consumerArray, consumerSchema, provider)
-              }
-              root.setRowCount(rowCount)
-              vsr = Some(root)
-              true
-            case _ =>
-              vsr = None
-              false
+          if (rowCount > 0) {
+            Data.importIntoVectorSchemaRoot(reader.getAllocator, consumerArray, root, provider)
+            root.setRowCount(rowCount)
+            true
+          } else {
+            false
           }
-        } catch {
-          case e: java.util.concurrent.TimeoutException =>
-            ex = Some(e)
-            println("[ERROR][org.apache.arrow.lakesoul.io.read.LakeSoulArrowReader] native reader fetching timeout," +
-              "please try a larger number with LakeSoulSQLConf.NATIVE_IO_READER_AWAIT_TIMEOUT")
-            throw e
-          case e: Throwable =>
-            ex = Some(e)
-            throw e
         } finally {
-          provider.close()
           consumerArray.close()
-          consumerSchema.close()
         }
       } else {
-        clean()
         false
       }
     }
 
-    override def next(): Option[VectorSchemaRoot] = {
-      if (ex.isDefined) {
-        throw ex.get
-      }
-      vsr
+    override def next(): VectorSchemaRoot = {
+      root
     }
 
     private def finish(): Unit = {
@@ -105,21 +64,11 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
         finished = true
       }
     }
-
-    def clean(): Unit = {
-      if (vsr != null) {
-        vsr match {
-          case Some(root) =>
-            root.close()
-            vsr = None
-          case _ =>
-        }
-      }
-    }
   }
 
   override def close(): Unit = {
-    iterator.clean()
+    iterator.root.close()
+    iterator.provider.close()
     reader.close()
   }
 }
