@@ -69,6 +69,7 @@ public class JnrLoader {
                 // so disable them
                 System.setProperty("arrow.enable_unsafe_memory_access", "true");
                 System.setProperty("arrow.enable_null_check_for_get", "false");
+                System.setProperty("arrow.allocation.manager.type", "Netty");
             }
         }
 

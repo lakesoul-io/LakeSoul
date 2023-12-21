@@ -6,6 +6,7 @@ package com.dmetasoul.lakesoul.lakesoul.io;
 
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import jnr.ffi.Pointer;
+import jnr.ffi.byref.IntByReference;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -17,7 +18,6 @@ import java.util.function.BiConsumer;
 
 public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     private Pointer reader = null;
-
 
     private Schema readerSchema = null;
 
@@ -122,5 +122,14 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             throw new RuntimeException(p.getString(0));
         }
         libLakeSoulIO.next_record_batch(reader, schemaAddr, arrayAddr, nativeIntegerCallback);
+    }
+
+    public int nextBatchBlocked(long arrayAddr) throws IOException {
+        IntByReference count = new IntByReference();
+        String err = libLakeSoulIO.next_record_batch_blocked(reader, arrayAddr, count);
+        if (err != null) {
+            throw new IOException(err);
+        }
+        return count.getValue();
     }
 }

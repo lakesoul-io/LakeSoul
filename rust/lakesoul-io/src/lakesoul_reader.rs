@@ -66,7 +66,7 @@ impl LakeSoulReader {
                 self.config.batch_size,
             )
             .await?;
-            self.schema = Some(schema.clone());
+            self.schema = Some(stream.schema());
             self.stream = Some(stream);
 
             Ok(())

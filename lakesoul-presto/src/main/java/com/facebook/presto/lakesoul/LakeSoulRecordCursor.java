@@ -109,7 +109,6 @@ public class LakeSoulRecordCursor implements RecordCursor {
             curRecordIdx = -1;
         } else {
             close();
-            return;
         }
     }
 

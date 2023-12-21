@@ -334,19 +334,15 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         closeCurrentBatch();
         if (nativeReader.hasNext()) {
             VectorSchemaRoot nextVectorSchemaRoot = nativeReader.nextResultVectorSchemaRoot();
-            if (nextVectorSchemaRoot == null) {
-                throw new IOException("nextVectorSchemaRoot not ready");
-            } else {
-                int rowCount = nextVectorSchemaRoot.getRowCount();
-                if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
-                    if (partitionColumnVectors == null) {
-                        throw new IOException("NativeVectorizedReader has not been initialized");
-                    }
-                    columnarBatch = new ColumnarBatch(partitionColumnVectors, rowCount);
-                } else {
-                    nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
-                    columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
+            int rowCount = nextVectorSchemaRoot.getRowCount();
+            if (nextVectorSchemaRoot.getSchema().getFields().isEmpty()) {
+                if (partitionColumnVectors == null) {
+                    throw new IOException("NativeVectorizedReader has not been initialized");
                 }
+                columnarBatch = new ColumnarBatch(partitionColumnVectors, rowCount);
+            } else {
+                nativeColumnVector = NativeIOUtils.asArrayColumnVector(nextVectorSchemaRoot);
+                columnarBatch = new ColumnarBatch(nativeColumnVector, rowCount);
             }
             return true;
         } else {
@@ -355,7 +351,6 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
     }
 
     private void initializeInternal() throws IOException, UnsupportedOperationException {
-        recreateNativeReader();
         initBatch();
     }
 

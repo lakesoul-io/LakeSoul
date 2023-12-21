@@ -38,15 +38,12 @@ public class NativeIOBase implements AutoCloseable {
 
     protected CDataDictionaryProvider provider;
 
-    protected boolean hasExternalAllocator;
-
     public static boolean isNativeIOLibExist() {
         return JnrLoader.get() != null;
     }
 
     public NativeIOBase(String allocatorName) {
-        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 0, Long.MAX_VALUE);
-        this.hasExternalAllocator = false;
+        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator(allocatorName, 32 * 1024 * 1024, Long.MAX_VALUE);
         this.provider = new CDataDictionaryProvider();
 
         libLakeSoulIO = JnrLoader.get();
@@ -55,13 +52,12 @@ public class NativeIOBase implements AutoCloseable {
         intReferenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
-        setBatchSize(8192);
+        setBatchSize(10240);
         setThreadNum(2);
     }
 
     public void setExternalAllocator(BufferAllocator allocator) {
         this.allocator = allocator;
-        this.hasExternalAllocator = true;
     }
 
     public void addFile(String file) {
@@ -139,8 +135,7 @@ public class NativeIOBase implements AutoCloseable {
             provider = null;
         }
         if (allocator != null) {
-            if (!hasExternalAllocator)
-                allocator.close();
+            allocator.close();
             allocator = null;
         }
     }
