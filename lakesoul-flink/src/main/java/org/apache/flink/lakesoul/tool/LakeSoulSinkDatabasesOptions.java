@@ -34,8 +34,8 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("source database access password");
 
-    public static final ConfigOption<String> TARGET_DATABASE = ConfigOptions
-            .key("target_db.db_sync")
+    public static final ConfigOption<String> TARGET_DATABASE_TYPE = ConfigOptions
+            .key("target_db.db_type")
             .stringType()
             .noDefaultValue()
             .withDescription("mysql,postgres,doris");
@@ -47,13 +47,13 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .withDescription("target ddatabase name");
 
     public static final ConfigOption<String> SOURCE_DB_LAKESOUL_TABLE = ConfigOptions
-            .key("source_db.table")
+            .key("source_db.table_name")
             .stringType()
             .noDefaultValue()
             .withDescription("lakesoul table");
 
     public static final ConfigOption<String> TARGET_DB_TABLE_NAME = ConfigOptions
-            .key("target_db.table")
+            .key("target_db.table_name")
             .stringType()
             .noDefaultValue()
             .withDescription("target database table");
