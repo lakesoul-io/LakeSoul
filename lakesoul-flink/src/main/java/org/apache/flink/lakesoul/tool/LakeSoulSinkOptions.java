@@ -147,7 +147,11 @@ public class LakeSoulSinkOptions {
             .stringType()
             .defaultValue("")
             .withDescription("list tables of a schema");
-
+    public static final ConfigOption<String> SOURCE_DB_SLOT_NAME = ConfigOptions
+            .key("source_db.slot_name")
+            .stringType()
+            .defaultValue("flink")
+            .withDescription("source db slot name");
     public static final ConfigOption<Integer> SOURCE_DB_SPLIT_SIZE = ConfigOptions
             .key("source_db.splitSize")
             .intType()
