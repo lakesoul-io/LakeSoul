@@ -4,7 +4,6 @@
 
 
 package org.apache.flink.lakesoul.tool;
-
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 
