@@ -63,19 +63,19 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-table-common</artifactId>
             <version>${flink.version}</version>
-<!--            <scope>${local.scope}</scope>-->
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-core</artifactId>
             <version>${flink.version}</version>
-<!--            <scope>${local.scope}</scope>-->
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java</artifactId>
             <version>${flink.version}</version>
-<!--            <scope>${local.scope}</scope>-->
+            <scope>${local.scope}</scope>
             <exclusions>
                 <exclusion>
                     <groupId>org.scala-lang</groupId>
@@ -126,19 +126,19 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
+<!--            <scope>${local.scope}</scope>-->
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
+<!--            <scope>${local.scope}</scope>-->
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
-            <scope>${local.scope}</scope>
+<!--            <scope>${local.scope}</scope>-->
         </dependency>
 
 <!--        <dependency>-->
