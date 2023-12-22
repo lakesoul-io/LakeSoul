@@ -23,7 +23,7 @@ SPDX-License-Identifier: Apache-2.0
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
-        <cdc.version>2.4.2</cdc.version>
+        <cdc.version>3.0.0</cdc.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -122,6 +122,7 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
+
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>

@@ -4,11 +4,13 @@
 package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
+import com.ververica.cdc.connectors.base.options.StartupOptions;
 import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
 //import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 //import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
+import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
@@ -46,10 +48,8 @@ public class JdbcCDC {
     private static int port;
     private static int splitSize;
     private static String slotName;
-
     private static String[] schemaList;
     private static String[] tableList;
-
     private static String serverTimezone;
 
     public static void main(String[] args) throws Exception {
@@ -62,15 +62,15 @@ public class JdbcCDC {
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
 
         //Postgres Oracle
-        splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
-        String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
-        schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
-        tableList = new String[tables.length];
-        for (int i = 0; i < tables.length; i++) {
-            tableList[i] = tables[i].toUpperCase();
+        if (!dbType.equals("mysql")) {
+            schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
+            String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+            tableList = new String[tables.length];
+            for (int i = 0; i < tables.length; i++) {
+                tableList[i] = tables[i].toUpperCase();
+            }
+            splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
-        slotName = parameter.get(SOURCE_DB_SLOT_NAME.key(),SOURCE_DB_SLOT_NAME.defaultValue());
-
         //flink
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
         serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
@@ -78,7 +78,6 @@ public class JdbcCDC {
         int bucketParallelism = parameter.getInt(BUCKET_PARALLELISM.key());
         int checkpointInterval = parameter.getInt(JOB_CHECKPOINT_INTERVAL.key(),
                 JOB_CHECKPOINT_INTERVAL.defaultValue());//mill second
-
 
         Configuration conf = new Configuration();
         // parameters for mutil tables ddl sink
@@ -127,7 +126,11 @@ public class JdbcCDC {
             mysqlCdc(lakeSoulRecordConvert, conf, env);
         }
         if (dbType.equalsIgnoreCase("postgres")) {
+            slotName = parameter.get(SOURCE_DB_SLOT_NAME.key(), SOURCE_DB_SLOT_NAME.defaultValue());
             postgresCdc(lakeSoulRecordConvert, conf, env);
+        }
+        if (dbType.equalsIgnoreCase("oracle")) {
+            oracleCdc(lakeSoulRecordConvert, conf, env);
         }
 
     }
@@ -139,7 +142,7 @@ public class JdbcCDC {
                 .databaseList(dbName) // set captured database
                 .tableList(dbName + ".*") // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                .scanNewlyAddedTableEnabled(true)
+                //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
                 .password(passWord);
         sourceBuilder.deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert,
@@ -157,6 +160,7 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("MySQL Source");
+        source.print();
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
@@ -165,7 +169,7 @@ public class JdbcCDC {
     }
 
     private static void postgresCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env) throws Exception {
-        JdbcIncrementalSource<BinarySourceRecord> pgSource =  PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
+        JdbcIncrementalSource<BinarySourceRecord> pgSource = PostgresSourceBuilder.PostgresIncrementalSource.<BinarySourceRecord>builder()
                 .hostname(host)
                 .schemaList(schemaList)
                 .tableList(tableList)
@@ -173,8 +177,9 @@ public class JdbcCDC {
                 .port(port)
                 .username(userName)
                 .password(passWord)
+                .decodingPluginName("pgoutput")
                 .splitSize(splitSize)
-                .slotName(slotName)
+                //.slotName(slotName)
                 .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
                 .build();
 
@@ -185,10 +190,45 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(pgSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
+        source.print();
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);
     }
 
+    private static void oracleCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env) throws Exception {
+
+        Properties debeziumProperties = new Properties();
+        debeziumProperties.setProperty("log.mining.strategy", "online_catalog");
+        debeziumProperties.setProperty("log.mining.continuous.mine", "true");
+        JdbcIncrementalSource<BinarySourceRecord> oracleChangeEventSource =
+                new OracleSourceBuilder()
+                        .hostname(host)
+                        .schemaList(schemaList)
+                        .tableList(tableList)
+                        .databaseList(dbName)
+                        .port(port)
+                        .username(userName)
+                        .password(passWord)
+                        .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
+                        .includeSchemaChanges(true) // output the schema changes as well
+                        .startupOptions(StartupOptions.initial())
+                        .debeziumProperties(debeziumProperties)
+                        .splitSize(splitSize)
+                        .build();
+
+        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        context.env = env;
+        context.conf = conf;
+        LakeSoulMultiTableSinkStreamBuilder
+                builder =
+                new LakeSoulMultiTableSinkStreamBuilder(oracleChangeEventSource, context, lakeSoulRecordConvert);
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
+        source.print();
+
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
+        DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);
+    }
 }
