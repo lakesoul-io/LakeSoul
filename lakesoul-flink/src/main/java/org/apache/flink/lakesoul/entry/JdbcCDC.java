@@ -60,7 +60,6 @@ public class JdbcCDC {
         passWord = parameter.get(SOURCE_DB_PASSWORD.key());
         host = parameter.get(SOURCE_DB_HOST.key());
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
-
         //Postgres Oracle
         if (!dbType.equals("mysql")) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
