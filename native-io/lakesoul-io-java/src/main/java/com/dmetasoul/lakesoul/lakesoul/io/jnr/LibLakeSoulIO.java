@@ -9,6 +9,8 @@ import jnr.ffi.Pointer;
 import jnr.ffi.Runtime;
 import jnr.ffi.annotations.Delegate;
 import jnr.ffi.annotations.LongLong;
+import jnr.ffi.annotations.Out;
+import jnr.ffi.byref.IntByReference;
 
 public interface LibLakeSoulIO {
 
@@ -78,6 +80,8 @@ public interface LibLakeSoulIO {
     void start_reader(Pointer reader, BooleanCallback callback);
 
     void next_record_batch(Pointer reader, @LongLong long schemaAddr, @LongLong long arrayAddr, IntegerCallback callback);
+
+    String next_record_batch_blocked(Pointer reader, @LongLong long arrayAddr, @Out IntByReference count);
 
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
