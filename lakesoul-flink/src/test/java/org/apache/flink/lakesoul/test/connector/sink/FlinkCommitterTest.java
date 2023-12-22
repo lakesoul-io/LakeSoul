@@ -29,7 +29,6 @@ import static org.apache.flink.streaming.runtime.operators.sink.TestSink.END_OF_
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 
-
 public class FlinkCommitterTest {
     static final List<Integer> SOURCE_DATA =
             Arrays.asList(
