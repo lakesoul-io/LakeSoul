@@ -141,11 +141,6 @@ SPDX-License-Identifier: Apache-2.0
 <!--            <scope>${local.scope}</scope>-->
         </dependency>
 
-<!--        <dependency>-->
-<!--            <groupId>com.ververica</groupId>-->
-<!--            <artifactId>flink-sql-connector-mongodb-cdc</artifactId>-->
-<!--            <version>2.3.0</version>-->
-<!--        </dependency>-->
         <dependency>
             <groupId>org.apache.doris</groupId>
             <artifactId>flink-doris-connector-1.17</artifactId>
