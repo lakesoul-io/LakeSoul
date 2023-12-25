@@ -158,6 +158,13 @@ public class LakeSoulSinkOptions {
             .defaultValue(1024)
             .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
 
+    //for pg
+    public static final ConfigOption<String> PLUGIN_NAME = ConfigOptions
+            .key("pluginName")
+            .stringType()
+            .defaultValue("decoderbufs")
+            .withDescription("The name of the Postgres logical decoding plug-in installed on the server.");
+
 }
 
 

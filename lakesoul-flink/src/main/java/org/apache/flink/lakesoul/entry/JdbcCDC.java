@@ -51,6 +51,7 @@ public class JdbcCDC {
     private static String[] schemaList;
     private static String[] tableList;
     private static String serverTimezone;
+    private static String pluginName;
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -70,6 +71,7 @@ public class JdbcCDC {
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
+        pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
         //flink
         String databasePrefixPath = parameter.get(WAREHOUSE_PATH.key());
         serverTimezone = parameter.get(SERVER_TIME_ZONE.key(), SERVER_TIME_ZONE.defaultValue());
@@ -175,9 +177,9 @@ public class JdbcCDC {
                 .port(port)
                 .username(userName)
                 .password(passWord)
-                .decodingPluginName("pgoutput")
+                .decodingPluginName(pluginName)
                 .splitSize(splitSize)
-                //.slotName(slotName)
+                .slotName(slotName)
                 .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
                 .build();
 
