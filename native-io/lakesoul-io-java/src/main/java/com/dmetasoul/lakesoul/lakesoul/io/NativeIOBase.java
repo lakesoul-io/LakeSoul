@@ -105,7 +105,8 @@ public class NativeIOBase implements AutoCloseable {
 
     public void setObjectStoreOptions(String accessKey, String accessSecret,
                                       String region, String bucketName, String endpoint,
-                                      String user, String defaultFS) {
+                                      String user, String defaultFS,
+                                      boolean virtual_path_style) {
         setObjectStoreOption("fs.s3a.access.key", accessKey);
         setObjectStoreOption("fs.s3a.secret.key", accessSecret);
         setObjectStoreOption("fs.s3a.endpoint.region", region);
@@ -113,6 +114,7 @@ public class NativeIOBase implements AutoCloseable {
         setObjectStoreOption("fs.s3a.endpoint", endpoint);
         setObjectStoreOption("fs.defaultFS", defaultFS);
         setObjectStoreOption("fs.hdfs.user", user);
+        setObjectStoreOption("fs.s3a.path.style.access", String.valueOf(virtual_path_style));
     }
 
     public void setObjectStoreOption(String key, String value) {

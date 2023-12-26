@@ -19,12 +19,23 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
       val reader = new NativeIOReader()
       //    val filePath = projectDir + "/native-io/lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet"
 //      val filePath = "/data/presto-parquet/parquet/hive_data/tpch/orders/20231207_090334_00001_d3cs8_4bc28274-73fb-49eb-a3cc-389a3a4aed94.parquet"
-      val filePath = "/home/chenxu/program/data/lakesoul-test-orders/part-00000-00e25436-9e3a-483e-b0d6-74bc2f60a1bd-c000.parquet"
+//      val filePath = "/home/chenxu/program/data/lakesoul-test-orders/part-00000-00e25436-9e3a-483e-b0d6-74bc2f60a1bd-c000.parquet"
+      val filePath = "s3://lakesoul-bucket/data/test/1.parquet"
       reader.addFile(filePath)
       reader.setThreadNum(2)
       reader.setBatchSize(20480)
-      reader.setBufferSize(4)
-      reader.addFilter("eq(orderpriority,String('2-HIGH'))")
+      reader.setBufferSize(1)
+      reader.setObjectStoreOptions(
+        "LTAI5tM4NgLw6awxJ3mU2pmK",
+        "EwQju7BHmkimkOQk8m3PP0SIl4BkYO",
+        "cn-huhehaote",
+        null,
+        "https://oss-cn-huhehaote.aliyuncs.com",
+        null,
+        null,
+        false
+      )
+//      reader.addFilter("eq(orderpriority,String('2-HIGH'))")
       val schema = new Schema(Seq(
         Field.nullable("orderkey", new ArrowType.Int(64, true)),
         Field.nullable("custkey", new ArrowType.Int(64, true)),
