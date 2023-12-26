@@ -6,14 +6,13 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API 及 SQL （单表），以及 Stream API （整库多表）。目前支持的上游数据源为 MySQL（5.6-8.0）
-
+LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API 及 SQL （单表），以及 Stream API （整库多表）。目前支持的上游数据源为 MySQL(5.6-8.0)、Oracle(11、12、19、21)、Postgresql(10-14)。入湖入口统一为JdbcCdc。
 ## 主要功能特点
 
 在 Stream API 中，LakeSoul Sink 主要功能点有：
 * 支持整库千表（不同 schema）在同一个 Flink 作业中实时 CDC 同步，不同表会自动写入 LakeSoul 对应表名中
 * 对于mysql和postgresql，支持 Schema 变更(DDL)自动同步到 LakeSoul，下游读取自动兼容新旧数据（目前支持增删列以及数值类型增加精度）；
-* 对于oracle，仅支持同步指定schema不在变更的表，且不支持新表同步。
+* 对于oracle，仅支持同步schema不在变更的表(列增加，列删除都是不允许的)，且不支持新表同步。
 * mysql和postgresql支持运行过程中上游数据库中新建表自动感知，在 LakeSoul 中自动建表；
 * 支持严格一次（Exactly Once）语义，即使 Flink 作业发生 Failover，能够保证数据不丢不重；
 * 提供 Flink 命令行启动入口类，支持指定库名、表名黑名单、并行度等参数；
@@ -83,10 +82,8 @@ export LAKESOUL_PG_PASSWORD=root
 
 | 参数                     | 含义说明                         | 参数填写格式                                   |
 |--------------------------|------------------------------|------------------------------------------|
-| --source_db.exclude_tables | 不需要同步的数据表名列表，表名之间用逗号分隔，默认为空  | --source_db.exclude_tables test_1,test_2 |
 | --job.checkpoint_mode      | 数据同步方式，默认是 EXACTLY_ONCE       | --job.checkpoint_mode AT_LEAST_ONCE      |
 | --job.checkpoint_interval  | checkpoint 存储间隔，单位 ms，默认值为10分钟 | --job.checkpoint_interval 1200000        |
-| --server_time_zone=Asia/Shanghai  | MySQL 服务端时区，Flink 端默认为 "Asia/Shanghai" | 参考 [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
 
 对于mysql，需额外配置下面参数：
 
@@ -100,12 +97,12 @@ export LAKESOUL_PG_PASSWORD=root
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
     lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
-    --source_db.db_name "jdbccdc" \
+    --source_db.db_name "testDB" \
     --source_db.user "root" \
     --source.parallelism 1 \
     --source_db.db_type "mysql" \
     --source_db.password "123456" \
-    --source_db.host "172.17.0.4" \
+    --source_db.host "172.17.0.2" \
     --source_db.port 3306 \
     --sink.parallelism 1 \
     --server_time_zone=Asia/Shanghai
@@ -118,7 +115,7 @@ export LAKESOUL_PG_PASSWORD=root
 | 参数                               | 是否必须 | 含义说明                                         | 参数填写格式                                                                              |
 |----------------------------------|------|----------------------------------------------|-------------------------------------------------------------------------------------|
 | --source_db.schemaList           | 是    | Oracle数据库的schema列表                           | --source_db.schemaList schema1,schema2                                              |
-| --source_db.schema_tables        | 是    | 表名，schema.table，多个表之间使用逗号隔开                  | --source_db.schema_tables schema.table1,schema.table2                               |
+| --source_db.schema_tables        | 是    | 表名，多个表之间使用逗号隔开                  | --source_db.schema_tables schema.table1,schema.table2                               |
 | --server_time_zone=Asia/Shanghai | 否    | Oracle 服务端时区，Flink 端默认为 "Asia/Shanghai"      | 参考 [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
 | --source_db.splitSize            | 否    | 表快照的分割大小，读取表快照时捕获的表被分割为多个split。默认为1024,可适当调大 | --source_db.splitSize 10000                                                         |
 同步oracle作业实例
@@ -276,5 +273,5 @@ Oracle与LakeSoul的映射关系
 4. 源数据库中TIMESTAMP和DATETIME类型，在LakeSoul中会以UTC时区值进行存储，避免出现时区解析问题；在读的时候只需要指定时区便可按指定时区正确解析读出。所以在FLINK CDC任务启动时需要正确填写server_time_zone参数。
 5. Postgres需设置wal_level = logical
 6. Postgres为获取Update完整事件信息，需执行alter table tablename  replica identity full 
-7. oracle需要为同步的表开启增量日志：ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
-8. oracle传表的时候应避免使用schema.*的形式传入多表。
+7. Oracle需要为同步的表开启增量日志：ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+8. Oracle传表的时候应避免使用schema.*的形式传入多表。
