@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use arrow::{datatypes::Schema, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 
-use datafusion::{logical_expr::{Expr, col}, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::Partitioning, execution::context::SessionState, physical_planner::create_physical_sort_expr, common::DFSchema, error::Result, scalar::ScalarValue};
+use datafusion::scalar::ScalarValue;
 
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 use proto::proto::entity::TableInfo;

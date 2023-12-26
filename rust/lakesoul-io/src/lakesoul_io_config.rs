@@ -60,6 +60,8 @@ pub struct LakeSoulIOConfig {
     pub(crate) max_row_group_size: usize,
     #[derivative(Default(value = "1"))]
     pub(crate) prefetch_size: usize,
+    #[derivative(Default(value = "false"))]
+    pub(crate) parquet_filter_pushdown: bool,
 
     // arrow schema
     pub(crate) schema: IOSchema,
@@ -169,6 +171,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
+        self
+    }
+
+    pub fn with_parquet_filter_pushdown(mut self, enable: bool) -> Self {
+        self.config.parquet_filter_pushdown = enable;
         self
     }
 
@@ -379,7 +386,7 @@ pub fn create_session_context_with_planner(config: &mut LakeSoulIOConfig, planne
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
-    sess_conf.options_mut().execution.parquet.pushdown_filters = true;
+    sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     // sess_conf.options_mut().execution.parquet.enable_page_index = true;
 
     // limit memory for sort writer
