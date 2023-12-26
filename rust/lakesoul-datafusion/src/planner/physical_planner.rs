@@ -9,19 +9,22 @@ use arrow::datatypes::Schema;
 
 
 use datafusion::common::{DFSchema, SchemaExt};
-use datafusion::physical_planner::{PhysicalPlanner, DefaultPhysicalPlanner};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_planner::{PhysicalPlanner, DefaultPhysicalPlanner, create_physical_sort_expr};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::error::{Result, DataFusionError};
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::{Expr, LogicalPlan, Partitioning as LogicalPartitioning, Sort, Repartition};
 use datafusion::execution::context::SessionState;
 
 use async_trait::async_trait;
 
 use datafusion::logical_expr::{DmlStatement, WriteOp, LogicalPlanBuilder};
+use lakesoul_io::helpers::{create_sort_exprs, create_hash_partitioning};
+use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
 
 use crate::lakesoul_table::LakeSoulTable;
-use crate::lakesoul_table::helpers::create_sort_exprs;
 
 
 pub struct LakeSoulPhysicalPlanner {
@@ -56,9 +59,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 let lakesoul_table = LakeSoulTable::for_name(name).await.unwrap();
                 match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
-                        let builder = LogicalPlanBuilder::from(input.deref().clone());
+                        let physical_input = self.create_physical_plan(&input, session_state).await?;
                         
-                        let builder = if lakesoul_table.primary_keys().is_empty() {
+                        let physical_input = if lakesoul_table.primary_keys().is_empty() {
                             if !lakesoul_table
                                 .schema()
                                 .logically_equivalent_names_and_types(&Schema::from(input.schema().as_ref()))
@@ -68,24 +71,28 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                     format!("Inserting query must have the same schema with the table.")
                                 ));
                             }
-
-                            builder
+                            physical_input
                         } else {
-                            let sort_exprs = create_sort_exprs(lakesoul_table.primary_keys());
-                            builder.sort(sort_exprs)?
+                            let input_schema = physical_input.schema();
+                            let input_dfschema = input.as_ref().schema();
+                            let sort_expr = create_sort_exprs(
+                                &lakesoul_table.primary_keys(), 
+                                input_dfschema, 
+                                &input_schema, 
+                                session_state
+                            )?;
+                            let hash_partitioning = create_hash_partitioning(
+                                &lakesoul_table.primary_keys(),
+                                lakesoul_table.hash_bucket_num(),
+                                input_dfschema,
+                                &input_schema,
+                                session_state,
+                            )?;
+                            let sort_exec = Arc::new(SortExec::new(sort_expr, physical_input));
+                            Arc::new(RepartitionByRangeAndHashExec::try_new(sort_exec, hash_partitioning)?)
                         };
 
-                        // let pk_exprs = provider.create_pk_exprs();
-                        // let builder = if pk_exprs.is_empty() {
-                        //     builder
-                        // } else {
-                            
-                        //     builder.repartition(Partitioning::Hash(pk_exprs, 2))?
-                        // };
-
-                        let input = builder.build()?;
-                        let input_exec = self.create_physical_plan(&input, session_state).await?;
-                        provider.insert_into(session_state, input_exec, false).await
+                        provider.insert_into(session_state, physical_input, false).await
                     } 
                     Err(e) => 
                         return Err(DataFusionError::External(Box::new(e)))

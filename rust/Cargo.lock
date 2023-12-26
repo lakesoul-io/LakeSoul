@@ -1631,6 +1631,7 @@ dependencies = [
 name = "lakesoul-io"
 version = "2.3.0"
 dependencies = [
+ "ahash",
  "arrow",
  "arrow-array",
  "arrow-buffer",
@@ -1647,7 +1648,9 @@ dependencies = [
  "futures",
  "hdrs",
  "lazy_static",
+ "log",
  "object_store",
+ "parking_lot",
  "parquet",
  "proto",
  "rand",

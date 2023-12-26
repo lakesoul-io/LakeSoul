@@ -372,8 +372,10 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
 pub fn create_session_context_with_planner(config: &mut LakeSoulIOConfig, planner: Option<Arc<dyn QueryPlanner + Send + Sync>>) -> Result<SessionContext> {
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
-        .with_parquet_pruning(true);
-        // .with_prefetch(config.prefetch_size);
+        .with_parquet_pruning(true)
+        // .with_repartition_sorts(false)
+        // .with_prefetch(config.prefetch_size)
+        ;
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'

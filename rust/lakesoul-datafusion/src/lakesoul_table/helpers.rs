@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use datafusion::logical_expr::{Expr, col};
+use arrow::{datatypes::Schema, record_batch::RecordBatch};
+
+use datafusion::{logical_expr::{Expr, col}, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::Partitioning, execution::context::SessionState, physical_planner::create_physical_sort_expr, common::DFSchema, error::Result, scalar::ScalarValue};
 
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
 use proto::proto::entity::TableInfo;
@@ -29,9 +31,9 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
 }
 
 
-pub(crate) fn create_sort_exprs(colunms: &[String]) -> Vec<Expr> {
-    colunms
-        .iter()
-        .map(|column| col(column).sort(true, true))
-        .collect()
+
+pub fn get_columnar_value(
+    batch: &RecordBatch
+) -> Vec<(String, ScalarValue)> {
+    vec![]
 }

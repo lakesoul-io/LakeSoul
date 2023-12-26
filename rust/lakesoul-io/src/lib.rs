@@ -9,6 +9,8 @@ pub mod lakesoul_writer;
 pub mod lakesoul_io_config;
 pub mod sorted_merge;
 pub mod datasource;
+pub mod repartition;
+pub mod helpers;
 mod projection;
 
 #[cfg(feature = "hdfs")]
