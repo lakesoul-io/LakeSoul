@@ -34,7 +34,7 @@ public class SyncDatabase {
 
         String sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
         String sourceTableName = parameter.get(SOURCE_DB_LAKESOUL_TABLE.key()).toLowerCase();
-        String targeSyncName = parameter.get(TARGET_DATABASE_TYPE.key());
+        String targetSyncName = parameter.get(TARGET_DATABASE_TYPE.key());
         String targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
         String targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
         String url = parameter.get(TARGET_DB_URL.key());
@@ -50,7 +50,7 @@ public class SyncDatabase {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
         env.setParallelism(sinkParallelism);
 
-        switch (targeSyncName) {
+        switch (targetSyncName) {
             case "mysql":
                 xsyncToMysql(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
                 break;
@@ -61,7 +61,7 @@ public class SyncDatabase {
                 xsyncToDoris(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, fenodes);
                 break;
             default:
-                throw new RuntimeException("not supported the database: " + targeSyncName);
+                throw new RuntimeException("not supported the database: " + targetSyncName);
         }
     }
 

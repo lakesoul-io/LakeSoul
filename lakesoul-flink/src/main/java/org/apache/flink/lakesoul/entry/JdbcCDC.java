@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
+import com.dmetasoul.lakesoul.meta.external.NameSpaceManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
+import com.dmetasoul.lakesoul.meta.external.oracle.OracleDBManager;
 import com.ververica.cdc.connectors.base.options.StartupOptions;
 import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
 //import com.ververica.cdc.connectors.mysql.source.MySqlSource;
@@ -154,6 +156,9 @@ public class JdbcCDC {
         sourceBuilder.jdbcProperties(jdbcProperties);
         MySqlSource<BinarySourceRecord> mySqlSource = sourceBuilder.build();
 
+        NameSpaceManager manager = new NameSpaceManager();
+        manager.importOrSyncLakeSoulNamespace(dbName);
+
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = conf;
@@ -183,6 +188,10 @@ public class JdbcCDC {
                 .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
                 .build();
 
+        NameSpaceManager manager = new NameSpaceManager();
+        for (String schema : schemaList) {
+            manager.importOrSyncLakeSoulNamespace(schema);
+        }
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
         context.conf = conf;
@@ -217,6 +226,11 @@ public class JdbcCDC {
                         .debeziumProperties(debeziumProperties)
                         .splitSize(splitSize)
                         .build();
+
+        NameSpaceManager manager = new NameSpaceManager();
+        for (String schema : schemaList) {
+            manager.importOrSyncLakeSoulNamespace(schema);
+        }
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
