@@ -62,14 +62,14 @@ impl LakeSoulParquetProvider {
         for i in 0..self.config.files.len() {
             let file = self.config.files[i].clone();
             let df = context.read_parquet(file, Default::default()).await.unwrap();
-            full_schema.merge(&Schema::try_from(df.schema()).unwrap().to_dfschema().unwrap());
+            full_schema.merge(&Schema::from(df.schema()).to_dfschema().unwrap());
             let plan = df.into_unoptimized_plan();
             plans.push(plan);
         }
         Ok(Self {
             config: self.config.clone(),
             plans,
-            full_schema: SchemaRef::new(Schema::try_from(full_schema).unwrap()),
+            full_schema: SchemaRef::new(Schema::from(full_schema)),
         })
     }
 

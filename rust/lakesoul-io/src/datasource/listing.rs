@@ -51,7 +51,7 @@ impl LakeSoulListingTable {
                     .map(ListingTableUrl::parse)
                     .collect::<Result<Vec<_>>>()?;
                 // Create default parquet options
-                let object_store_url = table_paths.get(0).unwrap().object_store();
+                let object_store_url = table_paths.first().unwrap().object_store();
                 let store = session_state.runtime_env().object_store(object_store_url.clone())?;
                 let target_schema = uniform_schema(lakesoul_io_config.schema());
 

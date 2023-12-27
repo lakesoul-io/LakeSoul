@@ -280,7 +280,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                     .map_err(|e| External(Box::new(e)))?;
                 let endpoint_s = endpoint_url.to_string();
                 endpoint = endpoint_s
-                    .strip_suffix("/")
+                    .strip_suffix('/')
                     .map(|s| s.to_string())
                     .or(Some(endpoint_s));
             }

@@ -833,7 +833,7 @@ pub async fn execute_insert(
 
     let result = match insert_type {
         DaoType::InsertNamespace if wrapper.namespace.len() == 1 => {
-            let namespace = wrapper.namespace.get(0).unwrap();
+            let namespace = wrapper.namespace.first().unwrap();
             let properties: serde_json::Value = serde_json::from_str(&namespace.properties)?;
             client
                 .execute(
@@ -843,7 +843,7 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::InsertTableInfo if wrapper.table_info.len() == 1 => {
-            let table_info = wrapper.table_info.get(0).unwrap();
+            let table_info = wrapper.table_info.first().unwrap();
             let properties: serde_json::Value = serde_json::from_str(&table_info.properties)?;
             client
                 .execute(
@@ -862,7 +862,7 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::InsertTableNameId if wrapper.table_name_id.len() == 1 => {
-            let table_name_id = wrapper.table_name_id.get(0).unwrap();
+            let table_name_id = wrapper.table_name_id.first().unwrap();
             client
                 .execute(
                     &statement,
@@ -876,7 +876,7 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::InsertTablePathId if wrapper.table_path_id.len() == 1 => {
-            let table_path_id = wrapper.table_path_id.get(0).unwrap();
+            let table_path_id = wrapper.table_path_id.first().unwrap();
             client
                 .execute(
                     &statement,
@@ -890,7 +890,7 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::InsertPartitionInfo if wrapper.partition_info.len() == 1 => {
-            let partition_info = wrapper.partition_info.get(0).unwrap();
+            let partition_info = wrapper.partition_info.first().unwrap();
             let snapshot = partition_info
                 .snapshot
                 .iter()
@@ -912,7 +912,7 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::InsertDataCommitInfo if wrapper.data_commit_info.len() == 1 => {
-            let data_commit_info = wrapper.data_commit_info.get(0).unwrap();
+            let data_commit_info = wrapper.data_commit_info.first().unwrap();
             let file_ops = data_commit_info
                 .file_ops
                 .iter()
