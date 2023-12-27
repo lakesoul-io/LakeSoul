@@ -5,17 +5,16 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::datatypes::{SchemaRef, Schema};
+use arrow::datatypes::{Schema, SchemaRef};
 
 use async_trait::async_trait;
+use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::TableType};
-use datafusion::execution::context::SessionState;
 use datafusion_common::Result;
 
 use super::physical_plan::EmptySchemaScanExec;
-
 
 #[derive(Clone, Debug)]
 pub struct EmptySchemaProvider {

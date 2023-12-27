@@ -2,20 +2,39 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::Arc, any::Any, pin::Pin, task::{Context, Poll}};
+use std::{
+    any::Any,
+    collections::HashMap,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use arrow_schema::SchemaRef;
-use datafusion::{physical_plan::{common::{AbortOnDropMany, AbortOnDropSingle, transpose}, PhysicalExpr, Partitioning, metrics::{ExecutionPlanMetricsSet, MetricBuilder, BaselineMetrics}, ExecutionPlan, DisplayFormatType, DisplayAs, SendableRecordBatchStream, sorts::streaming_merge::streaming_merge, RecordBatchStream}, execution::{memory_pool::{MemoryReservation, MemoryConsumer}, TaskContext}, physical_expr::PhysicalSortExpr};
-use datafusion_common::{DataFusionError, Result, hash_utils::create_hashes};
 use datafusion::physical_plan::metrics;
+use datafusion::{
+    execution::{
+        memory_pool::{MemoryConsumer, MemoryReservation},
+        TaskContext,
+    },
+    physical_expr::PhysicalSortExpr,
+    physical_plan::{
+        common::{transpose, AbortOnDropMany, AbortOnDropSingle},
+        metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder},
+        sorts::streaming_merge::streaming_merge,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, RecordBatchStream,
+        SendableRecordBatchStream,
+    },
+};
+use datafusion_common::{hash_utils::create_hashes, DataFusionError, Result};
 
-use arrow_array::{RecordBatch, builder::UInt64Builder, ArrayRef};
-use futures::{Stream, StreamExt, FutureExt};
+use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
+use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
 use crate::repartition::distributor_channels::partition_aware_channels;
 
-use self::distributor_channels::{DistributionSender, DistributionReceiver};
+use self::distributor_channels::{DistributionReceiver, DistributionSender};
 
 use log::trace;
 use parking_lot::Mutex;
@@ -28,7 +47,6 @@ type InputPartitionsToCurrentPartitionReceiver = Vec<DistributionReceiver<MaybeB
 
 /// [`MemoryReservation`] used across query execution streams
 pub(crate) type SharedMemoryReservation = Arc<Mutex<MemoryReservation>>;
-
 
 /// Inner state of [`RepartitionExec`].
 #[derive(Debug)]
@@ -77,7 +95,11 @@ impl BatchPartitioner {
                 random_state: ahash::RandomState::with_seeds(0, 0, 0, 0),
                 hash_buffer: vec![],
             },
-            other => return Err(DataFusionError::NotImplemented(format!("Unsupported repartitioning scheme {other:?}"))),
+            other => {
+                return Err(DataFusionError::NotImplemented(format!(
+                    "Unsupported repartitioning scheme {other:?}"
+                )))
+            }
         };
 
         Ok(Self { state, timer })
@@ -118,57 +140,51 @@ impl BatchPartitioner {
             num_partitions: partitions,
             hash_buffer,
         } = &mut self.state;
-        let it: Box<dyn Iterator<Item = Result<(usize, RecordBatch)>> + Send> =
-            {
-                let timer = self.timer.timer();
+        let it: Box<dyn Iterator<Item = Result<(usize, RecordBatch)>> + Send> = {
+            let timer = self.timer.timer();
 
-                let hash_arrays = hash_exprs
-                    .iter()
-                    .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
-                    .collect::<Result<Vec<_>>>()?;
+            let hash_arrays = hash_exprs
+                .iter()
+                .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
+                .collect::<Result<Vec<_>>>()?;
 
-                hash_buffer.clear();
-                hash_buffer.resize(batch.num_rows(), 0);
+            hash_buffer.clear();
+            hash_buffer.resize(batch.num_rows(), 0);
 
-                create_hashes(&hash_arrays, random_state, hash_buffer)?;
+            create_hashes(&hash_arrays, random_state, hash_buffer)?;
 
-                let mut indices: Vec<_> = (0..*partitions)
-                    .map(|_| UInt64Builder::with_capacity(batch.num_rows()))
-                    .collect();
+            let mut indices: Vec<_> = (0..*partitions)
+                .map(|_| UInt64Builder::with_capacity(batch.num_rows()))
+                .collect();
 
-                for (index, hash) in hash_buffer.iter().enumerate() {
-                    indices[(*hash % *partitions as u64) as usize]
-                        .append_value(index as u64);
-                }
+            for (index, hash) in hash_buffer.iter().enumerate() {
+                indices[(*hash % *partitions as u64) as usize].append_value(index as u64);
+            }
 
-                let it = indices
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(partition, mut indices)| {
-                        let indices = indices.finish();
-                        (!indices.is_empty()).then_some((partition, indices))
-                    })
-                    .map(move |(partition, indices)| {
-                        // Produce batches based on indices
-                        let columns = batch
-                            .columns()
-                            .iter()
-                            .map(|c| {
-                                arrow::compute::take(c.as_ref(), &indices, None)
-                                    .map_err(DataFusionError::ArrowError)
-                            })
-                            .collect::<Result<Vec<ArrayRef>>>()?;
+            let it = indices
+                .into_iter()
+                .enumerate()
+                .filter_map(|(partition, mut indices)| {
+                    let indices = indices.finish();
+                    (!indices.is_empty()).then_some((partition, indices))
+                })
+                .map(move |(partition, indices)| {
+                    // Produce batches based on indices
+                    let columns = batch
+                        .columns()
+                        .iter()
+                        .map(|c| arrow::compute::take(c.as_ref(), &indices, None).map_err(DataFusionError::ArrowError))
+                        .collect::<Result<Vec<ArrayRef>>>()?;
 
-                        let batch =
-                            RecordBatch::try_new(batch.schema(), columns).unwrap();
+                    let batch = RecordBatch::try_new(batch.schema(), columns).unwrap();
 
-                        // bind timer so it drops w/ this iterator
-                        let _ = &timer;
+                    // bind timer so it drops w/ this iterator
+                    let _ = &timer;
 
-                        Ok((partition, batch))
-                    });
-                Box::new(it)
-            };
+                    Ok((partition, batch))
+                });
+            Box::new(it)
+        };
 
         Ok(it)
     }
@@ -190,11 +206,7 @@ struct RepartitionMetrics {
 }
 
 impl RepartitionMetrics {
-    pub fn new(
-        output_partition: usize,
-        input_partition: usize,
-        metrics: &ExecutionPlanMetricsSet,
-    ) -> Self {
+    pub fn new(output_partition: usize, input_partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
         let label = metrics::Label::new("inputPartition", input_partition.to_string());
 
         // Time in nanos to execute child operator and fetch batches
@@ -233,9 +245,7 @@ pub struct RepartitionByRangeAndHashExec {
 
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
-
 }
-
 
 impl RepartitionByRangeAndHashExec {
     /// Input execution plan
@@ -255,11 +265,7 @@ impl RepartitionByRangeAndHashExec {
 }
 
 impl DisplayAs for RepartitionByRangeAndHashExec {
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
@@ -271,11 +277,7 @@ impl DisplayAs for RepartitionByRangeAndHashExec {
                 )?;
 
                 if let Some(sort_exprs) = self.sort_exprs() {
-                    write!(
-                        f,
-                        ", sort_exprs={}",
-                        PhysicalSortExpr::format_list(sort_exprs)
-                    )?;
+                    write!(f, ", sort_exprs={}", PhysicalSortExpr::format_list(sort_exprs))?;
                 }
                 Ok(())
             }
@@ -283,15 +285,11 @@ impl DisplayAs for RepartitionByRangeAndHashExec {
     }
 }
 
-
 impl RepartitionByRangeAndHashExec {
     /// Create a new RepartitionExec, that produces output `partitioning`, and
     /// does not preserve the order of the input (see [`Self::with_preserve_order`]
     /// for more details)
-    pub fn try_new(
-        input: Arc<dyn ExecutionPlan>,
-        hash_partitioning: Partitioning,
-    ) -> Result<Self> {
+    pub fn try_new(input: Arc<dyn ExecutionPlan>, hash_partitioning: Partitioning) -> Result<Self> {
         Ok(Self {
             input,
             hash_partitioning,
@@ -315,16 +313,12 @@ impl RepartitionByRangeAndHashExec {
     async fn pull_from_input(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
-        mut output_channels: HashMap<
-            usize,
-            (DistributionSender<MaybeBatch>, SharedMemoryReservation),
-        >,
+        mut output_channels: HashMap<usize, (DistributionSender<MaybeBatch>, SharedMemoryReservation)>,
         partitioning: Partitioning,
         metrics: RepartitionMetrics,
         context: Arc<TaskContext>,
     ) -> Result<()> {
-        let mut partitioner =
-            BatchPartitioner::try_new(partitioning, metrics.repartition_time.clone())?;
+        let mut partitioner = BatchPartitioner::try_new(partitioning, metrics.repartition_time.clone())?;
 
         // execute the child operator
         let timer = metrics.fetch_time.timer();
@@ -450,13 +444,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         vec![self.input.clone()]
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        mut children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         let repartition =
             RepartitionByRangeAndHashExec::try_new(children.swap_remove(0), self.hash_partitioning.clone())?;
-        
+
         Ok(Arc::new(repartition))
     }
 
@@ -484,16 +475,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         vec![self.input().output_partitioning().partition_count() <= 1]
     }
 
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        trace!(
-            "Start {}::execute for partition: {}",
-            self.name(),
-            partition
-        );
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        trace!("Start {}::execute for partition: {}", self.name(), partition);
         // lock mutexes
         let mut state = self.state.lock();
 
@@ -502,30 +485,28 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
 
         // if this is the first partition to be invoked then we need to set up initial state
         if state.channels.is_empty() {
-            let (txs, rxs) =  {
-                let (txs, rxs) =
-                    partition_aware_channels(num_input_partitions, num_output_partitions);
+            let (txs, rxs) = {
+                let (txs, rxs) = partition_aware_channels(num_input_partitions, num_output_partitions);
                 // Take transpose of senders and receivers. `state.channels` keeps track of entries per output partition
                 let txs = transpose(txs);
                 let rxs = transpose(rxs);
                 (txs, rxs)
-            // } else {
-            //     // create one channel per *output* partition
-            //     // note we use a custom channel that ensures there is always data for each receiver
-            //     // but limits the amount of buffering if required.
-            //     let (txs, rxs) = channels(num_output_partitions);
-            //     // Clone sender for each input partitions
-            //     let txs = txs
-            //         .into_iter()
-            //         .map(|item| vec![item; num_input_partitions])
-            //         .collect::<Vec<_>>();
-            //     let rxs = rxs.into_iter().map(|item| vec![item]).collect::<Vec<_>>();
-            //     (txs, rxs)
+                // } else {
+                //     // create one channel per *output* partition
+                //     // note we use a custom channel that ensures there is always data for each receiver
+                //     // but limits the amount of buffering if required.
+                //     let (txs, rxs) = channels(num_output_partitions);
+                //     // Clone sender for each input partitions
+                //     let txs = txs
+                //         .into_iter()
+                //         .map(|item| vec![item; num_input_partitions])
+                //         .collect::<Vec<_>>();
+                //     let rxs = rxs.into_iter().map(|item| vec![item]).collect::<Vec<_>>();
+                //     (txs, rxs)
             };
             for (partition, (tx, rx)) in txs.into_iter().zip(rxs).enumerate() {
                 let reservation = Arc::new(Mutex::new(
-                    MemoryConsumer::new(format!("{}[{partition}]", self.name()))
-                        .register(context.memory_pool()),
+                    MemoryConsumer::new(format!("{}[{partition}]", self.name())).register(context.memory_pool()),
                 ));
                 state.channels.insert(partition, (tx, rx, reservation));
             }
@@ -536,22 +517,19 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                 let txs: HashMap<_, _> = state
                     .channels
                     .iter()
-                    .map(|(partition, (tx, _rx, reservation))| {
-                        (*partition, (tx[i].clone(), Arc::clone(reservation)))
-                    })
+                    .map(|(partition, (tx, _rx, reservation))| (*partition, (tx[i].clone(), Arc::clone(reservation))))
                     .collect();
 
                 let r_metrics = RepartitionMetrics::new(i, partition, &self.metrics);
 
-                let input_task: JoinHandle<Result<()>> =
-                    tokio::spawn(Self::pull_from_input(
-                        self.input.clone(),
-                        i,
-                        txs.clone(),
-                        self.hash_partitioning().clone(),
-                        r_metrics,
-                        context.clone(),
-                    ));
+                let input_task: JoinHandle<Result<()>> = tokio::spawn(Self::pull_from_input(
+                    self.input.clone(),
+                    i,
+                    txs.clone(),
+                    self.hash_partitioning().clone(),
+                    r_metrics,
+                    context.clone(),
+                ));
 
                 // In a separate task, wait for each input to be done
                 // (and pass along any errors, including panic!s)
@@ -573,12 +551,9 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             partition
         );
 
-                // now return stream for the specified *output* partition which will
+        // now return stream for the specified *output* partition which will
         // read from the channel
-        let (_tx, rx, reservation) = state
-            .channels
-            .remove(&partition)
-            .expect("partition not used yet");
+        let (_tx, rx, reservation) = state.channels.remove(&partition).expect("partition not used yet");
 
         // Store streams from all the input partitions:
         let input_streams = rx
@@ -601,8 +576,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         // input partitions to this partition:
         let fetch = None;
         let merge_reservation =
-            MemoryConsumer::new(format!("{}[Merge {partition}]", self.name()))
-                .register(context.memory_pool());
+            MemoryConsumer::new(format!("{}[Merge {partition}]", self.name())).register(context.memory_pool());
         streaming_merge(
             input_streams,
             self.schema(),
@@ -612,9 +586,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             fetch,
             merge_reservation,
         )
-        
     }
-
 }
 
 /// This struct converts a receiver to a stream.
@@ -637,16 +609,11 @@ struct PerPartitionStream {
 impl Stream for PerPartitionStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.receiver.recv().poll_unpin(cx) {
             Poll::Ready(Some(Some(v))) => {
                 if let Ok(batch) = &v {
-                    self.reservation
-                        .lock()
-                        .shrink(batch.get_array_memory_size());
+                    self.reservation.lock().shrink(batch.get_array_memory_size());
                 }
                 Poll::Ready(Some(v))
             }

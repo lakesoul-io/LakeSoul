@@ -671,7 +671,6 @@ mod tests {
             Field::new("c", DataType::Int32, true),
         ]);
 
-
         let merge_stream = SortedStreamMerger::new_from_streams(
             vec![s1, s2, s3],
             Arc::new(schema),

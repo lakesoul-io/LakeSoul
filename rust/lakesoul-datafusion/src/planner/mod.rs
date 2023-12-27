@@ -2,5 +2,5 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-pub mod query_planner;
 mod physical_planner;
+pub mod query_planner;

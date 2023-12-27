@@ -2,11 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{error::Error, sync::Arc, result, fmt::Display};
+use std::{error::Error, fmt::Display, result, sync::Arc};
 
-use lakesoul_io::lakesoul_reader::{DataFusionError, ArrowError};
+use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
-
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]
 pub type Result<T, E = LakeSoulError> = result::Result<T, E>;
@@ -58,8 +57,11 @@ impl Display for LakeSoulError {
             LakeSoulError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"),
             LakeSoulError::ArrowError(ref desc) => write!(f, "arrow error: {desc}"),
             LakeSoulError::Internal(ref desc) => {
-                write!(f, "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
-                    code and we would welcome that you file an bug report in our issue tracker")
+                write!(
+                    f,
+                    "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
+                    code and we would welcome that you file an bug report in our issue tracker"
+                )
             }
         }
     }

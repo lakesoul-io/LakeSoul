@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-pub use merge::MergeParquetExec;
 pub use empty_schema::EmptySchemaScanExec;
+pub use merge::MergeParquetExec;
 
-mod merge;
 mod empty_schema;
+mod merge;
