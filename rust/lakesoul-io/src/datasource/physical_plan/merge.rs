@@ -2,12 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{any::Any, collections::HashMap};
 use std::sync::Arc;
+use std::{any::Any, collections::HashMap};
 
-use arrow_schema::{SchemaRef, Field, Schema};
-use datafusion::{physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream, PhysicalExpr}, physical_expr::PhysicalSortExpr, execution::TaskContext, datasource::physical_plan::{FileScanConfig, ParquetExec}};
-use datafusion_common::{Result, DataFusionError};
+use arrow_schema::{Field, Schema, SchemaRef};
+use datafusion::{
+    datasource::physical_plan::{FileScanConfig, ParquetExec},
+    execution::TaskContext,
+    physical_expr::PhysicalSortExpr,
+    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
+};
+use datafusion_common::{DataFusionError, Result};
 
 use crate::datasource::parquet_source::merge_stream;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -19,7 +24,7 @@ pub struct MergeParquetExec {
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
     config: FileScanConfig,
-    inputs: Vec<Arc<dyn ExecutionPlan>>
+    inputs: Vec<Arc<dyn ExecutionPlan>>,
 }
 
 impl MergeParquetExec {
@@ -61,8 +66,8 @@ impl MergeParquetExec {
         let primary_keys = Arc::new(io_config.primary_keys);
         let default_column_value = Arc::new(io_config.default_column_value);
         let merge_operators = Arc::new(io_config.merge_operators);
-        
-        Self { 
+
+        Self {
             schema,
             inputs,
             config,
@@ -113,26 +118,21 @@ impl ExecutionPlan for MergeParquetExec {
     }
 
     fn with_new_children(self: Arc<Self>, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(
-            Self {
-                schema: self.schema(),
-                inputs,
-                primary_keys: self.primary_keys(),
-                default_column_value: self.default_column_value(),
-                merge_operators: self.merge_operators(),
-                config: self.config.clone(),
-            }
-        ))
+        Ok(Arc::new(Self {
+            schema: self.schema(),
+            inputs,
+            primary_keys: self.primary_keys(),
+            default_column_value: self.default_column_value(),
+            merge_operators: self.merge_operators(),
+            config: self.config.clone(),
+        }))
     }
 
-    fn execute(&self, 
-        partition: usize, 
-        context: Arc<TaskContext>
-    ) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
-            return Err(DataFusionError::Internal(
-                format!("Invalid requested partition {partition}. InsertExec requires a single input partition."
-                )));
+            return Err(DataFusionError::Internal(format!(
+                "Invalid requested partition {partition}. InsertExec requires a single input partition."
+            )));
         }
 
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
@@ -159,8 +159,5 @@ impl ExecutionPlan for MergeParquetExec {
         )?;
 
         Ok(merged_stream)
-        
     }
-
 }
-

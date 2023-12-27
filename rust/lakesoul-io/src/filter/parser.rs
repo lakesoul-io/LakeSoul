@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::Not;
 use arrow_schema::{DataType, Field, SchemaRef};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
- 
+use std::ops::Not;
+
 pub struct Parser {}
 
 impl Parser {

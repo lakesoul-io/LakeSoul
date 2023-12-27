@@ -18,7 +18,7 @@ use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
-use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, DisplayAs, DisplayFormatType};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream};
 use datafusion_common::DataFusionError;
 use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
@@ -86,10 +86,7 @@ struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
 impl Write for InMemBuf {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut v = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(AddrInUse))?;
+        let mut v = self.0.try_borrow_mut().map_err(|_| std::io::Error::from(AddrInUse))?;
         v.extend(buf);
         Ok(buf.len())
     }
@@ -101,10 +98,7 @@ impl Write for InMemBuf {
 
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut v = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| std::io::Error::from(AddrInUse))?;
+        let mut v = self.0.try_borrow_mut().map_err(|_| std::io::Error::from(AddrInUse))?;
         v.extend(buf);
         Ok(())
     }
@@ -165,11 +159,10 @@ impl ExecutionPlan for ReceiverStreamExec {
         let builder = self.receiver_stream_builder.borrow_mut().take().unwrap();
         Ok(builder.build())
     }
-
 }
 
 impl MultiPartAsyncWriter {
-    pub async fn try_new_with_context(config:&mut LakeSoulIOConfig, task_context: Arc<TaskContext>) -> Result<Self> {
+    pub async fn try_new_with_context(config: &mut LakeSoulIOConfig, task_context: Arc<TaskContext>) -> Result<Self> {
         if config.files.is_empty() {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
@@ -215,7 +208,7 @@ impl MultiPartAsyncWriter {
             _config: config.clone(),
             object_store,
             path,
-            num_rows: 0
+            num_rows: 0,
         })
     }
 
@@ -261,7 +254,6 @@ impl MultiPartAsyncWriter {
     pub fn task_ctx(&self) -> Arc<TaskContext> {
         self.task_context.clone()
     }
-
 }
 
 #[async_trait]
@@ -501,11 +493,11 @@ mod tests {
     };
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
+    use arrow_array::Array;
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs::File;
     use std::sync::Arc;
-    use arrow_array::Array;
     use tokio::runtime::Builder;
 
     #[test]

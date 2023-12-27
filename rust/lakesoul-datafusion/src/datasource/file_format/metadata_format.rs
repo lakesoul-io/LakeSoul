@@ -1,32 +1,40 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
-use std::any::Any;
 
-use arrow::array::{UInt64Array, ArrayRef};
+use arrow::array::{ArrayRef, UInt64Array};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
-use arrow::datatypes::{SchemaRef, Schema, Field, DataType};
-use datafusion::common::{Statistics, FileType};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::common::{FileType, Statistics};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::common::AbortOnDropSingle;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, SendableRecordBatchStream, Partitioning, Distribution};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
-use datafusion::{datasource::{file_format::{parquet::ParquetFormat, FileFormat}, physical_plan::{FileSinkConfig, FileScanConfig}}, physical_plan::{ExecutionPlan, PhysicalExpr}, execution::context::SessionState, physical_expr::PhysicalSortRequirement, error::Result};
-use lakesoul_io::lakesoul_writer::{MultiPartAsyncWriter, AsyncBatchWriter};
-use lakesoul_metadata::{MetaDataClientRef, MetaDataClient};
-use object_store::{ObjectStore, ObjectMeta};
+use datafusion::{
+    datasource::{
+        file_format::{parquet::ParquetFormat, FileFormat},
+        physical_plan::{FileScanConfig, FileSinkConfig},
+    },
+    error::Result,
+    execution::context::SessionState,
+    physical_expr::PhysicalSortRequirement,
+    physical_plan::{ExecutionPlan, PhysicalExpr},
+};
+use futures::StreamExt;
+use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
+use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
 use rand::distributions::DistString;
-use futures::StreamExt;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-
 
 use crate::catalog::commit_data;
 use crate::lakesoul_table::helpers::{create_io_config_builder_from_table_info, get_columnar_value};
@@ -34,20 +42,23 @@ use crate::lakesoul_table::helpers::{create_io_config_builder_from_table_info, g
 pub struct LakeSoulMetaDataParquetFormat {
     parquet_format: Arc<ParquetFormat>,
     client: MetaDataClientRef,
-    table_info: Arc<TableInfo>
+    table_info: Arc<TableInfo>,
 }
 
 impl Debug for LakeSoulMetaDataParquetFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LakeSoulMetaDataParquetFormat")
-            .finish()
+        f.debug_struct("LakeSoulMetaDataParquetFormat").finish()
     }
 }
 
 impl LakeSoulMetaDataParquetFormat {
     pub async fn new(parquet_format: Arc<ParquetFormat>, table_info: Arc<TableInfo>) -> crate::error::Result<Self> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        Ok(Self { parquet_format, client, table_info })
+        Ok(Self {
+            parquet_format,
+            client,
+            table_info,
+        })
     }
 
     fn client(&self) -> MetaDataClientRef {
@@ -61,7 +72,7 @@ impl LakeSoulMetaDataParquetFormat {
 
 #[async_trait]
 impl FileFormat for LakeSoulMetaDataParquetFormat {
-    fn as_any(&self) ->  &dyn Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
@@ -81,7 +92,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         table_schema: SchemaRef,
         object: &ObjectMeta,
     ) -> Result<Statistics> {
-        self.parquet_format.infer_stats(state, store, table_schema, object).await
+        self.parquet_format
+            .infer_stats(state, store, table_schema, object)
+            .await
     }
 
     async fn create_physical_plan(
@@ -101,23 +114,21 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         order_requirements: Option<Vec<PhysicalSortRequirement>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if conf.overwrite {
-            return Err(DataFusionError::NotImplemented("Overwrites are not implemented yet for Parquet".to_string()));
+            return Err(DataFusionError::NotImplemented(
+                "Overwrites are not implemented yet for Parquet".to_string(),
+            ));
         }
 
-        Ok(Arc::new(LakeSoulHashSinkExec::new(
-            input,
-            order_requirements,
-            self.table_info(),
-            self.client()
-        ).await?) as _)
+        Ok(
+            Arc::new(LakeSoulHashSinkExec::new(input, order_requirements, self.table_info(), self.client()).await?)
+                as _,
+        )
     }
 
     fn file_type(&self) -> FileType {
         FileType::PARQUET
     }
-
 }
-
 
 // /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
 // ///
@@ -125,15 +136,15 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
 pub struct LakeSoulHashSinkExec {
     /// Input plan that produces the record batches to be written.
     input: Arc<dyn ExecutionPlan>,
-    
+
     /// Schema describing the structure of the output data.
     count_schema: SchemaRef,
     /// Optional required sort order for output data.
     sort_order: Option<Vec<PhysicalSortRequirement>>,
 
-    table_info: Arc<TableInfo>, 
+    table_info: Arc<TableInfo>,
 
-    metadata_client: MetaDataClientRef, 
+    metadata_client: MetaDataClientRef,
 }
 
 impl fmt::Debug for LakeSoulHashSinkExec {
@@ -155,7 +166,7 @@ impl LakeSoulHashSinkExec {
             count_schema: make_count_schema(),
             sort_order,
             table_info,
-            metadata_client
+            metadata_client,
         })
     }
 
@@ -183,7 +194,7 @@ impl LakeSoulHashSinkExec {
         context: Arc<TaskContext>,
         table_info: Arc<TableInfo>,
         write_id: String,
-        partitioned_file_path_and_row_count : Arc<Mutex<HashMap<Vec<(String, ScalarValue)>, (Vec<String>, u64)>>>
+        partitioned_file_path_and_row_count: Arc<Mutex<HashMap<Vec<(String, ScalarValue)>, (Vec<String>, u64)>>>,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
 
@@ -201,17 +212,21 @@ impl LakeSoulHashSinkExec {
                     .with_schema(batch.schema())
                     .build();
 
-                let writer = 
-                    MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
+                let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                 partitioned_writer.insert(columnar_value.clone(), Box::new(writer));
             }
-            
+
             if let Some(async_writer) = partitioned_writer.get_mut(&columnar_value) {
-                if let Some(file_path_and_row_count) = partitioned_file_path_and_row_count_locked.get_mut(&columnar_value) {
+                if let Some(file_path_and_row_count) =
+                    partitioned_file_path_and_row_count_locked.get_mut(&columnar_value)
+                {
                     file_path_and_row_count.0.push(file_absolute_path);
                     file_path_and_row_count.1 += batch.num_rows() as u64;
                 } else {
-                    partitioned_file_path_and_row_count_locked.insert(columnar_value.clone(), (vec![file_absolute_path], batch.num_rows() as u64));
+                    partitioned_file_path_and_row_count_locked.insert(
+                        columnar_value.clone(),
+                        (vec![file_absolute_path], batch.num_rows() as u64),
+                    );
                 }
                 row_count += batch.num_rows();
                 async_writer.write_record_batch(batch).await?;
@@ -227,21 +242,20 @@ impl LakeSoulHashSinkExec {
     }
 
     async fn wait_for_commit(
-        join_handles: Vec<JoinHandle<Result<u64>>>, 
+        join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
         table_name: String,
-        partitioned_file_path_and_row_count : Arc<Mutex<HashMap<Vec<(String, ScalarValue)>, (Vec<String>, u64)>>>
+        partitioned_file_path_and_row_count: Arc<Mutex<HashMap<Vec<(String, ScalarValue)>, (Vec<String>, u64)>>>,
     ) -> Result<u64> {
-        let count = futures::future::join_all(join_handles)
-            .await
-            .iter()
-            .try_fold(0u64, |counter, result| {
-                match &result {
+        let count =
+            futures::future::join_all(join_handles)
+                .await
+                .iter()
+                .try_fold(0u64, |counter, result| match &result {
                     Ok(Ok(count)) => Ok(counter + count),
                     Ok(Err(e)) => Err(DataFusionError::Execution(format!("{}", e))),
-                    Err(e) =>  Err(DataFusionError::Execution(format!("{}", e))),
-                }
-            })?;
+                    Err(e) => Err(DataFusionError::Execution(format!("{}", e))),
+                })?;
         let partitioned_file_path_and_row_count = partitioned_file_path_and_row_count.lock().await;
 
         for (columnar_value, (files, _)) in partitioned_file_path_and_row_count.iter() {
@@ -249,19 +263,16 @@ impl LakeSoulHashSinkExec {
                 .iter()
                 .map(|(column, value)| (column.to_string(), value.to_string()))
                 .collect::<Vec<_>>();
-            commit_data(client.clone(), &table_name, partition_desc, &files).await.map_err(|e| DataFusionError::External(Box::new(e)))?;
+            commit_data(client.clone(), &table_name, partition_desc, &files)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
         }
         Ok(count)
     }
-
 }
 
 impl DisplayAs for LakeSoulHashSinkExec {
-    fn fmt_as(
-        &self,
-        _t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "LakeSoulHashSinkExec")
     }
 }
@@ -322,10 +333,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![self.input.clone()]
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             input: children[0].clone(),
             count_schema: self.count_schema.clone(),
@@ -341,74 +349,66 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
     /// Execute the plan and return a stream of `RecordBatch`es for
     /// the specified partition.
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
-            return Err(DataFusionError::NotImplemented(format!("FileSinkExec can only be called on partition 0!")));
+            return Err(DataFusionError::NotImplemented(format!(
+                "FileSinkExec can only be called on partition 0!"
+            )));
         }
         let num_input_partitions = self.input.output_partitioning().partition_count();
 
         // launch one async task per *input* partition
         let mut join_handles = vec![];
 
-        let write_id =
-            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-        let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<Vec<(String, ScalarValue)>, (Vec<String>, u64)>::new()));
+        let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<
+            Vec<(String, ScalarValue)>,
+            (Vec<String>, u64),
+        >::new()));
         for i in 0..num_input_partitions {
-            let sink_task = 
-                tokio::spawn(Self::pull_and_sink(
-                    self.input().clone(), 
-                    i, 
-                    context.clone(), 
-                    self.table_info(),
-                    write_id.clone(),
-                    partitioned_file_path_and_row_count.clone()
+            let sink_task = tokio::spawn(Self::pull_and_sink(
+                self.input().clone(),
+                i,
+                context.clone(),
+                self.table_info(),
+                write_id.clone(),
+                partitioned_file_path_and_row_count.clone(),
             ));
             // // In a separate task, wait for each input to be done
             // // (and pass along any errors, including panic!s)
             join_handles.push(sink_task);
         }
 
-        let join_handle = AbortOnDropSingle::new(
-            tokio::spawn(Self::wait_for_commit(
+        let join_handle = AbortOnDropSingle::new(tokio::spawn(Self::wait_for_commit(
             join_handles,
             self.metadata_client(),
             self.table_info().table_name.clone(),
-            partitioned_file_path_and_row_count
+            partitioned_file_path_and_row_count,
         )));
 
+        // });
 
-
-    // });
-        
         // let abort_helper = Arc::new(AbortOnDropMany(join_handles));
 
         let count_schema = self.count_schema.clone();
         // let count = futures::future::join_all(join_handles).await;
-            // for (columnar_values, result) in partitioned_file_path_and_row_count.lock().await.iter() {
-            //     match commit_data(self.metadata_client(), self.table_info().table_name.as_str(), &result.0).await {
-            //         Ok(()) => todo!(),
-            //         Err(_) => todo!(),
-            //     }
-            // }
-
+        // for (columnar_values, result) in partitioned_file_path_and_row_count.lock().await.iter() {
+        //     match commit_data(self.metadata_client(), self.table_info().table_name.as_str(), &result.0).await {
+        //         Ok(()) => todo!(),
+        //         Err(_) => todo!(),
+        //     }
+        // }
 
         let stream = futures::stream::once(async move {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_count_batch(count)),
-                other => Ok(make_count_batch(u64::MAX))
+                other => Ok(make_count_batch(u64::MAX)),
             }
         })
         .boxed();
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            count_schema,
-            stream,
-        )))
+        Ok(Box::pin(RecordBatchStreamAdapter::new(count_schema, stream)))
     }
 }
 
@@ -429,9 +429,5 @@ fn make_count_batch(count: u64) -> RecordBatch {
 
 fn make_count_schema() -> SchemaRef {
     // define a schema.
-    Arc::new(Schema::new(vec![Field::new(
-        "count",
-        DataType::UInt64,
-        false,
-    )]))
+    Arc::new(Schema::new(vec![Field::new("count", DataType::UInt64, false)]))
 }

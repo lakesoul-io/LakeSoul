@@ -208,7 +208,7 @@ impl LakeSoulParquetScanExec {
         merge_operators: Arc<HashMap<String, String>>,
         primary_keys: Arc<Vec<String>>,
     ) -> Self {
-         let target_schema_with_pks = if let Some(proj) = projections {
+        let target_schema_with_pks = if let Some(proj) = projections {
             let mut proj_with_pks = proj.clone();
             for idx in 0..primary_keys.len() {
                 let field_idx = full_schema.index_of(primary_keys[idx].as_str()).unwrap();
@@ -220,7 +220,7 @@ impl LakeSoulParquetScanExec {
         } else {
             full_schema.clone()
         };
-        
+
         Self {
             projections: projections.unwrap().clone(),
             origin_schema: full_schema.clone(),
@@ -290,11 +290,8 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
                 .projections
                 .iter()
                 .map(|&idx| {
-                    datafusion::physical_expr::expressions::col(
-                        self.origin_schema().field(idx).name(),
-                        &self.schema(),
-                    )
-                    .unwrap()
+                    datafusion::physical_expr::expressions::col(self.origin_schema().field(idx).name(), &self.schema())
+                        .unwrap()
                 })
                 .collect::<Vec<_>>(),
             schema: self.target_schema.clone(),
@@ -303,7 +300,6 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
 
         Ok(Box::pin(result))
     }
-
 }
 
 pub fn merge_stream(
@@ -364,7 +360,10 @@ pub fn merge_stream(
 }
 
 fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef, primary_keys: &[String]) -> Vec<Expr> {
-    let mut exprs = primary_keys.iter().map(|pk| Column(datafusion::common::Column::new_unqualified(pk))).collect::<Vec<_>>();
+    let mut exprs = primary_keys
+        .iter()
+        .map(|pk| Column(datafusion::common::Column::new_unqualified(pk)))
+        .collect::<Vec<_>>();
     for field in request_schema.fields() {
         if primary_keys.contains(field.name()) {
             continue;
