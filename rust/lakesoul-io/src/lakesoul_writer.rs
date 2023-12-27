@@ -19,7 +19,6 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning, SendableRecordBatchStream, DisplayAs, DisplayFormatType};
-use datafusion::prelude::SessionContext;
 use datafusion_common::DataFusionError;
 use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
@@ -61,7 +60,7 @@ pub trait AsyncBatchWriter {
 /// all parts will be committed to cloud storage by shutdown the `AsyncWrite` object.
 pub struct MultiPartAsyncWriter {
     in_mem_buf: InMemBuf,
-    sess_ctx: SessionContext,
+    task_context: Arc<TaskContext>,
     schema: SchemaRef,
     writer: Box<dyn AsyncWrite + Unpin + Send>,
     multi_part_id: MultipartId,
@@ -69,6 +68,7 @@ pub struct MultiPartAsyncWriter {
     _config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
     path: Path,
+    num_rows: u64,
 }
 
 /// Wrap the above async writer with a SortExec to
@@ -169,18 +169,17 @@ impl ExecutionPlan for ReceiverStreamExec {
 }
 
 impl MultiPartAsyncWriter {
-    pub async fn try_new(mut config: LakeSoulIOConfig) -> Result<Self> {
+    pub async fn try_new_with_context(config:&mut LakeSoulIOConfig, task_context: Arc<TaskContext>) -> Result<Self> {
         if config.files.is_empty() {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
-        let sess_ctx = create_session_context(&mut config)?;
         let file_name = &config.files.last().unwrap();
 
         // local style path should have already been handled in create_session_context,
         // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
         let (object_store, path) = match Url::parse(file_name.as_str()) {
             Ok(url) => Ok((
-                sess_ctx
+                task_context
                     .runtime_env()
                     .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
                 Path::from(url.path()),
@@ -208,15 +207,21 @@ impl MultiPartAsyncWriter {
 
         Ok(MultiPartAsyncWriter {
             in_mem_buf,
-            sess_ctx,
+            task_context,
             schema: uniform_schema(schema),
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
-            _config: config,
+            _config: config.clone(),
             object_store,
             path,
+            num_rows: 0
         })
+    }
+
+    pub async fn try_new(mut config: LakeSoulIOConfig) -> Result<Self> {
+        let task_context = create_session_context(&mut config)?.task_ctx();
+        Self::try_new_with_context(&mut config, task_context).await
     }
 
     async fn write_batch(
@@ -244,12 +249,26 @@ impl MultiPartAsyncWriter {
         writer.write_all_buf(in_mem_buf).await?;
         Ok(())
     }
+
+    pub fn nun_rows(&self) -> u64 {
+        self.num_rows
+    }
+
+    pub fn path(&self) -> Path {
+        self.path.clone()
+    }
+
+    pub fn task_ctx(&self) -> Arc<TaskContext> {
+        self.task_context.clone()
+    }
+
 }
 
 #[async_trait]
 impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
+        self.num_rows += batch.num_rows() as u64;
         MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
     }
 
@@ -329,7 +348,7 @@ impl SortAsyncWriter {
             Arc::new(ProjectionExec::try_new(proj_expr, sort_exec)?)
         };
 
-        let mut sorted_stream = exec_plan.execute(0, async_writer.sess_ctx.task_ctx())?;
+        let mut sorted_stream = exec_plan.execute(0, async_writer.task_ctx())?;
 
         let mut async_writer = Box::new(async_writer);
         let join_handle = tokio::task::spawn(async move {
@@ -385,7 +404,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
     }
 }
 
-type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
+pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
 pub struct SyncSendableMutableLakeSoulWriter {
     inner: Arc<Mutex<SendableWriter>>,

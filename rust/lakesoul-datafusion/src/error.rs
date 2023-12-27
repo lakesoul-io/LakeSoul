@@ -22,7 +22,7 @@ pub enum LakeSoulError {
     MetaDataError(LakeSoulMetaDataError),
     DataFusionError(DataFusionError),
     ArrowError(ArrowError),
-    JsonError(json::Error),
+    SerdeJsonError(serde_json::Error),
     Internal(String),
 }
 
@@ -44,12 +44,18 @@ impl From<ArrowError> for LakeSoulError {
     }
 }
 
+impl From<serde_json::Error> for LakeSoulError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::SerdeJsonError(err)
+    }
+}
+
 impl Display for LakeSoulError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             LakeSoulError::MetaDataError(ref desc) => write!(f, "metadata error: {desc}"),
             LakeSoulError::DataFusionError(ref desc) => write!(f, "DataFusion error: {desc}"),
-            LakeSoulError::JsonError(ref desc) => write!(f, "json error: {desc}"),
+            LakeSoulError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"),
             LakeSoulError::ArrowError(ref desc) => write!(f, "arrow error: {desc}"),
             LakeSoulError::Internal(ref desc) => {
                 write!(f, "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
@@ -64,7 +70,7 @@ impl Error for LakeSoulError {
         match self {
             LakeSoulError::MetaDataError(e) => Some(e),
             LakeSoulError::DataFusionError(e) => Some(e),
-            LakeSoulError::JsonError(e) => Some(e),
+            LakeSoulError::SerdeJsonError(e) => Some(e),
             LakeSoulError::ArrowError(e) => Some(e),
             LakeSoulError::Internal(_) => None,
         }
