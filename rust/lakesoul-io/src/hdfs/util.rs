@@ -11,9 +11,9 @@ use futures::{stream::StreamExt, TryStreamExt};
 #[cfg(not(target_arch = "wasm32"))]
 /// Takes a function and spawns it to a tokio blocking pool if available
 pub async fn maybe_spawn_blocking<F, T>(f: F) -> object_store::Result<T>
-    where
-        F: FnOnce() -> object_store::Result<T> + Send + 'static,
-        T: Send + 'static,
+where
+    F: FnOnce() -> object_store::Result<T> + Send + 'static,
+    T: Send + 'static,
 {
     match tokio::runtime::Handle::try_current() {
         Ok(runtime) => runtime.spawn_blocking(f).await?,
@@ -42,9 +42,9 @@ pub async fn coalesce_ranges<F, Fut>(
     fetch: F,
     coalesce: usize,
 ) -> object_store::Result<Vec<Bytes>>
-    where
-        F: Send + FnMut(std::ops::Range<usize>) -> Fut,
-        Fut: std::future::Future<Output = object_store::Result<Bytes>> + Send,
+where
+    F: Send + FnMut(std::ops::Range<usize>) -> Fut,
+    Fut: std::future::Future<Output = object_store::Result<Bytes>> + Send,
 {
     let fetch_ranges = merge_ranges(ranges, coalesce, OBJECT_STORE_COALESCE_MAX);
 
@@ -91,10 +91,10 @@ fn merge_ranges(
 
         while end_idx != ranges.len()
             && ranges[end_idx]
-            .start
-            .checked_sub(range_end)
-            .map(|delta| delta <= coalesce)
-            .unwrap_or(true)
+                .start
+                .checked_sub(range_end)
+                .map(|delta| delta <= coalesce)
+                .unwrap_or(true)
         {
             range_end = range_end.max(ranges[end_idx].end);
             end_idx += 1;

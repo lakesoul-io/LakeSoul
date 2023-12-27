@@ -48,9 +48,7 @@ use std::{
 use parking_lot::Mutex;
 
 /// Create `n` empty channels.
-pub fn channels<T>(
-    n: usize,
-) -> (Vec<DistributionSender<T>>, Vec<DistributionReceiver<T>>) {
+pub fn channels<T>(n: usize) -> (Vec<DistributionSender<T>>, Vec<DistributionReceiver<T>>) {
     let channels = (0..n)
         .map(|id| {
             Arc::new(Mutex::new(Channel {
@@ -192,9 +190,7 @@ impl<'a, T> Future for SendFuture<'a, T> {
 
         // receiver end still alive?
         if !guard_channel.recv_alive {
-            return Poll::Ready(Err(SendError(
-                this.element.take().expect("just checked"),
-            )));
+            return Poll::Ready(Err(SendError(this.element.take().expect("just checked"))));
         }
 
         let mut guard_gate = this.gate.lock();
@@ -202,16 +198,12 @@ impl<'a, T> Future for SendFuture<'a, T> {
         // does ANY receiver need data?
         // if so, allow sender to create another
         if guard_gate.empty_channels == 0 {
-            guard_gate
-                .send_wakers
-                .push((cx.waker().clone(), guard_channel.id));
+            guard_gate.send_wakers.push((cx.waker().clone(), guard_channel.id));
             return Poll::Pending;
         }
 
         let was_empty = guard_channel.data.is_empty();
-        guard_channel
-            .data
-            .push_back(this.element.take().expect("just checked"));
+        guard_channel.data.push_back(this.element.take().expect("just checked"));
         if was_empty {
             guard_gate.empty_channels -= 1;
             guard_channel.wake_receivers();
@@ -373,10 +365,7 @@ impl Gate {
     /// This is helpful to signal that the receiver side is gone and the senders shall now error.
     fn wake_channel_senders(&mut self, id: usize) {
         // `drain_filter` is unstable, so implement our own
-        let (wake, keep) = self
-            .send_wakers
-            .drain(..)
-            .partition(|(_waker, id2)| id == *id2);
+        let (wake, keep) = self.send_wakers.drain(..).partition(|(_waker, id2)| id == *id2);
         self.send_wakers = keep;
         for (waker, _id) in wake {
             waker.wake();

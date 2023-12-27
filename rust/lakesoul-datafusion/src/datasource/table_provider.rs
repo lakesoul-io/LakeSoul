@@ -2,18 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::any::Any;
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 
 use async_trait::async_trait;
 
-use datafusion::datasource::TableProvider;
-use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::file_format::FileFormat;
+use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
-use datafusion::logical_expr::{TableType, TableProviderFilterPushDown};
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{execution::context::SessionState, logical_expr::Expr};
@@ -27,7 +27,6 @@ use crate::catalog::parse_table_info_partitions;
 use crate::serialize::arrow_java::schema_from_metadata_str;
 
 use super::file_format::LakeSoulMetaDataParquetFormat;
-
 
 /// Reads data from LakeSoul
 ///
@@ -43,7 +42,7 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 ///
 /// ```
 pub struct LakeSoulTableProvider {
-    listing_table: Arc<LakeSoulListingTable>, 
+    listing_table: Arc<LakeSoulListingTable>,
     table_info: Arc<TableInfo>,
     schema: SchemaRef,
     primary_keys: Vec<String>,
@@ -54,33 +53,36 @@ impl LakeSoulTableProvider {
         session_state: &SessionState,
         lakesoul_io_config: LakeSoulIOConfig,
         table_info: Arc<TableInfo>,
-        as_sink: bool
+        as_sink: bool,
     ) -> crate::error::Result<Self> {
         let schema = schema_from_metadata_str(&table_info.table_schema);
         let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone());
 
         let file_format: Arc<dyn FileFormat> = match as_sink {
-            true => Arc::new(LakeSoulMetaDataParquetFormat::new(
-                    Arc::new(ParquetFormat::new()),
-                    table_info.clone()
-                ).await?),
+            true => {
+                Arc::new(LakeSoulMetaDataParquetFormat::new(Arc::new(ParquetFormat::new()), table_info.clone()).await?)
+            }
             false => Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()), 
-                lakesoul_io_config.clone()))
+                Arc::new(ParquetFormat::new()),
+                lakesoul_io_config.clone(),
+            )),
         };
         Ok(Self {
-            listing_table: Arc::new(LakeSoulListingTable::new_with_config_and_format(
-                session_state, 
-                lakesoul_io_config, 
-                file_format,
-                as_sink
-            ).await?),
+            listing_table: Arc::new(
+                LakeSoulListingTable::new_with_config_and_format(
+                    session_state,
+                    lakesoul_io_config,
+                    file_format,
+                    as_sink,
+                )
+                .await?,
+            ),
             table_info,
             schema,
             primary_keys: hash_partitions,
         })
     }
-    
+
     fn primary_keys(&self) -> &[String] {
         &self.primary_keys
     }
@@ -89,7 +91,6 @@ impl LakeSoulTableProvider {
         self.table_info.clone()
     }
 }
-
 
 #[async_trait]
 impl TableProvider for LakeSoulTableProvider {
@@ -115,10 +116,7 @@ impl TableProvider for LakeSoulTableProvider {
         self.listing_table.scan(state, projection, filters, limit).await
     }
 
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> Result<Vec<TableProviderFilterPushDown>> {
+    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
         self.listing_table.supports_filters_pushdown(filters)
     }
 

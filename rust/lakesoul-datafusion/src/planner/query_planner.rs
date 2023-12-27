@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use datafusion::execution::context::{QueryPlanner, SessionState};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::error::Result;
+use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::PhysicalPlanner;
 
 use crate::planner::physical_planner::LakeSoulPhysicalPlanner;
@@ -20,7 +20,7 @@ pub struct LakeSoulQueryPlanner {}
 
 impl LakeSoulQueryPlanner {
     pub fn new_ref() -> Arc<dyn QueryPlanner + Send + Sync> {
-        Arc::new(Self{})
+        Arc::new(Self {})
     }
 }
 
@@ -33,9 +33,6 @@ impl QueryPlanner for LakeSoulQueryPlanner {
         session_state: &SessionState,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = LakeSoulPhysicalPlanner::new();
-        planner
-            .create_physical_plan(logical_plan, session_state)
-            .await
+        planner.create_physical_plan(logical_plan, session_state).await
     }
-
 }

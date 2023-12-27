@@ -159,7 +159,7 @@ impl ObjectStore for Hdfs {
     //             store: "hdfs",
     //             source: Box::new(e),
     //             }))),
-    //         meta: 
+    //         meta:
     //     })
     // }
 

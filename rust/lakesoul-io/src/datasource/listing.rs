@@ -2,22 +2,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::any::Any;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use arrow::datatypes::{SchemaRef, SchemaBuilder};
+use arrow::datatypes::{SchemaBuilder, SchemaRef};
 
 use datafusion::datasource::file_format::FileFormat;
+use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl};
 use datafusion::datasource::physical_plan::FileSinkConfig;
 use datafusion::execution::context::SessionState;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
-use datafusion::datasource::listing::{ListingTable, ListingTableUrl, ListingOptions, ListingTableConfig};
 
-use datafusion::logical_expr::{TableType, TableProviderFilterPushDown};
-use datafusion_common::{Result, FileTypeWriterOptions};
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
+use datafusion_common::{FileTypeWriterOptions, Result};
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
@@ -28,43 +28,50 @@ pub struct LakeSoulListingTable {
     lakesoul_io_config: LakeSoulIOConfig,
 }
 
-
 impl LakeSoulListingTable {
     pub fn new(listing_table: Arc<ListingTable>, lakesoul_io_config: LakeSoulIOConfig) -> Self {
-        Self { listing_table, lakesoul_io_config }
+        Self {
+            listing_table,
+            lakesoul_io_config,
+        }
     }
 
-    pub async fn new_with_config_and_format(session_state: &SessionState, lakesoul_io_config: LakeSoulIOConfig, file_format: Arc<dyn FileFormat>, as_sink: bool) -> Result<Self> {
+    pub async fn new_with_config_and_format(
+        session_state: &SessionState,
+        lakesoul_io_config: LakeSoulIOConfig,
+        file_format: Arc<dyn FileFormat>,
+        as_sink: bool,
+    ) -> Result<Self> {
         let config = match as_sink {
             false => {
                 // Parse the path
-                let table_paths = lakesoul_io_config.files.iter().map(ListingTableUrl::parse).collect::<Result<Vec<_>>>()?;
+                let table_paths = lakesoul_io_config
+                    .files
+                    .iter()
+                    .map(ListingTableUrl::parse)
+                    .collect::<Result<Vec<_>>>()?;
                 // Create default parquet options
-                let object_store_url = table_paths.get(0).unwrap().object_store();
+                let object_store_url = table_paths.first().unwrap().object_store();
                 let store = session_state.runtime_env().object_store(object_store_url.clone())?;
                 let target_schema = uniform_schema(lakesoul_io_config.schema());
-                
-                let listing_options = ListingOptions::new(file_format.clone())
-                .with_file_extension(".parquet");
+
+                let listing_options = ListingOptions::new(file_format.clone()).with_file_extension(".parquet");
                 // .with_table_partition_cols(table_partition_cols);
 
-                let mut objects = vec![]; 
+                let mut objects = vec![];
                 for url in &table_paths {
                     objects.push(store.head(url.prefix()).await?);
                 }
                 // Resolve the schema
-                let resolved_schema = file_format
-                    .infer_schema(session_state, &store, &objects)
-                    .await?;    
-                
-        
+                let resolved_schema = file_format.infer_schema(session_state, &store, &objects).await?;
+
                 let mut builder = SchemaBuilder::from(target_schema.fields());
                 for field in resolved_schema.fields() {
                     if target_schema.field_with_name(field.name()).is_err() {
                         builder.push(field.clone());
                     }
                 }
-        
+
                 ListingTableConfig::new_with_multi_paths(table_paths)
                     .with_listing_options(listing_options)
                     .with_schema(Arc::new(builder.finish()))
@@ -74,32 +81,28 @@ impl LakeSoulListingTable {
                 let table_partition_cols = lakesoul_io_config
                     .range_partitions
                     .iter()
-                    .map(|col| 
-                        Ok((
-                            col.clone(), 
-                            target_schema.field_with_name(col)?.data_type().clone()
-                        ))
-                    )
+                    .map(|col| Ok((col.clone(), target_schema.field_with_name(col)?.data_type().clone())))
                     .collect::<Result<Vec<_>>>()?;
 
                 let listing_options = ListingOptions::new(file_format.clone())
                     .with_file_extension(".parquet")
                     .with_table_partition_cols(table_partition_cols)
                     .with_insert_mode(datafusion::datasource::listing::ListingTableInsertMode::AppendNewFiles);
-                let prefix = ListingTableUrl::parse_create_local_if_not_exists(lakesoul_io_config.prefix.clone(), true)?;
-                
+                let prefix =
+                    ListingTableUrl::parse_create_local_if_not_exists(lakesoul_io_config.prefix.clone(), true)?;
+
                 ListingTableConfig::new(prefix)
                     .with_listing_options(listing_options)
                     .with_schema(target_schema)
             }
         };
-        
+
         // Create a new TableProvider
         let listing_table = Arc::new(ListingTable::try_new(config)?);
 
-        Ok(Self { 
-            listing_table, 
-            lakesoul_io_config 
+        Ok(Self {
+            listing_table,
+            lakesoul_io_config,
         })
     }
 
@@ -138,7 +141,11 @@ impl TableProvider for LakeSoulListingTable {
                 .iter()
                 .map(|f| {
                     if let Ok(cols) = f.to_columns() {
-                        if self.lakesoul_io_config.parquet_filter_pushdown && cols.iter().all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name)) {
+                        if self.lakesoul_io_config.parquet_filter_pushdown
+                            && cols
+                                .iter()
+                                .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
+                        {
                             Ok(TableProviderFilterPushDown::Inexact)
                         } else {
                             Ok(TableProviderFilterPushDown::Unsupported)
@@ -161,7 +168,7 @@ impl TableProvider for LakeSoulListingTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         self.listing_table.scan(state, projection, filters, limit).await
     }
-    
+
     async fn insert_into(
         &self,
         state: &SessionState,
@@ -223,10 +230,7 @@ impl TableProvider for LakeSoulListingTable {
 
         let file_type_writer_options = match &self.options().file_type_write_options {
             Some(opt) => opt.clone(),
-            None => FileTypeWriterOptions::build_default(
-                &file_format.file_type(),
-                state.config_options(),
-            )?,
+            None => FileTypeWriterOptions::build_default(&file_format.file_type(), state.config_options())?,
         };
 
         // Sink related option, apart from format
@@ -282,6 +286,6 @@ impl TableProvider for LakeSoulListingTable {
         self.options()
             .format
             .create_writer_physical_plan(input, state, config, order_requirements)
-            .await    
+            .await
     }
 }

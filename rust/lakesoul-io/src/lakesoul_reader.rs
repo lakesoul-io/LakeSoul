@@ -55,8 +55,17 @@ impl LakeSoulReader {
         } else {
             // let source = LakeSoulParquetProvider::from_config(self.config.clone());
             // let source = source.build_with_context(&self.sess_ctx).await.unwrap();
-            let file_format = Arc::new(LakeSoulParquetFormat::new(Arc::new(ParquetFormat::new()), self.config.clone()));
-            let source = LakeSoulListingTable::new_with_config_and_format(&self.sess_ctx.state(), self.config.clone(), file_format, false).await?;
+            let file_format = Arc::new(LakeSoulParquetFormat::new(
+                Arc::new(ParquetFormat::new()),
+                self.config.clone(),
+            ));
+            let source = LakeSoulListingTable::new_with_config_and_format(
+                &self.sess_ctx.state(),
+                self.config.clone(),
+                file_format,
+                false,
+            )
+            .await?;
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
             let stream = prune_filter_and_execute(

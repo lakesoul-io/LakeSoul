@@ -12,7 +12,7 @@ mod upsert_tests;
 // mod streaming_tests;
 
 #[ctor::ctor]
-fn init()  {
+fn init() {
     lakesoul_io::tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -2,7 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{result, sync::Arc, error::Error, io, fmt::{Display, Formatter}, num};
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+    io, num, result,
+    sync::Arc,
+};
 
 /// Result type for operations that could result in an [LakeSoulMetaDataError]
 pub type Result<T, E = LakeSoulMetaDataError> = result::Result<T, E>;
@@ -84,20 +89,22 @@ impl Display for LakeSoulMetaDataError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match *self {
             LakeSoulMetaDataError::PostgresError(ref desc) => write!(f, "postgres error: {desc}"),
-            LakeSoulMetaDataError::IoError(ref desc) => write!(f, "IO error: {desc}"), 
-            LakeSoulMetaDataError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"), 
-            LakeSoulMetaDataError::ParseIntError(ref desc) => write!(f, "parse_int error: {desc}"), 
-            LakeSoulMetaDataError::UuidError(ref desc) => write!(f, "uuid error: {desc}"), 
-            LakeSoulMetaDataError::ProstEncodeError(ref desc) => write!(f, "prost encode error: {desc}"), 
-            LakeSoulMetaDataError::ProstDecodeError(ref desc) => write!(f, "prost decode error: {desc}"), 
+            LakeSoulMetaDataError::IoError(ref desc) => write!(f, "IO error: {desc}"),
+            LakeSoulMetaDataError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"),
+            LakeSoulMetaDataError::ParseIntError(ref desc) => write!(f, "parse_int error: {desc}"),
+            LakeSoulMetaDataError::UuidError(ref desc) => write!(f, "uuid error: {desc}"),
+            LakeSoulMetaDataError::ProstEncodeError(ref desc) => write!(f, "prost encode error: {desc}"),
+            LakeSoulMetaDataError::ProstDecodeError(ref desc) => write!(f, "prost decode error: {desc}"),
             LakeSoulMetaDataError::Other(ref desc) => {
                 write!(f, "Other error: {desc}")
             }
             LakeSoulMetaDataError::Internal(ref desc) => {
-                write!(f, "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
-                    code and we would welcome that you file an bug report in our issue tracker")
+                write!(
+                    f,
+                    "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
+                    code and we would welcome that you file an bug report in our issue tracker"
+                )
             }
-
         }
     }
 }

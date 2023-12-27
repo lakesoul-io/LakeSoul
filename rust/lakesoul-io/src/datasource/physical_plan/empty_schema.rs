@@ -5,8 +5,12 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow_schema::{SchemaRef, Schema};
-use datafusion::{physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream}, physical_expr::PhysicalSortExpr, execution::TaskContext};
+use arrow_schema::{Schema, SchemaRef};
+use datafusion::{
+    execution::TaskContext,
+    physical_expr::PhysicalSortExpr,
+    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
+};
 use datafusion_common::Result;
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
@@ -63,6 +67,4 @@ impl ExecutionPlan for EmptySchemaScanExec {
             self.count,
         )))
     }
-
 }
-
