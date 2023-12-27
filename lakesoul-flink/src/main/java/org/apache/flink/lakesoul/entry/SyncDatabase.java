@@ -238,9 +238,8 @@ public class SyncDatabase {
         tEnvs.executeSql(createCatalog);
         String insertQuery = "INSERT INTO mysql_catalog.`" + targetDatabase + "`.`" + targetTableName+"`" +
                 " SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
-
         tEnvs.executeSql(insertQuery);
-        // Close connections
+
         statement.close();
         conn.close();
     }

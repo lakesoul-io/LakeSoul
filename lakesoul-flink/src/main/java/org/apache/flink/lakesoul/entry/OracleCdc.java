@@ -68,7 +68,9 @@ public class OracleCdc {
                 host,
                 Integer.toString(port));
 
-        dbManager.importOrSyncLakeSoulNamespace(dbName);
+        for (String schema : schemaList) {
+            dbManager.importOrSyncLakeSoulNamespace(schema);
+        }
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
         conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
