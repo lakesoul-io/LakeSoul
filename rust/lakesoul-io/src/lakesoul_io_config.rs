@@ -281,7 +281,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                 let endpoint_s = endpoint_url.to_string();
                 endpoint = endpoint_s
                     .strip_suffix("/")
-                    .and_then(|s| Some(s.to_string()))
+                    .map(|s| s.to_string())
                     .or(Some(endpoint_s));
             }
         }
