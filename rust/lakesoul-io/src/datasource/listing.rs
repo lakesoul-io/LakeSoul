@@ -128,13 +128,17 @@ impl TableProvider for LakeSoulListingTable {
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
         if self.lakesoul_io_config.primary_keys.is_empty() {
-            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            if self.lakesoul_io_config.parquet_filter_pushdown {
+                Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            } else {
+                Ok(vec![TableProviderFilterPushDown::Unsupported; filters.len()])
+            }
         } else {
             filters
                 .iter()
                 .map(|f| {
                     if let Ok(cols) = f.to_columns() {
-                        if cols.iter().all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name)) {
+                        if self.lakesoul_io_config.parquet_filter_pushdown && cols.iter().all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name)) {
                             Ok(TableProviderFilterPushDown::Inexact)
                         } else {
                             Ok(TableProviderFilterPushDown::Unsupported)

@@ -12,7 +12,7 @@ use datafusion::{dataframe::DataFrame, logical_expr::LogicalPlanBuilder, executi
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
 
-use crate::{error::Result, catalog::{create_io_config_builder, parse_table_info_partitions}, planner::query_planner::LakeSoulQueryPlanner, serialize::arrow_java::schema_from_metadata_str};
+use crate::{error::Result, catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty}, planner::query_planner::LakeSoulQueryPlanner, serialize::arrow_java::schema_from_metadata_str};
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
 
@@ -22,6 +22,7 @@ pub struct LakeSoulTable {
     table_name: String,
     table_schema: SchemaRef,
     primary_keys: Vec<String>,
+    properties: LakeSoulTableProperty,
 }
 
 impl LakeSoulTable {
@@ -49,6 +50,7 @@ impl LakeSoulTable {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
         
         let table_name = table_info.table_name.clone();
+        let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties).unwrap();
         let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone());
 
 
@@ -57,7 +59,8 @@ impl LakeSoulTable {
             table_info: Arc::new(table_info),
             table_name, 
             table_schema,
-            primary_keys: hash_partitions
+            primary_keys: hash_partitions,
+            properties
         })
     }
 
@@ -116,6 +119,13 @@ impl LakeSoulTable {
 
     pub fn primary_keys(&self) -> &Vec<String> {
         &self.primary_keys
+    }
+
+    pub fn hash_bucket_num(&self) -> usize {
+        match self.properties.hash_bucket_num {
+            Some(hash_bucket_num) => hash_bucket_num,
+            None => 1
+        }
     }
 
     pub fn schema(&self) -> SchemaRef {

@@ -82,7 +82,7 @@ mod upsert_with_io_config_tests {
     }
 
     fn create_batch_string(names: Vec<&str>, values: Vec<&[&str]>) -> RecordBatch {
-        let mut values=values
+        let values=values
             .into_iter()
             .map(|vec| Arc::new(StringArray::from(Vec::from(vec))) as ArrayRef)
             .collect::<Vec<ArrayRef>>();
@@ -1110,30 +1110,20 @@ mod upsert_with_io_config_tests {
 
 
 mod upsert_with_metadata_tests {
-    use std::ops::Deref;
+    
     use std::sync::Arc;
-
-    use std::env;
-    use std::path::PathBuf;
-    use std::time::SystemTime;
-    use std::thread;
-    use std::time::Duration;
     use chrono::naive::NaiveDate;
 
     use lakesoul_io::filter::parser::Parser;
 
     use arrow::datatypes::DataType;
 
-    use arrow::util::pretty::print_batches;
-    use arrow::datatypes::{Schema, SchemaRef, Field, TimestampMicrosecondType, TimeUnit};
+    
+    use arrow::datatypes::{Schema, SchemaRef, Field, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use arrow::array::{ArrayRef, Int32Array, StringArray, TimestampMicrosecondArray};
 
     use datafusion::assert_batches_eq;
-    use datafusion::prelude::DataFrame;
-    use datafusion::logical_expr::LogicalPlanBuilder;
-    use datafusion::logical_expr::col;
-    use datafusion::logical_expr::Expr;
     use crate::error::Result;
     use crate::lakesoul_table::LakeSoulTable;
 
@@ -1215,7 +1205,7 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    async fn execute_upsert(record_batch: RecordBatch, table_name: &str, client: MetaDataClientRef) -> Result<()> {
+    async fn execute_upsert(record_batch: RecordBatch, table_name: &str, _client: MetaDataClientRef) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(record_batch).await
     }
@@ -1545,7 +1535,7 @@ mod upsert_with_metadata_tests {
         let table_name = "test_basic_upsert_same_columns";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
-        let builder = init_table(
+        init_table(
             create_batch_i32(vec!["range", "hash", "value"], vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]]),
             table_name,
             SchemaRef::new(Schema::new(["range", "hash", "value"].into_iter().map(|name| Field::new(name, DataType::Int32, true)).collect::<Vec<Field>>())),
@@ -2124,7 +2114,7 @@ mod upsert_with_metadata_tests {
         &[str_or_i32::v2(4), str_or_i32::v2(2), str_or_i32::v2(3)], &[str_or_i32::v1("d2"), str_or_i32::v1("b222"), str_or_i32::v1("c222")], &[str_or_i32::v1("d"), str_or_i32::v1("b"), str_or_i32::v1("c")]]
         );
 
-        let builder = init_table(
+        init_table(
             batch1,
             table_name,
             SchemaRef::new(Schema::new(["range", "v1", "hash1", "v2", "hash2"].into_iter().map(|name|
@@ -2370,10 +2360,10 @@ mod upsert_with_metadata_tests {
         test_select_requested_columns_without_hash_columns_upsert_2_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_int_type_upsert_1_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_int_type_upsert_2_times_i32().await?;
-        test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32().await?;//
+        test_derange_hash_key_and_data_schema_order_int_type_upsert_3_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32().await?;
         test_derange_hash_key_and_data_schema_order_string_type_upsert_2_times_i32().await?;
-        test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32().await?;//
+        test_derange_hash_key_and_data_schema_order_string_type_upsert_3_times_i32().await?;
         test_create_table_with_hash_key_disordered().await?;
         test_merge_same_column_with_timestamp_type_i32_time().await?;
         test_merge_different_columns_with_timestamp_type_i32_time().await?;

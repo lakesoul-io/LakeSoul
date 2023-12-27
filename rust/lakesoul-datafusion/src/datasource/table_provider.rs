@@ -115,23 +115,11 @@ impl TableProvider for LakeSoulTableProvider {
         self.listing_table.scan(state, projection, filters, limit).await
     }
 
-    fn supports_filter_pushdown(
+    fn supports_filters_pushdown(
         &self,
-        filter: &Expr,
-    ) -> Result<TableProviderFilterPushDown> {
-        if self.primary_keys().is_empty() {
-            Ok(TableProviderFilterPushDown::Exact)
-        } else {
-            if let Ok(cols) = filter.to_columns() {
-                if cols.iter().all(|col| self.primary_keys().contains(&col.name)) {
-                    Ok(TableProviderFilterPushDown::Inexact)
-                } else {
-                    Ok(TableProviderFilterPushDown::Unsupported)
-                }
-            } else {
-                Ok(TableProviderFilterPushDown::Unsupported)
-            }
-        }
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        self.listing_table.supports_filters_pushdown(filters)
     }
 
     async fn insert_into(
