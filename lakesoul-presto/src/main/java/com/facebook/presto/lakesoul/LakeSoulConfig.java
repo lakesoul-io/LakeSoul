@@ -29,6 +29,7 @@ public class LakeSoulConfig {
         this.endpoint = config.get("fs.s3a.endpoint");
         this.defaultFS = config.get("fs.defaultFS");
         this.user = config.get("fs.hdfs.user");
+        this.virtualPathStyle = Boolean.parseBoolean(config.getOrDefault("fs.s3a.path.style.access", "false"));
         this.timeZone = config.getOrDefault("timezone","");
     }
 
@@ -40,6 +41,7 @@ public class LakeSoulConfig {
     private String user;
     private String defaultFS;
     private String timeZone;
+    private boolean virtualPathStyle;
 
 
     public String getAccessKey() {
@@ -106,4 +108,11 @@ public class LakeSoulConfig {
         this.timeZone = timeZone;
     }
 
+    public boolean isVirtualPathStyle() {
+        return virtualPathStyle;
+    }
+
+    public void setVirtualPathStyle(boolean virtualPathStyle) {
+        this.virtualPathStyle = virtualPathStyle;
+    }
 }

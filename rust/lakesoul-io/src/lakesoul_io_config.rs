@@ -10,12 +10,13 @@ use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_common::DataFusionError::ObjectStore;
+use datafusion_common::DataFusionError::{External, ObjectStore};
 use derivative::Derivative;
 use object_store::aws::AmazonS3Builder;
-use object_store::RetryConfig;
+use object_store::{ClientOptions, RetryConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -209,8 +210,8 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_object_store_option(mut self, key: String, value: String) -> Self {
-        self.config.object_store_options.insert(key, value);
+    pub fn with_object_store_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.object_store_options.insert(key.into(), value.into());
         self
     }
 
@@ -237,9 +238,9 @@ impl LakeSoulIOConfigBuilder {
 }
 
 impl From<LakeSoulIOConfig> for LakeSoulIOConfigBuilder {
-     fn from(val: LakeSoulIOConfig) -> Self {
-         LakeSoulIOConfigBuilder { config: val }
-     }
+    fn from(val: LakeSoulIOConfig) -> Self {
+        LakeSoulIOConfigBuilder { config: val }
+    }
 }
 
 /// First check envs for credentials, region and endpoint.
@@ -259,10 +260,32 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
             .ok()
             .or_else(|| config.object_store_options.get("fs.s3a.endpoint.region").cloned())
     });
-    let endpoint = std::env::var("AWS_ENDPOINT")
+    let mut endpoint = std::env::var("AWS_ENDPOINT")
         .ok()
         .or_else(|| config.object_store_options.get("fs.s3a.endpoint").cloned());
     let bucket = config.object_store_options.get("fs.s3a.bucket").cloned();
+    let virtual_path_style = config.object_store_options.get("fs.s3a.path.style.access").cloned();
+    let virtual_path_style = virtual_path_style.is_some_and(|s| s == "true");
+    if !virtual_path_style {
+        if let (Some(endpoint_str), Some(bucket)) = (&endpoint, &bucket) {
+            // for host style access with endpoint defined, we need to check endpoint contains bucket name
+            if !endpoint_str.contains(bucket) {
+                let mut endpoint_url = Url::parse(endpoint_str.as_str()).map_err(|e| External(Box::new(e)))?;
+                endpoint_url
+                    .set_host(Some(&*format!(
+                        "{}.{}",
+                        bucket,
+                        endpoint_url.host_str().expect("endpoint should contains host")
+                    )))
+                    .map_err(|e| External(Box::new(e)))?;
+                let endpoint_s = endpoint_url.to_string();
+                endpoint = endpoint_s
+                    .strip_suffix("/")
+                    .and_then(|s| Some(s.to_string()))
+                    .or(Some(endpoint_s));
+            }
+        }
+    }
 
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
@@ -275,6 +298,14 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
         .with_region(region.unwrap_or_else(|| "us-east-1".to_owned()))
         .with_bucket_name(bucket.unwrap())
         .with_retry(retry_config)
+        .with_virtual_hosted_style_request(!virtual_path_style)
+        .with_client_options(
+            ClientOptions::new()
+                .with_allow_http(true)
+                .with_connect_timeout(Duration::from_secs(10))
+                .with_pool_idle_timeout(Duration::from_secs(300))
+                .with_timeout(Duration::from_secs(10)),
+        )
         .with_allow_http(true);
     if let (Some(k), Some(s)) = (key, secret) {
         s3_store_builder = s3_store_builder.with_access_key_id(k).with_secret_access_key(s);
@@ -376,13 +407,14 @@ pub fn create_session_context(config: &mut LakeSoulIOConfig) -> Result<SessionCo
     create_session_context_with_planner(config, None)
 }
 
-pub fn create_session_context_with_planner(config: &mut LakeSoulIOConfig, planner: Option<Arc<dyn QueryPlanner + Send + Sync>>) -> Result<SessionContext> {
+pub fn create_session_context_with_planner(
+    config: &mut LakeSoulIOConfig,
+    planner: Option<Arc<dyn QueryPlanner + Send + Sync>>,
+) -> Result<SessionContext> {
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        // .with_repartition_sorts(false)
-        // .with_prefetch(config.prefetch_size)
-        ;
+        .with_prefetch(config.prefetch_size);
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
@@ -414,12 +446,11 @@ pub fn create_session_context_with_planner(config: &mut LakeSoulIOConfig, planne
 
     // create session context
     let state = if let Some(planner) = planner {
-        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
-            .with_query_planner(planner)
+        SessionState::new_with_config_rt(sess_conf, Arc::new(runtime)).with_query_planner(planner)
     } else {
         SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
     };
-        
+
     Ok(SessionContext::new_with_state(state))
 }
 

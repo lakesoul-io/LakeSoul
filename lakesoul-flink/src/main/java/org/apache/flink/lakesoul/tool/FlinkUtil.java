@@ -429,10 +429,13 @@ public class FlinkUtil {
         setFSConf(conf, "fs.s3a.secret.key", "fs.s3a.secret.key", io);
         setFSConf(conf, "fs.s3a.endpoint", "fs.s3a.endpoint", io);
         setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
+        setFSConf(conf, "fs.s3a.path.style.access", "fs.s3a.path.style.access", io);
         // try flink's s3 credential configs
         setFSConf(conf, "s3.access-key", "fs.s3a.access.key", io);
         setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key", io);
         setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint", io);
+        setFSConf(conf, "s3.endpoint.region", "fs.s3a.endpoint.region", io);
+        setFSConf(conf, "s3.path.style.access", "fs.s3a.path.style.access", io);
     }
 
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
@@ -442,7 +445,6 @@ public class FlinkUtil {
             io.setObjectStoreOption(fsConfKey, value);
         }
     }
-
 
     public static Object convertStringToInternalValue(String valStr, LogicalType type) {
         if (valStr == null) {
