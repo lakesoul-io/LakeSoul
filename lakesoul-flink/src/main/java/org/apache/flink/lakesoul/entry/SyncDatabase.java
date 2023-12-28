@@ -44,10 +44,13 @@ public class SyncDatabase {
         boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
         //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
 
+
+
         String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        //StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
 
         switch (targetSyncName) {
