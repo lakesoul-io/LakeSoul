@@ -10,16 +10,18 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
 
 ## 参数配置
 
-| 参数名称                   | 是否必须 | 含义                          |
-|------------------------|------|-----------------------------|
-| --target_db.url        | 是    | 目标数据库的url，‘/’结尾             |
+| 参数名称                   | 是否必须 | 含义                             |
+|------------------------|------|--------------------------------|
+| --target_db.url        | 是    | 目标数据库的url，‘/’结尾                |
 | --target_db.db_type    | 是    | 目标数据库的类型(doris,mysql,postgres) |
-| --target_db.db_name    | 是    | 目标数据库库名字                    |
-| --target_db.user       | 是    | 目标数据库用户名                    |
-| --target_db.password   | 是    | 用户密码                        |
-| --target_db.table_name | 是    | 目标数据库的表名                    |
-| --sink_parallelism     | 否    | 同步作业的并行度，默认1                |
-| --use_batch            | 否    | true表示批同步，false表示流同步，默认采用批同步 |
+| --target_db.db_name    | 是    | 目标数据库库名字                       |
+| --target_db.user       | 是    | 目标数据库用户名                       |
+| --target_db.password   | 是    | 用户密码                           |
+| --target_db.table_name | 是    | 目标数据库的表名                       |
+| --source_db.db_name    | 是    | lakesoul库名                     |
+| --source_db.table_name | 是    | lakesoul表名                     |
+| --sink_parallelism     | 否    | 同步作业的并行度，默认1                   |
+| --use_batch            | 否    | true表示批同步，false表示流同步，默认采用批同步   |
 
 对于到doris的出湖，需要额外配置：
 
@@ -38,8 +40,9 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
     --target_db.db_name test \
     --target_db.user root \
     --target_db.password 123456 \
-    --target_db.table_name tb \
-    --source_db.table_name tb \
+    --target_db.table_name t1 \
+    --source_db.db_name
+    --source_db.table_name t1 \
     --sink_parallelism 1 \
     --use_batch true
 ```
@@ -47,16 +50,16 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
     lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
-    --target_db.url "jdbc:postgresql://172.17.0.2:5432/" \
-    --source_db.db_name default \
+    --target_db.url jdbc:postgresql://172.17.0.2:5432/ \
     --target_db.db_name test \
-    --target_db.user postgres_user \
-    --target_db.password 123456 \
     --target_db.db_type postgres \
-    --target_db.table_name tb \
-    --source_db.table_name tb \
+    --source_db.db_name jdbccdc \
+    --target_db.user lakesoul_test \
+    --target_db.password lakesoul_test \
+    --target_db.table_name t5_copy3 \
+    --source_db.table_name t5_copy1 \
     --sink_parallelism 1 \
-    --use_batch false 
+    --use_batch true
 ```
 出湖到doris任务启动
 ```bash
