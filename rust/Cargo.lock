@@ -1643,7 +1643,6 @@ dependencies = [
 name = "lakesoul-io"
 version = "2.3.0"
 dependencies = [
- "ahash",
  "arrow",
  "arrow-array",
  "arrow-buffer",
@@ -1658,6 +1657,7 @@ dependencies = [
  "datafusion-common",
  "derivative",
  "futures",
+ "half",
  "hdrs",
  "lazy_static",
  "log",

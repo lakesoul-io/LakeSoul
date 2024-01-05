@@ -8,6 +8,7 @@ use lakesoul_metadata::MetaDataClient;
 
 mod insert_tests;
 mod upsert_tests;
+mod hash_tests;
 // mod compaction_tests;
 // mod streaming_tests;
 

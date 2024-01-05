@@ -5,13 +5,16 @@
 package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
+import org.apache.spark.sql.catalyst.expressions.Murmur3HashFunction
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.test.{LakeSoulTestBeforeAndAfterEach, LakeSoulTestSparkSession, LakeSoulTestUtils}
 import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
+import org.apache.spark.sql.types.DataTypes.{BooleanType, DoubleType, FloatType, IntegerType, ShortType, StringType, createArrayType}
 import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SparkSession}
+import org.apache.spark.unsafe.types.UTF8String
 import org.junit.runner.RunWith
 import org.scalatestplus.junit.JUnitRunner
 
@@ -770,4 +773,42 @@ class UpsertSuiteBase extends QueryTest
     }
   }
 
+  test("hash value") {
+    sql("select hash(1), hash(2), hash(3), hash(4)").show()
+
+    sql("select hash(cast(1 as long)), hash(cast(2 as long)), hash(cast(3 as long)), hash(cast(4 as long))").show()
+    println(java.lang.Float.floatToIntBits(1.0f))
+    println(java.lang.Double.doubleToLongBits(1.0d))
+
+    sql("select hash(1.0), hash(2.0), hash(3.0), hash(4.0)").show()
+
+    sql("select hash(cast(1.0 as double)), hash(cast(2.0 as double)), hash(cast(3.0 as double)), hash(cast(4.0 as double))").show()
+
+    sql("select hash('1'), hash('2'), hash('3'), hash('4')").show()
+
+
+    sql("select hash(array(cast(49 as BYTE)))").show()
+    //0
+    sql("select hash('2','22'), hash('3', '32'), hash('1', '1')").show()
+
+    //1
+    sql("select hash('1','12'), hash('4', '42'), hash('2', '2')").show()
+
+    println("bool false: " + Murmur3HashFunction.hash(false, BooleanType, 42))
+    println("string 321: " + Murmur3HashFunction.hash(UTF8String.fromString("321"), StringType, 42))
+    println("bytes [1]: " + Murmur3HashFunction.hash(Array('1'.toByte), createArrayType(ShortType), 42))
+    println("byte 1: " + Murmur3HashFunction.hash('1'.toByte, ShortType, 42))
+    println("float 1.0: " + Murmur3HashFunction.hash(1.0f, FloatType, 42))
+    println("float -0.0 :" + Murmur3HashFunction.hash(-0.0f, FloatType, 42))
+    println("float 0.0 :" + Murmur3HashFunction.hash(0.0f, FloatType, 42))
+    println("double -0.0 :" + Murmur3HashFunction.hash(-0.0, DoubleType, 42))
+    println("double 0.0 :" + Murmur3HashFunction.hash(0.0, DoubleType, 42))
+    println("integer 1065353216: " + Murmur3HashFunction.hash(1065353216, IntegerType, 42))
+    println("string 321,321: " + Murmur3HashFunction.hash(UTF8String.fromString("321"), StringType,
+      Murmur3HashFunction.hash(UTF8String.fromString("321"), StringType, 42)))
+    println("string 1,12: " + Murmur3HashFunction.hash(UTF8String.fromString("12"), StringType,
+      Murmur3HashFunction.hash(UTF8String.fromString("1"), StringType, 42)))
+    println("string 2,22: " + Murmur3HashFunction.hash(UTF8String.fromString("22"), StringType,
+      Murmur3HashFunction.hash(UTF8String.fromString("2"), StringType, 42)))
+  }
 }

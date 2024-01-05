@@ -26,13 +26,13 @@ use datafusion::{
         SendableRecordBatchStream,
     },
 };
-use datafusion_common::{hash_utils::create_hashes, DataFusionError, Result};
+use datafusion_common::{DataFusionError, Result};
 
 use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
-use crate::repartition::distributor_channels::partition_aware_channels;
+use crate::{repartition::distributor_channels::partition_aware_channels, hash_utils::create_hashes};
 
 use self::distributor_channels::{DistributionReceiver, DistributionSender};
 
@@ -73,12 +73,12 @@ pub struct BatchPartitioner {
 }
 
 struct BatchPartitionerState {
-    random_state: ahash::RandomState,
+    // random_state: ahash::RandomState,
     #[allow(dead_code)]
     range_exprs: Vec<Arc<dyn PhysicalExpr>>,
     hash_exprs: Vec<Arc<dyn PhysicalExpr>>,
     num_partitions: usize,
-    hash_buffer: Vec<u64>,
+    hash_buffer: Vec<u32>,
 }
 
 impl BatchPartitioner {
@@ -92,7 +92,7 @@ impl BatchPartitioner {
                 hash_exprs: exprs,
                 num_partitions,
                 // Use fixed random hash
-                random_state: ahash::RandomState::with_seeds(0, 0, 0, 0),
+                // random_state: ahash::RandomState::with_seeds(0, 0, 0, 0),
                 hash_buffer: vec![],
             },
             other => {
@@ -134,7 +134,7 @@ impl BatchPartitioner {
         batch: RecordBatch,
     ) -> Result<impl Iterator<Item = Result<(usize, RecordBatch)>> + Send + '_> {
         let BatchPartitionerState {
-            random_state,
+            // random_state,
             range_exprs: _,
             hash_exprs,
             num_partitions: partitions,
@@ -151,14 +151,14 @@ impl BatchPartitioner {
             hash_buffer.clear();
             hash_buffer.resize(batch.num_rows(), 0);
 
-            create_hashes(&hash_arrays, random_state, hash_buffer)?;
+            create_hashes(&hash_arrays, hash_buffer)?;
 
             let mut indices: Vec<_> = (0..*partitions)
                 .map(|_| UInt64Builder::with_capacity(batch.num_rows()))
                 .collect();
 
             for (index, hash) in hash_buffer.iter().enumerate() {
-                indices[(*hash % *partitions as u64) as usize].append_value(index as u64);
+                indices[(*hash % *partitions as u32) as usize].append_value(index as u64);
             }
 
             let it = indices
