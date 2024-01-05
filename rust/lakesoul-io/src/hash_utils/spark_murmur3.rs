@@ -56,9 +56,8 @@ pub fn spark_murmur3_32_for_bytes<T: Read>(source: &mut T, seed: u32) -> Result<
             0 => return Ok(finish(state, processed)),
             n if n < 4 => {
                 processed += n as u32;
-                for i in 0..n {
-                    let k = buffer[i] as u32;
-                    state ^= calc_k(k);
+                for k in buffer.iter().take(n) {
+                    state ^= calc_k(*k as u32);
                     state = state.rotate_left(R2);
                     state = (state.wrapping_mul(M)).wrapping_add(N);
                 }
@@ -70,7 +69,7 @@ pub fn spark_murmur3_32_for_bytes<T: Read>(source: &mut T, seed: u32) -> Result<
 
 fn finish(state: u32, processed: u32) -> u32 {
     let mut hash = state;
-    hash ^= processed as u32;
+    hash ^= processed;
     hash ^= hash.wrapping_shr(R1);
     hash = hash.wrapping_mul(C1);
     hash ^= hash.wrapping_shr(R2);
