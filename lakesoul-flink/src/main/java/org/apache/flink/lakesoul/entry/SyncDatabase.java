@@ -44,8 +44,6 @@ public class SyncDatabase {
         boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
         //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
 
-
-
         String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
@@ -206,8 +204,9 @@ public class SyncDatabase {
         conn.close();
     }
 
-    public static void xsyncToMysql(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
-        if (bathXync) {
+
+    public static void xsyncToMysql(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
+        if (batchXync) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -217,31 +216,39 @@ public class SyncDatabase {
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        tEnvs.useCatalog("lakeSoul");
-        tEnvs.useDatabase(sourceDatabase);
-
+        String jdbcUrl = url + targetDatabase;
         TableResult schemaResult = tEnvs.executeSql(
                 "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
-
+        DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
+        String[] mysqlFieldTypes = getDorisFieldTypes(fieldDataTypes);
         String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
-        DataType[] fieldTypes = schemaResult.getTableSchema().getFieldDataTypes();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
-        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldTypes, fieldNames, tablePk);
-
+        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
         String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
-        String newUrl = url + targetDatabase;
-        Connection conn = DriverManager.getConnection(newUrl, username, password);
-        Statement statement = conn.createStatement();
 
+        Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        Statement statement = conn.createStatement();
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
-        String createCatalog = "create catalog mysql_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
-                "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
-        // Move data from LakeSoul to MySQL
-        tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO mysql_catalog.`" + targetDatabase + "`.`" + targetTableName+"`" +
-                " SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
-        tEnvs.executeSql(insertQuery);
+
+        StringBuilder coulmns = new StringBuilder();
+        for (int i = 0; i < fieldDataTypes.length; i++) {
+            coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
+            if (i< fieldDataTypes.length-1){
+                coulmns.append(",");
+            }
+        }
+        String sql;
+        if (tablePk!=null){
+            sql = String.format(
+                    "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
+                    targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password);
+        }else {
+            sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
+                    targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password);
+        }
+        tEnvs.executeSql(sql);
+        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
 
         statement.close();
         conn.close();
