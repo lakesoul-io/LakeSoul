@@ -36,7 +36,8 @@ serde_json = { workspace = true }
 log = { workspace = true }
 proto = { path = "../proto" }
 parking_lot = "0.12.1"
-ahash = "0.8.6"
+
+half = { workspace = true }
 
 
 [features]

@@ -11,6 +11,7 @@ pub mod lakesoul_writer;
 mod projection;
 pub mod repartition;
 pub mod sorted_merge;
+pub mod hash_utils;
 
 #[cfg(feature = "hdfs")]
 mod hdfs;
