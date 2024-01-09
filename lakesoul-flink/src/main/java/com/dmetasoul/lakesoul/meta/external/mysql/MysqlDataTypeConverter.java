@@ -5,7 +5,6 @@
 package com.dmetasoul.lakesoul.meta.external.mysql;
 
 import com.dmetasoul.lakesoul.meta.external.jdbc.JdbcDataTypeConverter;
-import io.debezium.connector.mysql.antlr.MySqlAntlrDdlParser;
 import io.debezium.relational.Column;
 import io.debezium.util.Strings;
 import org.apache.spark.sql.types.DataType;
@@ -94,12 +93,5 @@ public class MysqlDataTypeConverter extends JdbcDataTypeConverter {
                 || upperCaseTypeName.endsWith(".GEOMCOLLECTION");
     }
 
-    protected List<String> extractEnumAndSetOptions(Column column) {
-        return MySqlAntlrDdlParser.extractEnumAndSetOptions(column.enumValues());
-    }
-
-    protected String extractEnumAndSetOptionsAsString(Column column) {
-        return Strings.join(",", extractEnumAndSetOptions(column));
-    }
 
 }

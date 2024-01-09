@@ -8,11 +8,5 @@ import java.io.IOException;
 import java.util.List;
 
 public interface ExternalDBManager {
-
-    List<String> listTables();
-
-
-    void importOrSyncLakeSoulTable(String tableName) throws IOException;
-
     void importOrSyncLakeSoulNamespace(String namespace);
 }

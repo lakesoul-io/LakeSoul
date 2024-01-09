@@ -1,5 +1,12 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.external.oracle;
 
+import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
+
+import java.io.IOException;
+import java.util.List;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
@@ -13,14 +20,16 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-
 public class OracleDBManager implements ExternalDBManager {
-
     private final String dbName;
+
     private final DBManager lakesoulDBManager = new DBManager();
+
     private final HashSet<String> includeTables = null;
+
     public static final int DEFAULT_ORACLE_PORT = 1521;
     private final DBConnector dbConnector;
+
     public OracleDBManager(String dbName,
                            String user,
                            String passwd,
@@ -28,6 +37,8 @@ public class OracleDBManager implements ExternalDBManager {
                            String port
     ) {
         this.dbName = dbName;
+
+
         DataBaseProperty dataBaseProperty = new DataBaseProperty();
         dataBaseProperty.setDriver("oracle.jdbc.driver.OracleDriver");
         String url = "jdbc:oracle:thin:@" + host + ":" + port + "/" + dbName;
@@ -64,21 +75,6 @@ public class OracleDBManager implements ExternalDBManager {
         return opened;
     }
 
-    public ResultSet showTable(String sql){
-        Connection con = null;
-        PreparedStatement psmt = null;
-        ResultSet rs = null;
-        try {
-            con = dbConnector.getConn();
-            psmt = con.prepareStatement(sql);
-            rs = psmt.executeQuery();
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-        return rs;
-    }
-
-    @Override
     public List<String> listTables() {
         Connection conn = null;
         PreparedStatement pstmt = null;
@@ -92,6 +88,7 @@ public class OracleDBManager implements ExternalDBManager {
             while (rs.next()) {
                 String tableName = rs.getString("table_name");
                 list.add(tableName);
+
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -99,11 +96,6 @@ public class OracleDBManager implements ExternalDBManager {
             dbConnector.closeConn(rs, pstmt, conn);
         }
         return list;
-    }
-
-    @Override
-    public void importOrSyncLakeSoulTable(String tableName) {
-
     }
 
     @Override

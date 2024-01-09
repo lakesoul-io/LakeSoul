@@ -147,12 +147,23 @@ public class LakeSoulSinkOptions {
             .stringType()
             .defaultValue("")
             .withDescription("list tables of a schema");
-
+    public static final ConfigOption<String> SOURCE_DB_SLOT_NAME = ConfigOptions
+            .key("source_db.slot_name")
+            .stringType()
+            .defaultValue("flink")
+            .withDescription("source db slot name");
     public static final ConfigOption<Integer> SOURCE_DB_SPLIT_SIZE = ConfigOptions
             .key("source_db.splitSize")
             .intType()
             .defaultValue(1024)
             .withDescription("The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.");
+
+    //for pg
+    public static final ConfigOption<String> PLUGIN_NAME = ConfigOptions
+            .key("pluginName")
+            .stringType()
+            .defaultValue("decoderbufs")
+            .withDescription("The name of the Postgres logical decoding plug-in installed on the server.");
 
 }
 

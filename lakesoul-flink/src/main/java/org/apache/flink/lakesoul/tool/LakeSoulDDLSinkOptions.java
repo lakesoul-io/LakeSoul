@@ -9,6 +9,12 @@ import org.apache.flink.configuration.ConfigOptions;
 
 public class LakeSoulDDLSinkOptions extends LakeSoulSinkOptions{
 
+    public static final ConfigOption<String> SOURCE_DB_TYPE = ConfigOptions
+            .key("source_db.db_type")
+            .stringType()
+            .defaultValue("mysql")
+            .withDescription("source database type");
+
     public static final ConfigOption<String> SOURCE_DB_DB_NAME = ConfigOptions
             .key("source_db.db_name")
             .stringType()

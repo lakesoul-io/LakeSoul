@@ -7,7 +7,9 @@ package org.apache.flink.lakesoul.entry;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -24,6 +26,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
 
 import java.sql.*;
+import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
@@ -34,7 +37,7 @@ public class SyncDatabase {
 
         String sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
         String sourceTableName = parameter.get(SOURCE_DB_LAKESOUL_TABLE.key()).toLowerCase();
-        String targeSyncName = parameter.get(TARGET_DATABASE.key());
+        String targetSyncName = parameter.get(TARGET_DATABASE_TYPE.key());
         String targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
         String targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
         String url = parameter.get(TARGET_DB_URL.key());
@@ -47,10 +50,11 @@ public class SyncDatabase {
         String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        //StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(conf);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
 
-        switch (targeSyncName) {
+        switch (targetSyncName) {
             case "mysql":
                 xsyncToMysql(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
                 break;
@@ -61,26 +65,8 @@ public class SyncDatabase {
                 xsyncToDoris(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, fenodes);
                 break;
             default:
-                throw new RuntimeException("not supported the database: " + targeSyncName);
+                throw new RuntimeException("not supported the database: " + targetSyncName);
         }
-    }
-
-    public static String dorisCreateTableSql(String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk, int replicationNum) {
-        StringBuilder createTableQuery = new StringBuilder("CREATE TABLE IF NOT EXISTS `")
-                .append(targetTableName)
-                .append("` (");
-        for (int i = 0; i < fieldNames.length; i++) {
-            String dataType = stringFieldTypes[i];
-            String nullable = stringFieldTypes[i].contains("NULL") ? "" : " NOT NULL";
-            createTableQuery.append("`").append(fieldNames[i]).append("` ").append(dataType).append(nullable);
-
-            if (i != fieldNames.length - 1) {
-                createTableQuery.append(", ");
-            }
-        }
-        createTableQuery.append(")").append(" DISTRIBUTED BY HASH(").append(pk).append(") BUCKETS 32")
-                .append(" PROPERTIES('replication_num'='").append(replicationNum).append("')");
-        return createTableQuery.toString();
     }
 
     public static String pgAndMsqlCreateTableSql(String[] stringFieldTypes, String[] fieldNames, String targetTableName, String pk) {
@@ -95,8 +81,11 @@ public class SyncDatabase {
                 createTableQuery.append(", ");
             }
         }
-        createTableQuery.append(" ,PRIMARY KEY(").append(pk);
-        createTableQuery.append("))");
+        if (pk!=null){
+            createTableQuery.append(" ,PRIMARY KEY(").append(pk);
+            createTableQuery.append(")");
+        }
+        createTableQuery.append(")");
         return createTableQuery.toString();
     }
 
@@ -106,8 +95,10 @@ public class SyncDatabase {
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
-                if (pk.contains(fieldNames[i])) {
-                    mysqlType = "VARCHAR(100)";
+                if (pk!=null){
+                    if (pk.contains(fieldNames[i])) {
+                        mysqlType = "VARCHAR(100)";
+                    }
                 }
                 stringFieldTypes[i] = mysqlType;
             } else if (fieldTypes[i].getLogicalType() instanceof DecimalType) {
@@ -131,8 +122,10 @@ public class SyncDatabase {
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
-                if (pk.contains(fieldNames[i])) {
-                    mysqlType = "VARCHAR(100)";
+                if (pk!=null){
+                    if (pk.contains(fieldNames[i])) {
+                        mysqlType = "VARCHAR(100)";
+                    }
                 }
                 stringFieldTypes[i] = mysqlType;
             } else if (fieldTypes[i].getLogicalType() instanceof DoubleType) {
@@ -150,18 +143,16 @@ public class SyncDatabase {
         return stringFieldTypes;
     }
 
-    public static String[] getDorisFieldTypes(DataType[] fieldTypes, String[] fieldNames, String pk) {
+    public static String[] getDorisFieldTypes(DataType[] fieldTypes) {
         String[] stringFieldTypes = new String[fieldTypes.length];
         for (int i = 0; i < fieldTypes.length; i++) {
-            if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
-                String mysqlType;
-                if (pk.contains(fieldNames[i])) {
-                    mysqlType = "VARCHAR";
-                } else {
-                    mysqlType = "TEXT";
-                }
-                stringFieldTypes[i] = mysqlType;
-            } else {
+            if (fieldTypes[i].getLogicalType() instanceof TimestampType){
+                stringFieldTypes[i] = "DATETIME";
+            }
+            else if (fieldTypes[i].getLogicalType() instanceof VarCharType){
+                stringFieldTypes[i] = "VARCHAR";
+
+            }   else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
         }
@@ -171,43 +162,17 @@ public class SyncDatabase {
     public static String getTablePk(String sourceDataBae, String sourceTableName) {
         DBManager dbManager = new DBManager();
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
-        String tableProperties = tableInfo.getProperties();
-        JSONObject jsonObject = JSON.parseObject(tableProperties);
-        return jsonObject.getString("hashPartitions");
-    }
-
-    public static String getColumns(String[] fieldNames, DataType[] fieldTypes, String pk) {
-        String[] names = new String[fieldNames.length];
-        StringBuilder columns = new StringBuilder();
-        for (int i = 0; i < fieldNames.length; i++) {
-            if (fieldTypes[i].getLogicalType() instanceof VarCharType && pk.contains(fieldNames[i])) {
-                names[i] = "CAST(" + fieldNames[i] + " AS CHAR(85)) " + fieldNames[i];
-            } else {
-                names[i] = fieldNames[i];
-            }
-            columns.append(names[i]);
-            if (i < fieldNames.length - 1) {
-                columns.append(", ");
+        String partitions = tableInfo.getPartitions();
+        DBUtil.TablePartitionKeys keys = DBUtil.parseTableInfoPartitions(partitions);
+        List<String> primaryKeys = keys.primaryKeys;
+        StringBuilder stringBuilder = new StringBuilder();
+        for (int i = 0; i < primaryKeys.size(); i++) {
+            stringBuilder.append(primaryKeys.get(i));
+            if (i<primaryKeys.size()-1){
+                stringBuilder.append(",");
             }
         }
-        return columns.toString();
-    }
-
-    public static String tableFields(Connection conn, String tableName) throws SQLException {
-        DatabaseMetaData databaseMetaData = conn.getMetaData();
-        ResultSet specificResultSet = databaseMetaData.getColumns(null, "%", tableName, "%");
-        String columnName2;
-        String columnType2;
-        StringBuilder createSql = new StringBuilder();
-        while (specificResultSet.next()) {
-            columnName2 = specificResultSet.getString("COLUMN_NAME");
-            columnType2 = specificResultSet.getString("TYPE_NAME");
-            createSql.append(columnName2).append(" ").append(columnType2);
-            if (!specificResultSet.isLast()) {
-                createSql.append(",");
-            }
-        }
-        return createSql.toString();
+        return primaryKeys.size() == 0 ? null : stringBuilder.toString();
     }
 
     public static void xsyncToPg(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
@@ -242,16 +207,17 @@ public class SyncDatabase {
                 "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
         // Move data from LakeSoul to MySQL
         tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO postgres_catalog." + targetDatabase + "." + targetTableName +
-                " SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
+        String insertQuery = "INSERT INTO postgres_catalog.`" + targetDatabase+ "`.`" + targetTableName +
+                "` SELECT * FROM lakeSoul.`"  +sourceDatabase + "`.`" + sourceTableName + "`";
 
         tEnvs.executeSql(insertQuery);
         statement.close();
         conn.close();
     }
 
-    public static void xsyncToMysql(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
-        if (bathXync) {
+
+    public static void xsyncToMysql(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
+        if (batchXync) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -261,33 +227,40 @@ public class SyncDatabase {
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
-        tEnvs.useCatalog("lakeSoul");
-        tEnvs.useDatabase(sourceDatabase);
-
+        String jdbcUrl = url + targetDatabase;
         TableResult schemaResult = tEnvs.executeSql(
                 "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
-
+        DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
+        String[] mysqlFieldTypes = getDorisFieldTypes(fieldDataTypes);
         String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
-        DataType[] fieldTypes = schemaResult.getTableSchema().getFieldDataTypes();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
-        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldTypes, fieldNames, tablePk);
-
+        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
         String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
-        String newUrl = url + targetDatabase;
-        Connection conn = DriverManager.getConnection(newUrl, username, password);
-        Statement statement = conn.createStatement();
 
+        Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        Statement statement = conn.createStatement();
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
-        String createCatalog = "create catalog mysql_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
-                "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
-        // Move data from LakeSoul to MySQL
-        tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO mysql_catalog." + targetDatabase + "." + targetTableName +
-                " SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
 
-        tEnvs.executeSql(insertQuery);
-        // Close connections
+        StringBuilder coulmns = new StringBuilder();
+        for (int i = 0; i < fieldDataTypes.length; i++) {
+            coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
+            if (i< fieldDataTypes.length-1){
+                coulmns.append(",");
+            }
+        }
+        String sql;
+        if (tablePk!=null){
+            sql = String.format(
+                    "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
+                    targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password);
+        }else {
+            sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
+                    targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password);
+        }
+        tEnvs.executeSql(sql);
+        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+
         statement.close();
         conn.close();
     }
@@ -304,13 +277,23 @@ public class SyncDatabase {
         Catalog lakesoulCatalog = new LakeSoulCatalog();
         tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
         String jdbcUrl = url + targetDatabase;
-        Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        TableResult schemaResult = tEnvs.executeSql(
+                "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
+        DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
+        String[] dorisFieldTypes = getDorisFieldTypes(fieldDataTypes);
+        String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
+
+        StringBuilder coulmns = new StringBuilder();
+        for (int i = 0; i < fieldDataTypes.length; i++) {
+            coulmns.append("`").append(fieldNames[i]).append("` ").append(dorisFieldTypes[i]);
+            if (i< fieldDataTypes.length-1){
+                coulmns.append(",");
+            }
+        }
         String sql = String.format(
                 "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s')",
-                targetTableName, tableFields(conn, targetTableName), "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
+                targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul." + sourceDatabase + "." + sourceTableName);
-
-        conn.close();
+        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
     }
 }

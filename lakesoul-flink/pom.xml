@@ -23,6 +23,7 @@ SPDX-License-Identifier: Apache-2.0
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
+        <cdc.version>2.4.2</cdc.version>
         <local.scope>provided</local.scope>
     </properties>
 
@@ -82,7 +83,6 @@ SPDX-License-Identifier: Apache-2.0
                 </exclusion>
             </exclusions>
         </dependency>
-
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-clients</artifactId>
@@ -123,13 +123,18 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-postgres-cdc</artifactId>
+            <version>${cdc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mysql-cdc</artifactId>
-            <version>2.3.0</version>
+            <version>${cdc.version}</version>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
-            <version>2.3.0</version>
+            <version>${cdc.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>
@@ -531,6 +536,10 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
+                            <include>com.ververica:flink-sql-connector-postgres-cdc</include>
+                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
+                            <include>org.apache.flink:flink-connector-jdbc</include>
+                            <include>org.apache.flink:flink-doris-connector-1.17</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>

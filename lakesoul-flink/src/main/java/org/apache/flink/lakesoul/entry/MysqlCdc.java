@@ -113,7 +113,7 @@ public class MysqlCdc {
                 .databaseList(dbName) // set captured database
                 .tableList(dbName + ".*") // set captured table
                 .serverTimeZone(serverTimezone)  // default -- Asia/Shanghai
-                .scanNewlyAddedTableEnabled(true)
+                //.scanNewlyAddedTableEnabled(true)
                 .username(userName)
                 .password(passWord);
 

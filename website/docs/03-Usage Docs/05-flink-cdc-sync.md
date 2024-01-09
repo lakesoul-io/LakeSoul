@@ -6,16 +6,15 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Since version 2.1.0, LakeSoul has implemented Flink CDC Sink, which can support Table API and SQL (single table), and Stream API (full database with multiple tables). The currently supported upstream data source is MySQL (5.6-8.0)
-
+Since version 2.1.0, LakeSoul has introduced Flink CDC Sink, capable of supporting Table API and SQL (single-table) as well as Stream API (multiple tables within a database). Currently, the supported upstream data sources are MySQL (5.6-8.0), Oracle (11, 12, 19, 21), and Postgresql (10-14). The unified entry for data ingestion into the lake is JdbcCdc.
 ## Main features
 
 In the Stream API, the main functions of LakeSoul Sink are:
 
 * Support real-time CDC synchronization of thousands of tables (different schemas) in the same Flink job, and different tables will be automatically written to the corresponding table names of LakeSoul
-* Support automatic synchronization of schema changes (DDL) to LakeSoul, and automatic compatibility of downstream reads (currently supports adding and dropping columns as well as numeric type upcast);
-* Support automatic perception of new tables in the upstream database during operation, and automatic table creation in LakeSoul;
-* Support Exactly Once semantics, even if a Flink job fails, it can ensure that the data is not lost or heavy;
+* For MySQL and PostgreSQL, LakeSoul supports automatic synchronization of schema changes (DDL) to downstream reads, ensuring compatibility between old and new data. Currently, it supports column addition and deletion as well as increasing precision for numeric types.* Support automatic perception of new tables in the upstream database during operation, and automatic table creation in LakeSoul;
+* However, for Oracle, only tables with unchanged schemas are supported for synchronization (adding or deleting columns is not allowed), and it does not support synchronization of new tables.
+* Additionally, MySQL and PostgreSQL support automatic detection of newly created tables in the upstream database during runtime, enabling automatic table creation within LakeSoul.
 * Provide Flink command line startup entry class, support specifying parameters such as database name, table name blacklist, parallelism, etc.;
 
 
@@ -57,38 +56,22 @@ export LAKESOUL_PG_PASSWORD=root
 ````
 :::
 
-#### 2.2 Start sync job
-```bash
-bin/flink run -c org.apache.flink.lakesoul.entry.MysqlCdc \
-    lakesoul-flink-2.4.0-flink-1.17.jar \
-    --source_db.host localhost \
-    --source_db.port 3306 \
-    --source_db.db_name default \
-    --source_db.user root \
-    --source_db.password root \
-    --source.parallelism 4 \
-    --sink.parallelism 4 \
-    --server_time_zone=Asia/Shanghai
-    --warehouse_path s3://bucket/lakesoul/flink/data \
-    --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
-    --flink.savepoint s3://bucket/lakesoul/flink/savepoints
-````
-
 Description of required parameters:
 
-| Parameter | Meaning | Value Description |
-|----------------|------------------------------------|-------------------------------------------- |
-| -c | The task runs the main function entry class | org.apache.flink.lakesoul.entry.MysqlCdc |
-| Main package | Task running jar | lakesoul-flink-2.4.0-flink-1.17.jar |
-| --source_db.host | The address of the MySQL database | |
-| --source_db.port | MySQL database port | |
-| --source_db.user | MySQL database username | |
-| --source_db.password | Password for MySQL database | |
-| --source.parallelism | The parallelism of a single table read task affects the data reading speed. The larger the value, the greater the pressure on MySQL | The parallelism can be adjusted according to the write QPS of MySQL |
+| Parameter | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Value Description                                                                                             |
+|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| -c | The task runs the main function entry class                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | org.apache.flink.lakesoul.entry.MysqlCdc                                                                      |
+| Main package | Task running jar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | lakesoul-flink-2.4.0-flink-1.17.jar                                                                           |
+| --source_db.type | source database type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | mysql postgres oracle                                                                                         |
+| --source_db.host | The address of the source database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |                                                                                                               |
+| --source_db.port | source database port                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |                                                                                                               |
+| --source_db.user | source database username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |                                                                                                               |
+| --source_db.password | Password for source database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |                                                                                                               |
+| --source.parallelism | The parallelism of a single table read task affects the data reading speed. The larger the value, the greater the pressure on source database.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | The parallelism can be adjusted according to the write QPS of source database                                 |
 | --sink.parallelism | The parallelism of the single-table write task, which is also the number of primary key shards in the LakeSoul table. Affects the landing speed of data entering the lake. The larger the value, the greater the number of small files, which affects the subsequent read performance; the smaller the value, the greater the pressure on the write task, and the greater the possibility of data skew. It can be adjusted according to the data volume of the largest table. It is generally recommended that a degree of parallelism (primary key sharding) manage no more than 10 million rows of data. |
-| --warehouse_path | Data storage path prefix (cluster prefix is ​​required for hdfs) | LakeSoul will write the corresponding table data to the ${warehouse_path}/database_name/table_name/ directory |
-| --flink.savepoint | Flink savepoint path (cluster prefix is ​​required for hdfs) | |
-| --flink.checkpoint | Flink checkpoint path (cluster prefix is ​​required for hdfs) | |
+| --warehouse_path | Data storage path prefix (cluster prefix is ​​required for hdfs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | LakeSoul will write the corresponding table data to the ${warehouse_path}/database_name/table_name/ directory |
+| --flink.savepoint | Flink savepoint path (cluster prefix is ​​required for hdfs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |                                                                                                               |
+| --flink.checkpoint | Flink checkpoint path (cluster prefix is ​​required for hdfs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |                                                                                                               |
 
 Other Flink parameters, such as job manager, task manager CPU, memory, slots, etc., also need to be set according to the specific situation.
 
@@ -96,11 +79,99 @@ Optional parameter description:
 
 | Parameter | Meaning Description | Parameter Filling Format |
 |--------------------------------------|----------------------|-----------------------------------------|
-| --source_db.exclude_tables | A list of data table names that do not need to be synchronized, separated by commas, the default is empty | --source_db.exclude_tables test_1,test_2 |
 | --job.checkpoint_mode | Data synchronization mode, the default is EXACTLY_ONCE | --job.checkpoint_mode AT_LEAST_ONCE |
 | --job.checkpoint_interval | Checkpoint storage interval, in ms, default is 10 minutes | --job.checkpoint_interval 1200000 |
-| --server_time_zone=Asia/Shanghai | MySQL server time zone, Flink side defaults to "Asia/Shanghai" | Refer to [JDK ZoneID documentation](https://docs.oracle.com/javase/8/docs/api/java /time/ZoneId.html) |
 
+For MySQL, the following additional parameters need to be configured
+
+| Parameter                 | Required | Meaning Description    | Parameter Filling Format                                                                  |
+|----------------------|----------|------------------------|-------------------------------------------------------------------------------------------|
+| --source_db.exclude_tables| optional | A list of data table names that do not need to be synchronized, separated by commas, the default is empty | --source_db.exclude_tables test_1,test_2                                                  |
+| --server_time_zone=Asia/Shanghai | optional | MySQL server time zone, Flink side defaults to "Asia/Shanghai" | Refer to [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
+
+Synchronous mysql job example
+For Mysql configuration, please refer to https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/mysql-cdc.html
+
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --source_db.db_name "testDB" \
+    --source_db.user "root" \
+    --source.parallelism 1 \
+    --source_db.db_type "mysql" \
+    --source_db.password "123456" \
+    --source_db.host "172.17.0.2" \
+    --source_db.port 3306 \
+    --sink.parallelism 1 \
+    --server_time_zone=Asia/Shanghai
+    --warehouse_path s3://bucket/lakesoul/flink/data \
+    --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
+    --flink.savepoint s3://bucket/lakesoul/flink/savepoints
+```
+For Oracle, the following additional parameters need to be configured
+
+| Parameter                        | Required | Meaning Description              | Parameter Filling Format                                                                  |
+|----------------------------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| --source_db.schemaList           | require  | The list schema of oracle database                                                                                                                     | --source_db.schemaList schema1,schema2                                                    |
+| --source_db.schema_tables        | require  | table name，Use commas to separate multiple tables                                                                                                      | --source_db.schema_tables schema.table1,schema.table2                                     |
+| --server_time_zone=Asia/Shanghai | optional | Oracle server time zone, Flink side defaults to "Asia/Shanghai"                                                                                        | Refer to [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
+| --source_db.splitSize            | optional | The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.the default is 1024. | --source_db.splitSize 10000                                                               |
+
+Synchronous oracle job example
+For oracle configuration,please refer to https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/oracle-cdc.html
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --source_db.db_type oracle \
+    --source_db.db_name "testDB" \
+    --source_db.user "FLINKUSER" \
+    --source.parallelism 1 \
+    --sink.parallelism 1 \
+    --source_db.password "flinkpw" \
+    --source_db.host "172.17.0.2" \
+    --source_db.port 1521 \
+    --source_db.splitSize 10000 \
+    --source_db.schemaList "FLINKUSER" \
+    --source_db.schema_tables "FLINKUSER.T1" \
+    --job.checkpoint_interval 1000 \
+    --server_time_zone=Asia/Shanghai
+    --warehouse_path s3://bucket/lakesoul/flink/data \
+    --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
+    --flink.savepoint s3://bucket/lakesoul/flink/savepoints
+```
+
+For Postgresql, the following additional parameters need to be configured
+
+| Parameter                 | Required | Meaning Description                                                                                                                                                                                                  | Parameter Filling Format                                                |
+|---------------------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------|
+| --source_db.schemaList    | require  | the schema list of postgres                                                                                                                                                                                          | --source_db.schemaList schema1,schema2          |
+| --source_db.schema_tables | require  | table name，Use commas to separate multiple tables                                                                                                                                                                    | --source_db.schema_tables schema.table1,schema.table2 |
+| --source_db.splitSize     | optional | The split size (number of rows) of table snapshot, captured tables are split into multiple splits when read the snapshot of table.the default is 1024.                                                               | --source_db.splitSize 10000                     |
+| --pluginName              | optional | The name of the Postgres logical decoding plug-in installed on the server. Supported values are decoderbufs, wal2json, wal2json_rds, wal2json_streaming, wal2json_rds_streaming and pgoutput. default is decoderbufs | --pluginName    pgoutput                        |
+| --source_db.slot_name     | require  | postgres slot name                                                                                                                                                                                                   | --source_db.slot_name flink                     |
+
+For Postgresql configuration,please refer to  https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/postgres-cdc.html
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --source_db.db_name "postgres" \
+    --source_db.user "postgres" \
+    --source.parallelism 1 \
+    --source_db.schemaList "public" \
+    --source_db.db_type "postgres" \
+    --source_db.password "123456" \
+    --source_db.host "172.17.0.2" \
+    --source_db.port 5433 \
+    --source_db.splitSize 2 \
+    --source_db.schema_tables "public.t1" \
+    --source_db.slot_name flink \
+    --pluginName "pgoutput" \
+    --sink.parallelism 1 \
+    --job.checkpoint_interval 1000 \
+    --warehouse_path s3://bucket/lakesoul/flink/data \
+    --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
+    --flink.savepoint s3://bucket/lakesoul/flink/savepoints
+```
 ## LakeSoul Flink CDC Sink job execution process
 
 In the initialization phase after the LakeSoul Flink job starts, it will first read all the tables in the configured MySQL DB (excluding tables that do not need to be synchronized). For each table, first determine whether it exists in LakeSoul. If it does not exist, a LakeSoul table is automatically created, and its schema is consistent with the corresponding table in MySQL.
@@ -160,8 +231,43 @@ Since MySQL, Spark, Parquet and other data types are not exactly the same, LakeS
 
 Types in Spark, type names in Spark SQL, you can find the corresponding relationship in the [Spark Data Types](https://spark.apache.org/docs/latest/sql-ref-datatypes.html) document.
 
+## Data type matching
+Type mapping relationship between Postgres and LakeSoul
+
+| SMALLINT INT2 SMALLSERIALSERIAL2                                                      | org.apache.spark.sql.types.DataTypes.IntegerType                                                                                                                                                                                                                                           | 
+|---------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| INTEGER   <br/>SERIAL                                                                 | org.apache.spark.sql.types.DataTypes.IntegerType                                                                                                                                                                                                                                           |
+| BIGINT   <br/>BIGSERIAL                                                               | org.apache.spark.sql.types.DataTypes.LongType                                                                                                                                                                                                                                              |
+| REAL   <br/>FLOAT4  <br/>FLOAT8   <br/>DOUBLE  <br/>PRECISION                         | org.apache.spark.sql.types.DataTypes.DoubleType                                                                                                                                                                                                                                            |
+| NUMERIC(p, s)  <br/>DECIMAL(p, s)                                                     | if decimal.handling.mode=precise  <br/>    org.apache.spark.sql.types.DecimalType(M,D)  <br/> if decimal.handling.mode=string   <br/>    org.apache.spark.sql.types.DataTypes.StringType   <br/> if decimal.handling.mode=doulbe   <br/>   org.apache.spark.sql.types.DataTypes.DoubleType |
+| BOOLEAN                                                                               | org.apache.spark.sql.types.DataTypes.BooleanType                                                                                                                                                                                                                                           |
+| DATE                                                                                  | org.apache.spark.sql.types.DataTypes.DateType                                                                                                                                                                                                                                              |
+| TIME [(p)] [WITHOUT TIMEZONE]                                                         | org.apache.spark.sql.types.DataTypes.LongType                                                                                                                                                                                                                                              |
+| TIMESTAMP [(p)] [WITHOUT TIMEZONE]                                                    | org.apache.spark.sql.types.DataTypes.TimestampType                                                                                                                                                                                                                                         |
+| CHAR(n)  <br/> CHARACTER(n)  <br/>  VARCHAR(n)  <br/> CHARACTER VARYING(n)  <br/>TEXT |  org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                          |
+| BYTEA                                                                                 |org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                           |
+
+Type mapping relationship between Oracle and LakeSoul
+
+| SMALLINT INT2 SMALLSERIALSERIAL2                                                                                                    | org.apache.spark.sql.types.DataTypes.IntegerType                                                                                                                                                                          | 
+|-------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| NUMBER(p, s )                                                                                                                       | if decimal.handling.mode=precise  <br/>  org.apache.spark.sql.types.DecimalType(M,D)  <br/>if decimal.handling.mode=string  <br/>  org.apache.spark.sql.types.DataTypes.StringType  <br/>if decimal.handling.mode=doulbe  <br/> org.apache.spark.sql.types.DataTypes.DoubleType |
+| FLOAT  <br/> BINARY_FLOAT                                                                                                           | org.apache.spark.sql.types.DataTypes.DoubleType                                                                                                                                                                                                                                      |
+| DOUBLE PRECISION  <br/> BINARY_DOUBLE                                                                                               | org.apache.spark.sql.types.DataTypes.DoubleType                                                                                                                                                                                                                                                                                     |
+| NUMBER(1)                                                                                                                           | org.apache.spark.sql.types.DataTypes.BooleanType                                                                                                                                                                                                                                                                                                                                    |
+| DATE                                                                                                                                |  org.apache.spark.sql.types.DataTypes.DateType                                                                                                                                                                                                                                                                                                                                                                                   |
+| TIMESTAMP [(p)] WITH TIME ZONE                                                                                                      |  org.apache.spark.sql.types.DataTypes.TimestampType                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| CHAR(n)  <br/>NCHAR(n)  <br/>NVARCHAR2(n)  <br/>VARCHAR(n)  <br/>VARCHAR2(n)  <br/>CLOB  <br/>NCLOB  <br/>XMLType  <br/>SYS.XMLTYPE | org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| BLOB                                                                                                                                |  org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+
+
 ## Precautions
 1. A table in MySQL must have a primary key, and tables without a primary key are currently not supported;
 2. The DDL change currently supports adding a column at the end, or deleting a column in the middle; the default value of a new column currently only supports `null`, and LakeSoul will automatically add a `null` value to the column when reading old data; the deleted column , LakeSoul will automatically filter this column when reading;
 3. The TIME type in MySQL corresponds to the LongType type in LakeSoul, as there is no TIME data type in Spark and Debezium resolves the TIME type to the current value in microseconds from 00:00:00. Therefore, this is consistent with Debezium;
 4. The TIMESTAMP and DATETIME types in MySQL are stored as UTC TIME ZOME values in LakeSoul to avoid time zone resolution issues; When reading, you just need to specify the time zone and it can be parsed according to the specified time zone. So it is necessary to correctly fill in the server_time_zone parameter when starting the FLINK CDC task.
+5. Postgres needs to set wal_level = logical
+6. In order to obtain complete Update event information in Postgres, you need to execute: alter table tablename replica identity full.
+7. Oracle needs to enable incremental logging for synchronized tables: ALTER TABLE inventory.customers ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+8. When transferring tables from Oracle to lakesoul, avoid using schema.* to transfer multiple tables.
