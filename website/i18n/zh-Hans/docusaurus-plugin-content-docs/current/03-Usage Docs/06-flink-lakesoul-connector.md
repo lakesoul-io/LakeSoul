@@ -31,7 +31,7 @@ Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.4.0-flink-1.17.j
 切换到 Flink 文件夹下，执行命令开启 SQL Client 客户端。
 ```bash
 # 启动 Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.3.0-flink-1.17.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.5.0-flink-1.17.jar
 ```
 
 ## 2. DDL

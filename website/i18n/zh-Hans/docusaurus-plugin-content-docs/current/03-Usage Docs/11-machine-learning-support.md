@@ -11,13 +11,13 @@ LakeSoul 实现了 PyTorch/ PyArrow/ HuggingFace / Ray 的数据源接口， 用
 Python 包目前仅支持 Linux 系统，在 GLibc 2.17 以上均可使用（Centos 7 及以上，Ubuntu 16.04 及以上）。
 
 对于Python
-3.8用户：[lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+3.8用户：[lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
 
 对于Python
-3.9用户：[lakesoul-1.0.0b0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+3.9用户：[lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
 
 对于Python
-3.10用户：[lakesoul-1.0.0b0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+3.10用户：[lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
 
 假设我们使用Python 3.8，我们可以按照以下方式下载wheel文件
 
@@ -187,8 +187,7 @@ ds = ray.data.read_lakesoul("table_name", partitions={'split': 'train'})
 ## PyArrow/Pandas 读取 LakeSoul 表
 LakeSoul 可以支持单机读取数据，并使用 PyArrow、Pandas 进行计算。LakeSoul 读取时返回 PyArrow 的 [Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.Dataset.html) 对象，支持迭代访问。示例：
 ```python
-import pyarrow
-import lakesoul.arrow.lakesoul_dataset
+from lakesoul.arrow import lakesoul_dataset
 
 ds = lakesoul_dataset("table_name", partitions={'split': 'train'})
 

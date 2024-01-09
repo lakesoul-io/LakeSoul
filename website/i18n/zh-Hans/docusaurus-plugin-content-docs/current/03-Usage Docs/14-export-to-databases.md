@@ -1,4 +1,4 @@
-### lakesoul表出湖使用手册
+# LakeSoul 表实时出湖使用手册
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 ## 支持出湖的目标库
-laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖，现支持lakesoul表到mysql，doris，postgres的出湖
+LakeSoul 至 2.5.0 开始，支持单表数据以批同步出湖，流同步出湖，现支持 LakeSoul 表导出到 MySQL，Apache Doris，PostgreSQL 以及兼容这些数据库协议的数据库。
 
 ## 参数配置
 
@@ -34,7 +34,7 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    lakesoul-flink-2.5.0-flink-1.17.jar \
     --target_db.url jdbc:mysql://172.17.0.4:3306/ \
     --target_db.db_type mysql \
     --target_db.db_name test \
@@ -49,7 +49,7 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
 出湖postgres任务启动
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    lakesoul-flink-2.5.0-flink-1.17.jar \
     --target_db.url jdbc:postgresql://172.17.0.2:5432/ \
     --target_db.db_name test \
     --target_db.db_type postgres \
@@ -64,7 +64,7 @@ laeksoul至2.5.0开始，支持单表数据以批同步出湖，流同步出湖�
 出湖到doris任务启动
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+lakesoul-flink-2.5.0-flink-1.17.jar \
 --target_db.url "jdbc:mysql://172.17.0.2:9030/" \
 --source_db.db_name test \
 --target_db.db_name test \
@@ -79,9 +79,10 @@ lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
 ```
 
 ## 使用事项
-1. 出湖到postgresql和mysql，可以支持用户根据需求手动建表，也支持程序自动建表，如果用户对数据的类型要求比较高，那么建议用户自己建表  
-2. 如果出湖的表是分区表，那么需要用户手动建表，否则同步后的表无分区字段  
-3. 对于出湖到doris，目前仅支持用户手动建表，建表之后再开启同步任务  
-4. 出湖doris，用户需要配置FE的地址，默认为127.0.0.1:8030  
+1. 出湖到 PostgreSQL 和 MySql，可以支持用户根据需求手动建表，也支持程序自动建表，如果用户对数据的类型要求自定义控制(例如 varchar)，那么建议用户提前在目标库建表  
+2. 如果出湖的 LakeSoul 表是分区表，那么需要用户手动在目标库建表，否则同步后的表无分区字段  
+3. 对于出湖到 Doris，目前仅支持用户手动在 Doris 库中建表，建表之后再开启同步任务
+4. 出湖到 Doris，用户需要配置FE的地址，默认为127.0.0.1:8030  
 5. 对于jdbc的地址，用户应严格以‘/’结尾，如：jdbc:mysql://172.17.0.2:9030/
-6. 用户建doris表时,对于有主键表，doris表的数据模型应为Unique，对于非主键表，数据模型应为Duplicate
+6. 用户在目的端库提前建表时，表的主键需要和 LakeSoul 一致，或者都没有主键
+7. 用户建 Doris 表时,对于有主键表，Doris 表的数据模型应为 Unique，对于非主键表，数据模型应为 Duplicate
