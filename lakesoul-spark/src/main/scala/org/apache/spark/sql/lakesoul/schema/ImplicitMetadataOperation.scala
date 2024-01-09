@@ -13,6 +13,7 @@ import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.arrow.ArrowUtils
+import org.apache.spark.sql.lakesoul.LakeSoulOptions.HASH_PARTITIONS
 
 
 /**
@@ -137,6 +138,7 @@ trait ImplicitMetadataOperation extends Logging {
           throw LakeSoulErrors.hashBucketNumNotSetException()
         }
       }
+      val hash_column = normalizedHashPartitionCols.mkString(LAKESOUL_HASH_PARTITION_SPLITTER)
 
       // If this is the first write, configure the metadata of the table.
       //todo: setting
@@ -147,9 +149,9 @@ trait ImplicitMetadataOperation extends Logging {
           table_id = table_info.table_id,
           table_schema = ArrowUtils.toArrowSchema(dataSchema).toJson,
           range_column = normalizedRangePartitionCols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
-          hash_column = normalizedHashPartitionCols.mkString(LAKESOUL_HASH_PARTITION_SPLITTER),
+          hash_column = hash_column,
           bucket_num = realHashBucketNum,
-          configuration = configuration,
+          configuration = if (hash_column.nonEmpty) configuration.updated(HASH_PARTITIONS, hash_column) else configuration,
           short_table_name = table_info.short_table_name))
     }
     else if (isOverwriteMode && canOverwriteSchema && isNewSchema) {

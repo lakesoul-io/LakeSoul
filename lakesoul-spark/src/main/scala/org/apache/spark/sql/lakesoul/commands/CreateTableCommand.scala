@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER
+import com.dmetasoul.lakesoul.meta.DBConfig.{LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_RANGE_PARTITION_SPLITTER}
 import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -166,6 +166,7 @@ case class CreateTableCommand(var table: CatalogTable,
         if (noExistingMetadata) {
           assertTableSchemaDefined(tableLocation, tableWithLocation)
           assertPathEmpty(sparkSession, tableWithLocation)
+          assertHashPartitionNonNullable(table)
           // This is a user provided schema.
           // Doesn't come from a query, Follow nullability invariants.
           val newTableInfo = getProvidedTableInfo(tc, table, ArrowUtils.toArrowSchema(table.schema).toJson)
@@ -210,14 +211,14 @@ case class CreateTableCommand(var table: CatalogTable,
   private def getProvidedTableInfo(tc: TransactionCommit,
                                    table: CatalogTable,
                                    schemaString: String): TableInfo = {
-    val hashParitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
+    val hashPartitions = table.properties.getOrElse(LakeSoulOptions.HASH_PARTITIONS, "")
     val hashBucketNum = table.properties.getOrElse(LakeSoulOptions.HASH_BUCKET_NUM, "-1").toInt
     TableInfo(tc.tableInfo.namespace,
       table_path_s = tc.tableInfo.table_path_s,
       table_id = tc.tableInfo.table_id,
       table_schema = schemaString,
       range_column = table.partitionColumnNames.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),
-      hash_column = hashParitions,
+      hash_column = hashPartitions,
       bucket_num = hashBucketNum,
       configuration = table.properties
     )
@@ -235,6 +236,19 @@ case class CreateTableCommand(var table: CatalogTable,
         tableWithLocation.identifier.toString(),
         tableWithLocation.location.toString)
     }
+  }
+
+  private def assertHashPartitionNonNullable(table: CatalogTable): Unit = {
+    table.properties.get(LakeSoulOptions.HASH_PARTITIONS).foreach(hashPartitions => {
+      val hashPartitionsSet = hashPartitions.split(LAKESOUL_HASH_PARTITION_SPLITTER).toSet
+      if (hashPartitionsSet.nonEmpty) {
+        if (table.schema(hashPartitionsSet).exists(f => f.nullable)) {
+          throw LakeSoulErrors.failedCreateTableException(
+            table.identifier.toString(),
+            hashPartitionsSet)
+        }
+      }
+    })
   }
 
 

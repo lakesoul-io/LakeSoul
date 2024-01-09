@@ -1185,7 +1185,7 @@ trait TableCreationTests
     withTempPath { dir =>
       val tableName = "test_table"
       withTable(s"$tableName") {
-        spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
+        spark.sql(s"CREATE TABLE $tableName(id string not null, date string, data string) USING lakesoul" +
           s" PARTITIONED BY (date)" +
           s" LOCATION '${dir.toURI}'" +
           s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
@@ -1201,6 +1201,25 @@ trait TableCreationTests
         assert(tableInfo.range_partition_columns.equals(Seq("date")))
         assert(tableInfo.hash_partition_columns.equals(Seq("id")))
         assert(tableInfo.bucket_num == 2)
+      }
+    }
+  }
+
+  test("create table sql with range and hash partition - fails when hash partition is nullable") {
+    withTempPath { dir =>
+      val tableName = "test_table"
+      withTable(s"$tableName") {
+        val e = intercept[AnalysisException] {
+          spark.sql(s"CREATE TABLE $tableName(id string, date string, data string) USING lakesoul" +
+            s" PARTITIONED BY (date)" +
+            s" LOCATION '${dir.toURI}'" +
+            s" TBLPROPERTIES('lakesoul_cdc_change_column'='change_kind'," +
+            s" 'hashPartitions'='id'," +
+            s" 'hashBucketNum'='2')")
+        }
+        assert(e.getMessage.contains(tableName))
+        assert(e.getMessage.contains("The hash partitions"))
+        assert(e.getMessage.contains("contains nullable column."))
       }
     }
   }
