@@ -7,7 +7,9 @@ package org.apache.flink.lakesoul.entry;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -24,6 +26,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
 
 import java.sql.*;
+import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
@@ -159,9 +162,17 @@ public class SyncDatabase {
     public static String getTablePk(String sourceDataBae, String sourceTableName) {
         DBManager dbManager = new DBManager();
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
-        String tableProperties = tableInfo.getProperties();
-        JSONObject jsonObject = JSON.parseObject(tableProperties);
-        return jsonObject.getString("hashPartitions");
+        String partitions = tableInfo.getPartitions();
+        DBUtil.TablePartitionKeys keys = DBUtil.parseTableInfoPartitions(partitions);
+        List<String> primaryKeys = keys.primaryKeys;
+        StringBuilder stringBuilder = new StringBuilder();
+        for (int i = 0; i < primaryKeys.size(); i++) {
+            stringBuilder.append(primaryKeys.get(i));
+            if (i<primaryKeys.size()-1){
+                stringBuilder.append(",");
+            }
+        }
+        return primaryKeys.size() == 0 ? null : stringBuilder.toString();
     }
 
     public static void xsyncToPg(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
