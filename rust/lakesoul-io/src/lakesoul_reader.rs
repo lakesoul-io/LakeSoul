@@ -4,6 +4,7 @@
 
 use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
@@ -15,8 +16,6 @@ pub use datafusion::error::{DataFusionError, Result};
 
 use datafusion::prelude::SessionContext;
 
-use core::pin::Pin;
-use datafusion::physical_plan::RecordBatchStream;
 use futures::StreamExt;
 
 use tokio::runtime::Runtime;
@@ -31,7 +30,7 @@ use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 pub struct LakeSoulReader {
     sess_ctx: SessionContext,
     config: LakeSoulIOConfig,
-    stream: Option<Pin<Box<dyn RecordBatchStream + Send>>>,
+    stream: Option<SendableRecordBatchStream>,
     pub(crate) schema: Option<SchemaRef>,
 }
 
@@ -183,7 +182,7 @@ mod tests {
 
         while let Some(rb) = reader.next_rb().await {
             let num_rows = &rb.unwrap().num_rows();
-            row_cnt = row_cnt + num_rows;
+            row_cnt += num_rows;
         }
         assert_eq!(row_cnt, 1000);
         Ok(())
@@ -261,7 +260,7 @@ mod tests {
                     let rb = rb.unwrap();
                     let num_rows = &rb.num_rows();
                     unsafe {
-                        ROW_CNT = ROW_CNT + num_rows;
+                        ROW_CNT += num_rows;
                         println!("{}", ROW_CNT);
                     }
 
@@ -300,7 +299,7 @@ mod tests {
         while let Some(rb) = reader.next_rb().await {
             let num_rows = &rb.unwrap().num_rows();
             unsafe {
-                ROW_CNT = ROW_CNT + num_rows;
+                ROW_CNT += num_rows;
                 println!("{}", ROW_CNT);
             }
             sleep(Duration::from_millis(20)).await;

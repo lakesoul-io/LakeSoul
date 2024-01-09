@@ -13,12 +13,12 @@ use datafusion::{
 use datafusion_common::{DFSchema, Result};
 
 pub fn create_sort_exprs(
-    colunms: &[String],
+    columns: &[String],
     input_dfschema: &DFSchema,
     input_schema: &Schema,
     session_state: &SessionState,
 ) -> Result<Vec<PhysicalSortExpr>> {
-    colunms
+    columns
         .iter()
         .map(|column| {
             create_physical_sort_expr(
@@ -32,13 +32,13 @@ pub fn create_sort_exprs(
 }
 
 pub fn create_hash_partitioning(
-    colunms: &[String],
+    columns: &[String],
     partitioning_num: usize,
     input_dfschema: &DFSchema,
     input_schema: &Schema,
     session_state: &SessionState,
 ) -> Result<Partitioning> {
-    let runtime_expr = colunms
+    let runtime_expr = columns
         .iter()
         .map(|column| {
             create_physical_expr(

@@ -33,3 +33,4 @@ __pycache__/
 /python/lakesoul.egg-info/
 /python/*.whl
 /wheelhouse/
+/rust/.idea
