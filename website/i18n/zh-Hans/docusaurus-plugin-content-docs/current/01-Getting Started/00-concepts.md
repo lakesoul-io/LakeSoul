@@ -25,7 +25,7 @@ LakeSoul 的目标是构建一套端到端的湖仓平台，涵盖数据集成�
 5. 多租户空间和 RBAC。LakeSoul 内置了[多空间隔离和权限控制](../03-Usage%20Docs/12-workspace-and-rbac.md)。可以在湖仓中划分多个工作空间，每个工作空间可以加入多个用户。不同空间的元数据、物理数据实现了访问权限隔离。空间的权限隔离，对于 SQL、Java/Scala、Python 作业，包括提交到集群上执行的作业，均是有效的。
 6. 自治管理。LakeSoul 提供了[自动分离式的弹性 Compaction 服务](../03-Usage%20Docs/08-auto-compaction-task.md)、[自动数据清理服务等](../03-Usage%20Docs/09-clean-redundant-data.md)，减轻运维工作量。其中分离式弹性 Compaction 服务由元数据层自动感知触发，并行执行，不影响写入任务的效率。
 7. 快照和回滚。LakeSoul 表可以支持按照时间戳进行[快照读和版本回滚](../02-Tutorials/03-snapshot-manage.md)。
-8. [出湖同步](../03-Usage%20Docs/14-out-of-lake-databases.md)。LakeSoul 提供封装好的流式、批式出湖任务。
+8. [出湖同步](../03-Usage%20Docs/14-export-to-databases.md)。LakeSoul 提供封装好的流式、批式出湖任务。
 
 ## LakeSoul 的核心概念
 在 LakeSoul 中，数据被组织成表。表支持多级 range 分区，支持指定主键。
