@@ -12,26 +12,53 @@ from . import lib
 from .generated import entity_pb2
 
 global config
-config = None
+config = "host=127.0.0.1 port=5432 user=lakesoul_test password=lakesoul_test"
 
 
 def reset_pg_conf(conf):
     global config
     config = " ".join(conf)
 
+def parse_jdbc_url(url):
+    from urllib.parse import urlparse
+    if url.startswith('jdbc:'):
+        url = url[5:]
+    parsed_url = urlparse(url)
+    host, port = parsed_url.netloc.split(':')
+    return host, port, parsed_url.path[1:]
 
 def get_pg_conf_from_env():
     import os
     conf = []
     fields = 'host', 'port', 'dbname', 'user', 'password'
-    for field in fields:
-        key = 'LAKESOUL_METADATA_PG_%s' % field.upper()
-        value = os.environ.get(key)
-        if value is not None:
-            conf.append('%s=%s' % (field, value))
-    if conf:
+    if os.environ.get("LAKESOUL_HOME") is not None:
+        import configparser
+        tmp_conf = configparser.ConfigParser()
+        with open(os.environ.get("LAKESOUL_HOME"), "r") as stream:
+            tmp_conf.read_string("[top]\n" + stream.read())
+            tmp_conf = tmp_conf["top"]
+            host, port, dbname = parse_jdbc_url(tmp_conf['lakesoul.pg.url'])
+            conf.append('host=%s' % host)
+            conf.append('port=%s' % port)
+            conf.append('dbname=%s' % dbname)
+            conf.append('user=%s' % tmp_conf["lakesoul.pg.username"])
+            conf.append('password=%s' % tmp_conf["lakesoul.pg.password"])
         return conf
-    return None
+    env_vars = ['LAKESOUL_PG_URL', 'LAKESOUL_PG_USERNAME', 'LAKESOUL_PG_PASSWORD']
+    for evar in env_vars:
+        if evar not in os.environ:
+            # or if you want to raise exception
+            print('Warning: Environment variable "%s" was not set and will use default meta db: '
+                  'jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified' % evar)
+            return None
+    host, port, dbname = parse_jdbc_url(os.environ.get('LAKESOUL_PG_URL'))
+    conf.append('host=%s' % host)
+    conf.append('port=%s' % port)
+    conf.append('dbname=%s' % dbname)
+    conf.append('user=%s' % os.environ.get('LAKESOUL_PG_USERNAME'))
+    conf.append('password=%s' % os.environ.get('LAKESOUL_PG_PASSWORD'))
+
+    return conf
 
 
 class NativeMetadataClient:
@@ -51,13 +78,8 @@ class NativeMetadataClient:
 
         def target():
             global config
-            if config is None:
-                conf = get_pg_conf_from_env()
-                if conf is None:
-                    message = "set LAKESOUL_METADATA_PG_* environment variables or "
-                    message += "call lakesoul.metadata.native_client.reset_pg_conf "
-                    message += "to configure LakeSoul metadata"
-                    raise RuntimeError(message)
+            conf = get_pg_conf_from_env()
+            if conf is not None:
                 reset_pg_conf(conf)
             return lib.lakesoul_metadata_c.create_tokio_postgres_client(CFUNCTYPE(c_void_p, c_bool, c_char_p)(callback),
                                                                         config.encode("utf-8"),
