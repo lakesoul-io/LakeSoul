@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io"
-version = "2.3.0"
+version = "2.5.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "lakesoul-io-c"
-version = "2.3.0"
+version = "2.5.0"
 dependencies = [
  "arrow",
  "cbindgen",
