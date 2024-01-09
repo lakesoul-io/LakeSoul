@@ -37,6 +37,12 @@ object LakeSoulErrors {
 
   def formatSchema(schema: StructType): String = schema.treeString
 
+  def failedCreateTableException(table_name: String, hash_partitions: Set[String]): Throwable = {
+    new AnalysisException(
+      s"""
+         |Error: Failed to create table: $table_name. The hash partitions ('$hash_partitions') contains nullable column.
+       """.stripMargin)
+  }
 
   def failedCreateTableException(table_name: String): Throwable = {
     new AnalysisException(

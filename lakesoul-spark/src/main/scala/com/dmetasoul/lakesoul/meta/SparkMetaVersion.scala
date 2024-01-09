@@ -91,8 +91,7 @@ object SparkMetaVersion {
     }
     val short_table_name = info.getTableName
     val partitions = info.getPartitions
-    val properties = info.getProperties.toString()
-
+    val properties = info.getProperties
     import scala.util.parsing.json.JSON
     val configuration = JSON.parseFull(properties)
     val configurationMap = configuration match {
