@@ -55,10 +55,10 @@ LakeSoul 支持自动分离式 Compaction 、自动表生命周期清理、自�
 ### 微信公众号
 欢迎关注 <u>**元灵数智**</u> 公众号，我们会定期推送关于 LakeSoul 的架构代码解读、端到端算法业务落地案例分享等干货文章：
 
-![元灵数智公众号](website/static/img/%E5%85%83%E7%81%B5%E6%95%B0%E6%99%BA%E5%85%AC%E4%BC%97%E5%8F%B7.jpg)
-
 ### LakeSoul 开发者社区微信群
-欢迎加入 LakeSoul 开发者社区微信群，随时交流 LakeSoul 开发相关的各类问题：请关注公众号后点击下方 "了解我们-用户交流" 获取最新微信群二维码。
+欢迎加入 LakeSoul 开发者社区微信群，随时交流 LakeSoul 开发相关的各类问题：请关注公众号后点击下方 "了解我们-用户交流" 获取最新微信群二维码。或扫描以下二维码添加小助手微信后加群：
+
+![微信交流群](website/static/img/wechat.png)
 
 # 联系我们
 发送邮件至 [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation).
