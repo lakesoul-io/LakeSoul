@@ -1,4 +1,4 @@
-# LakeSoul Flink CDC 整库千表同步
+# LakeSoul Flink CDC 整库千表同步入湖
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -6,20 +6,20 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API 及 SQL （单表），以及 Stream API （整库多表）。目前支持的上游数据源为 MySQL(5.6-8.0)、Oracle(11、12、19、21)、Postgresql(10-14)。入湖入口统一为JdbcCdc。
+LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API 及 SQL （单表），以及 Stream API （整库多表）。目前支持的上游数据源为 MySQL(5.6-8.0, PolarDB)、Oracle(11、12、19、21)、Postgresql(10-14, PolarDB)。入湖入口统一为 JdbcCdc。
 ## 主要功能特点
 
 在 Stream API 中，LakeSoul Sink 主要功能点有：
 * 支持整库千表（不同 schema）在同一个 Flink 作业中实时 CDC 同步，不同表会自动写入 LakeSoul 对应表名中
-* 对于mysql和postgresql，支持 Schema 变更(DDL)自动同步到 LakeSoul，下游读取自动兼容新旧数据（目前支持增删列以及数值类型增加精度）；
-* 对于oracle，仅支持同步schema不在变更的表(列增加，列删除都是不允许的)，且不支持新表同步。
-* mysql和postgresql支持运行过程中上游数据库中新建表自动感知，在 LakeSoul 中自动建表；
+* 对于 MySQL 和 PostgreSQL，支持 Schema 变更(DDL)自动同步到 LakeSoul，下游读取自动兼容新旧数据（目前支持增删列以及数值类型增加精度）；
+* 对于 Oracle，仅支持同步 schema 不再变更的表(由于 Flink CDC 2.4 的问题，列增加，列删除暂不支持)，且不支持新表同步。
+* MySQL 和 PostgreSQ L支持运行过程中上游数据库中新建表自动感知，在 LakeSoul 中自动建表；
 * 支持严格一次（Exactly Once）语义，即使 Flink 作业发生 Failover，能够保证数据不丢不重；
 * 提供 Flink 命令行启动入口类，支持指定库名、表名黑名单、并行度等参数；
 
 ## 命令行使用方法
 ### 1. 下载 LakeSoul Flink Jar
-可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.5.0-flink-1.17.jar。
+可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-flink-2.5.0-flink-1.17.jar。
 
 如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.5.0-flink-1.17.jar。
 
@@ -42,7 +42,7 @@ containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://localhost:5432/
 注意这里 master 和 taskmanager 的环境变量都需要设置。
 
 :::tip
-Postgres 数据库的连接信息、用户名密码需要根据实际情况修改。
+PostgreSQL 数据库的连接信息、用户名密码需要根据实际情况修改。
 :::
 
 :::caution
@@ -96,7 +96,7 @@ export LAKESOUL_PG_PASSWORD=root
 对于Mysql数据库配置，可参考https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/mysql-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    lakesoul-flink-2.5.0-flink-1.17.jar \
     --source_db.db_name "testDB" \
     --source_db.user "root" \
     --source.parallelism 1 \
@@ -124,7 +124,7 @@ export LAKESOUL_PG_PASSWORD=root
 https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/oracle-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    lakesoul-flink-2.5.0-flink-1.17.jar \
     --source_db.db_type oracle \
     --source_db.db_name "testDB" \
     --source_db.user "FLINKUSER" \
@@ -156,7 +156,7 @@ https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/
 对于Postgres数据库配置，可参考 https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/postgres-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    lakesoul-flink-2.5.0-flink-1.17.jar \
     --source_db.db_name "postgres" \
     --source_db.user "postgres" \
     --source.parallelism 1 \

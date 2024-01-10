@@ -12,7 +12,7 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
  * Run with following commands with local minio env:
  *
  * mvn package -Prelease-linux-x86-64 -pl lakesoul-spark -am -DskipTests
- * docker run --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars bitnami/spark:3.3.1 spark-submit --driver-memory 4g --jars /opt/spark/work-dir/jars/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT.jar --class org.apache.spark.sql.lakesoul.benchmark.io.ParquetWriteBenchmark /opt/spark/work-dir/jars/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar --localtest
+ * docker run --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars bitnami/spark:3.3.1 spark-submit --driver-memory 4g --jars /opt/spark/work-dir/jars/lakesoul-spark-2.5.0-spark-3.3-SNAPSHOT.jar --class org.apache.spark.sql.lakesoul.benchmark.io.ParquetWriteBenchmark /opt/spark/work-dir/jars/lakesoul-spark-2.2.0-spark-3.3-SNAPSHOT-tests.jar --localtest
  */
 object ParquetWriteBenchmark {
   def main(args: Array[String]): Unit = {

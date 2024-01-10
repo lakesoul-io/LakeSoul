@@ -16,8 +16,7 @@ docker pull bitnami/spark:3.3.1
 ```
 
 ### Download LakeSoul release jar
-1. download [maven-package-upload.zip](https://github.com/lakesoul-io/LakeSoul/suites/16162659724/artifacts/922875223).
-2. unzip the zip file and extract `lakesoul-spark-2.3.0-spark-3.3-SNAPSHOT.jar` from `maven-package-upload/lakesoul-spark/target/`.
+1. download Spark release jar from https://github.com/lakesoul-io/LakeSoul/releases
 
 ### Download LakeSoul wheel file
 For users of Python 3.8, Python 3.9, and Python 3.10, we have prepared different wheel files for each version. Please download the appropriate one based on your requirements.
