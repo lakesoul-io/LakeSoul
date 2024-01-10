@@ -25,12 +25,12 @@ LakeSoul | Spark Version
 使用`LakeSoulSparkSessionExtension` sql扩展来运行spark-shell/spark-sql。
 
 <Tabs
-    defaultValue="Scala"
+    defaultValue="SQL"
     values={[
         {label: 'Scala', value: 'Scala'},
         {label: 'SQL', value: 'SQL'},
     ]}>
-  <TabItem value="Spark SQL" label="Spark SQL" default>
+  <TabItem value="SQL" label="SQL" default>
 
   ```bash
   spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-2.5.0-spark-3.3.jar
@@ -110,7 +110,13 @@ LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_table'
 
 ```scala
 // scala
-// First commit will auto-initialize the table
+val tablePath= "s3://lakesoul-test-bucket/test_table"
+val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+df.write
+  .mode("append")
+  .format("lakesoul")
+  .option("rangePartitions","date")
+  .save(tablePath)
 ```
 </TabItem>
 

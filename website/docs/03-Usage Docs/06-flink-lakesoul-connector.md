@@ -178,7 +178,7 @@ LakeSoul supports reading full data of LakeSoul table in batch mode and stream m
      ```sql
      -- Set batch mode, read test_table table
      SET execution.runtime-mode = batch;
-     SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10' order by id;
+     SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10';
     
      -- Set streaming mode, read test_table table
      SET execution.runtime-mode = stream;
@@ -200,7 +200,7 @@ LakeSoul supports reading full data of LakeSoul table in batch mode and stream m
      tEnvs. useCatalog("lakeSoul");
      tEnvs.useDatabase("default");
     
-     tEnvs.executeSql("SELECT * FROM test_table order by id").print();
+     tEnvs.executeSql("SELECT * FROM test_table").print();
      ```
 
      ```java

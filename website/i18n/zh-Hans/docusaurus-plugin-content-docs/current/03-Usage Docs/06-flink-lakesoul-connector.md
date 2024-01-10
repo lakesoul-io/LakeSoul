@@ -24,7 +24,7 @@ flink.warehouse.dir: "s3://bucket/path"
 ```
 如果指定了 warehouse 路径，则表路径默认为 `warehouse_dir/table_name`。如果建表时在属性中指定了 `path` 属性，则优先使用该属性作为表的存储路径。
 
-Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.4.0-flink-1.17.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
+Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.5.0-flink-1.17.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
 
 为了使用 Flink 创建 LakeSoul 表，推荐使用 Flink SQL Client，支持直接使用 Flink SQL 命令操作 LakeSoul 表，本文档中 Flink SQL 是在 Flink SQL Client 界面直接输入语句；Table API 需要在 Java 项目中编写使用。
 
@@ -183,7 +183,7 @@ SET execution.runtime-mode = batch;
     ```sql
     -- 设置批式模式，读取test_table表
     SET execution.runtime-mode = batch;
-    SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10' order by id;
+    SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10';
     
     -- 设置流式模式，读取test_table表
     SET execution.runtime-mode = stream;
@@ -205,7 +205,7 @@ SET execution.runtime-mode = batch;
     tEnvs.useCatalog("lakeSoul");
     tEnvs.useDatabase("default");
     
-    tEnvs.executeSql("SELECT * FROM test_table order by id").print();
+    tEnvs.executeSql("SELECT * FROM test_table").print();
     ```
 
     ```java
