@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Setup
 
-To use LakeSoul in Spark, first configure [Spark catalogs](02-docker-compose.mdx). LakeSoul uses Apache Spark’s DataSourceV2 API for data source and catalog implementations. Moreover, LakeSoul provides scala table API to extend the capability of LakeSoul table.
+To use LakeSoul in Spark, first configure [Spark catalogs](01-setup-locl-env.mdx). LakeSoul uses Apache Spark’s DataSourceV2 API for data source and catalog implementations. Moreover, LakeSoul provides scala table API to extend the capability of LakeSoul table.
 
 ### Spark 3 Support Matrix
 
