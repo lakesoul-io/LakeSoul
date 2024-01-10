@@ -1,4 +1,4 @@
-# 搭建本地测试环境
+# 测试环境搭建
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -6,19 +6,25 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## 启动一个 PostgreSQL 数据库
+## 1. 在Linux本地文件系统中搭建测试环境
+将数据存储在本地磁盘上，只需要有PostgreSQL数据库即可。
+### 1.1 启动一个 PostgreSQL 数据库
 可以通过docker使用下面命令快速搭建一个pg数据库：
 ```bash
 docker run -d --name lakesoul-test-pg -p5432:5432 -e POSTGRES_USER=lakesoul_test -e POSTGRES_PASSWORD=lakesoul_test -e POSTGRES_DB=lakesoul_test -d swr.cn-north-4.myhuaweicloud.com/dmetasoul-repo/postgres:14.5
 ```
 
-## PG 数据库初始化
+### 1.2 PG 数据库初始化
 在 LakeSoul 代码库目录下执行：
 ```bash
-PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
+## 将初始化脚本copy到容器中
+docker cp script/meta_init.sql lakesoul-test-pg:/
+
+## 执行初始化命令
+docker exec -i lakesoul-test-pg sh -c "PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f meta_init.sql"
 ```
 
-## 安装 Spark 环境
+### 1.3 安装 Spark 环境
 由于 Apache Spark 官方的下载安装包不包含 hadoop-cloud 以及 AWS S3 等依赖，我们提供了一个 Spark 安装包，其中包含了 hadoop cloud 、s3 等必要的依赖：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop3.tgz
 
 ```bash
@@ -37,18 +43,18 @@ https://dlcdn.apache.org/spark/spark-3.3.2/spark-3.3.2-bin-without-hadoop.tgz
 
 LakeSoul 发布 jar 包可以从 GitHub Releases 页面下载：https://github.com/lakesoul-io/LakeSoul/releases 。下载后请将 Jar 包放到 Spark 安装目录下的 jars 目录中：
 ```bash
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-spark-2.5.0-spark-3.3.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-spark-2.4.0-spark-3.3.jar -P $SPARK_HOME/jars
 ```
 
-如果访问 Github 有问题，也可以从如下链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.5.0-spark-3.3.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.4.0-spark-3.3.jar
 
 :::tip
 从 2.1.0 版本起，LakeSoul 自身的依赖已经通过 shade 方式打包到一个 jar 包中。之前的版本是多个 jar 包以 tar.gz 压缩包的形式发布。
 :::
 
-## 启动 spark-shell 进行测试
+#### 1.3.1 启动 spark-shell 进行测试
 
-### 首先为 LakeSoul 增加 PG 数据库配置
+#### 首先为 LakeSoul 增加 PG 数据库配置
 默认情况下，pg数据库连接到本地数据库，配置信息如下：
 ```txt
 lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
@@ -64,12 +70,18 @@ export lakesoul_home=/opt/soft/pg.property
 
 用户可以在这里自定义数据库配置信息，这样用户自定义 PG DB 的配置信息就会在 Spark 作业中生效。
 
-### 进入 Spark 安装目录，启动 spark 交互式 shell：
+#### 1.3.2 进入 Spark 安装目录，启动 spark 交互式 shell：
   ```shell
   ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul
   ```
 
-## Spark 作业 LakeSoul 相关参数设置
+#### 1.3.3 将数据写入对象存储服务
+需要添加对象存储 access key, secret key 和 endpoint 等信息
+  ```shell
+  ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --conf spark.hadoop.fs.s3a.access.key=XXXXXX --conf spark.hadoop.fs.s3a.secret.key=XXXXXX --conf spark.hadoop.fs.s3a.endpoint=XXXXXX --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+  ```
+
+#### Spark 作业 LakeSoul 相关参数设置
 可以将以下配置添加到 spark-defaults.conf 或者 Spark Session Builder 部分。
 
 |Key | Value
@@ -77,3 +89,166 @@ export lakesoul_home=/opt/soft/pg.property
 spark.sql.extensions | com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 spark.sql.defaultCatalog | lakesoul
+
+### 1.4 Flink 环境搭建
+以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.1/lakesoul-flink-2.4.1-flink-1.17.jar
+
+最新版本支持 flink 集群为1.17，Flink jar下载地址为：https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
+
+#### 1.4.1 启动Flink SQL shell
+在创建好 pg 数据库和 `lakesoul_home` 配置文件后，通过以下方式可以进入 SQL Client 客户端，将LakeSoul Flink jar放在 FLink 目录下，
+进入 Flink 安装目录，执行以下命令：
+```shell
+# 启动 flink 集群
+export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
+
+# 启动 flink sql client
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-2.4.1-flink-1.17.jar
+```
+
+#### 1.4.2 将数据写入对象存储服务
+需要在配置文件 flink-conf.yaml 添加 access key, secret key 和 endpoint 等信息
+```shell
+s3.access-key: XXXXXX
+s3.secret-key: XXXXXX
+s3.endpoint: XXXXXX
+```
+将flink-s3-fs-hadoop.jar 和 flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 放到 Flink/lib 下
+flink-s3-fs-hadoop.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.2/flink-s3-fs-hadoop-1.17.2.jar
+flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
+
+## 2. 在 Hadoop、Spark 和 FLink 集群环境下运行
+在 hadoop 集群中应用 LakeSoul 服务，只需要将相关配置信息假如环境变量中以及 Spark、FLink 集群配置中即可。具体操作如下：
+2.1 在 Spark 配置文件 spark-defaults.conf 添加如下信息
+```shell
+spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
+spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+spark.sql.defaultCatalog=lakesoul
+
+spark.yarn.appMasterEnv.LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+spark.yarn.appMasterEnv.LAKESOUL_PG_URL=jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+spark.yarn.appMasterEnv.LAKESOUL_PG_USERNAME=lakesoul_test
+spark.yarn.appMasterEnv.LAKESOUL_PG_PASSWORD=lakesoul_test
+```
+
+2.2 在Flink 配置文件中 flink-conf.yaml 添加如下信息
+```shell
+containerized.master.env.LAKESOUL_PG_DRIVER: com.lakesoul.shaded.org.postgresql.Driver
+containerized.master.env.LAKESOUL_PG_USERNAME: postgres
+containerized.master.env.LAKESOUL_PG_PASSWORD: postgres123
+containerized.master.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+containerized.taskmanager.env.LAKESOUL_PG_DRIVER: com.lakesoul.shaded.org.postgresql.Driver
+containerized.taskmanager.env.LAKESOUL_PG_USERNAME: lakesoul_test
+containerized.taskmanager.env.LAKESOUL_PG_PASSWORD: lakesoul_test
+containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+```
+
+2.3 在客户端机器上配置全局环境变量信息，这里需要用到变量信息写到一个 env.sh 文件中，内容如下:
+这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.3.2， Flink 版本为 flink-1.17.2
+```shell
+export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+export HADOOP_HOME="/usr/hdp/3.1.4.0-315/hadoop"
+export HADOOP_HDFS_HOME="/usr/hdp/3.1.4.0-315/hadoop-hdfs"
+export HADOOP_MAPRED_HOME="/usr/hdp/3.1.4.0-315/hadoop-mapreduce"
+export HADOOP_YARN_HOME="/usr/hdp/3.1.4.0-315/hadoop-yarn"
+export HADOOP_LIBEXEC_DIR="/usr/hdp/3.1.4.0-315/hadoop/libexec"
+export HADOOP_CONF_DIR="/usr/hdp/3.1.4.0-315/hadoop/conf"
+
+export SPARK_HOME=/usr/hdp/spark-3.3.2-bin-without-hadoop-ddf
+export SPARK_CONF_DIR=/home/lakesoul/lakesoul_hadoop_ci/LakeSoul-main/LakeSoul/script/benchmark/hadoop/spark-conf
+
+export FLINK_HOME=/opt/flink-1.17.2
+export FLINK_CONF_DIR=/opt/flink-1.17.2/conf
+export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$FLINK_HOME/bin:$JAVA_HOME/bin:$PATH
+export HADOOP_CLASSPATH=$(hadoop classpath)
+export SPARK_DIST_CLASSPATH=$HADOOP_CLASSPATH
+export LAKESOUL_PG_DRIVER=com.lakesoul.shaded.org.postgresql.Driver
+export LAKESOUL_PG_URL=jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
+export LAKESOUL_PG_USERNAME=lakesoul_test
+export LAKESOUL_PG_PASSWORD=lakesoul_test
+```
+配置好如上信息后，执行以下命令，然后便可以在客户端将 LakeSoul 任务提交到 yarn 集群上运行
+```shell
+source env.sh
+```
+
+## 3. 在 Docker Compose 环境运行
+
+### 3.1 Docker Compose 文件
+我们提供了 docker compose 环境方便快速启动一个本地的 PostgreSQL 服务和一个 MinIO S3 存储服务。Docker Compose 环境可以在代码库中找到：[lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
+
+### 3.2 安装 Docker Compose
+安装 Docker Compose 可以参考 Docker 官方文档：[Install Docker Engine](https://docs.docker.com/engine/install/)
+
+### 3.3 启动 Docker Compose 环境
+启动 Docker Compose 环境，执行以下命令：
+```bash
+cd docker/lakesoul-docker-compose-env/
+docker compose up -d
+```
+然后可以使用 `docker compose ps` 命令来检查服务状态是否是 `running`. PostgreSQL 服务会自动初始化好 LakeSoul 需要的 database 和 表结构。MinIO 服务会创建一个公共读写的桶。PostgreSQL 的用户名、密码、DB名字、MinIO 的桶名可以在 `docker-compose.yml` 文件中修改。
+
+### 3.4 在 Docker Compose 环境中运行 LakeSoul 测试
+#### 3.4.1 准备 LakeSoul 配置文件
+```ini title="lakesoul.properties"
+lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
+lakesoul.pg.url=jdbc:postgresql://lakesoul-docker-compose-env-lakesoul-meta-db-1:5432/lakesoul_test?stringtype=unspecified
+lakesoul.pg.username=lakesoul_test
+lakesoul.pg.password=lakesoul_test
+```
+#### 3.4.2 准备 Spark 镜像
+可以使用 bitnami Spark 镜像：
+```bash
+docker pull bitnami/spark:3.3.1
+```
+
+#### 3.4.3 启动 Spark Shell
+```bash
+docker run --net lakesoul-docker-compose-env_default --rm -ti \
+    -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
+    --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 \
+    spark-shell \
+    --packages com.dmetasoul:lakesoul-spark:2.4.0-spark-3.3 \
+    --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
+    --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
+    --conf spark.sql.defaultCatalog=lakesoul \
+    --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.buffer.dir=/opt/spark/work-dir/s3a \
+    --conf spark.hadoop.fs.s3a.path.style.access=true \
+    --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
+    --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider
+```
+
+#### 3.4.4 执行 LakeSoul Scala API
+```scala
+val tablePath= "s3://lakesoul-test-bucket/test_table"
+val df = Seq(("2021-01-01",1,"rice"),("2021-01-01",2,"bread")).toDF("date","id","name")
+df.write
+  .mode("append")
+  .format("lakesoul")
+  .option("rangePartitions","date")
+  .option("hashPartitions","id")
+  .option("hashBucketNum","2")
+  .save(tablePath)
+```
+
+#### 3.4.5 检查数据是否成功写入
+可以打开链接 http://127.0.0.1:9001/buckets/lakesoul-test-bucket/browse/ 查看数据是否已经成功写入。
+MinIO console 的登录用户名密码是 minioadmin1:minioadmin1。
+
+### 3.5 清理元数据表和 MinIO 桶
+清理元数据表内容:
+```bash
+docker exec -ti lakesoul-docker-compose-env-lakesoul-meta-db-1 psql -h localhost -U lakesoul_test -d lakesoul_test -f /meta_cleanup.sql
+```
+清理 MinIO 桶内容:
+```bash
+docker run --net lakesoul-docker-compose-env_default --rm -t bitnami/spark:3.3.1 aws --no-sign-request --endpoint-url http://minio:9000 s3 rm --recursive s3://lakesoul-test-bucket/
+```
+
+### 3.6 停止 Docker Compose 环境
+```bash
+cd docker/lakesoul-docker-compose-env/
+docker compose stop
+docker compose down
+```
