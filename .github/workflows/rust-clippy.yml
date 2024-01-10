@@ -42,5 +42,5 @@ jobs:
           workspaces: "./rust -> target"
           key: "ubuntu-latest-clippy"
       - name: Run Clippy
-        run: cd rust && cargo clippy --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+        run: cd rust && cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c
 
