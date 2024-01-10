@@ -110,7 +110,7 @@ Spark SQL访问Lakesoul:
 ```SQL
 use default;
 
-create table if not exists test_lakesoul_table_v2 (id INT, name STRING, score INT, date STRING,region STRING) USING lakesoul PARTITIONED BY (region,date) LOCATION 'hdfs:///lakesoul-test-bucket/default/test_lakesoul_table_v2/' TBLPROPERTIES( 'hashPartitions'='id,name', 'use_cdc'='true', 'hashBucketNum'='4');
+create table if not exists test_lakesoul_table_v2 (id INT, name STRING, score INT, date STRING,region STRING) USING lakesoul PARTITIONED BY (region,date) LOCATION 'hdfs:///lakesoul-test-bucket/default/test_lakesoul_table_v2/';
 
 insert into test_lakesoul_table_v2 values (1,'AAA', 100, '2023-05-11', 'China');
 insert into test_lakesoul_table_v2 values (2,'BBB', 100, '2023-05-11', 'China');
@@ -123,4 +123,4 @@ drop table test_lakesoul_table_v2;
 
 可以将数据存储路径中的`hdfs://`替换为`file://` 。
 
-详细的Spark SQL操作Lakesoul的内容参阅 : [Operate LakeSoulTable by Spark SQL](./03-api-docs.md#7-operate-lakesoultable-by-spark-sql) 
+详细的Spark SQL操作Lakesoul的内容参阅 : [Operate LakeSoulTable by Spark SQL](./03-spark-api-docs.md#7-operate-lakesoultable-by-spark-sql) 

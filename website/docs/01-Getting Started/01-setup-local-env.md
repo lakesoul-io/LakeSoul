@@ -1,4 +1,4 @@
-# Setup a Test Environment
+# Quick Setup Environment
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -112,7 +112,7 @@ Place flink-s3-fs-hadoop.jar and flink-shaded-hadoop-2-uber-2.6.5-10.0.jar under
 Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.2/flink-s3-fs-hadoop-1.17.2.jar
 Download flink-shaded-hadoop-2-uber-2.6.5-10.0.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
-## 2. Start on Hadoop, Spark and FLink cluster environments
+## 2. Start on Hadoop, Spark and Flink cluster environments
 Run LakeSoul tasks on Hadoop you only need to add the relevant configuration information to the environment variables and Spark and FLink cluster configurations. The specific operations are as follows:
 
 ### 2.1 Add the following information to the Spark configuration file spark-defaults.conf
@@ -170,7 +170,7 @@ After configuring the above information, execute the following command, and then
 source env.sh
 ```
 
-## 3. Use Docker Compose
+## 3. Use Docker Compose to Start a Local Cluster
 ### 3.1 Docker Compose Files
 We provide a docker compose env to quickly start a local PostgreSQL service and a MinIO S3 Storage service. The docker compose env is located under [lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
 

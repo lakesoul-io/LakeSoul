@@ -1,4 +1,4 @@
-# 测试环境搭建
+# 快速搭建运行环境
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## 1. 在Linux本地文件系统中搭建测试环境
+## 1. 在 Linux 本地搭建测试环境
 将数据存储在本地磁盘上，只需要有PostgreSQL数据库即可。
 ### 1.1 启动一个 PostgreSQL 数据库
 可以通过docker使用下面命令快速搭建一个pg数据库：
@@ -172,7 +172,7 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 source env.sh
 ```
 
-## 3. 在 Docker Compose 环境运行
+## 3. 使用 Docker Compose 搭建本地集群环境
 
 ### 3.1 Docker Compose 文件
 我们提供了 docker compose 环境方便快速启动一个本地的 PostgreSQL 服务和一个 MinIO S3 存储服务。Docker Compose 环境可以在代码库中找到：[lakesoul-docker-compose-env](https://github.com/lakesoul-io/LakeSoul/tree/main/docker/lakesoul-docker-compose-env).
