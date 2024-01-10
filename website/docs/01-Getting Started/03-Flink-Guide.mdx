@@ -1,4 +1,7 @@
-# Flink Standalone Cluster
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+# Flink Getting Started Guide
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -11,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
 
 | LakeSoul                   | Flink                                                    |
 |----------------------------|----------------------------------------------------------|
- 2.4.x       | 1.17 
+ 2.4.x+       | 1.17
  2.1.x-2.3.x | 1.14    
 
 ## PG Configuration
@@ -46,11 +49,11 @@ export LAKESOUL_PG_PASSWORD=root
 
 ## SQL
 ### Download LakeSoul Flink Jar
-It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.4.0/lakesoul-flink-2.4.0-flink-1.17.jar.
+It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-flink-2.5.0-flink-1.17.jar.
 ### Start SQL Client
 ```bash
 # Start Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.4.0-flink-1.17.jar
+bin/sql-client.sh embedded -j lakesoul-flink-2.5.0-flink-1.17.jar
 ```
 ## Create Table
 
@@ -62,43 +65,43 @@ bin/sql-client.sh embedded -j lakesoul-flink-2.4.0-flink-1.17.jar
     ]}>
 <TabItem value="Java">
 
-     ```Java
-     TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
-     String createUserSql = "create table user_info (" +
-             "`id` INT," +
-             "name STRING," +
-             "score INT," +
-             "`date` STRING," +
-             "region STRING," +
-              " PRIMARY KEY (`id`,`name`) NOT ENFORCED"+
-             ") PARTITIONED BY (`region`,`date`)"+
-              " WITH (" +
-             " 'connector'='lakesoul'," +
-             " 'hashBucketNum'='4'," +
-             " 'use_cdc'='true'," +
-             " 'path'='/tmp/lakesoul/flink/sink/test' )";
-     tEnv. executeSql(createUserSql);
-     ```
+   ```java
+   TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+   String createUserSql = "create table user_info (" +
+           "`id` INT," +
+           "name STRING," +
+           "score INT," +
+           "`date` STRING," +
+           "region STRING," +
+            " PRIMARY KEY (`id`,`name`) NOT ENFORCED"+
+           ") PARTITIONED BY (`region`,`date`)"+
+            " WITH (" +
+           " 'connector'='lakesoul'," +
+           " 'hashBucketNum'='4'," +
+           " 'use_cdc'='true'," +
+           " 'path'='/tmp/lakesoul/flink/sink/test' )";
+   tEnv. executeSql(createUserSql);
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     -- Create the test_table table, use id and name as the joint primary key, use region and date as the two-level range partition, catalog is lakesoul, and database is default
-     create table `lakesoul`.`default`.test_table (
-                 `id` INT,
-                 name STRING,
-                 score INT,
-                 `date` STRING,
-                 region STRING,
-             PRIMARY KEY (`id`,`name`) NOT ENFORCED
-             ) PARTITIONED BY (`region`,`date`)
-             WITH (
-                 'connector'='lakesoul',
-                 'hashBucketNum'='4',
-                 'use_cdc'='true',
-                 'path'='file:///tmp/lakesoul/flink/sink/test');
-     ```
+   ```sql
+   -- Create the test_table table, use id and name as the joint primary key, use region and date as the two-level range partition, catalog is lakesoul, and database is default
+   create table `lakesoul`.`default`.test_table (
+               `id` INT,
+               name STRING,
+               score INT,
+               `date` STRING,
+               region STRING,
+           PRIMARY KEY (`id`,`name`) NOT ENFORCED
+           ) PARTITIONED BY (`region`,`date`)
+           WITH (
+               'connector'='lakesoul',
+               'hashBucketNum'='4',
+               'use_cdc'='true',
+               'path'='file:///tmp/lakesoul/flink/sink/test');
+   ```
 
 </TabItem>
 </Tabs>
@@ -125,16 +128,16 @@ The meaning of the parameters for creating a table
     ]}>
 <TabItem value="Java">
 
-     ```java
-     tEnvs.executeSql("DROP TABLE if exists test_table");
-     ```
+   ```java
+   tEnvs.executeSql("DROP TABLE if exists test_table");
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     DROP TABLE if exists test_table;
-     ```
+   ```sql
+   DROP TABLE if exists test_table;
+   ```
 
 </TabItem>
 </Tabs>
@@ -149,40 +152,37 @@ The meaning of the parameters for creating a table
     ]}>
 <TabItem value="Java">
 
-     ```java
-     tEnvs.executeSql("insert into `lakesoul`.`default`.test_table values (1, 'AAA', 98, '2023-05-10', 'China')"). await();
-     ```
+  ```java
+  tEnvs.executeSql("insert into `lakesoul`.`default`.test_table values (1, 'AAA', 98, '2023-05-10', 'China')"). await();
+  ```
 
 </TabItem>
 <TabItem value="SQL">
 
-   批式：直接插入数据
-    ```sql
-    insert into `lakesoul`.`default`.test_table values (1,'AAA', 98, '2023-05-10', 'China');
-    ```
-   流式：构建流式任务，从另一个流式数据源中读取数据并写入到 LakeSoul 表中。如果上游数据是 CDC 的格式，则目标写入的 LakeSoul 表也需要设置为 CDC 表。
-    ```sql
-    -- 表示将`lakesoul`.`cdcsink`.soure_table表中的全部数据，插入到lakesoul`.`default`.test_table
-    insert into `lakesoul`.`default`.test_table select * from `lakesoul`.`cdcsink`.soure_table;
-    ```
+  Batch insert:
+  ```sql
+  insert into `lakesoul`.`default`.test_table values (1,'AAA', 98, '2023-05-10', 'China');
+  ```
+  Streaming: read data from another stream source and write into LakeSoul. If upstream source is a Changelog stream, then LakeSoul table should be created with CDC format enabled.
+  ```sql
+  insert into `lakesoul`.`default`.test_table select * from `lakesoul`.`cdcsink`.soure_table;
+  ```
 </TabItem>
 </Tabs>
 
 :::caution
-1. Both stream and batch writing must enable the `execution.checkpointing.checkpoints-after-tasks-finish.enabled` option;
-2. For stream writing, checkpoint interval needs to be set, and it is recommended to be more than 1 minute;
-3. Set the corresponding time zone according to the environment:
+1. For stream writing, checkpoint interval needs to be set, and it is recommended to be more than 1 minute;
+2. Set the corresponding time zone according to the environment:
 
 ```sql
 SET 'table.local-time-zone' = 'Asia/Shanghai';
-set 'execution.checkpointing.checkpoints-after-tasks-finish.enabled' = 'true';
 -- Set the checkpointing interval
-set 'execution.checkpointing.interval' = '2min';
+SET 'execution.checkpointing.interval' = '2min';
 ```
 :::
 
 ## Update Data
-
+For batch mode only.
 <Tabs
     defaultValue="SQL"
     values={[
@@ -191,24 +191,25 @@ set 'execution.checkpointing.interval' = '2min';
     ]}>
 <TabItem value="Java">
 
-     ```java
-     tEnvs.executeSql("UPDATE `lakesoul`.`default`.test_table set score = 100 where id = 1") await();
-     ```
+   ```java
+   tEnvs.executeSql("UPDATE `lakesoul`.`default`.test_table set score = 100 where id = 1") await();
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     UPDATE `lakesoul`.`default`.test_table set score = 100 where id = 1;
-     ```
+   ```sql
+   UPDATE `lakesoul`.`default`.test_table set score = 100 where id = 1;
+   ```
 </TabItem>
 </Tabs>
 
 :::caution
-Note that in the case of `update`, updating the values of primary key and partition columns is not allowed.For the stream execution mode, LakeSoul has been able to support ChangeLog semantics, which can support additions, deletions and modifications.
+Note that in the case of `update`, updating the values of primary key and partition columns is not allowed. For the stream execution mode, LakeSoul has been able to support ChangeLog semantics, which can support additions, deletions and modifications.
 :::
-## Delete Data
 
+## Delete Data
+For batch mode only.
 <Tabs
     defaultValue="SQL"
     values={[
@@ -217,16 +218,16 @@ Note that in the case of `update`, updating the values of primary key and partit
     ]}>
 <TabItem value="Java">
 
-     ```java
-     tEnvs.executeSql("DELETE FROM `lakesoul`.`default`.test_table where id = 1") await();
-     ```
+   ```java
+   tEnvs.executeSql("DELETE FROM `lakesoul`.`default`.test_table where id = 1") await();
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     DELETE FROM `lakesoul`.`default`.test_table where id = 1;
-     ```
+   ```sql
+   DELETE FROM `lakesoul`.`default`.test_table where id = 1;
+   ```
 </TabItem>
 </Tabs>
 
@@ -244,17 +245,17 @@ In the case of `delete`, partitioning columns in the condition are not allowed.F
     ]}>
 <TabItem value="Java">
 
-     ```java
-     // Create a batch execution environment
-     tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10'").print();
-     ```
+   ```java
+   // Create a batch execution environment
+   tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10'").print();
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10';
-     ```
+   ```sql
+   SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10';
+   ```
 </TabItem>
 </Tabs>
 
@@ -269,17 +270,17 @@ LakeSoul supports snapshot reading of tables, and users can query all data befor
     ]}>
 <TabItem value="Java">
 
-     ```java
-     tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='snapshot', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
-     ```
+   ```java
+   tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='snapshot', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
+   ```
 
 </TabItem>
 <TabItem value="SQL">
 
-     ```sql
-     -- Execute snapshot read of test_table in the region=China partition, the end timestamp of the read is 2023-05-01 15:20:15, and the time zone is Asia/Shanghai
-     SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='snapshot', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China';
-     ```
+   ```sql
+   -- Execute snapshot read of test_table in the region=China partition, the end timestamp of the read is 2023-05-01 15:20:15, and the time zone is Asia/Shanghai
+   SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='snapshot', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China';
+   ```
 </TabItem>
 </Tabs>
 
@@ -294,17 +295,17 @@ LakeSoul supports range incremental reads for tables. Users can query incrementa
     ]}>
 <TabItem value="Java">
 
-    ```java
-     tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='incremental'，'readstarttime'='2023-05-01 15:15:15 ', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
-    ```
+  ```java
+   tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='incremental'，'readstarttime'='2023-05-01 15:15:15 ', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
+  ```
 
 </TabItem>
 <TabItem value="SQL">
 
-    ```sql
-    -- Incremental reading of test_table in the region=China partition, the read timestamp range is 2023-05-01 15:15:15 to 2023-05-01 15:20:15, and the time zone is Asia/Shanghai
-    SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='incremental', 'readstarttime'='2023-05-01 15:15:15 ', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China';
-    ```
+  ```sql
+  -- Incremental reading of test_table in the region=China partition, the read timestamp range is 2023-05-01 15:15:15 to 2023-05-01 15:20:15, and the time zone is Asia/Shanghai
+  SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('readtype'='incremental', 'readstarttime'='2023-05-01 15:15:15 ', 'readendtime'='2023-05-01 15:20:15', 'timezone'='Asia/Shanghai')*/ WHERE region='China';
+  ```
 </TabItem>
 </Tabs>
 
@@ -319,17 +320,18 @@ If start timestamp is not specified, it will read from the first data。
         {label: 'SQL', value: 'SQL'},
     ]}>
 <TabItem value="Java">
-    ```java
-     tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
-    ```
+
+  ```java
+  tEnvs.executeSql("SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('timezone'='Asia/Shanghai')*/ WHERE region='China'").print();
+  ```
 
 </TabItem>
 <TabItem value="SQL">
 
-    ```sql
-    -- Incremental reading of test_table in the region=China partition, the time zone is Asia/Shanghai
-    SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('timezone'='Asia/Shanghai')*/ WHERE region='China';
-    ```
+  ```sql
+  -- Incremental reading of test_table in the region=China partition, the time zone is Asia/Shanghai
+  SELECT * FROM `lakesoul`.`default`.test_table /*+ OPTIONS('timezone'='Asia/Shanghai')*/ WHERE region='China';
+  ```
 </TabItem>
 </Tabs>
 
