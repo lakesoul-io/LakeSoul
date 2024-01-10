@@ -183,7 +183,7 @@ SET execution.runtime-mode = batch;
     ```sql
     -- 设置批式模式，读取test_table表
     SET execution.runtime-mode = batch;
-    SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10' order by id;
+    SELECT * FROM `lakesoul`.`default`.test_table where region='China' and `date`='2023-05-10';
     
     -- 设置流式模式，读取test_table表
     SET execution.runtime-mode = stream;
@@ -205,7 +205,7 @@ SET execution.runtime-mode = batch;
     tEnvs.useCatalog("lakeSoul");
     tEnvs.useDatabase("default");
     
-    tEnvs.executeSql("SELECT * FROM test_table order by id").print();
+    tEnvs.executeSql("SELECT * FROM test_table").print();
     ```
 
     ```java
