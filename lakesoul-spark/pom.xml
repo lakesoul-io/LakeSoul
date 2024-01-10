@@ -23,7 +23,7 @@ SPDX-License-Identifier: Apache-2.0
         <scalatest.version>3.2.14</scalatest.version>
         <kafka.client.version>3.3.1</kafka.client.version>
         <schema.registry.version>7.3.1</schema.registry.version>
-        <avro.version>1.11.0</avro.version>
+        <avro.version>1.11.3</avro.version>
         <mysql.version>8.0.30</mysql.version>
         <jackson.yaml.version>2.12.7</jackson.yaml.version>
         <gluten.version>1.1.0</gluten.version>
