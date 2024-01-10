@@ -1,4 +1,4 @@
-# Spark Guide
+# Spark 快速开始
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -6,9 +6,9 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## Setup
+## 配置
+要在Spark中使用LakeSoul，请首先配置[Spark Catalog](01-setup-local-env.mdx)。LakeSoul使用Apache Spark的DataSourceV2 API来实现数据源和目录。此外，LakeSoul还提供了 Scala 的表API，以扩展LakeSoul数据表的功能。
 
-To use LakeSoul in Spark, first configure [Spark catalogs](02-docker-compose.mdx). LakeSoul uses Apache Spark’s DataSourceV2 API for data source and catalog implementations. Moreover, LakeSoul provides scala table API to extend the capability of LakeSoul table.
 
 ### Spark 3 Support Matrix
 
@@ -19,7 +19,8 @@ LakeSoul | Spark Version
 
 ### Spark Shell/SQL
 
-Run spark-shell/spark-sql with the `LakeSoulSparkSessionExtension` sql extension.
+使用`LakeSoulSparkSessionExtension` sql扩展来运行spark-shell/spark-sql。
+
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
 
@@ -38,9 +39,9 @@ spark-shell
 
 </Tabs>
 
-### Setup project
+### 依赖配置
 
-Then, we do imports LakeSoul dependencies and setup spark config for following cases.
+然后，我们导入LakeSoul依赖项并设置Spark配置，后续的使用案例都将依赖这里的配置。
 
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
@@ -74,16 +75,17 @@ val spark = SparkSession.builder()
 </Tabs>
 
 
-## Create Namespace
-First, create a namespace for LakeSoul table, default namespace of LakeSoul Catalog is `default`.
+## 创建命名空间
+首先，为LakeSoul表创建一个namespace，如果不创建将使用默认的namespace，LakeSoul Catalog的默认namespace是`default`。
+
 ```sql
 // Spark SQL
 CREATE NAMESPACE lakesoul_namespace;
 USE lakesoul_namespace
 ```
 
-## Create Table
-Create a partitioned LakeSoul table with the clause `USING lakesoul`:
+## 创建表
+使用`USING lakesoul`的子句创建一个分区的LakeSoul表
 
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
@@ -108,8 +110,8 @@ LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_table'
 
 </Tabs>
 
-### Hash Partitioned Table
-In LakeSoul, a table with primary keys is defined as a hash-partitioned table. To create such a table, use the `USING lakesoul` clause and specify the `TBLPROPERTIES` setting, where `'hashPartitions'` designates a comma-separated list of primary key column names, and `'hashBucketNum'` determines the size or number of hash buckets.
+### 哈希分区表
+在LakeSoul中，带有主键的表被定义为哈希分区表。使用USING lakesoul子句，并结合TBLPROPERTIES设置（其中'hashPartitions'指定以逗号分隔的主键列表，'hashBucketNum'指定哈希桶的大小），可以创建一个哈希分区的LakeSoul表。
 
 ```sql
 // Spark SQL
@@ -122,8 +124,8 @@ TBLPROPERTIES (
   'hashBucketNum'='2')
 ```
 
-### CDC Table
-Optionally, a hash-partitioned LakeSoul table has the capability to record Change Data Capture (CDC) data, enabling the tracking of data modifications. To create a LakeSoul table with CDC support, one can utilize the DDL statement for a hash-partitioned LakeSoul table and include an additional `TBLPROPERTIES` setting specifying the `'lakesoul_cdc_change_column'` attribute. This attribute introduces an implicit column that assists the table in efficiently handling CDC information, ensuring precise tracking and management of data changes.
+### CDC表
+哈希分区的LakeSoul表具有可选的数据变更捕获（CDC）功能，能够记录数据的变化。要创建支持CDC的LakeSoul表，可以在哈希分区表的DDL语句中添加额外的`TBLPROPERTIES`设置，指定`'lakesoul_cdc_change_column'`属性。这个属性定义了一个隐式列，帮助表有效地处理CDC信息，从而实现对数据变更的精确追踪和管理。
 
 ```sql
 // Spark SQL
@@ -138,12 +140,11 @@ TBLPROPERTIES(
 )
 ```
 
-## Insert/Merge Data
+## 数据插入/合并
 
-To append new data to a non-hash-partitioned table using Spark SQL, use INSERT INTO.
+要使用Spark SQL向非哈希分区表写入数据，请使用`INSERT INTO`语句。
 
-To append new data to a table using DataFrame, use `DataFrameWriterV2` API. If this is the first write of the table, it will also auto-create the corresponding LakeSoul table. 
-
+要使用DataFrame向表写入数据，请使用`DataFrameWriterV2` API。如果这是对该表的第一次写入，它还将自动创建相应的LakeSoul表。
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
 
@@ -165,9 +166,9 @@ data.write.format("lakesoul").insertIno("lakesoul_table")
 
 </Tabs>
 
-To append new data to a hash-partitioned table using Spark SQL, use Merge INTO.
+要使用Spark SQL向哈希分区表写入数据，请使用`Merge INTO`语句。
 
-To append new data to a hash-partitioned table using DataFrame, use `LakeSoulTable` upsert API.
+要使用DataFrame向哈希分区表写入数据，请使用`LakeSoulTable`的`upsert` API。
 
 
 <Tabs>
@@ -219,9 +220,9 @@ LakeSoulTable.forPath(tablePath).upsert(dfUpsert)
 
 
 
-## Update Data
-LakeSoul tables can be updated by a DataFrame or using a standard `UPDATE` statement.
-To update data to a table using DataFrame, use `LakeSoulTable` updateExpr API.
+## 数据更新
+LakeSoul表可以通过DataFrame或使用标准的`UPDATE`语句进行更新。要使用DataFrame更新表中的数据，请使用`LakeSoulTable`的`updateExpr` API。
+
 
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
@@ -245,16 +246,16 @@ LakeSoulTable.forPath(tablePath).updateExpr("id = 2", Seq("name"->"David").toMap
 </Tabs>
 
 
-## Delete Data
-LakeSoul tables can be removes the records by a DataFrame or using a standard `DELETE` statement.
-To delete data to a table using DataFrame, use `LakeSoulTable` `delete` API.
+## 数据删除
+LakeSoul表可以通过DataFrame或使用标准的`DELETE`语句来删除记录。要使用DataFrame从表中删除数据，请使用`LakeSoulTable`的`delete` API。
+
 
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
 
 ```sql
 // Spark SQL
-DELETE FROM lakesoul.lakesoul_namespace.tbl  WHERE key =1
+DELETE FROM lakesoul_table WHERE id =1
 ```
 
   </TabItem>
@@ -271,9 +272,9 @@ LakeSoulTable.forPath(tablePath).delete("id = 1 or id =2")
 
 </Tabs>
 
-## Query Data
+## 数据查询
 
-LakeSoul tables can be queried using a DataFrame or Spark SQL.
+LakeSoul表可以使用DataFrame或Spark SQL进行查询。
 
 <Tabs>
   <TabItem value="Spark SQL" label="Spark SQL" default>
@@ -306,8 +307,8 @@ LakeSoulTable.forName(tableName).toDF
 
 </Tabs>
 
-## Time Travel Query
-LakeSoul supports time travel query to query the table at any point-in-time in history or the changed data between two commit time. 
+## Time Travel查询
+LakeSoul支持Time Travel查询，可以查询历史上任何时间点的表或两个提交时间之间的更改数据。
 
 ```scala
 // Scala
@@ -342,14 +343,16 @@ val versionC: String = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(System
 
 ```
 
-### Complete Query
+### 全量查询
 ```scala
 // Scala
 spark.sql("SELECT * FROM lakesoul_cdc_table")
 ```
 
-### Snapshot Query
-LakeSoul supports snapshot query for query the table at a point-in-time in history.
+### 快照查询
+LakeSoul支持快照查询，可用于查询历史上某一时间点的表数据。
+
+
 ```scala
 // Scala
 spark.read.format("lakesoul")
@@ -359,8 +362,8 @@ spark.read.format("lakesoul")
     .load(tablePath)
 ```
 
-### Incremental Query
-LakeSoul supports incremental query to obtain a set of records that changed between a start and end time.
+### 增量查询
+LakeSoul支持增量查询，可获得在起始时间和结束时间之间发生更改的数据记录。
 
 ```scala
 // Scala
@@ -372,5 +375,5 @@ spark.read.format("lakesoul")
     .load(tablePath)
 ```
 
-## Next steps
-Next, you can learn more usage cases about LakeSoul tables in Spark at [Spark API docs](../03-Usage%20Docs/03-api-docs.md).
+## 更多案例
+接下来，您可以在[Spark API文档](../03-Usage%20Docs/03-api-docs.md)中了解更多关于在Spark中使用LakeSoul表的案例。
