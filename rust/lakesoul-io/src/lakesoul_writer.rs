@@ -349,7 +349,7 @@ impl SortAsyncWriter {
                     Ok(batch) => {
                         async_writer.write_record_batch(batch).await?;
                     }
-                    // received abort singal
+                    // received abort signal
                     Err(_) => return async_writer.abort_and_close().await,
                 }
             }

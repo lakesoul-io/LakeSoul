@@ -132,10 +132,7 @@ impl LakeSoulTable {
     }
 
     pub fn hash_bucket_num(&self) -> usize {
-        match self.properties.hash_bucket_num {
-            Some(hash_bucket_num) => hash_bucket_num,
-            None => 1,
-        }
+        self.properties.hash_bucket_num.unwrap_or_else(|| 1)
     }
 
     pub fn schema(&self) -> SchemaRef {

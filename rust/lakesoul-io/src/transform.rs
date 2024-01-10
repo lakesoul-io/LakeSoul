@@ -17,6 +17,7 @@ use datafusion_common::DataFusionError::{ArrowError, External};
 
 use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING};
 
+/// adjust time zone to UTC
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
         orig_schema
@@ -112,7 +113,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-    .map_err(ArrowError)
+        .map_err(ArrowError)
 }
 
 pub fn transform_array(

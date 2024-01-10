@@ -14,7 +14,7 @@ mod hash_tests;
 
 #[ctor::ctor]
 fn init() {
-    lakesoul_io::tokio::runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
