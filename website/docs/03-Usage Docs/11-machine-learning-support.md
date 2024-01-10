@@ -179,7 +179,7 @@ More Examples at  [LakeSoul/python/examples](https://github.com/lakesoul-io/Lake
 ## Ray DataSource
 LakeSoul implements Ray's [Datasource](https://docs.ray.io/en/latest/data/api/doc/ray.data.Datasource.html). The following is an example of calling code:
 ```python
-importray.data
+import ray.data
 import lakesoul.ray
 ds = ray.data.read_lakesoul("table_name", partitions={'split': 'train'})
 ```
