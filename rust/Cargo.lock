@@ -78,9 +78,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.76"
+version = "1.0.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59d2a3357dde987206219e78ecfbbb6e8dad06cbb65292758d3270e6254f7355"
+checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
 
 [[package]]
 name = "array-init"
@@ -103,7 +103,7 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 [[package]]
 name = "arrow"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "ahash",
  "arrow-arith",
@@ -124,7 +124,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -138,7 +138,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -155,7 +155,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "bytes",
  "half",
@@ -165,7 +165,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -182,7 +182,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -200,7 +200,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -211,7 +211,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -224,7 +224,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -243,7 +243,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -257,7 +257,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -271,7 +271,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "bitflags 2.4.1",
  "serde",
@@ -280,7 +280,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -293,7 +293,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -312,7 +312,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ca33f4bc4ed1babef42cad36cc1f51fa88be00420404e5b1e80ab1b18f7678c"
 dependencies = [
  "concurrent-queue",
- "event-listener 4.0.1",
+ "event-listener 4.0.3",
  "event-listener-strategy",
  "futures-core",
  "pin-project-lite",
@@ -351,26 +351,26 @@ version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7125e42787d53db9dd54261812ef17e937c95a51e4d291373b670342fa44310c"
 dependencies = [
- "event-listener 4.0.1",
+ "event-listener 4.0.3",
  "event-listener-strategy",
  "pin-project-lite",
 ]
 
 [[package]]
 name = "async-task"
-version = "4.6.0"
+version = "4.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d90cd0b264dfdd8eb5bad0a2c217c1f88fa96a8573f40e7b12de23fb468f46"
+checksum = "fbb36e985947064623dbd357f727af08ffd077f93d696782f3c56365fa2e2799"
 
 [[package]]
 name = "async-trait"
-version = "0.1.75"
+version = "0.1.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf6721fb0140e4f897002dd086c06f6c27775df19cfe1fccb21181a48fd2c98"
+checksum = "c980ee35e870bd1a4d2c8294d4c04d0499e67bca1e4b5cefcc693c2fa00caea9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -428,9 +428,9 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.21.5"
+version = "0.21.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35636a1494ede3b646cc98f74f8e62c773a38a659ebc777a2cf26b9b74171df9"
+checksum = "c79fed4cdb43e993fcdadc7e58a09fd0e3e649c4436fa11da71c9f1f3ee7feb9"
 
 [[package]]
 name = "bitflags"
@@ -604,9 +604,9 @@ dependencies = [
 
 [[package]]
 name = "chrono-tz"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e23185c0e21df6ed832a12e2bda87c7d1def6842881fb634a8511ced741b0d76"
+checksum = "91d7b79e99bfaa0d47da0687c43aa3b7381938a62ad3a6498599039321f660b7"
 dependencies = [
  "chrono",
  "chrono-tz-build",
@@ -724,9 +724,9 @@ checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
 
 [[package]]
 name = "cpufeatures"
-version = "0.2.11"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce420fe07aecd3e67c5f910618fe65e94158f6dcc0adf44e00d69ce2bdfe0fd0"
+checksum = "53fe5e26ff1b7aef8bca9c6080520cfb8d9333c7568e1829cef191a9723e5504"
 dependencies = [
  "libc",
 ]
@@ -742,12 +742,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.8.18"
+version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a430a770ebd84726f584a90ee7f020d28db52c6d02138900f22341f866d39c"
-dependencies = [
- "cfg-if",
-]
+checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 
 [[package]]
 name = "crossterm"
@@ -818,7 +815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30d2b3721e861707777e3195b0158f950ae6dc4a27e4d02ff9f67e3eb3de199e"
 dependencies = [
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -1099,9 +1096,9 @@ checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
 name = "event-listener"
-version = "4.0.1"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84f2cdcf274580f2d63697192d744727b3198894b1bf02923643bf59e2c26712"
+checksum = "67b215c49b2b248c855fb73579eb1f4f26c38ffdc12973e20e07b91d78d5646e"
 dependencies = [
  "concurrent-queue",
  "parking",
@@ -1114,7 +1111,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "958e4d70b6d5e81971bebec42271ec641e7ff4e170a6fa605f2b8a8b65cb97d3"
 dependencies = [
- "event-listener 4.0.1",
+ "event-listener 4.0.3",
  "pin-project-lite",
 ]
 
@@ -1227,9 +1224,9 @@ checksum = "a44623e20b9681a318efdd71c299b6b222ed6f231972bfe2f224ebad6311f0c1"
 
 [[package]]
 name = "futures-lite"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeee267a1883f7ebef3700f262d2d54de95dfaf38189015a74fdc4e0c7ad8143"
+checksum = "445ba825b27408685aaecefd65178908c36c6e96aaf6d8599419d46e624192ba"
 dependencies = [
  "futures-core",
  "pin-project-lite",
@@ -1243,7 +1240,7 @@ checksum = "87750cf4b7a4c0625b1529e4c543c2182106e4dedc60a2a6455e00d212c489ac"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -1288,9 +1285,9 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.11"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe9006bed769170c11f845cf00c7c1e9092aeb3f268e007c3e760ac68008070f"
+checksum = "190092ea657667030ac6a35e305e62fc4dd69fd98ac98631e5d3a2b1575a12b5"
 dependencies = [
  "cfg-if",
  "libc",
@@ -1502,9 +1499,9 @@ dependencies = [
 
 [[package]]
 name = "iana-time-zone"
-version = "0.1.58"
+version = "0.1.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8326b86b6cff230b97d0d312a6c40a60726df3332e721f72a1b035f451663b20"
+checksum = "b6a67363e2aa4443928ce15e57ebae94fd8949958fd1223c4cfc0cd473ad7539"
 dependencies = [
  "android_system_properties",
  "core-foundation-sys",
@@ -1786,9 +1783,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.151"
+version = "0.2.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "302d7ab3130588088d277783b1e2d2e10c9e9e4a16dd9050e6ec93fb3e7048f4"
+checksum = "13e3bf6590cbc649f4d1a3eefc9d5d6eb746f5200ffb04e5e142700b8faa56e7"
 
 [[package]]
 name = "libm"
@@ -1850,9 +1847,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.6.4"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f665ee40bc4a3c5590afb1e9677db74a508659dfd71e126420da8274909a0167"
+checksum = "523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149"
 
 [[package]]
 name = "mime"
@@ -2095,7 +2092,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "48.0.1"
-source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#f00cb1b172856e37b0a1eca80832caceadc276b3"
+source = "git+https://github.com/lakesoul-io/arrow-rs.git?branch=arrow-rs-48-parquet-bufferred#bb0ebe19cb0b43fcf1b7f3606f33e8b6e0eea756"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -2246,7 +2243,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -2311,9 +2308,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.71"
+version = "1.0.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75cb1540fadbd5b8fbccc4dddad2734eba435053f725621c070711a14bb5f4b8"
+checksum = "95fc56cda0b5c3325f5fbbd7ff9fda9e02bb00bb3dac51252d2f1bfa1cb8cc8c"
 dependencies = [
  "unicode-ident",
 ]
@@ -2409,9 +2406,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.33"
+version = "1.0.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5267fca4496028628a95160fc423a33e8b2e6af8a5302579e322e4b520293cae"
+checksum = "291ec9ab5efd934aaf503a6466c5d5251535d108ee747472c3977cc5acc868ef"
 dependencies = [
  "proc-macro2",
 ]
@@ -2653,9 +2650,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.20"
+version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "836fa6a3e1e547f9a2c4040802ec865b5d85f4014efe00555d7090a3dcaa1090"
+checksum = "b97ed7a9823b74f99c7742f5336af7be5ecd3eeafcb1507d1fa93347b1d589b0"
 
 [[package]]
 name = "seq-macro"
@@ -2665,29 +2662,29 @@ checksum = "a3f0bf26fd526d2a95683cd0f87bf103b8539e2ca1ef48ce002d67aad59aa0b4"
 
 [[package]]
 name = "serde"
-version = "1.0.193"
+version = "1.0.195"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25dd9975e68d0cb5aa1120c288333fc98731bd1dd12f561e468ea4728c042b89"
+checksum = "63261df402c67811e9ac6def069e4786148c4563f4b50fd4bf30aa370d626b02"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.193"
+version = "1.0.195"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43576ca501357b9b071ac53cdc7da8ef0cbd9493d8df094cd821777ea6e894d3"
+checksum = "46fe8f8603d81ba86327b23a2e9cdf49e1255fb94a4c5f297f6ee0547178ea2c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
 name = "serde_json"
-version = "1.0.108"
+version = "1.0.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d1c7e3eac408d115102c4c24ad393e0821bb3a5df4d506a80f85f7a742a526b"
+checksum = "176e46fa42316f18edd598015a5166857fc835ec732f5215eac6b7bdbf0a84f4"
 dependencies = [
  "itoa",
  "ryu",
@@ -2900,7 +2897,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -2922,9 +2919,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.43"
+version = "2.0.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee659fb5f3d355364e1f3e5bc10fb82068efbf824a1e9d1c9504244a6469ad53"
+checksum = "0f3531638e407dfc0814761abb7c00a5b54992b849452a0646b7f65c9f770f3f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2954,15 +2951,15 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.8.1"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ef1adac450ad7f4b3c28589471ade84f25f731a7a0fe30d71dfa9f60fd808e5"
+checksum = "01ce4141aa927a6d1bd34a041795abd0db1cccba5d5f24b009f694bdf3a1f3fa"
 dependencies = [
  "cfg-if",
  "fastrand",
  "redox_syscall",
  "rustix",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3042,7 +3039,7 @@ checksum = "5b8a1e28f2deaa14e508979454cb3a223b10b938b45af148bc0986de36f1923b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -3158,7 +3155,7 @@ checksum = "34704c8d6ebcbc939824180af020566b01a7c01f80641264eba0999f6c2b6be7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -3267,7 +3264,7 @@ checksum = "f49e7f3f3db8040a100710a11932239fd30697115e2ba4107080d8252939845e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -3322,7 +3319,7 @@ dependencies = [
  "once_cell",
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
  "wasm-bindgen-shared",
 ]
 
@@ -3356,7 +3353,7 @@ checksum = "f0eb82fcb7930ae6219a7ecfd55b217f5f0893484b7a13022ebb2b2bf20b5283"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
  "wasm-bindgen-backend",
  "wasm-bindgen-shared",
 ]
@@ -3451,11 +3448,11 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-core"
-version = "0.51.1"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1f8cf84f35d2db49a46868f947758c7a1138116f7fac3bc844f43ade1292e64"
+checksum = "33ab640c8d7e35bf8ba19b884ba838ceb4fba93a4e8c65a9059d08afcfc683d9"
 dependencies = [
- "windows-targets 0.48.5",
+ "windows-targets 0.52.0",
 ]
 
 [[package]]
@@ -3592,9 +3589,9 @@ checksum = "dff9641d1cd4be8d1a070daf9e3773c5f67e78b4d9d42263020c057706765c04"
 
 [[package]]
 name = "winnow"
-version = "0.5.30"
+version = "0.5.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b5c3db89721d50d0e2a673f5043fc4722f76dcc352d7b1ab8b8288bed4ed2c5"
+checksum = "b7520bbdec7211caa7c4e682eb1fbe07abe20cee6756b6e00f537c82c11816aa"
 dependencies = [
  "memchr",
 ]
@@ -3635,7 +3632,7 @@ checksum = "9ce1b18ccd8e73a9321186f97e46f9f04b778851177567b1975109d26a08d2a6"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.43",
+ "syn 2.0.48",
 ]
 
 [[package]]
