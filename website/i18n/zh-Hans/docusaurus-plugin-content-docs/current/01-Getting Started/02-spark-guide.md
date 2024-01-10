@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 ## 配置
-要在Spark中使用LakeSoul，请首先配置[Spark Catalog](01-setup-local-env.mdx)。LakeSoul使用Apache Spark的DataSourceV2 API来实现数据源和目录。此外，LakeSoul还提供了 Scala 的表API，以扩展LakeSoul数据表的功能。
+要在Spark中使用LakeSoul，请首先配置[LakeSoul Catalog](01-setup-local-env.md)。LakeSoul使用Apache Spark的DataSourceV2 API来实现数据源和目录。此外，LakeSoul还提供了 Scala 的表API，以扩展LakeSoul数据表的功能。
 
 
 ### Spark 3 Support Matrix
