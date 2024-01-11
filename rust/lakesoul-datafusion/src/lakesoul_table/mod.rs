@@ -6,7 +6,8 @@ pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{SchemaRef, Schema};
+use datafusion::dataframe;
 use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
@@ -72,6 +73,30 @@ impl LakeSoulTable {
             primary_keys: hash_partitions,
             properties,
         })
+    }
+
+    pub async fn upsert_dataframe(&self, dataframe: DataFrame) -> Result<()> {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let builder = create_io_config_builder(client, None, false, self.table_namespace()).await?;
+        let sess_ctx =
+            create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
+
+        let schema: Schema = dataframe.schema().into();
+        let logical_plan = LogicalPlanBuilder::insert_into(
+            dataframe.into_unoptimized_plan(),
+            TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
+            &schema,
+            false,
+        )?
+        .build()?;
+        let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
+
+        let _results = dataframe
+            // .explain(true, false)?
+            .collect()
+            .await?;
+
+        Ok(())
     }
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {

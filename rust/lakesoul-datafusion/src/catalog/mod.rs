@@ -29,6 +29,7 @@ pub use lakesoul_namespace::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
+    #[serde(rename = "hashBucketNum")]
     pub hash_bucket_num: Option<usize>,
 }
 
