@@ -40,7 +40,7 @@ function HomepageHeader(){
         value: 'Github'
     },
     {
-        link: '/docs/intro',
+      link: translate({message:"/docs/intro",id : "homepage.documentBtnLink"}),
         value: <Translate id="homepage.documentBtn">Documentation</Translate>
     },
   ]
