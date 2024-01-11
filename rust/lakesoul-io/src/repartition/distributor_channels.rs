@@ -16,7 +16,7 @@
 // under the License.
 
 //! Special channel construction to distribute data from various inputs into N outputs
-//! minimizing buffering but preventing deadlocks when repartitoning
+//! minimizing buffering but preventing deadlocks when repartitioning
 //!
 //! # Design
 //!

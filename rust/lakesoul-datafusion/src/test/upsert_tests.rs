@@ -17,8 +17,6 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
     use tokio::runtime::Builder;
 
-    use arrow::array::Int64Array;
-
     enum str_or_i32 {
         v1(&'static str),
         v2(i32),
@@ -298,7 +296,7 @@ mod upsert_with_io_config_tests {
         builder
     }
 
-    #[test]
+    #[test_log::test]
     fn test_merge_same_column_i32() {
         let table_name = "merge-same_column";
         let builder = init_table(
@@ -629,8 +627,8 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_upsert_without_range_parqitions_i32() {
-        let table_name = "upsert_without_range_parqitions";
+    fn test_upsert_without_range_partitions_i32() {
+        let table_name = "upsert_without_range_partitions";
         let builder = init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
@@ -668,8 +666,8 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_upsert_with_multiple_range_and_hash_parqitions_i32() {
-        let table_name = "upsert_with_multiple_range_and_hash_parqitions";
+    fn test_upsert_with_multiple_range_and_hash_partitions_i32() {
+        let table_name = "upsert_with_multiple_range_and_hash_partitions";
         let builder = init_table(
             create_batch_i32(
                 vec!["range1", "range2", "hash1", "hash2", "value"],
@@ -2222,8 +2220,8 @@ mod upsert_with_metadata_tests {
         Ok(())
     }
 
-    async fn test_upsert_without_range_parqitions_i32() -> Result<()> {
-        let table_name = "upsert_without_range_parqitions";
+    async fn test_upsert_without_range_partitions_i32() -> Result<()> {
+        let table_name = "upsert_without_range_partitions";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -2271,8 +2269,8 @@ mod upsert_with_metadata_tests {
         Ok(())
     }
 
-    async fn test_upsert_with_multiple_range_and_hash_parqitions_i32() -> Result<()> {
-        let table_name = "upsert_with_multiple_range_and_hash_parqitions";
+    async fn test_upsert_with_multiple_range_and_hash_partitions_i32() -> Result<()> {
+        let table_name = "upsert_with_multiple_range_and_hash_partitions";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -3378,8 +3376,8 @@ mod upsert_with_metadata_tests {
         test_merge_different_columns_and_filter_partial_rows_i32().await?;
         test_merge_one_file_with_empty_batch_i32().await?;
         test_merge_multi_files_with_empty_batch_i32().await?;
-        test_upsert_without_range_parqitions_i32().await?;
-        test_upsert_with_multiple_range_and_hash_parqitions_i32().await?;
+        test_upsert_without_range_partitions_i32().await?;
+        test_upsert_with_multiple_range_and_hash_partitions_i32().await?;
         test_filter_requested_columns_upsert_1_times_i32().await?;
         test_filter_requested_columns_upsert_2_times_i32().await?;
         test_filter_requested_columns_upsert_3_times_i32().await?;
@@ -3396,5 +3394,10 @@ mod upsert_with_metadata_tests {
         test_merge_different_columns_with_timestamp_type_i32_time().await?;
 
         Ok(())
+    }
+
+    #[test_log::test]
+    fn t() {
+        log::debug!("hello");
     }
 }

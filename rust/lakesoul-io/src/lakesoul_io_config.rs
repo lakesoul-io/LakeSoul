@@ -32,6 +32,7 @@ impl Default for IOSchema {
     }
 }
 
+/// The base configurations to provide when creating a IO Reader or Writer
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {

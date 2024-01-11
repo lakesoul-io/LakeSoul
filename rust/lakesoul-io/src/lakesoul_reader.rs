@@ -17,6 +17,7 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
 use futures::StreamExt;
+use log::debug;
 
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -75,6 +76,7 @@ impl LakeSoulReader {
             )
             .await?;
             self.schema = Some(stream.schema());
+            debug!("set read stream ");
             self.stream = Some(stream);
 
             Ok(())

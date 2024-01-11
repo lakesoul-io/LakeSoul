@@ -26,6 +26,7 @@ use crate::{
 
 use crate::datasource::table_provider::LakeSoulTableProvider;
 
+/// The abstraction of a table in LakeSoul.
 pub struct LakeSoulTable {
     client: MetaDataClientRef,
     table_info: Arc<TableInfo>,
@@ -86,7 +87,7 @@ impl LakeSoulTable {
             schema.deref(),
             false,
         )?
-        .build()?;
+            .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
         let results = dataframe

@@ -23,6 +23,7 @@ use datafusion::physical_plan::{
 use datafusion::prelude::{DataFrame, SessionContext};
 
 use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use log::debug;
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
@@ -152,7 +153,7 @@ impl TableProvider for LakeSoulParquetProvider {
                     provider_as_source(Arc::new(EmptySchemaProvider::new(df.count().await?))),
                     None,
                 )?
-                .build()?;
+                    .build()?;
                 DataFrame::new(_state.clone(), plan)
             } else {
                 df.select(projected_cols)?
@@ -172,12 +173,12 @@ impl TableProvider for LakeSoulParquetProvider {
                         field.data_type().clone(),
                         field.is_nullable()
                             | inputs.iter().any(|plan| {
-                                if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
-                                    plan_field.is_nullable()
-                                } else {
-                                    true
-                                }
-                            }),
+                            if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
+                                plan_field.is_nullable()
+                            } else {
+                                true
+                            }
+                        }),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -349,7 +350,7 @@ pub fn merge_stream(
             batch_size,
             merge_ops,
         )
-        .unwrap();
+            .unwrap();
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             vec![Box::pin(merge_stream)],
             schema,
@@ -385,6 +386,7 @@ pub async fn prune_filter_and_execute(
     // find columns requested and prune others
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone(), &[]);
     if cols.is_empty() {
+        debug!("create EmptySchemaStream");
         Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
     } else {
         // row filtering should go first since filter column may not in the selected cols
@@ -395,6 +397,7 @@ pub async fn prune_filter_and_execute(
         })?;
         // column pruning
         let df = df.select(cols)?;
+        debug!("df -> steam ");
         df.execute_stream().await
     }
 }
@@ -441,7 +444,7 @@ mod tests {
             LakeSoulParquetProvider::from_config(builder.build()),
             Some(Parser::parse("gt(value,0)".to_string(), schema.clone())),
         )
-        .await?;
+            .await?;
 
         Ok(())
     }
@@ -467,7 +470,7 @@ mod tests {
             LakeSoulParquetProvider::from_config(builder.build()),
             Some(Parser::parse("gt(hash,0)".to_string(), schema.clone())),
         )
-        .await?;
+            .await?;
 
         Ok(())
     }
@@ -498,8 +501,8 @@ mod tests {
             // assert_eq!(expected_result_length, record_batch.column(1).len());
             let _ = print_batches(&result);
         })
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         Ok(())
     }
