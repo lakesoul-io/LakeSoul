@@ -180,11 +180,12 @@ TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_c
 ```
   </TabItem>
 
-    <TabItem value="Scala" label="Scala">
+  <TabItem value="Scala" label="Scala">
 
 ```scala
 // Scala
-spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_cdc_table' TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_column' = 'op')")```
+spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_cdc_table' TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_column' = 'op')")
+```
 
   </TabItem>
 
@@ -203,7 +204,8 @@ To append new data to a table using DataFrame, use `DataFrameWriterV2` API. If t
 ```sql
 INSERT INTO TABLE lakesoul_table VALUES (1, 'Alice', '2024-01-01'), (2, 'Bob', '2024-01-01'), (1, 'Cathy', '2024-01-02');
 ```
-  </TabItem>
+
+</TabItem>
 
   <TabItem value="Scala" label="Scala">
 

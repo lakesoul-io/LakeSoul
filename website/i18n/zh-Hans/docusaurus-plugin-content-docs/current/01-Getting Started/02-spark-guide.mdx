@@ -106,6 +106,9 @@ spark.sql("CREATE NAMESPACE IF NOT EXISTS lakesoul_namespace")
 spark.sql("USE lakesoul_namespace")
 spark.sql("SHOW TABLES")
 ```
+  </TabItem>
+
+</Tabs>
 
 
 ## 创建表
@@ -181,7 +184,8 @@ TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_c
 
 ```scala
 // Scala
-spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_cdc_table' TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_column' = 'op')")```
+spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_cdc_table' TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_column' = 'op')")
+```
 
   </TabItem>
 
@@ -425,3 +429,4 @@ spark.read.format("lakesoul")
 
 ## 更多案例
 接下来，您可以在[Spark API文档](../03-Usage%20Docs/03-spark-api-docs.md)中了解更多关于在Spark中使用LakeSoul表的案例。
+
