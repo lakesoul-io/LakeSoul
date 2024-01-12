@@ -200,6 +200,9 @@ lakeSoulTable.compaction("date='2021-01-01'")
 lakeSoulTable.compaction()
 //compaction on all partitions, but only partitions meet the conditions will be performed
 lakeSoulTable.compaction(false)
+//spark sql
+spark.sql("call LakeSoulTable.compaction(condition=>map('date','2021-01-01'),tablePath=>'"+tablePath+"')")
+spark.sql("call LakeSoulTable.compaction(tableName=>'lakesoul_table_name')")
 
 ```
 
@@ -210,6 +213,7 @@ Since version 2.0, LakeSoul supports load partition into Hive after compaction.
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 val lakeSoulTable = LakeSoulTable.forName("lakesoul_test_table")
 lakeSoulTable.compaction("date='2021-01-01'", "spark_catalog.default.hive_test_table")
+spark.sql("call LakeSoulTable.compaction(tableName=>'lakesoul_table_name',hiveTableName=>'spark_catalog.default.hive_test_table',condition=>map('date','2021-01-01'))")
 ```
 
 **Note** If `lakesoul` has been set as default catalog, Hive tables should be referenced with `spark_catalog` prefix.

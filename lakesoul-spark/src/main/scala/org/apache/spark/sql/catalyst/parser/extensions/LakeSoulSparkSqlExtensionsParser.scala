@@ -40,7 +40,7 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
     lexer.addErrorListener(LakeSoulParseErrorListener)
     val tokenStream = new CommonTokenStream(lexer)
     val parser = new LakeSoulSqlExtensionsParser(tokenStream)
-    parser.addParseListener(IcebergSqlExtensionsPostProcessor)
+    parser.addParseListener(LakeSoulSqlExtensionsPostProcessor)
     parser.removeErrorListeners()
     parser.addErrorListener(LakeSoulParseErrorListener)
     try {
@@ -138,7 +138,7 @@ class LakeSoulSparkSqlExtensionsParser(delegate: ParserInterface) extends Parser
     normalized.startsWith("call")
   }
 }
-case object IcebergSqlExtensionsPostProcessor extends LakeSoulSqlExtensionsListener {
+case object LakeSoulSqlExtensionsPostProcessor extends LakeSoulSqlExtensionsListener {
 
   /** Remove the back ticks from an Identifier. */
   override def exitQuotedIdentifier(ctx: QuotedIdentifierContext): Unit = {

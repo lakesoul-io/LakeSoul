@@ -197,6 +197,10 @@ lakeSoulTable.compaction("date='2021-01-01'")
 lakeSoulTable.compaction()
 //对全表所有分区执行 compaction 操作，会检测是否符合执行 compaction 的条件，只有符合条件的才会执行
 lakeSoulTable.compaction(false)
+//使用sql执行
+spark.sql("call LakeSoulTable.compaction(condition=>map('date','2021-01-01'),tablePath=>'"+tablePath+"')")
+spark.sql("call LakeSoulTable.compaction(tableName=>'lakesoul_table_name')")
+
 ```
 
 ### 6.2 Compaction 后挂载到 Hive Meta
@@ -207,6 +211,7 @@ lakeSoulTable.compaction(false)
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 val lakeSoulTable = LakeSoulTable.forName("lakesoul_test_table")
 lakeSoulTable.compaction("date='2021-01-01'", "spark_catalog.default.hive_test_table")
+spark.sql("call LakeSoulTable.compaction(tableName=>'lakesoul_table_name',hiveTableName=>'spark_catalog.default.hive_test_table',condition=>map('date','2021-01-01'))")
 ```
 自定义 hive 分区名，可以执行如下 Compaction 调用：
 ```scala
