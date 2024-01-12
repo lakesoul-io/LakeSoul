@@ -20,17 +20,18 @@ LakeSoul | Spark Version
 2.2.x-2.4.x |3.3.x
 2.0.x-2.1.x| 3.1.x
 
-### Spark Shell/SQL
+### Spark Shell/SQL/PySpark
 
-使用`LakeSoulSparkSessionExtension` sql扩展来运行spark-shell/spark-sql。
+使用`LakeSoulSparkSessionExtension` sql扩展来运行spark-shell/spark-sql/pyspark。
 
 <Tabs
-    defaultValue="SQL"
+    defaultValue="Spark SQL"
     values={[
+        {label: 'Spark SQL', value: 'Spark SQL'},
         {label: 'Scala', value: 'Scala'},
-        {label: 'SQL', value: 'SQL'},
+        {label: 'PySpark', value: 'PySpark'},
     ]}>
-  <TabItem value="SQL" label="SQL" default>
+  <TabItem value="Spark SQL" label="Spark SQL" default>
 
   ```bash
   spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-2.5.0-spark-3.3.jar
@@ -43,7 +44,14 @@ LakeSoul | Spark Version
   ```bash
   spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul  --jars lakesoul-spark-2.5.0-spark-3.3.jar
   ```
-</TabItem>  
+</TabItem>
+  <TabItem value="PySpark" label="PySpark">
+
+  ```bash
+  wget https://github.com/lakesoul-io/LakeSoul/tree/main/python/lakesoul/spark/tables.py
+  pyspark --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-2.5.0-spark-3.3.jar --py-files tables.py
+  ```
+</TabItem>
   
 </Tabs>
 
@@ -108,6 +116,16 @@ spark.sql("SHOW TABLES")
 ```
   </TabItem>
 
+  <TabItem value="PySpark" label="PySpark">
+
+```python
+// python
+spark.sql("CREATE NAMESPACE IF NOT EXISTS lakesoul_namespace")
+spark.sql("USE lakesoul_namespace")
+spark.sql("SHOW TABLES")
+```
+  </TabItem>
+
 </Tabs>
 
 
@@ -135,6 +153,13 @@ spark.sql("CREATE TABLE lakesoul_table (id BIGINT, name STRING, `date` STRING) U
 
   </TabItem>
 
+  <TabItem value="PySpark" label="PySpark">
+
+```python
+// python
+spark.sql("CREATE TABLE lakesoul_table (id BIGINT, name STRING, `date` STRING) USING lakesoul PARTITIONED BY (`date`) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_table'")
+```
+  </TabItem>
 </Tabs>
 
 ### 主键表
@@ -160,6 +185,13 @@ TBLPROPERTIES ( 'hashPartitions'='id', 'hashBucketNum'='2');
 spark.sql("CREATE TABLE lakesoul_hash_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_hash_table' TBLPROPERTIES ( 'hashPartitions'='id', 'hashBucketNum'='2')")
 ```
 
+  </TabItem>
+  <TabItem value="PySpark" label="PySpark">
+
+  ```python
+  // python
+spark.sql("CREATE TABLE lakesoul_hash_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_hash_table' TBLPROPERTIES ( 'hashPartitions'='id', 'hashBucketNum'='2')")
+  ```
   </TabItem>
 
 </Tabs>
@@ -188,7 +220,13 @@ spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, dat
 ```
 
   </TabItem>
+  <TabItem value="PySpark" label="PySpark">
 
+```python
+// python
+spark.sql("CREATE TABLE lakesoul_cdc_table (id BIGINT NOT NULL, name STRING, date STRING) USING lakesoul PARTITIONED BY (date) LOCATION 'file:/tmp/lakesoul_namespace/lakesoul_cdc_table' TBLPROPERTIES('hashPartitions'='id', 'hashBucketNum'='2', 'lakesoul_cdc_change_column' = 'op')")
+```
+  </TabItem>
 
 </Tabs>
 
@@ -213,12 +251,22 @@ INSERT INTO TABLE lakesoul_table VALUES (1, 'Alice', '2024-01-01'), (2, 'Bob', '
 val data = Seq(Row(1L, "Alice", "2024-01-01"), Row(2L, "Bob", "2024-01-01"), Row(1L, "Cathy", "2024-01-02"))
 val schema = StructType(Seq(StructField("id", LongType, false), StructField("name", StringType, true), StructField("date", StringType, false)))
 val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
-
 df.write.format("lakesoul").insertInto("lakesoul_table")
 
 ```
   </TabItem>
 
+  <TabItem value="PySpark" label="PySpark">
+
+```python
+  // python
+from pyspark.sql.types import *
+data = [(1,"Cathy","2024-01-02")]
+schema = StructType([StructField("id", LongType(), False), StructField("name", StringType(), True), StructField("date", StringType(), False)])
+df = spark.createDataFrame(data,schema=schema)
+df.write.format("lakesoul").insertInto("lakesoul_table")
+```
+  </TabItem>
 </Tabs>
 
 要使用Spark SQL向哈希分区表写入数据，请使用`Merge INTO`语句。
@@ -247,6 +295,7 @@ WHEN NOT MATCHED THEN INSERT *;
 
 ```scala
 // Scala
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 val tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
 
 // Init hash table with first dataframe
@@ -264,7 +313,20 @@ val dfUpsert = Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (202011
 LakeSoulTable.forPath(tablePath).upsert(dfUpsert)
 
 ```
-</TabItem>
+ </TabItem>
+ <TabItem value="PySpark" label="PySpark">
+
+```python
+  // python
+from pyspark.sql.types import *
+from tables import LakeSoulTable
+tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
+df = spark.createDataFrame([(20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 4, 4)],schema='range string,hash string,value string')
+df.write.format("lakesoul").mode("overwrite").option("rangePartitions", "range").option("hashPartitions", "hash").option("hashBucketNum", 2).save(tablePath)
+dfUpsert = spark.createDataFrame([(20201111, 1, 1), (20201111, 2, 2), (20201111, 3, 3), (20201112, 4, 4)],schema='range string,hash string,value string')
+LakeSoulTable.forPath(spark,tablePath).upsert(dfUpsert)
+```
+ </TabItem>
 
 </Tabs>
 
@@ -289,10 +351,17 @@ UPDATE lakesoul_table SET name = 'David' WHERE id = 2;
   // Scala
 val tablePath = "file:/tmp/lakesoul_namespace/lakesoul_table"
 LakeSoulTable.forPath(tablePath).updateExpr("id = 2", Seq(("name"->"'David'")).toMap)
-
-
   ```
   </TabItem>
+  <TabItem value="PySpark" label="PySpark">
+
+  ```python
+    // python
+  from tables import LakeSoulTable
+  tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
+  LakeSoulTable.forPath(spark,tablePath).update("hash = 4", { "value":"5"})
+  ```
+   </TabItem>
 
 </Tabs>
 
@@ -318,7 +387,16 @@ val tablePath = "file:/tmp/lakesoul_namespace/lakesoul_table"
 LakeSoulTable.forPath(tablePath).delete("id = 1 or id =2")
 ```
 
-</TabItem>
+  </TabItem>
+  <TabItem value="PySpark" label="PySpark">
+
+  ```python
+    // python
+  from tables import LakeSoulTable
+  tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
+  LakeSoulTable.forPath(spark,tablePath).delete("hash = 4")
+  ```
+  </TabItem>
 
 </Tabs>
 
@@ -353,6 +431,20 @@ LakeSoulTable.forName(tableName).toDF
 ```
 
 </TabItem>
+  <TabItem value="PySpark" label="PySpark">
+
+  ```python
+    // python
+  from tables import LakeSoulTable
+  tablePath = "file:/tmp/lakesoul_namespace/lakesoul_upsert_table"
+
+  // query data with LakeSoulTable API
+  LakeSoulTable.forPath(spark,tablePath).toDF().show()
+
+  // query data with DataFrameReader API
+  spark.read.format("lakesoul").load(tablePath).show()
+  ```
+  </TabItem>
 
 </Tabs>
 

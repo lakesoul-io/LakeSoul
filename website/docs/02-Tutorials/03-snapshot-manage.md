@@ -38,6 +38,10 @@ val lakeSoulTable = LakeSoulTable. forPath(tablePath)
 
 //Rollback metadata and storage data partitioned as '2021-01-02' when the timestamp is less than or equal to and the closest to '2022-01-01 15:15:15'
 lakeSoulTable.rollbackPartition("date='2022-01-02'", "2022-01-01 15:15:15")
+//sql
+spark.sql("call LakeSoulTable.rollback(partitionvalue=>map('date','2022-01-02'),toTime=>'2022-01-01 15:15:15',tablePath=>'" + tablePath + "')")
+spark.sql("call LakeSoulTable.rollback(partitionvalue=>map('date','2022-01-02'),toTime=>'2022-01-01 15:15:15',tzoneId=>'Asia/Shanghai',tableName=>'lakesoul')")
+
 ```
 The rollback operation itself will create a new snapshot version, while other version snapshots and data will not be deleted.
 
