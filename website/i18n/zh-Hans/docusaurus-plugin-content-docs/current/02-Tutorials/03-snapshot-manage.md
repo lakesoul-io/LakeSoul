@@ -38,6 +38,9 @@ val lakeSoulTable = LakeSoulTable.forPath(tablePath)
 
 //将分区为'2021-01-02'的数据回滚到时间戳小于等于并最接近'2022-01-01 15:15:15'时的数据信息
 lakeSoulTable.rollbackPartition("date='2022-01-02'", "2022-01-01 15:15:15")
+//sql
+spark.sql("call LakeSoulTable.rollback(partitionvalue=>map('date','2022-01-02'),toTime=>'2022-01-01 15:15:15',tablePath=>'" + tablePath + "')")
+spark.sql("call LakeSoulTable.rollback(partitionvalue=>map('date','2022-01-02'),toTime=>'2022-01-01 15:15:15',tzoneId=>'Asia/Shanghai',tableName=>'lakesoul')")
 ```
 回滚操作本身会创建一个新的快照版本，而其他的版本快照以及数据不会被删除。
 
