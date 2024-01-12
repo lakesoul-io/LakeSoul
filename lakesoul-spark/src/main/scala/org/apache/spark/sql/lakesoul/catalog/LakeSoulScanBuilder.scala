@@ -138,6 +138,13 @@ case class LakeSoulScanBuilder(sparkSession: SparkSession,
     }
   }
 
+  override def readPartitionSchema(): StructType = {
+    if (options.getBoolean("isCompaction", false)) {
+      StructType(Seq.empty)
+    } else {
+      super.readPartitionSchema()
+    }
+  }
 
   private def parquetScan(): Scan = {
     if (sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)) {

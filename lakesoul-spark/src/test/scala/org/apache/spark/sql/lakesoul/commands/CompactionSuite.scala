@@ -6,6 +6,10 @@ package org.apache.spark.sql.lakesoul.commands
 
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
+import org.apache.log4j.{Level, Logger}
+import org.apache.logging.slf4j.Log4jLogger
+import org.slf4j.LoggerFactory
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -22,6 +26,15 @@ import org.scalatestplus.junit.JUnitRunner
 class CompactionSuite extends QueryTest
   with SharedSparkSession with BeforeAndAfterEach
   with LakeSoulSQLCommandTest {
+
+  override def sparkConf: SparkConf = {
+    super.sparkConf
+      .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
+      .set("spark.network.timeout", "10000000")
+      .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+      .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
+      .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")
+  }
 
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
@@ -71,6 +84,43 @@ class CompactionSuite extends QueryTest
 
 
       val df2 = Seq((1, 1, 1), (2, 1, 1), (3, 1, 1), (1, 2, 2), (1, 3, 3))
+        .toDF("range", "hash", "name")
+
+      withSQLConf("spark.dmetasoul.lakesoul.schema.autoMerge.enabled" -> "true") {
+        LakeSoulTable.forPath(tableName).upsert(df2)
+      }
+
+      rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      assert(!rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+
+
+      LakeSoulTable.forPath(tableName).compaction(true)
+      rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1))
+      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+
+    })
+  }
+
+  test("simple compaction - string partition") {
+    withTempDir(file => {
+      val tableName = file.getCanonicalPath
+
+      val df1 = Seq(("", 1, 1), (null, 1, 1), ("3", 1, 1), ("1", 2, 2), ("1", 3, 3))
+        .toDF("range", "hash", "value")
+      df1.write
+        .option("rangePartitions", "range")
+        .option("hashPartitions", "hash")
+        .option("hashBucketNum", "2")
+        .format("lakesoul")
+        .save(tableName)
+
+      val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString)
+      var rangeGroup = SparkUtil.allDataInfo(sm.updateSnapshot()).groupBy(_.range_partitions)
+      assert(rangeGroup.forall(_._2.groupBy(_.file_bucket_id).forall(_._2.length == 1)))
+
+
+      val df2 = Seq(("", 1, 2), (null, 1, 2), ("3", 1, 2), ("1", 2, 3), ("1", 3, 4))
         .toDF("range", "hash", "name")
 
       withSQLConf("spark.dmetasoul.lakesoul.schema.autoMerge.enabled" -> "true") {
