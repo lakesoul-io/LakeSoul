@@ -271,19 +271,36 @@ fn concat_last_with_string_type(
     let mut is_none = false;
     let mut first = true;
     let mut res = String::new();
-    for range in ranges.iter() {
+    let num_ranges = ranges.len();
+    for (idx, range) in ranges.iter().enumerate() {
         let array = range.array();
         let arr = as_string_array(array.as_ref());
-        if !arr.is_null(range.end_row - 1) {
-            if !first {
-                res.push(delim);
-            } else {
-                first = false;
+        if range.end_row == range.array().len() {
+            if idx == num_ranges - 1 || ranges[idx + 1].stream_idx != ranges[idx].stream_idx {
+                if !arr.is_null(range.end_row - 1) {
+                    if !first {
+                        res.push(delim);
+                    } else {
+                        first = false;
+                    }
+                    res.push_str(arr.value(range.end_row - 1));
+                } else {
+                    is_none = true;
+                    break;
+                }
             }
-            res.push_str(arr.value(range.end_row - 1));
         } else {
-            is_none = true;
-            break;
+            if !arr.is_null(range.end_row - 1) {
+                if !first {
+                    res.push(delim);
+                } else {
+                    first = false;
+                }
+                res.push_str(arr.value(range.end_row - 1));
+            } else {
+                is_none = true;
+                break;
+            }
         }
     }
     match is_none {
@@ -344,15 +361,28 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
     ($primitive_type_name:ty, $native_ty:ty, $primitive_builder_type:ty, $builder:ident, $ranges:ident) => {{
         let mut is_none = false;
         let mut res = <$primitive_type_name>::default_value();
-        for range in $ranges.iter() {
+        let num_ranges = $ranges.len();
+        for (idx, range) in $ranges.iter().enumerate() {
             let array = range.array();
             let arr = as_primitive_array::<$primitive_type_name>(array.as_ref());
             let values = arr.values();
-            if !arr.is_null(range.end_row - 1) {
-                res += values[range.end_row - 1]
+
+            if range.end_row == range.array().len() {
+                if idx == num_ranges - 1 || $ranges[idx + 1].stream_idx != $ranges[idx].stream_idx {
+                    if !arr.is_null(range.end_row - 1) {
+                        res += values[range.end_row - 1]
+                    } else {
+                        is_none = true;
+                        break;
+                    }
+                }
             } else {
-                is_none = true;
-                break;
+                if !arr.is_null(range.end_row - 1) {
+                    res += values[range.end_row - 1]
+                } else {
+                    is_none = true;
+                    break;
+                }
             }
         }
         match is_none {
