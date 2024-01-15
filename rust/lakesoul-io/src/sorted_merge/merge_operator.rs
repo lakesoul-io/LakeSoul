@@ -10,16 +10,19 @@ use arrow_schema::DataType;
 use smallvec::SmallVec;
 
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
-use crate::sum_with_primitive_type_and_append_value;
+use crate::{sum_all_with_primitive_type_and_append_value, sum_last_with_primitive_type_and_append_value};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum MergeOperator {
     #[default]
     UseLast,
     UseLastNotNull,
-    Sum,
-    JoinedByComma,
-    JoinedBySemicolon,
+    SumAll,
+    SumLast,
+    JoinedLastByComma,
+    JoinedLastBySemicolon,
+    JoinedAllByComma,
+    JoinedAllBySemicolon,
 }
 
 pub enum MergeResult {
@@ -33,9 +36,12 @@ impl MergeOperator {
         match name {
             "UseLast" => MergeOperator::UseLast,
             "UseLastNotNull" => MergeOperator::UseLastNotNull,
-            "Sum" => MergeOperator::Sum,
-            "JoinedByComma" => MergeOperator::JoinedByComma,
-            "JoinedBySemicolon" => MergeOperator::JoinedBySemicolon,
+            "SumAll" => MergeOperator::SumAll,
+            "SumLast" => MergeOperator::SumLast,
+            "JoinedLastByComma" => MergeOperator::JoinedLastByComma,
+            "JoinedLastBySemicolon" => MergeOperator::JoinedLastBySemicolon,
+            "JoinedAllByComma" => MergeOperator::JoinedAllByComma,
+            "JoinedAllBySemicolon" => MergeOperator::JoinedAllBySemicolon,
             _ => panic!("Invalid MergeOperator name"),
         }
     }
@@ -51,17 +57,29 @@ impl MergeOperator {
             1 => match self {
                 MergeOperator::UseLast => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
-                MergeOperator::Sum => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::SumAll => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => sum_with_primitive_type(data_type, ranges, append_array_data_builder),
+                    _ => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder),
                 },
-                MergeOperator::JoinedByComma => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::SumLast => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_with_string_type(ranges, append_array_data_builder, ','),
+                    _ => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder),
                 },
-                MergeOperator::JoinedBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                MergeOperator::JoinedLastByComma => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_with_string_type(ranges, append_array_data_builder, ';'),
+                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ','),
+                },
+                MergeOperator::JoinedLastBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                    1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ';'),
+                },
+                MergeOperator::JoinedAllByComma => match ranges[0].end_row - ranges[0].begin_row {
+                    1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ','),
+                },
+                MergeOperator::JoinedAllBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
+                    1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
+                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ';'),
                 },
             },
             _ => match self {
@@ -69,9 +87,12 @@ impl MergeOperator {
                     MergeResult::Extend(ranges.last().unwrap().batch_idx, ranges.last().unwrap().end_row - 1)
                 }
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
-                MergeOperator::Sum => sum_with_primitive_type(data_type, ranges, append_array_data_builder),
-                MergeOperator::JoinedByComma => concat_with_string_type(ranges, append_array_data_builder, ','),
-                MergeOperator::JoinedBySemicolon => concat_with_string_type(ranges, append_array_data_builder, ';'),
+                MergeOperator::SumAll => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder),
+                MergeOperator::SumLast => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder),
+                MergeOperator::JoinedLastByComma => concat_last_with_string_type(ranges, append_array_data_builder, ','),
+                MergeOperator::JoinedLastBySemicolon => concat_last_with_string_type(ranges, append_array_data_builder, ';'),
+                MergeOperator::JoinedAllByComma => concat_all_with_string_type(ranges, append_array_data_builder, ','),
+                MergeOperator::JoinedAllBySemicolon => concat_all_with_string_type(ranges, append_array_data_builder, ';'),
             },
         }
     }
@@ -104,44 +125,44 @@ fn last_non_null(ranges: &SmallVec<[SortKeyArrayRange; 4]>) -> MergeResult {
     }
 }
 
-fn sum_with_primitive_type(
+fn sum_all_with_primitive_type(
     dt: DataType,
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
 ) -> MergeResult {
     match dt {
         DataType::UInt8 => {
-            sum_with_primitive_type_and_append_value!(UInt8Type, u8, UInt8Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(UInt8Type, u8, UInt8Builder, append_array_data_builder, ranges)
         }
         DataType::UInt16 => {
-            sum_with_primitive_type_and_append_value!(UInt16Type, u16, UInt16Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(UInt16Type, u16, UInt16Builder, append_array_data_builder, ranges)
         }
         DataType::UInt32 => {
-            sum_with_primitive_type_and_append_value!(UInt32Type, u32, UInt32Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(UInt32Type, u32, UInt32Builder, append_array_data_builder, ranges)
         }
         DataType::UInt64 => {
-            sum_with_primitive_type_and_append_value!(UInt64Type, u64, UInt64Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(UInt64Type, u64, UInt64Builder, append_array_data_builder, ranges)
         }
         DataType::Int8 => {
-            sum_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
         }
         DataType::Int16 => {
-            sum_with_primitive_type_and_append_value!(Int16Type, i16, Int16Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(Int16Type, i16, Int16Builder, append_array_data_builder, ranges)
         }
         DataType::Int32 => {
-            sum_with_primitive_type_and_append_value!(Int32Type, i32, Int32Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(Int32Type, i32, Int32Builder, append_array_data_builder, ranges)
         }
         DataType::Int64 => {
-            sum_with_primitive_type_and_append_value!(Int64Type, i64, Int64Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(Int64Type, i64, Int64Builder, append_array_data_builder, ranges)
         }
-        DataType::Float32 => sum_with_primitive_type_and_append_value!(
+        DataType::Float32 => sum_all_with_primitive_type_and_append_value!(
             Float32Type,
             f32,
             Float32Builder,
             append_array_data_builder,
             ranges
         ),
-        DataType::Float64 => sum_with_primitive_type_and_append_value!(
+        DataType::Float64 => sum_all_with_primitive_type_and_append_value!(
             Float64Type,
             f64,
             Float64Builder,
@@ -152,24 +173,81 @@ fn sum_with_primitive_type(
     }
 }
 
-fn concat_with_string_type(
+fn sum_last_with_primitive_type(
+    dt: DataType,
+    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    append_array_data_builder: &mut Box<dyn ArrayBuilder>,
+) -> MergeResult {
+    match dt {
+        DataType::UInt8 => {
+            sum_last_with_primitive_type_and_append_value!(UInt8Type, u8, UInt8Builder, append_array_data_builder, ranges)
+        }
+        DataType::UInt16 => {
+            sum_last_with_primitive_type_and_append_value!(UInt16Type, u16, UInt16Builder, append_array_data_builder, ranges)
+        }
+        DataType::UInt32 => {
+            sum_last_with_primitive_type_and_append_value!(UInt32Type, u32, UInt32Builder, append_array_data_builder, ranges)
+        }
+        DataType::UInt64 => {
+            sum_last_with_primitive_type_and_append_value!(UInt64Type, u64, UInt64Builder, append_array_data_builder, ranges)
+        }
+        DataType::Int8 => {
+            sum_last_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
+        }
+        DataType::Int16 => {
+            sum_last_with_primitive_type_and_append_value!(Int16Type, i16, Int16Builder, append_array_data_builder, ranges)
+        }
+        DataType::Int32 => {
+            sum_last_with_primitive_type_and_append_value!(Int32Type, i32, Int32Builder, append_array_data_builder, ranges)
+        }
+        DataType::Int64 => {
+            sum_last_with_primitive_type_and_append_value!(Int64Type, i64, Int64Builder, append_array_data_builder, ranges)
+        }
+        DataType::Float32 => sum_last_with_primitive_type_and_append_value!(
+            Float32Type,
+            f32,
+            Float32Builder,
+            append_array_data_builder,
+            ranges
+        ),
+        DataType::Float64 => sum_last_with_primitive_type_and_append_value!(
+            Float64Type,
+            f64,
+            Float64Builder,
+            append_array_data_builder,
+            ranges
+        ),
+        _ => panic!("{} doesn't support MergeOperator::Sum", dt),
+    }
+}
+
+
+fn concat_all_with_string_type(
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     delim: char,
 ) -> MergeResult {
-    let mut is_none = true;
+    let mut is_none = false;
+    let mut first = true;
     let mut res = String::new();
     for range in ranges.iter() {
         let array = range.array();
         let arr = as_string_array(array.as_ref());
         for i in range.begin_row..range.end_row {
             if !arr.is_null(i) {
-                if !is_none {
+                if !first {
                     res.push(delim);
+                } else {
+                    first = true;
                 }
-                is_none = false;
                 res.push_str(arr.value(i));
+            } else {
+                is_none = true;
+                break;
             }
+        }
+        if is_none {
+            break;
         }
     }
     match is_none {
@@ -185,33 +263,69 @@ fn concat_with_string_type(
     }
 }
 
+fn concat_last_with_string_type(
+    ranges: &SmallVec<[SortKeyArrayRange; 4]>,
+    append_array_data_builder: &mut Box<dyn ArrayBuilder>,
+    delim: char,
+) -> MergeResult {
+    let mut is_none = false;
+    let mut first = true;
+    let mut res = String::new();
+    for range in ranges.iter() {
+        let array = range.array();
+        let arr = as_string_array(array.as_ref());
+        if !arr.is_null(range.end_row - 1) {
+            if !first {
+                res.push(delim);
+            } else {
+                first = false;
+            }
+            res.push_str(arr.value(range.end_row - 1));
+        } else {
+            is_none = true;
+            break;
+        }
+    }
+    match is_none {
+        true => MergeResult::AppendNull,
+        false => {
+            append_array_data_builder
+                .as_any_mut()
+                .downcast_mut::<StringBuilder>()
+                .unwrap()
+                .append_value(res);
+            MergeResult::AppendValue(append_array_data_builder.len() - 1)
+        }
+    }
+}
+
+
 #[macro_export]
-macro_rules! sum_with_primitive_type_and_append_value {
+macro_rules! sum_all_with_primitive_type_and_append_value {
     ($primitive_type_name:ty, $native_ty:ty, $primitive_builder_type:ty, $builder:ident, $ranges:ident) => {{
-        let mut is_none = true;
+        let mut is_none = false;
         let mut res = <$primitive_type_name>::default_value();
         for range in $ranges.iter() {
             let array = range.array();
             let arr = as_primitive_array::<$primitive_type_name>(array.as_ref());
             let values = arr.values();
-            if is_none {
-                let null_buffer = arr.nulls();
-                match null_buffer {
-                    Some(buffer) => {
-                        let offset = arr.offset();
-                        let null_buf_range = buffer.slice(offset + range.begin_row, range.end_row - range.begin_row);
-                        // the entire range is null
-                        is_none &= null_buf_range.null_count() == (range.end_row - range.begin_row);
+            let null_buffer = arr.nulls();
+            match null_buffer {
+                Some(buffer) => {
+                    let offset = arr.offset();
+                    let null_buf_range = buffer.slice(offset + range.begin_row, range.end_row - range.begin_row);
+                    // the entire range is null
+                    if null_buf_range.null_count() > 0 {
+                        is_none = true;
+                        break;
                     }
-                    None => is_none = false,
                 }
+                None => {}
             }
-            if !is_none {
-                res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
-            }
+            res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
         }
         match is_none {
-            // only when all ranges are null values, the result is also null
+            // sum result is null if null value exists
             true => MergeResult::AppendNull,
             false => {
                 $builder
@@ -224,6 +338,38 @@ macro_rules! sum_with_primitive_type_and_append_value {
         }
     }};
 }
+
+#[macro_export]
+macro_rules! sum_last_with_primitive_type_and_append_value {
+    ($primitive_type_name:ty, $native_ty:ty, $primitive_builder_type:ty, $builder:ident, $ranges:ident) => {{
+        let mut is_none = false;
+        let mut res = <$primitive_type_name>::default_value();
+        for range in $ranges.iter() {
+            let array = range.array();
+            let arr = as_primitive_array::<$primitive_type_name>(array.as_ref());
+            let values = arr.values();
+            if !arr.is_null(range.end_row - 1) {
+                res += values[range.end_row - 1]
+            } else {
+                is_none = true;
+                break;
+            }
+        }
+        match is_none {
+            // sum result is null if null value exists
+            true => MergeResult::AppendNull,
+            false => {
+                $builder
+                    .as_any_mut()
+                    .downcast_mut::<$primitive_builder_type>()
+                    .unwrap()
+                    .append_value(res);
+                MergeResult::AppendValue($builder.len() - 1)
+            }
+        }
+    }};
+}
+
 
 #[cfg(test)]
 mod tests {
