@@ -15,7 +15,7 @@ import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.functions.{col, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.schema.SchemaUtils
+import org.apache.spark.sql.lakesoul.schema.{InvariantCheckerExec, Invariants, SchemaUtils}
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.lakesoul.utils.SparkUtil
 import org.apache.spark.sql.types.{StringType, StructType}
@@ -161,7 +161,11 @@ trait TransactionalWrite {
     }
     val dataset = Dataset.ofRows(spark, dp.logicalPlan)
 
-    val (queryExecution, output) = normalizeData(dataset)
+    val (queryExecution, output) = if (isCompaction) {
+      dataset.queryExecution -> dataset.queryExecution.analyzed.output
+    } else {
+      normalizeData(dataset)
+    }
     val partitioningColumns = {
       if (isCompaction) Seq.empty else
       getPartitioningColumns(
@@ -203,9 +207,16 @@ trait TransactionalWrite {
         options.put("compression", "uncompressed")
       }
 
+      val physicalPlan = if (isCompaction) {
+        queryExecution.executedPlan
+      } else {
+        val invariants = Invariants.getFromSchema(tableInfo.schema, spark)
+        InvariantCheckerExec(queryExecution.executedPlan, invariants)
+      }
+
       LakeSoulFileWriter.write(
         sparkSession = spark,
-        plan = queryExecution.executedPlan,
+        plan = physicalPlan,
         fileFormat = snapshot.fileFormat,
         committer = committer,
         outputSpec = outputSpec,

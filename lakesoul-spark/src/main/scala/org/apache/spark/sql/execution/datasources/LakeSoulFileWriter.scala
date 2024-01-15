@@ -29,6 +29,8 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.FileFormatWriter.ConcurrentOutputWriterSpec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.lakesoul.rules.withPartitionAndOrdering
+import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.vectorized.ArrowFakeRowAdaptor
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
@@ -138,12 +140,17 @@ object LakeSoulFileWriter extends Logging {
       statsTrackers = statsTrackers
     )
 
+    val isCDC = caseInsensitiveOptions.getOrElse("isCDC", "false").toBoolean
+    val isCompaction = caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
+
     // We should first sort by partition columns, then bucket id, and finally sorting columns.
     val requiredOrdering =
       partitionColumns ++ writerBucketSpec.map(_.bucketIdExpression) ++ sortColumns
     // the sort order doesn't matter
     val actualOrdering = empty2NullPlan.outputOrdering.map(_.child)
-    val orderingMatched = if (requiredOrdering.length > actualOrdering.length) {
+    val orderingMatched = if (isCompaction) {
+      true
+    } else if (requiredOrdering.length > actualOrdering.length) {
       false
     } else {
       requiredOrdering.zip(actualOrdering).forall {
@@ -162,11 +169,14 @@ object LakeSoulFileWriter extends Logging {
     // prepares the job, any exception thrown from here shouldn't cause abortJob() to be called.
     committer.setupJob(job)
 
-    val isCDC = caseInsensitiveOptions.getOrElse("isCDC", "false").toBoolean
-    val isCompaction = caseInsensitiveOptions.getOrElse("isCompaction", "false").toBoolean
-
+    val nativeIOEnable = sparkSession.sessionState.conf.getConf(LakeSoulSQLConf.NATIVE_IO_ENABLE)
     def nativeWrap(plan: SparkPlan): RDD[InternalRow] = {
-      if (isCompaction && !isCDC) {
+      if (isCompaction && !isCDC && nativeIOEnable) {
+        plan match {
+          case withPartitionAndOrdering(_, _, child) =>
+            return nativeWrap(child)
+          case _ =>
+        }
         // in this case, we drop columnar to row
         // and use columnar batch directly as input
         // this takes effect no matter gluten enabled or not
@@ -175,6 +185,7 @@ object LakeSoulFileWriter extends Logging {
           case UnaryExecNode(plan, child)
             if plan.getClass.getName == "io.glutenproject.execution.VeloxColumnarToRowExec" => child
           case WholeStageCodegenExec(ColumnarToRowExec(child)) => child
+          case WholeStageCodegenExec(ProjectExec(_, child)) => child
           case _ => plan
         }).execute()
       } else {

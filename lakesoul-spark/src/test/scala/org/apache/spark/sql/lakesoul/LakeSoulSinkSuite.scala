@@ -225,7 +225,7 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
           .select("id", "value")
         val expectedSchema = new StructType()
-          .add(StructField("id", IntegerType, false))
+          .add(StructField("id", IntegerType, nullable = true))
           .add(StructField("value", IntegerType))
         assert(outputDf.schema === expectedSchema)
 
@@ -274,8 +274,8 @@ class LakeSoulSinkSuite extends StreamTest with LakeSoulTestUtils {
         val outputDf = spark.read.format("lakesoul").load(outputDir.getCanonicalPath)
           .select("range", "hash", "value")
         val expectedSchema = new StructType()
-          .add(StructField("range", IntegerType, false))
-          .add(StructField("hash", IntegerType, false))
+          .add(StructField("range", IntegerType, nullable = true))
+          .add(StructField("hash", IntegerType, nullable = false))
           .add(StructField("value", IntegerType))
         assert(outputDf.schema === expectedSchema)
 
