@@ -37,7 +37,6 @@ case class LakeSoulArrowReader(reader: NativeIOReader,
 
     override def hasNext: Boolean = {
       if (!finished) {
-        root.close()
         val consumerArray = ArrowArray.allocateNew(reader.getAllocator)
         val rowCount = reader.nextBatchBlocked(consumerArray.memoryAddress());
         try {

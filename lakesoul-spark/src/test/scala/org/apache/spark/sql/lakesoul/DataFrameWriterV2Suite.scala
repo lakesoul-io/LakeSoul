@@ -268,7 +268,7 @@ trait DataFrameWriterV2Tests
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, false))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, nullable = true))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
     assert(getProperties(table).isEmpty)
   }
@@ -431,7 +431,7 @@ class DataFrameWriterV2Suite
     val table = catalog.loadTable(Identifier.of(Array("default"), "table_name"))
 
     assert(table.name === "default.table_name")
-    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, false))
+    assert(table.schema === new StructType().add("data", StringType).add("id", LongType, nullable = true))
     assert(table.partitioning === Seq(IdentityTransform(FieldReference("id"))))
   }
 
