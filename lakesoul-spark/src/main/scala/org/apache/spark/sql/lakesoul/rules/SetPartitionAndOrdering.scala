@@ -90,12 +90,7 @@ case class SetPartitionAndOrdering(session: SparkSession)
 
 
       val batchExec = BatchScanExec(relation.output, relation.scan, filters)
-
-      val child = if (isCompaction) {
-        batchExec
-      } else {
-        withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
-      }
+      val child = withProjectAndFilter(project, filters, batchExec, !batchExec.supportsColumnar)
 
       if (hashKeys.forall(key => child.output.map(_.name).contains(key.name))) {
         withPartitionAndOrdering(outputPartitioning, outputOrdering, child) :: Nil

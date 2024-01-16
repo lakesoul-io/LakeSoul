@@ -8,12 +8,12 @@ import org.apache.hadoop.fs.FileStatus
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext}
 import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql. SparkSession
-import org.apache.spark.sql.execution.datasources.{FileFormat, OutputWriter, OutputWriterFactory}
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetUtils}
+import org.apache.spark.sql.execution.datasources.{FileFormat, OutputWriter, OutputWriterFactory}
 import org.apache.spark.sql.sources.DataSourceRegister
-import org.apache.spark.sql.types.{ArrayType, AtomicType, DataType, MapType, StructType, UserDefinedType}
+import org.apache.spark.sql.types._
 
 class NativeParquetFileFormat extends FileFormat
   with DataSourceRegister
@@ -26,21 +26,38 @@ class NativeParquetFileFormat extends FileFormat
                              options: Map[String, String],
                              dataSchema: StructType): OutputWriterFactory = {
 
-    val timeZoneId = options.getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
+    val timeZoneId = options
+      .getOrElse(DateTimeUtils.TIMEZONE_OPTION, sparkSession.sessionState.conf.sessionLocalTimeZone)
 
-    new OutputWriterFactory {
-      override def newInstance(
-                                path: String,
-                                dataSchema: StructType,
-                                context: TaskAttemptContext): OutputWriter = {
-        new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context)
+    if (options.getOrElse("isCompaction", "false").toBoolean &&
+      !options.getOrElse("isCDC", "false").toBoolean
+    ) {
+      new OutputWriterFactory {
+        override def newInstance(
+                                  path: String,
+                                  dataSchema: StructType,
+                                  context: TaskAttemptContext): OutputWriter = {
+          new NativeParquetCompactionColumnarOutputWriter(path, dataSchema, timeZoneId, context)
+        }
+
+        override def getFileExtension(context: TaskAttemptContext): String = {
+          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+        }
       }
+    } else {
+      new OutputWriterFactory {
+        override def newInstance(
+                                  path: String,
+                                  dataSchema: StructType,
+                                  context: TaskAttemptContext): OutputWriter = {
+          new NativeParquetOutputWriter(path, dataSchema, timeZoneId, context)
+        }
 
-      override def getFileExtension(context: TaskAttemptContext): String = {
-        CodecConfig.from(context).getCodec.getExtension + ".parquet"
+        override def getFileExtension(context: TaskAttemptContext): String = {
+          CodecConfig.from(context).getCodec.getExtension + ".parquet"
+        }
       }
     }
-
   }
 
   override def inferSchema(

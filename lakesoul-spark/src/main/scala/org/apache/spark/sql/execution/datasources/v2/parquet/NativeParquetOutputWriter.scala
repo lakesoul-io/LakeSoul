@@ -26,7 +26,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   val arrowSchema: Schema = ArrowUtils.toArrowSchema(dataSchema, timeZoneId)
 
-  private val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
+  protected val nativeIOWriter: NativeIOWriter = new NativeIOWriter(arrowSchema)
 
   GlutenUtils.setArrowAllocator(nativeIOWriter)
   nativeIOWriter.setRowGroupRowNumber(NATIVE_IO_WRITE_MAX_ROW_GROUP_SIZE)
@@ -38,7 +38,7 @@ class NativeParquetOutputWriter(val path: String, dataSchema: StructType, timeZo
 
   val allocator: BufferAllocator = nativeIOWriter.getAllocator
 
-  private val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
+  protected val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
 
   private val recordWriter: ArrowWriter = ArrowWriter.create(root)
 

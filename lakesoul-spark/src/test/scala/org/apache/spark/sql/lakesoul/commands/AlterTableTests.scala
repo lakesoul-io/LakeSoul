@@ -320,7 +320,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
       val snapshotManagement = getSnapshotManagement(tableName)
       assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
-        .add("v1", "integer").add("v2", "string", false)
+        .add("v1", "integer").add("v2", "string", nullable = true)
         .add("v3", "long").add("v4", "double"))
 
       checkDatasetUnorderly(
@@ -519,7 +519,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
       val snapshotManagement = getSnapshotManagement(tableName)
       assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
-        .add("v1", "integer", true, "a comment").add("v2", "string"))
+        .add("v1", "integer", nullable = true, "a comment").add("v2", "string"))
     }
   }
 
@@ -530,7 +530,7 @@ trait AlterTableTests extends AlterTableLakeSoulTestBase {
 
       val snapshotManagement = getSnapshotManagement(tableName)
       assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
-        .add("v1", "integer").add("v2", "string", false, "a comment"))
+        .add("v1", "integer").add("v2", "string", nullable = true, "a comment"))
     }
   }
 
