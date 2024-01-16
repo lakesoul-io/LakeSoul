@@ -142,6 +142,10 @@ void write_record_batch(CResult<Writer> *writer,
                         c_ptrdiff_t array_addr,
                         ResultCallback callback);
 
+const char *write_record_batch_blocked(CResult<Writer> *writer,
+                                       c_ptrdiff_t schema_addr,
+                                       c_ptrdiff_t array_addr);
+
 void flush_and_close_writer(CResult<Writer> *writer, ResultCallback callback);
 
 void abort_and_close_writer(CResult<Writer> *writer, ResultCallback callback);

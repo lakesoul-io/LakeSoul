@@ -875,10 +875,10 @@ trait TableCreationTests
           val snapshotManagement = getSnapshotManagement(new Path(location.get))
 
           assert(snapshotManagement.snapshot.getTableInfo.schema == new StructType()
-            .add("a", "integer", false).add("b", "integer", false)
+            .add("a", "integer", nullable = true).add("b", "integer", nullable = true)
             .add("c", "integer").add("d", "integer"))
           assert(snapshotManagement.snapshot.getTableInfo.partition_schema == new StructType()
-            .add("a", "integer", false).add("b", "integer", false))
+            .add("a", "integer", nullable = true).add("b", "integer", nullable = true))
 
           assert(getSchema("t1") == StructType(snapshotManagement.snapshot.getTableInfo.data_schema
             ++ snapshotManagement.snapshot.getTableInfo.range_partition_schema))

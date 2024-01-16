@@ -85,6 +85,8 @@ public interface LibLakeSoulIO {
 
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
+    String write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
+
     void free_lakesoul_reader(Pointer reader);
 
     void flush_and_close_writer(Pointer writer, BooleanCallback callback);

@@ -4,7 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.dmetasoul.lakesoul.meta.{DataFileInfo, SparkMetaVersion, PartitionInfoScala}
+import com.dmetasoul.lakesoul.meta.{DataFileInfo, PartitionInfoScala, SparkMetaVersion}
 import com.dmetasoul.lakesoul.spark.clean.CleanOldCompaction.cleanOldCommitOpDiskData
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
@@ -17,7 +17,8 @@ import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, Data
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulTableV2
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
-import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, SnapshotManagement, TransactionCommit}
+import org.apache.spark.sql.lakesoul.{BatchDataSoulFileIndexV2, LakeSoulOptions, SnapshotManagement, TransactionCommit}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.util.Utils
@@ -59,15 +60,24 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val option = new CaseInsensitiveStringMap(
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
+    val partitionNames = readPartitionInfo.map(p => {
+      p.range_value.split("=").head
+    })
+
     val scan = table.newScanBuilder(option).build()
-    if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
-      throw LakeSoulErrors.CompactionException(table_name = table.name())
+    val newReadFiles = if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
+      fileIndex.getFileInfo(Nil)
+    } else {
+      scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
     }
-    val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
+
+    val tableSchemaWithoutPartitions = StructType(table.schema().filter(f => {
+      !partitionNames.contains(f.name)
+    }))
 
     val v2Relation = DataSourceV2Relation(
       table,
-      table.schema().toAttributes,
+      tableSchemaWithoutPartitions.toAttributes,
       None,
       None,
       option
@@ -78,13 +88,18 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
       DataSourceV2ScanRelation(
         v2Relation,
         scan,
-        table.schema().toAttributes
+        tableSchemaWithoutPartitions.toAttributes
       )
     )
 
     tc.setReadFiles(newReadFiles)
     tc.setCommitType("compaction")
-    val (newFiles, path) = tc.writeFiles(compactDF, isCompaction = true)
+    val map = mutable.HashMap[String, String]()
+    map.put("isCompaction", "true")
+    if (readPartitionInfo.nonEmpty) {
+      map.put("partValue", readPartitionInfo.head.range_value)
+    }
+    val (newFiles, path) = tc.writeFiles(compactDF, Some(new LakeSoulOptions(map.toMap, spark.sessionState.conf)), isCompaction = true)
     tc.commit(newFiles, Seq.empty, readPartitionInfo)
     val partitionStr = escapeSingleBackQuotedString(conditionString)
     if (hiveTableName.nonEmpty) {
@@ -173,7 +188,7 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
           if (hasNoDeltaFile) {
             logInfo(s"== Partition ${part.range_value} has no delta file.")
           } else {
-            executeCompaction(sparkSession, tc, files, partitionsNeedCompact)
+            executeCompaction(sparkSession, tc, files, Array(part))
           }
         })
       })

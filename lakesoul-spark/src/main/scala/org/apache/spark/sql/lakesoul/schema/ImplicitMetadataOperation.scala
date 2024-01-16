@@ -104,7 +104,7 @@ trait ImplicitMetadataOperation extends Logging {
 
     val dataSchema = StructType(schema.map {
       case StructField(name, dataType, nullable, metadata) =>
-        if (normalizedRangePartitionCols.contains(name) || normalizedHashPartitionCols.contains(name)) {
+        if (normalizedHashPartitionCols.contains(name)) {
           StructField(name, dataType, nullable = false, metadata)
         } else {
           StructField(name, dataType.asNullable, nullable = true, metadata)

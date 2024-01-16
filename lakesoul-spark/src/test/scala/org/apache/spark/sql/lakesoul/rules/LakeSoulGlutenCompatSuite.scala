@@ -25,7 +25,6 @@ class LakeSoulGlutenCompatSuite
       .set("spark.sql.codegen.wholeStage", "false")
       .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
       .set("spark.network.timeout", "10000000")
-      .set("spark.gluten.sql.native.writer.enabled", "true")
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .set("spark.sql.extensions", "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension")

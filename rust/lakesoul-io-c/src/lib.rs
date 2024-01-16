@@ -627,6 +627,34 @@ pub extern "C" fn write_record_batch(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn write_record_batch_blocked(
+    writer: NonNull<CResult<Writer>>,
+    schema_addr: c_ptrdiff_t,
+    array_addr: c_ptrdiff_t,
+) -> *const c_char  {
+    unsafe {
+        let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
+        let mut ffi_array = FFI_ArrowArray::empty();
+        (array_addr as *mut FFI_ArrowArray).copy_to(&mut ffi_array as *mut FFI_ArrowArray, 1);
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+        (schema_addr as *mut FFI_ArrowSchema).copy_to(&mut ffi_schema as *mut FFI_ArrowSchema, 1);
+        let result_fn = move || {
+            let array_data = from_ffi(ffi_array, &ffi_schema)?;
+            let struct_array = StructArray::from(array_data);
+            let rb = RecordBatch::from(struct_array);
+            writer.as_ref().write_batch(rb)?;
+            Ok(())
+        };
+        let result: lakesoul_io::Result<()> = result_fn();
+        match result {
+            Ok(_) => std::ptr::null(),
+            Err(e) =>
+                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+        }
+    }
+}
+
 // consumes the writer pointer
 // this writer cannot be used again
 #[no_mangle]

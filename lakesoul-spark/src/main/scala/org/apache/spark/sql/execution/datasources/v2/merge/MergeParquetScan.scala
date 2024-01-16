@@ -290,7 +290,6 @@ abstract class MergeDeltaParquetScan(sparkSession: SparkSession,
       }
     }
 
-    //    MergeFilePartition.getFilePartitions(sparkSession.sessionState.conf, splitFiles, tableInfo.bucket_num)
     getFilePartitions(sparkSession.sessionState.conf, splitFiles, tableInfo.bucket_num)
   }
 
