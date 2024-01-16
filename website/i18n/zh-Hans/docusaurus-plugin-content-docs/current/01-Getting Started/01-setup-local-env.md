@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 ## 1. 在 Linux 本地搭建测试环境
-将数据存储在本地磁盘上，只需要有PostgreSQL数据库即可。
+将数据存储在本地磁盘上，只需要一行命令启动 PostgreSQL 数据库即可在单机环境快速体验 LakeSoul 的功能。
 ### 1.1 启动一个 PostgreSQL 数据库
 可以通过docker使用下面命令快速搭建一个pg数据库：
 ```bash
@@ -43,10 +43,10 @@ https://dlcdn.apache.org/spark/spark-3.3.2/spark-3.3.2-bin-without-hadoop.tgz
 
 LakeSoul 发布 jar 包可以从 GitHub Releases 页面下载：https://github.com/lakesoul-io/LakeSoul/releases 。下载后请将 Jar 包放到 Spark 安装目录下的 jars 目录中：
 ```bash
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-spark-2.5.0-spark-3.3.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-spark-2.5.1-spark-3.3.jar -P $SPARK_HOME/jars
 ```
 
-如果访问 Github 有问题，也可以从如下链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.5.0-spark-3.3.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-2.5.1-spark-3.3.jar
 
 :::tip
 从 2.1.0 版本起，LakeSoul 自身的依赖已经通过 shade 方式打包到一个 jar 包中。之前的版本是多个 jar 包以 tar.gz 压缩包的形式发布。
@@ -56,7 +56,7 @@ wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-s
 
 #### 首先为 LakeSoul 增加 PG 数据库配置
 默认情况下，pg数据库连接到本地数据库，配置信息如下：
-```txt
+```properties
 lakesoul.pg.driver=com.lakesoul.shaded.org.postgresql.Driver
 lakesoul.pg.url=jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
 lakesoul.pg.username=lakesoul_test
@@ -64,7 +64,7 @@ lakesoul.pg.password=lakesoul_test
 ```
 
 自定义 PG 数据库配置信息，需要在程序启动前增加一个环境变量 `lakesoul_home`，将配置文件信息引入进来。假如 PG 数据库配置信息文件路径名为：/opt/soft/pg.property，则在程序启动前需要添加这个环境变量：
-```bash
+```shell
 export lakesoul_home=/opt/soft/pg.property
 ```
 
@@ -81,6 +81,8 @@ export lakesoul_home=/opt/soft/pg.property
   ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --conf spark.hadoop.fs.s3a.access.key=XXXXXX --conf spark.hadoop.fs.s3a.secret.key=XXXXXX --conf spark.hadoop.fs.s3a.endpoint=XXXXXX --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
   ```
 
+如果是 Minio 等兼容 S3 的存储服务，还需要添加 `--conf spark.hadoop.fs.s3a.path.style.access=true`。
+
 #### Spark 作业 LakeSoul 相关参数设置
 可以将以下配置添加到 spark-defaults.conf 或者 Spark Session Builder 部分。
 
@@ -90,8 +92,8 @@ spark.sql.extensions | com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 spark.sql.defaultCatalog | lakesoul
 
-### 1.4 Flink 环境搭建
-以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-flink-2.5.0-flink-1.17.jar
+### 1.4 Flink 本地环境搭建
+以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-flink-2.5.1-flink-1.17.jar
 
 最新版本支持 flink 集群为1.17，Flink jar下载地址为：https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
 
@@ -103,24 +105,32 @@ spark.sql.defaultCatalog | lakesoul
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
 # 启动 flink sql client
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-2.5.0-flink-1.17.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-2.5.1-flink-1.17.jar
 ```
 
 #### 1.4.2 将数据写入对象存储服务
-需要在配置文件 flink-conf.yaml 添加 access key, secret key 和 endpoint 等信息
-```shell
+需要在配置文件 flink-conf.yaml 添加 access key, secret key 和 endpoint 等配置。
+```yaml
 s3.access-key: XXXXXX
 s3.secret-key: XXXXXX
 s3.endpoint: XXXXXX
 ```
+如果是 Minio 等兼容 S3 的存储服务，还需要添加：
+```yaml
+s3.path.style.access: true
+```
+
 将flink-s3-fs-hadoop.jar 和 flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 放到 Flink/lib 下
 flink-s3-fs-hadoop.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.2/flink-s3-fs-hadoop-1.17.2.jar
 flink-shaded-hadoop-2-uber-2.6.5-10.0.jar 下载地址为：https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
 ## 2. 在 Hadoop、Spark 和 FLink 集群环境下运行
-在 hadoop 集群中应用 LakeSoul 服务，只需要将相关配置信息假如环境变量中以及 Spark、FLink 集群配置中即可。具体操作如下：
-2.1 在 Spark 配置文件 spark-defaults.conf 添加如下信息
-```shell
+在 hadoop 集群中应用 LakeSoul 服务，只需要将相关配置信息假如环境变量中以及 Spark、FLink 集群配置中即可。Spark 环境可以参考 [1.3](#13-安装-spark-环境) 安装部署，Flink 环境可以参考 [1.4](#14-flink-本地环境搭建) 安装部署。Spark、Flink 的环境推荐不包含 Hadoop 依赖，通过 `SPARK_DIST_CLASSPATH`、`HADOOP_CLASSPATH` 环境变量引入 Hadoop 环境，避免对 Hadoop 版本的强依赖。
+
+具体配置方法如下：
+
+### 2.1 在 Spark 配置文件 `$SPARK_HOME/conf/spark-defaults.conf` 添加如下信息
+```properties
 spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 spark.sql.defaultCatalog=lakesoul
@@ -131,8 +141,8 @@ spark.yarn.appMasterEnv.LAKESOUL_PG_USERNAME=lakesoul_test
 spark.yarn.appMasterEnv.LAKESOUL_PG_PASSWORD=lakesoul_test
 ```
 
-2.2 在Flink 配置文件中 flink-conf.yaml 添加如下信息
-```shell
+### 2.2 在Flink 配置文件 `$FLINK_HOME/conf/flink-conf.yaml` 添加如下信息
+```yaml
 containerized.master.env.LAKESOUL_PG_DRIVER: com.lakesoul.shaded.org.postgresql.Driver
 containerized.master.env.LAKESOUL_PG_USERNAME: postgres
 containerized.master.env.LAKESOUL_PG_PASSWORD: postgres123
@@ -143,8 +153,18 @@ containerized.taskmanager.env.LAKESOUL_PG_PASSWORD: lakesoul_test
 containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
 ```
 
-2.3 在客户端机器上配置全局环境变量信息，这里需要用到变量信息写到一个 env.sh 文件中，内容如下:
-这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.3.2， Flink 版本为 flink-1.17.2
+:::tip
+以上配置中，LakeSoul 的 PG 数据库连接地址、用户名、密码，需要根据 PostgreSQL 具体的部署做相应的修改。
+:::
+
+:::tip
+如果需要在 Hadoop 环境中访问 S3 等对象存储，也需要添加 `spark.hadoop.fs.s3a.*`(Spark)、`s3.*`(Flink) 等相应配置项。
+* Spark 环境中需要 `hadoop-aws-$hadoop_version.jar` 及其依赖(建议放在 `$SPARK_HOME/jars` 目录下)。可以从 https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-aws 这里根据 Hadoop 版本下载，与 Spark 版本无关。同时还需要下载 `aws-java-sdk-bundle`：https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-bundle
+* Flink 环境中需要 `flink-s3-hadoop-$flink_version.jar`(建议放在 `$FLINK_HOME/plugins/s3` 目录下)。可以从 https://mvnrepository.com/artifact/org.apache.flink/flink-s3-fs-hadoop 这里根据 Flink 版本下载(LakeSoul 目前最新版本对 Flink 版本要求是 1.17)。
+:::
+
+### 2.3 在客户端机器上配置全局环境变量信息
+这里需要用到变量信息写到一个 env.sh 文件中，这里 Hadoop 版本为 3.1.4.0-315，Spark 版本为 spark-3.3.2， Flink 版本为 flink-1.17.2，Hadoop 环境可以根据实际情况配置。如果客户机上已经有默认的 Hadoop 环境变量配置，则前面 Hadoop 的变量可以省去：
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export HADOOP_HOME="/usr/hdp/3.1.4.0-315/hadoop"

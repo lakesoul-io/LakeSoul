@@ -52,7 +52,7 @@ After unpacking spark package, you could find LakeSoul distribution jar from htt
 wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/spark/spark-3.3.2-bin-hadoop-3.tgz
 tar xf spark-3.3.2-bin-hadoop-3.tgz
 export SPARK_HOME=${PWD}/spark-3.3.2-bin-hadoop3
-wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-spark-2.5.0-spark-3.3.jar -P $SPARK_HOME/jars
+wget https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-spark-2.5.1-spark-3.3.jar -P $SPARK_HOME/jars
 ```
 
 :::tip
@@ -78,6 +78,8 @@ It is necessary to add information such as object storage access key, secret key
   ```shell
   ./bin/spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --conf spark.hadoop.fs.s3a.access.key=XXXXXX --conf spark.hadoop.fs.s3a.secret.key=XXXXXX --conf spark.hadoop.fs.s3a.endpoint=XXXXXX --conf spark.hadoop.fs.s3.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
   ```
+
+If it is a storage service compatible with S3 such as Minio, you also need to add `--conf spark.hadoop.fs.s3a.path.style.access=true`.
   
 #### LakeSoul Spark Conf Parameters
 Before start to use Lakesoul, we should add some paramethers in `spark-defaults.conf` or `Spark Session Builder`。
@@ -89,7 +91,7 @@ spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatal
 spark.sql.defaultCatalog | lakesoul | set default catalog for spark
 
 ### 1.5 Setup Flink environment
-Download LakeSoul Flink jars：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.0/lakesoul-flink-2.5.0-flink-1.17.jar
+Download LakeSoul Flink jars：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-flink-2.5.1-flink-1.17.jar
 Download Flink jars：https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
 
 #### 1.5.1 Start Flink SQL shell
@@ -98,25 +100,32 @@ Enter the Flink installation directory and execute the following command:
 ```shell
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-2.5.0-flink-1.17.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-2.5.1-flink-1.17.jar
 ```
 
 #### 1.5.2 Write data to object storage service
 Access key, Secret key and Endpoint information need to be added to the Flink configuration file flink-conf.yaml
-```shell
+```yaml
 s3.access-key: XXXXXX
 s3.secret-key: XXXXXX
 s3.endpoint: XXXXXX
 ```
-Place flink-s3-fs-hadoop.jar and flink-shaded-hadoop-2-uber-2.6.5-10.0.jar under Flink/lib
+If it is a storage service compatible with S3 such as Minio, you also need to add:
+```yaml
+s3.path.style.access: true
+```
+
+And place flink-s3-fs-hadoop.jar and flink-shaded-hadoop-2-uber-2.6.5-10.0.jar under Flink/lib
 Download flink-s3-fs-hadoop.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.2/flink-s3-fs-hadoop-1.17.2.jar
 Download flink-shaded-hadoop-2-uber-2.6.5-10.0.jar: https://repo1.maven.org/maven2/org/apache/flink/flink-shaded-hadoop-2-uber/2.6.5-10.0/flink-shaded-hadoop-2-uber-2.6.5-10.0.jar
 
 ## 2. Start on Hadoop, Spark and Flink cluster environments
-Run LakeSoul tasks on Hadoop you only need to add the relevant configuration information to the environment variables and Spark and FLink cluster configurations. The specific operations are as follows:
+To deploy LakeSoul in a Hadoop cluster, you only need to add the relevant configuration information to the environment variables and Spark and FLink cluster configurations. For the Spark environment, please refer to [1.3](#13-Installation-spark-environment) for installation and deployment. For the Flink environment, please refer to [1.4](#14-flink-Local Environment Construction) for installation and deployment. It is recommended that the environments of Spark and Flink do not include Hadoop dependencies. Use the `SPARK_DIST_CLASSPATH` and `HADOOP_CLASSPATH` environment variables to introduce the Hadoop environment to avoid dependence on the Hadoop version.
+
+The detailed configurations are as follows:
 
 ### 2.1 Add the following information to the Spark configuration file spark-defaults.conf
-```shell
+```properties
 spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension
 spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
 spark.sql.defaultCatalog=lakesoul
@@ -128,7 +137,7 @@ spark.yarn.appMasterEnv.LAKESOUL_PG_PASSWORD=lakesoul_test
 ```
 
 ### 2.2 Add the following information to the Flink configuration file flink-conf.yaml
-```shell
+```yaml
 containerized.master.env.LAKESOUL_PG_DRIVER: com.lakesoul.shaded.org.postgresql.Driver
 containerized.master.env.LAKESOUL_PG_USERNAME: postgres
 containerized.master.env.LAKESOUL_PG_PASSWORD: postgres123
@@ -139,9 +148,11 @@ containerized.taskmanager.env.LAKESOUL_PG_PASSWORD: lakesoul_test
 containerized.taskmanager.env.LAKESOUL_PG_URL: jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified
 ```
 
-### 2.3 Configuration global environment
-Configure global environment variable information on the client machine. Here you need to write the variable information into an env.sh file, the content is as follows:
-Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.3.2, and the Flink version is flink-1.17.2
+In the above configurations, LakeSoul's PG URL connection address, user name, and password need to be modified accordingly according to the specific deployment of PostgreSQL.
+
+### 2.3 Configuration Hadoop Environment
+Configure global environment variable information on the client machine. Here you need to write the variable information into an env.sh file. 
+Here the Hadoop version is 3.1.4.0-315, the Spark version is spark-3.3.2, and the Flink version is flink-1.17.2. Change Hadoop environment variables according to your Hadoop deployment. If your environment has been pre-configured with Hadoop, you can omit those Hadoop related envs.
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -205,7 +216,7 @@ docker run --net lakesoul-docker-compose-env_default --rm -ti \
     -v $(pwd)/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
     --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 \
     spark-shell \
-    --packages com.dmetasoul:lakesoul-spark:2.5.0-spark-3.3 \
+    --packages com.dmetasoul:lakesoul-spark:2.5.1-spark-3.3 \
     --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension \
     --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog \
     --conf spark.sql.defaultCatalog=lakesoul \
