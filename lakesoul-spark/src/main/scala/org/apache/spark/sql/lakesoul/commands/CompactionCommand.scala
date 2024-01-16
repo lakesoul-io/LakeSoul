@@ -65,10 +65,11 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     })
 
     val scan = table.newScanBuilder(option).build()
-    if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
-      throw LakeSoulErrors.CompactionException(table_name = table.name())
+    val newReadFiles = if (scan.isInstanceOf[ParquetScan] || scan.isInstanceOf[NativeParquetScan]) {
+      fileIndex.getFileInfo(Nil)
+    } else {
+      scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
     }
-    val newReadFiles = scan.asInstanceOf[MergeDeltaParquetScan].newFileIndex.getFileInfo(Nil)
 
     val tableSchemaWithoutPartitions = StructType(table.schema().filter(f => {
       !partitionNames.contains(f.name)

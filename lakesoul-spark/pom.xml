@@ -279,6 +279,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>io.glutenproject</groupId>
             <artifactId>backends-velox</artifactId>
             <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>io.glutenproject</groupId>
@@ -290,6 +291,7 @@ SPDX-License-Identifier: Apache-2.0
                     <artifactId>spark-sql-columnar-shims-spark32</artifactId>
                 </exclusion>
             </exclusions>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>io.glutenproject</groupId>
@@ -308,11 +310,13 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>io.glutenproject</groupId>
             <artifactId>gluten-data</artifactId>
             <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>io.glutenproject</groupId>
             <artifactId>spark-sql-columnar-shims-common</artifactId>
             <version>${gluten.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <!-- currently this jar is missing on maven repo -->
 <!--        <dependency>-->

@@ -34,6 +34,8 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 import org.apache.spark.sql.vectorized.ArrowFakeRowAdaptor
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
+import com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC
+
 import java.util.{Date, UUID}
 
 /** A helper object for writing FileFormat data out to a location. */
@@ -307,8 +309,7 @@ object LakeSoulFileWriter extends Logging {
     val isCompaction = options.getOrElse("isCompaction", "false").toBoolean
 
     val dataWriter =
-      if (sparkPartitionId != 0 && !iterator.hasNext) {
-        // In case of empty job, leave first partition to save meta for file format like parquet.
+      if (!iterator.hasNext) {
         new EmptyDirectoryDataWriter(description, taskAttemptContext, committer)
       } else if (description.partitionColumns.isEmpty && description.bucketSpec.isEmpty && !isCompaction) {
         new SingleDirectoryDataWriter(description, taskAttemptContext, committer)
@@ -393,9 +394,7 @@ object LakeSoulFileWriter extends Logging {
     extends FileFormatDataWriter(description, taskAttemptContext, committer, customMetrics) {
     private var fileCounter: Int = _
     private var recordsInFile: Long = _
-    private val partValue: Option[String] = options.get("partValue").orElse(None)
-    // Initialize currentWriter and statsTrackers
-    newOutputWriter()
+    private val partValue: Option[String] = options.get("partValue").filter(_ != LAKESOUL_NON_PARTITION_TABLE_PART_DESC)
 
     private def newOutputWriter(): Unit = {
       recordsInFile = 0
@@ -423,7 +422,9 @@ object LakeSoulFileWriter extends Logging {
     }
 
     override def write(record: InternalRow): Unit = {
-      if (description.maxRecordsPerFile > 0 && recordsInFile >= description.maxRecordsPerFile) {
+      if (currentWriter == null) {
+        newOutputWriter()
+      } else if (description.maxRecordsPerFile > 0 && recordsInFile >= description.maxRecordsPerFile) {
         fileCounter += 1
         assert(fileCounter < MAX_FILE_COUNTER,
           s"File counter $fileCounter is beyond max value $MAX_FILE_COUNTER")
