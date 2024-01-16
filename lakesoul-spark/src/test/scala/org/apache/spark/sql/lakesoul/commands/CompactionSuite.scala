@@ -232,6 +232,10 @@ class CompactionSuite extends QueryTest
 
       LakeSoulTable.forPath(tableName).compaction("range=1")
 
+      println(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(_.range_partitions.equals("range=1"))
+        .groupBy(_.file_bucket_id))
+
       assert(SparkUtil.allDataInfo(sm.updateSnapshot())
         .filter(_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length == 1)
@@ -277,6 +281,11 @@ class CompactionSuite extends QueryTest
       * call LakeSoulTable.compaction(tableName=>'lakesoul',cleanOld=>true)
       */
       sql("call LakeSoulTable.compaction(condition=>map('range',1),tablePath=>'" + tableName + "')")
+
+      println(SparkUtil.allDataInfo(sm.updateSnapshot())
+        .filter(_.range_partitions.equals("range=1"))
+        .groupBy(_.file_bucket_id))
+
       assert(SparkUtil.allDataInfo(sm.updateSnapshot())
         .filter(_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length == 1)
