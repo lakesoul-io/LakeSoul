@@ -301,9 +301,15 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
     val df = inputDF.toDF("temp")
     Seq(
       (
+        df.withColumnRenamed("temp", "列名"),
+        "列名", // zero nesting
+        (x: Any) => x
+      ),
+      (
         df.withColumnRenamed("temp", "a"),
         "a", // zero nesting
-        (x: Any) => x),
+        (x: Any) => x
+      ),
       //      (
       //        df.withColumn("a", struct(df("temp") as "b")).drop("temp"),
       //        "a.b", // one level nesting
@@ -670,6 +676,48 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
         Seq(Row(resultFun("1")), Row(resultFun("4"))))
     }
   }
+
+  // TODO:  results of unicode string filter are not correct
+
+  //  test("filter pushdown - unicode string") {
+  //    def toUnicodeChar(i: Int) = {
+  //      new StringBuffer().append("\\u" + (8544 - 1 + i).toHexString).toString
+  //    }
+  //
+  //    val data = (1 to 4).map(i => Tuple1(Option(toUnicodeChar(i))))
+  //    println(data)
+  //    withNestedParquetDataFrame(data) { case (inputDF, colName, resultFun) =>
+  //      implicit val df: DataFrame = inputDF
+  //
+  //      val stringAttr = df(colName).expr
+  //      assert(df(colName).expr.dataType === StringType)
+  //
+  //      checkFilterPredicate(stringAttr.isNull, classOf[Eq[_]], Seq.empty[Row])
+  //      checkFilterPredicate(stringAttr.isNotNull, classOf[NotEq[_]],
+  //        (1 to 4).map(i => Row.apply(resultFun(toUnicodeChar(i)))))
+  //
+  //      checkFilterPredicate(stringAttr === "\u2160", classOf[Eq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(stringAttr <=> "\u2160", classOf[Eq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(stringAttr =!= "\u2160", classOf[NotEq[_]],
+  //        (2 to 4).map(i => Row.apply(resultFun(toUnicodeChar(i)))))
+  //
+  //      checkFilterPredicate(stringAttr < "\u2161", classOf[Lt[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(stringAttr > "\u2162", classOf[Gt[_]], resultFun("\u2163"))
+  //      checkFilterPredicate(stringAttr <= "\u2160", classOf[LtEq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(stringAttr >= "\u2163", classOf[GtEq[_]], resultFun("\u2163"))
+  //
+  //      checkFilterPredicate(Literal("\u2160") === stringAttr, classOf[Eq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(Literal("\u2160") <=> stringAttr, classOf[Eq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(Literal("\u2161") > stringAttr, classOf[Lt[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(Literal("\u2162") < stringAttr, classOf[Gt[_]], resultFun("\u2163"))
+  //      checkFilterPredicate(Literal("\u2160") >= stringAttr, classOf[LtEq[_]], resultFun("\u2160"))
+  //      checkFilterPredicate(Literal("\u2163") <= stringAttr, classOf[GtEq[_]], resultFun("\u2163"))
+  //
+  //      checkFilterPredicate(!(stringAttr < "\u2163"), classOf[GtEq[_]], resultFun("\u2163"))
+  //      checkFilterPredicate(stringAttr < "\u2161" || stringAttr > "\u2162", classOf[Operators.Or],
+  //        Seq(Row(resultFun("\u2160")), Row(resultFun("\u2163"))))
+  //    }
+  //  }
 
   test("filter pushdown - binary") {
     implicit class IntToBinary(int: Int) {
