@@ -18,7 +18,7 @@ trait MergeOperator[T] extends Serializable {
 
   def mergeData(input: Seq[T]): T
 
-  def toNativeName(): String
+  def toNativeName: String
 
   def register(spark: SparkSession, name: String): Unit = {
     val udf = getUdf(name)
@@ -47,7 +47,7 @@ class DefaultMergeOp[T] extends MergeOperator[T] {
     input.last
   }
 
-  override def toNativeName(): String = "UseLast"
+  override def toNativeName: String = "UseLast"
 }
 
 class MergeOpInt extends MergeOperator[Int] {
@@ -55,7 +55,7 @@ class MergeOpInt extends MergeOperator[Int] {
     input.sum
   }
 
-  override def toNativeName(): String = "Sum"
+  override def toNativeName: String = "SumAll"
 }
 
 class MergeNonNullOp[T] extends MergeOperator[T] {
@@ -64,7 +64,7 @@ class MergeNonNullOp[T] extends MergeOperator[T] {
     output.filter(!_.equals("null")).last
   }
 
-  override def toNativeName(): String = "UseLast"
+  override def toNativeName: String = "UseLast"
 }
 
 class MergeOpString extends MergeOperator[String] {
@@ -72,7 +72,7 @@ class MergeOpString extends MergeOperator[String] {
     input.mkString(",")
   }
 
-  override def toNativeName(): String = "JoinedByComma"
+  override def toNativeName: String = "JoinedLastByComma"
 }
 
 class MergeOpLong extends MergeOperator[Long] {
@@ -80,5 +80,5 @@ class MergeOpLong extends MergeOperator[Long] {
     input.sum
   }
 
-  override def toNativeName(): String = "Sum"
+  override def toNativeName: String = "SumAll"
 }
