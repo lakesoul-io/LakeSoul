@@ -176,7 +176,7 @@ class MergeOpInt extends MergeOperator[Int] {
     input.sum
   }
 
-  override def toNativeName(): String = "Sum"
+  override def toNativeName: String = "SumAll"
 }
 
 class MergeOpString extends MergeOperator[String] {
@@ -184,7 +184,7 @@ class MergeOpString extends MergeOperator[String] {
     input.mkString(",")
   }
 
-  override def toNativeName(): String = "JoinedByComma"
+  override def toNativeName: String = "JoinedLastByComma"
 }
 
 class MergeOpString02 extends MergeOperator[String] {
@@ -192,7 +192,7 @@ class MergeOpString02 extends MergeOperator[String] {
     input.mkString(";")
   }
 
-  override def toNativeName(): String = "JoinedBySemicolon"
+  override def toNativeName: String = "JoinedLastBySemicolon"
 }
 
 trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {

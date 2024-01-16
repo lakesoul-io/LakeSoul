@@ -173,7 +173,7 @@ case class NativeMergeParquetPartitionReaderFactory(sqlConf: SQLConf,
     taskContext.foreach(_.addTaskCompletionListener[Unit](_ => iter.close()))
     logDebug(s"Appending $partitionSchema $partitionValues")
 
-    val mergeOp = mergeOperatorInfo.map(tp => (tp._1, tp._2.toNativeName()))
+    val mergeOp = mergeOperatorInfo.map(tp => (tp._1, tp._2.toNativeName))
 
     // multi files
     val file = files.head
