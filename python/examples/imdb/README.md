@@ -7,7 +7,7 @@ We can download data from [Hugginface IMDB dataset](https://huggingface.co/datas
 
 ## Import data into LakeSoul
 ```shell
-export lakesoul_jar=lakesoul-spark-2.5.0-spark-3.3.jar
+export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
 sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/"${lakesoul_jar}":/opt/spark/work-dir/jars/"${lakesoul_jar}" \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \

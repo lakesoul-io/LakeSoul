@@ -7,7 +7,7 @@ We can download the dataset from [Kaggle Titanic Dataset](https://www.kaggle.com
 
 ## Import data into LakeSoul
 ```shell
-export lakesoul_jar=lakesoul-spark-2.5.0-spark-3.3.jar
+export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
 sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/"${lakesoul_jar}":/opt/spark/work-dir/jars/"${lakesoul_jar}" \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
@@ -19,7 +19,7 @@ bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar
 
 ## Feature Transform
 ```shell
-export lakesoul_jar=lakesoul-spark-2.5.0-spark-3.3.jar
+export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
 sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/"${lakesoul_jar}":/opt/spark/work-dir/jars/"${lakesoul_jar}" \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
