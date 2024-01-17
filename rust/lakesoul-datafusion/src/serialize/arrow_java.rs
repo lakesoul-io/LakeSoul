@@ -349,10 +349,10 @@ impl From<&ArrowJavaField> for Field {
             ArrowJavaType::Decimal {
                 precision,
                 scale,
-                bit_width,
+                bit_width: _,
             } => DataType::Decimal128(*precision, *scale),
             ArrowJavaType::Date { unit } if unit == "DAY" => DataType::Date32,
-            ArrowJavaType::Date { unit } => DataType::Date64,
+            ArrowJavaType::Date { unit: _ } => DataType::Date64,
             ArrowJavaType::Time { bit_width, unit } => {
                 let time_unit = match unit.as_str() {
                     "SECOND" => TimeUnit::Second,

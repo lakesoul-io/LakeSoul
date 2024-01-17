@@ -5,6 +5,7 @@
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::{collections::HashMap, env, fs, vec};
+use std::fmt::{Debug, Formatter};
 
 use prost::Message;
 use proto::proto::entity::{
@@ -27,6 +28,16 @@ pub struct MetaDataClient {
     max_retry: usize,
 }
 
+impl Debug for MetaDataClient {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetaDataClient")
+            .field("client", &"{pg_client}")
+            .field("max_retry", &self.max_retry)
+            .finish()
+    }
+}
+
+
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
 impl MetaDataClient {
@@ -44,7 +55,7 @@ impl MetaDataClient {
                         .get("lakesoul.pg.url=")
                         .unwrap_or(&"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")[5..],
                 )
-                .unwrap();
+                    .unwrap();
                 Self::from_config(format!(
                     "host={} port={} dbname={} user={} password={}",
                     url.host_str().unwrap(),
@@ -53,14 +64,14 @@ impl MetaDataClient {
                     config_map.get("lakesoul.pg.username=").unwrap_or(&"lakesoul_test"),
                     config_map.get("lakesoul.pg.password=").unwrap_or(&"lakesoul_test")
                 ))
-                .await
+                    .await
             }
             Err(_) => {
                 Self::from_config(
                     "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
                         .to_string(),
                 )
-                .await
+                    .await
             }
         }
     }
@@ -96,7 +107,7 @@ impl MetaDataClient {
                 insert_type,
                 wrapper.clone(),
             )
-            .await
+                .await
             {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry => continue,
@@ -114,7 +125,7 @@ impl MetaDataClient {
                 query_type,
                 joined_string.clone(),
             )
-            .await
+                .await
             {
                 Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
                 Err(_) if times < self.max_retry => continue,
@@ -132,7 +143,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_table_name_id(&self, table_name_id: &TableNameId) -> Result<i32> {
@@ -143,7 +154,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_table_path_id(&self, table_path_id: &TablePathId) -> Result<i32> {
@@ -154,7 +165,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_data_commit_info(&self, data_commit_info: &DataCommitInfo) -> Result<i32> {
@@ -165,7 +176,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn transaction_insert_partition_info(&self, partition_info_list: Vec<PartitionInfo>) -> Result<i32> {
@@ -176,7 +187,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
@@ -303,7 +314,7 @@ impl MetaDataClient {
             },
             CommitOp::from_i32(commit_op).unwrap(),
         )
-        .await
+            .await
     }
 
     pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
@@ -488,6 +499,7 @@ pub fn table_path_id_from_table_info(table_info: &TableInfo) -> TablePathId {
         domain: table_info.domain.clone(),
     }
 }
+
 pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
     TableNameId {
         table_name: table_info.table_name.clone(),

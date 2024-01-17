@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::Deref;
+
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -10,16 +10,16 @@ use arrow::datatypes::Schema;
 use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::{Expr, LogicalPlan, Partitioning as LogicalPartitioning, Repartition, Sort};
+use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::repartition::RepartitionExec;
+
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
-use datafusion::physical_planner::{create_physical_sort_expr, DefaultPhysicalPlanner, PhysicalPlanner};
+use datafusion::physical_plan::{ExecutionPlan};
+use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use async_trait::async_trait;
 
-use datafusion::logical_expr::{DmlStatement, LogicalPlanBuilder, WriteOp};
+use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{create_hash_partitioning, create_sort_exprs};
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
 
@@ -57,7 +57,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 let lakesoul_table = LakeSoulTable::for_name(name).await.unwrap();
                 match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
-                        let physical_input = self.create_physical_plan(&input, session_state).await?;
+                        let physical_input = self.create_physical_plan(input, session_state).await?;
 
                         let physical_input = if lakesoul_table.primary_keys().is_empty() {
                             if !lakesoul_table
@@ -66,7 +66,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             {
                                 return Err(DataFusionError::Plan(
                                     // Return an error if schema of the input query does not match with the table schema.
-                                    format!("Inserting query must have the same schema with the table."),
+                                    "Inserting query must have the same schema with the table.".to_string(),
                                 ));
                             }
                             physical_input
@@ -74,13 +74,13 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             let input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = create_sort_exprs(
-                                &lakesoul_table.primary_keys(),
+                                lakesoul_table.primary_keys(),
                                 input_dfschema,
                                 &input_schema,
                                 session_state,
                             )?;
                             let hash_partitioning = create_hash_partitioning(
-                                &lakesoul_table.primary_keys(),
+                                lakesoul_table.primary_keys(),
                                 lakesoul_table.hash_bucket_num(),
                                 input_dfschema,
                                 &input_schema,
@@ -125,10 +125,8 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         input_schema: &Schema,
         session_state: &SessionState,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        match expr {
-            _ => self
-                .default_planner
-                .create_physical_expr(expr, input_dfschema, input_schema, session_state),
-        }
+        self
+        .default_planner
+        .create_physical_expr(expr, input_dfschema, input_schema, session_state)
     }
 }

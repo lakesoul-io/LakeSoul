@@ -27,6 +27,6 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1))
 }
 
-pub fn get_columnar_value(batch: &RecordBatch) -> Vec<(String, ScalarValue)> {
+pub fn get_columnar_value(_batch: &RecordBatch) -> Vec<(String, ScalarValue)> {
     vec![]
 }

@@ -865,9 +865,10 @@ mod tests {
             Arc::new(schema),
             vec![String::from("id")],
             2,
+            // TODO SumLast?
             vec![
                 MergeOperator::UseLast,
-                MergeOperator::Sum,
+                MergeOperator::SumAll,
                 MergeOperator::UseLastNotNull,
                 MergeOperator::UseLast,
                 MergeOperator::UseLast,

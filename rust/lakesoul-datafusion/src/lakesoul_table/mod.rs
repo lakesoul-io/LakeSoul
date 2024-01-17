@@ -6,7 +6,7 @@ pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
 
-use arrow::{datatypes::SchemaRef, util::pretty::print_batches};
+use arrow::{datatypes::SchemaRef};
 use datafusion::{
     dataframe::DataFrame,
     datasource::TableProvider,
@@ -89,7 +89,7 @@ impl LakeSoulTable {
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
-        let results = dataframe
+        let _results = dataframe
             // .explain(true, false)?
             .collect()
             .await?;
@@ -132,7 +132,7 @@ impl LakeSoulTable {
     }
 
     pub fn hash_bucket_num(&self) -> usize {
-        self.properties.hash_bucket_num.unwrap_or_else(|| 1)
+        self.properties.hash_bucket_num.unwrap_or(1)
     }
 
     pub fn schema(&self) -> SchemaRef {

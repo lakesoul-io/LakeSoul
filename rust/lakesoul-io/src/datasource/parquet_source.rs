@@ -240,7 +240,7 @@ impl LakeSoulParquetScanExec {
 }
 
 impl DisplayAs for LakeSoulParquetScanExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LakeSoulParquetScanExec")
     }
 }
@@ -477,7 +477,7 @@ mod tests {
     async fn query(db: LakeSoulParquetProvider, filter: Option<Expr>) -> Result<()> {
         // create local execution context
         let config = SessionConfig::default();
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
 
         let db = db.build_with_context(&ctx).await.unwrap();
 
@@ -532,7 +532,7 @@ mod tests {
         let results = ctx
             .sql("SELECT * FROM lakesoul")
             .await?
-            .filter(col("value").gt(datafusion::prelude::Expr::Literal(ScalarValue::Int32(Some(1)))))?
+            .filter(col("value").gt(Expr::Literal(ScalarValue::Int32(Some(1)))))?
             .select(vec![col("hash")])?
             .explain(true, false)?
             .collect()

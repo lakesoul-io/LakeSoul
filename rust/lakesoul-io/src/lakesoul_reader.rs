@@ -340,7 +340,7 @@ mod tests {
                 Some(rb) => {
                     let num_rows = &rb.unwrap().num_rows();
                     unsafe {
-                        ROW_CNT = ROW_CNT + num_rows;
+                        ROW_CNT += num_rows;
                         println!("{}", ROW_CNT);
                     }
 
