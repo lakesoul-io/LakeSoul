@@ -263,7 +263,7 @@ impl LakeSoulHashSinkExec {
                 .iter()
                 .map(|(column, value)| (column.to_string(), value.to_string()))
                 .collect::<Vec<_>>();
-            commit_data(client.clone(), &table_name, partition_desc, &files)
+            commit_data(client.clone(), &table_name, partition_desc, files)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
         }
@@ -351,9 +351,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     /// the specified partition.
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
-            return Err(DataFusionError::NotImplemented(format!(
-                "FileSinkExec can only be called on partition 0!"
-            )));
+            return Err(DataFusionError::NotImplemented("FileSinkExec can only be called on partition 0!".to_string()));
         }
         let num_input_partitions = self.input.output_partitioning().partition_count();
 
@@ -403,7 +401,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let stream = futures::stream::once(async move {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_count_batch(count)),
-                other => Ok(make_count_batch(u64::MAX)),
+                _other => Ok(make_count_batch(u64::MAX)),
             }
         })
         .boxed();

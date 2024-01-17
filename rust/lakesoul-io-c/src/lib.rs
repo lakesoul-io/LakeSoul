@@ -876,9 +876,9 @@ mod tests {
             }
         }
 
-        start_reader(reader, reader_callback.clone());
+        start_reader(reader, reader_callback);
         unsafe {
-            assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
+            assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
@@ -930,7 +930,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_i32_callback.clone(),
+                reader_i32_callback,
             );
             wait_callback();
 
@@ -951,7 +951,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback.clone(),
+                writer_callback,
             );
             wait_callback();
 
@@ -1004,9 +1004,9 @@ mod tests {
             }
         }
 
-        start_reader(reader, reader_callback.clone());
+        start_reader(reader, reader_callback);
         unsafe {
-            assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
+            assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
@@ -1062,7 +1062,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_i32_callback.clone(),
+                reader_i32_callback,
             );
             wait_callback();
 
@@ -1083,7 +1083,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback.clone(),
+                writer_callback,
             );
             wait_callback();
 

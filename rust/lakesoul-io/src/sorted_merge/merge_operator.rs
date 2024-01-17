@@ -289,18 +289,16 @@ fn concat_last_with_string_type(
                     break;
                 }
             }
-        } else {
-            if !arr.is_null(range.end_row - 1) {
-                if !first {
-                    res.push(delim);
-                } else {
-                    first = false;
-                }
-                res.push_str(arr.value(range.end_row - 1));
+        } else if !arr.is_null(range.end_row - 1) {
+            if !first {
+                res.push(delim);
             } else {
-                is_none = true;
-                break;
+                first = false;
             }
+            res.push_str(arr.value(range.end_row - 1));
+        } else {
+            is_none = true;
+            break;
         }
     }
     match is_none {

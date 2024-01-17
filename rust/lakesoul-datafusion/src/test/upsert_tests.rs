@@ -17,7 +17,7 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
     use tokio::runtime::Builder;
 
-    use arrow::array::Int64Array;
+    
 
     enum str_or_i32 {
         v1(&'static str),
@@ -77,7 +77,6 @@ mod upsert_with_io_config_tests {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
                     .as_millis()
-                    .to_string()
             )
             .as_str(),
         ]
@@ -156,10 +155,10 @@ mod upsert_with_io_config_tests {
             .map(|vec| match vec[0] {
                 str_or_i32::v1(_) => {
                     let vec = vec
-                        .into_iter()
+                        .iter()
                         .map(|val| match val {
                             str_or_i32::v1(v1) => Some(*v1),
-                            str_or_i32::v2(v2) => None,
+                            str_or_i32::v2(_v2) => None,
                         })
                         .map(|val| val.unwrap())
                         .collect::<Vec<&str>>();
@@ -167,9 +166,9 @@ mod upsert_with_io_config_tests {
                 }
                 str_or_i32::v2(_) => {
                     let vec = vec
-                        .into_iter()
+                        .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(v1) => None,
+                            str_or_i32::v1(_v1) => None,
                             str_or_i32::v2(v2) => Some(v2),
                         })
                         .map(|val| *val.unwrap())
@@ -453,7 +452,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -497,7 +496,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -533,7 +532,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -1343,7 +1342,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert_string_or_i32(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -1372,7 +1371,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert_string_or_i32(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -1401,7 +1400,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert_string_or_i32(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -1430,7 +1429,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert_string_or_i32(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -1643,7 +1642,7 @@ mod upsert_with_metadata_tests {
     }
 
     fn create_batch_string(names: Vec<&str>, values: Vec<&[&str]>) -> RecordBatch {
-        let mut values = values
+        let values = values
             .into_iter()
             .map(|vec| Arc::new(StringArray::from(Vec::from(vec))) as ArrayRef)
             .collect::<Vec<ArrayRef>>();
@@ -1661,10 +1660,10 @@ mod upsert_with_metadata_tests {
             .map(|vec| match vec[0] {
                 str_or_i32::v1(_) => {
                     let vec = vec
-                        .into_iter()
+                        .iter()
                         .map(|val| match val {
                             str_or_i32::v1(v1) => Some(*v1),
-                            str_or_i32::v2(v2) => None,
+                            str_or_i32::v2(_v2) => None,
                         })
                         .map(|val| val.unwrap())
                         .collect::<Vec<&str>>();
@@ -1672,9 +1671,9 @@ mod upsert_with_metadata_tests {
                 }
                 str_or_i32::v2(_) => {
                     let vec = vec
-                        .into_iter()
+                        .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(v1) => None,
+                            str_or_i32::v1(_v1) => None,
                             str_or_i32::v2(v2) => Some(v2),
                         })
                         .map(|val| *val.unwrap())
@@ -1990,7 +1989,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -2045,7 +2044,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -2091,7 +2090,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -2161,7 +2160,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "hash", "value"]
+                ["range", "hash", "value"]
                     .iter()
                     .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
                     .collect::<Vec<_>>(),
@@ -3103,7 +3102,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -3133,7 +3132,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -3163,7 +3162,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -3193,7 +3192,7 @@ mod upsert_with_metadata_tests {
 
         check_upsert(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                vec!["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "v1", "hash1", "v2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
