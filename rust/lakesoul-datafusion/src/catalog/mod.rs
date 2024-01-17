@@ -155,10 +155,14 @@ impl LakeSoulCatalog {}
 #[derive(Debug)]
 struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
-    format: String,
 }
 
 impl LakeSoulNamespace {
+    pub fn new(meta_data_client_ref: MetaDataClientRef) -> Self {
+        Self {
+            metadata_client: meta_data_client_ref
+        }
+    }
 
 }
 
@@ -169,9 +173,12 @@ impl SchemaProvider for LakeSoulNamespace {
     }
 
     fn table_names(&self) -> Vec<String> {
+        // self.metadata_client.
         todo!()
     }
 
+    /// Search table by name
+    /// return LakesoulListing table
     async fn table(&self, _name: &str) -> Option<Arc<dyn TableProvider>> {
         todo!()
     }
