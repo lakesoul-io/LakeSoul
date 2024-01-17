@@ -31,15 +31,12 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
 
     public void addFilter(String filter) {
         assert ioConfigBuilder != null;
-        Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, filter);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, ptr);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, filter);
     }
 
     public void addMergeOps(Map<String, String> mergeOps) {
-        for (Map.Entry<String, String> entry:mergeOps.entrySet()) {
-            Pointer fieldPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, entry.getKey());
-            Pointer mergeOpPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, entry.getValue());
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_merge_op(ioConfigBuilder, fieldPtr, mergeOpPtr);
+        for (Map.Entry<String, String> entry : mergeOps.entrySet()) {
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_merge_op(ioConfigBuilder, entry.getKey(), entry.getValue());
         }
     }
 
@@ -103,7 +100,7 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
             if (status) {
                 this.readerSchema = getReaderSchema();
             }
-            if (err!=null) {
+            if (err != null) {
                 System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOReader.startReader]err=" + err);
             }
             callback.accept(status, err);
