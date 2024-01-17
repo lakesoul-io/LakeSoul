@@ -71,7 +71,7 @@ export LAKESOUL_PG_PASSWORD=root
 | --source_db.password | 源数据库的密码                                                                              |                                                                     |
 | --source.parallelism | 单表读取任务并行度，影响数据读取速度，值越大对 MySQL 压力越大                                                   | 可以根据 MySQL 的写入 QPS 来调整并行度                                           |
 | --sink.parallelism   | 单表写任务并行度，同时也是LakeSoul表主键分片的个数。影响入湖数据落地速度。值越大，小文件数越多，影响后续读取性能；值越小对写任务压力越大，发生数据倾斜可能性越大 | 可以根据最大表的数据量进行调整。一般建议一个并行度（主键分片）管理不超过1千万行数据。                         |
-| --warehouse_path     | 数据存储路径前缀（hdfs需要带上集群前缀）                                                               | LakeSoul 会将对应表数据写入到 ${warehouse_path}/database_name/table_name/ 目录下 |
+| --warehouse_path     | 数据存储路径前缀（hdfs需要带上集群前缀）                                                               | LakeSoul 会将对应表数据写入到 warehouse_path/database_name/table_name/ 目录下 |
 | --flink.savepoint    | Flink savepoint路径（hdfs需要带上集群前缀）                                                      |                                                                     |
 | --flink.checkpoint   | Flink checkpoint路径（hdfs需要带上集群前缀）                                                     |                                                                     |
 
