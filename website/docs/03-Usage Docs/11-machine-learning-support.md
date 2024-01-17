@@ -1,6 +1,8 @@
 # LakeSoul's Supports for Python and Machine Learning
 
-LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace/Ray, allowing users to retrieve datasets from LakeSoul tables through the interfaces. Distributed reading is supported for both PyTorch and Ray. LakeSoul for Python has now released 1.0 Beta.
+LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace/Ray, allowing users to retrieve datasets from LakeSoul
+tables through the interfaces. Distributed reading is supported for both PyTorch and Ray. LakeSoul for Python has now
+released 1.0 Beta.
 
 ## Install
 
@@ -9,7 +11,8 @@ LakeSoul implements interfaces for PyTorch/PyArrow/HuggingFace/Ray, allowing use
 For users of Python 3.8, Python 3.9, and Python 3.10, we have prepared different wheel files for each version. Please
 download the appropriate one based on your requirements. We will publish official package to pypi.org in near future.
 
-The Python package currently only supports Linux systems and can be used on distros with GLibc 2.17 and above (Centos 7 and above, Ubuntu 16.04 and above, etc.).
+The Python package currently only supports Linux systems and can be used on distros with GLibc 2.17 and above (Centos 7
+and above, Ubuntu 16.04 and above, etc.).
 
 * For Python 3.8
   users: [lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
@@ -25,11 +28,14 @@ wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lake
 ```
 
 ### Install python virtual enviroment
-We have provide several AI training examples using LakeSoul as data source. Follow the below instructions to setup a testing environment.
+
+We have provide several AI training examples using LakeSoul as data source. Follow the below instructions to setup a
+testing environment.
+
 ```bash 
 # change python version if needed
 conda create -n lakesoul_test python=3.8
-conda acitvate lakesoul_test
+conda activate lakesoul_test
 git clone https://github.com/lakesoul-io/LakeSoul.git
 cd LakeSoul/python/examples
 # replace ${PWD} with your wheel file directory in requirements.txt
@@ -38,16 +44,20 @@ pip install -r requirements.txt
 
 ## PyTorch API Usage
 
-LakeSoul implements interfaces for PyTorch/HuggingFace, which allows users to directly export data from LakeSoul tables into HuggingFace datasets.
+LakeSoul implements interfaces for PyTorch/HuggingFace, which allows users to directly export data from LakeSoul tables
+into HuggingFace datasets.
 
 API for reading tables:
+
 ```python
 import datasets
 import lakesoul.huggingface
 
 dataset = datasets.IterableDataset.from_lakesoul("lakesoul_table", partitions={'split': 'train'})
 ```
-You can create a PyTorch/HuggingFace dataset for training. The distributed training environment is automatically aware and no additional parameters are required when initializing the dataset.
+
+You can create a PyTorch/HuggingFace dataset for training. The distributed training environment is automatically aware
+and no additional parameters are required when initializing the dataset.
 
 Below is an example code that exports the feature-transformed [Titanic](https://www.kaggle.com/competitions/titanic)
 dataset from LakeSoul and then trains and validates a DNN model using the dataset.
@@ -177,15 +187,23 @@ if __name__ == '__main__':
 More Examples at  [LakeSoul/python/examples](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples)
 
 ## Ray DataSource
-LakeSoul implements Ray's [Datasource](https://docs.ray.io/en/latest/data/api/doc/ray.data.Datasource.html). The following is an example of calling code:
+
+LakeSoul implements Ray's [Datasource](https://docs.ray.io/en/latest/data/api/doc/ray.data.Datasource.html). The
+following is an example of calling code:
+
 ```python
 import ray.data
 import lakesoul.ray
+
 ds = ray.data.read_lakesoul("table_name", partitions={'split': 'train'})
 ```
 
 ## PyArrow/Pandas Reads LakeSoul Table
-LakeSoul can support single-machine reading of data and use PyArrow and Pandas for calculations. LakeSoul returns PyArrow's [Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.Dataset.html) object when reading, supporting iterative access. Example:
+
+LakeSoul can support single-machine reading of data and use PyArrow and Pandas for calculations. LakeSoul returns
+PyArrow's [Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.Dataset.html) object when reading,
+supporting iterative access. Example:
+
 ```python
 from lakesoul.arrow import lakesoul_dataset
 
@@ -194,7 +212,7 @@ ds = lakesoul_dataset("table_name", partitions={'split': 'train'})
 # iterate batches in dataset
 # this will not load entire table to memory
 for batch in ds.to_batches():
-     ...
+    ...
 
 # convert to pandas table
 # this will load entire table into memory
