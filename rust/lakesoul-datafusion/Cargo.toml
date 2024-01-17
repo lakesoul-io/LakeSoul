@@ -32,3 +32,4 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.2"
+test-log = "0.2.14"

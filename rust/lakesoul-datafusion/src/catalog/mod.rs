@@ -3,12 +3,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use std::{env, path::PathBuf};
+use std::any::Any;
+use std::hash::Hash;
+use arrow::ipc::Schema;
+use async_trait::async_trait;
+use datafusion::catalog::{CatalogList, CatalogProvider};
+use datafusion::catalog::schema::SchemaProvider;
+use datafusion::datasource::TableProvider;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -131,4 +138,78 @@ pub(crate) async fn commit_data(
         })
         .await?;
     Ok(())
+}
+
+
+/// A metadata wrapper
+#[derive(Debug)]
+struct LakeSoulMetadata {
+    // metadata_client: MetaDataClientRef,
+}
+
+
+impl LakeSoulMetadata {}
+
+
+//  cataloglist is not async trait
+impl CatalogList for LakeSoulMetadata {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn register_catalog(&self, name: String, catalog: Arc<dyn CatalogProvider>) -> Option<Arc<dyn CatalogProvider>> {
+        todo!()
+    }
+
+    fn catalog_names(&self) -> Vec<String> {
+        vec![String::from("xxx")]
+    }
+
+    fn catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
+        todo!()
+    }
+}
+
+/// A ['SchemaProvider`] that query pg to automatically discover tables
+#[derive(Debug)]
+struct LakeSoulNamespace {
+    metadata_client: MetaDataClientRef,
+    tables: Arc<Mutex<HashMap<String, Arc<dyn TableProvider>>>>,
+    format: String,
+}
+
+impl LakeSoulNamespace {
+
+}
+
+#[async_trait]
+impl SchemaProvider for LakeSoulNamespace {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn table_names(&self) -> Vec<String> {
+        todo!()
+    }
+
+    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+        todo!()
+    }
+
+    fn table_exist(&self, name: &str) -> bool {
+        todo!()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use datafusion::prelude::SessionContext;
+
+    #[test]
+    fn simple() {
+        let ctx = SessionContext::new();
+        let vec = ctx.catalog_names();
+        println!("{vec:?}");
+    }
 }

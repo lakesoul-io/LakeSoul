@@ -102,6 +102,7 @@ impl FileFormat for LakeSoulParquetFormat {
         for field in &conf.table_partition_cols {
             builder.push(Field::new(field.name(), field.data_type().clone(), false));
         }
+        // files to read
         let (summary_conf, flatten_conf) =
             flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice()).await?;
         let projection = summary_conf.projection.clone();

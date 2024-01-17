@@ -151,10 +151,10 @@ pub fn transform_array(
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
         }),
-        DataType::Struct(target_child_fileds) => {
+        DataType::Struct(target_child_fields) => {
             let orig_array = as_struct_array(&array);
             let mut child_array = vec![];
-            target_child_fileds.iter().try_for_each(|field| -> Result<()> {
+            target_child_fields.iter().try_for_each(|field| -> Result<()> {
                 match orig_array.column_by_name(field.name()) {
                     Some(array) => {
                         child_array.push((

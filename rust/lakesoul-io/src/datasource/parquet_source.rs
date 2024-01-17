@@ -59,6 +59,7 @@ impl LakeSoulParquetProvider {
     pub async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
         let mut plans = vec![];
         let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema().unwrap();
+        // one file is a table scan
         for i in 0..self.config.files.len() {
             let file = self.config.files[i].clone();
             let df = context.read_parquet(file, Default::default()).await.unwrap();
@@ -108,27 +109,6 @@ impl TableProvider for LakeSoulParquetProvider {
         TableType::Base
     }
 
-    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
-        if self.config.primary_keys.is_empty() {
-            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
-        } else {
-            filters
-                .iter()
-                .map(|f| {
-                    if let Ok(cols) = f.to_columns() {
-                        if cols.iter().all(|col| self.config.primary_keys.contains(&col.name)) {
-                            Ok(TableProviderFilterPushDown::Inexact)
-                        } else {
-                            Ok(TableProviderFilterPushDown::Unsupported)
-                        }
-                    } else {
-                        Ok(TableProviderFilterPushDown::Unsupported)
-                    }
-                })
-                .collect()
-        }
-    }
-
     async fn scan(
         &self,
         _state: &SessionState,
@@ -158,8 +138,8 @@ impl TableProvider for LakeSoulParquetProvider {
                 df.select(projected_cols)?
             };
 
-            let phycical_plan = df.create_physical_plan().await.unwrap();
-            inputs.push(phycical_plan);
+            let physical_plan = df.create_physical_plan().await.unwrap();
+            inputs.push(physical_plan);
         }
 
         let full_schema = SchemaRef::new(Schema::new(
@@ -184,6 +164,27 @@ impl TableProvider for LakeSoulParquetProvider {
         ));
 
         self.create_physical_plan(projections, full_schema, inputs).await
+    }
+
+    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
+        if self.config.primary_keys.is_empty() {
+            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        } else {
+            filters
+                .iter()
+                .map(|f| {
+                    if let Ok(cols) = f.to_columns() {
+                        if cols.iter().all(|col| self.config.primary_keys.contains(&col.name)) {
+                            Ok(TableProviderFilterPushDown::Inexact)
+                        } else {
+                            Ok(TableProviderFilterPushDown::Unsupported)
+                        }
+                    } else {
+                        Ok(TableProviderFilterPushDown::Unsupported)
+                    }
+                })
+                .collect()
+        }
     }
 }
 
@@ -329,7 +330,7 @@ pub fn merge_stream(
                     }
                 })
                 .collect::<Vec<_>>(),
-        )); //merge_schema
+        )); // merge_schema
         let merge_ops = schema
             .fields()
             .iter()
@@ -395,6 +396,7 @@ pub async fn prune_filter_and_execute(
         })?;
         // column pruning
         let df = df.select(cols)?;
+        // return a stream
         df.execute_stream().await
     }
 }
