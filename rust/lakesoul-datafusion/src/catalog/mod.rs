@@ -325,4 +325,3 @@ impl SchemaProvider for LakeSoulNamespace {
         let set = self.table_names().into_iter().collect::<HashSet<String>>();
         set.contains(name)
     }
-}
