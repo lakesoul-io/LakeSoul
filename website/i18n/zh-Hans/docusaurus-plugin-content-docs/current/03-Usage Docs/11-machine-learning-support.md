@@ -1,6 +1,7 @@
 # LakeSoul Python 接口和对机器学习框架的支持
 
-LakeSoul 实现了 PyTorch/ PyArrow/ HuggingFace / Ray 的数据源接口， 用户可以使用 LakeSoul 存储机器学习数据集，并可以通过接口读取 LakeSoul 表的数据，支持分布式读取。目前 Python 接口发布了 1.0 Beta 版。
+LakeSoul 实现了 PyTorch/ PyArrow/ HuggingFace / Ray 的数据源接口， 用户可以使用 LakeSoul 存储机器学习数据集，并可以通过接口读取 LakeSoul 表的数据，支持分布式读取。目前
+Python 接口发布了 1.0 Beta 版。
 
 ## 安装方法
 
@@ -22,15 +23,17 @@ Python 包目前仅支持 Linux 系统，在 GLibc 2.17 以上均可使用（Cen
 假设我们使用Python 3.8，我们可以按照以下方式下载wheel文件
 
 ```shell
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b0-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ```
 
 ### 安装 python 虚拟环境
+
 我们提供了多个 Python 读取 LakeSoul 表的示例，可以通过以下方式安装环境并体验：
+
 ```bash
 # change python version if needed
 conda create -n lakesoul_test python=3.8
-conda acitvate lakesoul_test
+conda activate lakesoul_test
 git clone https://github.com/lakesoul-io/LakeSoul.git
 cd LakeSoul/python/examples
 # replace ${PWD} with your wheel file directory in requirements.txt
@@ -42,12 +45,14 @@ pip install -r requirements.txt
 LakeSoul 实现 PyTorch/ HuggingFace 接口，可以直接将 LakeSoul 表的数据读取成 HuggingFace 的 datasets.
 
 读取表的 API：
+
 ```python
 import datasets
 import lakesoul.huggingface
 
 dataset = datasets.IterableDataset.from_lakesoul("lakesoul_table", partitions={'split': 'train'})
 ```
+
 即可创建 PyTorch/HuggingFace 的 dataset，进行训练。分布式训练环境会自动感知，在 dataset 初始化时不需要添加额外参数。
 
 下面给出从 LakeSoul 中导出经过特征转换的 [Titanic](https://www.kaggle.com/competitions/titanic) 数据集，然后用 DNN 模型进行训练和验证的示例代码。
@@ -177,15 +182,21 @@ if __name__ == '__main__':
 更多的示例可以参考 [LakeSoul/python/examples](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples)
 
 ## Ray 读取 LakeSoul 表
+
 LakeSoul 实现了 Ray 的 [Datasource](https://docs.ray.io/en/latest/data/api/doc/ray.data.Datasource.html)。以下为调用代码示例：
+
 ```python
 import ray.data
 import lakesoul.ray
+
 ds = ray.data.read_lakesoul("table_name", partitions={'split': 'train'})
 ```
 
 ## PyArrow/Pandas 读取 LakeSoul 表
-LakeSoul 可以支持单机读取数据，并使用 PyArrow、Pandas 进行计算。LakeSoul 读取时返回 PyArrow 的 [Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.Dataset.html) 对象，支持迭代访问。示例：
+
+LakeSoul 可以支持单机读取数据，并使用 PyArrow、Pandas 进行计算。LakeSoul 读取时返回 PyArrow
+的 [Dataset](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.Dataset.html) 对象，支持迭代访问。示例：
+
 ```python
 from lakesoul.arrow import lakesoul_dataset
 
