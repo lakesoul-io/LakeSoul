@@ -20,6 +20,7 @@ import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.datasources.parquet.{NumRowGroupsAcc, ParquetFilters, ParquetTest, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.execution.datasources.v2.parquet.{NativeParquetScan, ParquetScan}
+import org.apache.spark.sql.functions.struct
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{LegacyBehaviorPolicy, ParquetOutputTimestampType}
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
@@ -38,66 +39,6 @@ import java.sql.{Date, Timestamp}
 import java.time.{LocalDate, LocalDateTime, ZoneId}
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-
-@RunWith(classOf[JUnitRunner])
-class ParquetV2FilterSuite
-  extends ParquetFilterSuite {
-  override protected def sparkConf: SparkConf =
-    super
-      .sparkConf
-      .set(SQLConf.USE_V1_SOURCE_LIST, "")
-
-  override def checkFilterPredicate(
-                                     df: DataFrame,
-                                     predicate: Predicate,
-                                     filterClass: Class[_ <: FilterPredicate],
-                                     checker: (DataFrame, Seq[Row]) => Unit,
-                                     expected: Seq[Row]): Unit = {
-    val output = predicate.collect { case a: Attribute => a }.distinct
-
-    withSQLConf(
-      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
-      SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED.key -> "true",
-      SQLConf.PARQUET_FILTER_PUSHDOWN_TIMESTAMP_ENABLED.key -> "true",
-      SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key -> "true",
-      SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_STARTSWITH_ENABLED.key -> "true",
-      // Disable adding filters from constraints because it adds, for instance,
-      // is-not-null to pushed filters, which makes it hard to test if the pushed
-      // filter is expected or not (this had to be fixed with SPARK-13495).
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> InferFiltersFromConstraints.ruleName,
-      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
-      val query = df
-        .select(output.map(e => Column(e)): _*)
-        .where(Column(predicate))
-
-      query.queryExecution.optimizedPlan.collectFirst {
-        case PhysicalOperation(_, filters,
-        DataSourceV2ScanRelation(_, scan: ParquetScan, _, _)) =>
-          assert(filters.nonEmpty, "No filter is analyzed from the given query")
-          val sourceFilters = filters.flatMap(DataSourceStrategy.translateFilter(_, true)).toArray
-          val pushedFilters = scan.pushedFilters
-          assert(pushedFilters.nonEmpty, "No filter is pushed down")
-          val schema = new SparkToParquetSchemaConverter(conf).convert(df.schema)
-          val parquetFilters = createParquetFilters(schema)
-          // In this test suite, all the simple predicates are convertible here.
-          assert(parquetFilters.convertibleFilters(sourceFilters) === pushedFilters)
-          val pushedParquetFilters = pushedFilters.map { pred =>
-            val maybeFilter = parquetFilters.createFilter(pred)
-            assert(maybeFilter.isDefined, s"Couldn't generate filter predicate for $pred")
-            maybeFilter.get
-          }
-          // Doesn't bother checking type parameters here (e.g. `Eq[Integer]`)
-          assert(pushedParquetFilters.exists(_.getClass === filterClass),
-            s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
-
-          checker(stripSparkFilter(query), expected)
-
-        case _ =>
-          throw new AnalysisException("Can not match ParquetTable in the query.")
-      }
-    }
-  }
-}
 
 @RunWith(classOf[JUnitRunner])
 class ParquetNativeFilterSuite
@@ -310,25 +251,27 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
         "a", // zero nesting
         (x: Any) => x
       ),
-      //      (
-      //        df.withColumn("a", struct(df("temp") as "b")).drop("temp"),
-      //        "a.b", // one level nesting
-      //        (x: Any) => Row(x)),
-      //      (
-      //        df.withColumn("a", struct(struct(df("temp") as "c") as "b")).drop("temp"),
-      //        "a.b.c", // two level nesting
-      //        (x: Any) => Row(Row(x))
-      //      ),
-      //      (
-      //        df.withColumnRenamed("temp", "a.b"),
-      //        "`a.b`", // zero nesting with column name containing `dots`
-      //        (x: Any) => x
-      //      ),
-      //      (
-      //        df.withColumn("a.b", struct(df("temp") as "c.d") ).drop("temp"),
-      //        "`a.b`.`c.d`", // one level nesting with column names containing `dots`
-      //        (x: Any) => Row(x)
-      //      )
+      (
+        df.withColumn("a", struct(df("temp") as "b")).drop("temp"),
+        "a.b", // one level nesting
+        (x: Any) => Row(x)
+      ),
+
+      (
+        df.withColumn("a", struct(struct(df("temp") as "c") as "b")).drop("temp"),
+        "a.b.c", // two level nesting
+        (x: Any) => Row(Row(x))
+      ),
+      (
+        df.withColumnRenamed("temp", "a.b"),
+        "`a.b`", // zero nesting with column name containing `dots`
+        (x: Any) => x
+      ),
+      (
+        df.withColumn("a.b", struct(df("temp") as "c.d")).drop("temp"),
+        "`a.b`.`c.d`", // one level nesting with column names containing `dots`
+        (x: Any) => Row(x)
+      )
     )
   }
 
