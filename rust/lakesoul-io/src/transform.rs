@@ -11,28 +11,37 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{
     new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit, FieldRef, Fields};
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{ArrowError, External};
 
 use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING};
 
+/// adjust time zone to UTC
+pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
+    let data_type = orig_field.data_type();
+    match data_type {
+        DataType::Timestamp(unit, Some(_)) => Arc::new(Field::new(
+            orig_field.name(),
+            DataType::Timestamp(unit.clone(), Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE))),
+            orig_field.is_nullable(),
+        )),
+        DataType::Struct(fields) => Arc::new(Field::new(
+            orig_field.name(),
+            DataType::Struct(Fields::from(fields.iter().map(uniform_field).collect::<Vec<_>>())),
+            orig_field.is_nullable()
+        )),
+        _ => orig_field.clone(),
+    }
+}
+
+/// adjust time zone to UTC
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
         orig_schema
             .fields()
             .iter()
-            .map(|field| {
-                let data_type = field.data_type();
-                match data_type {
-                    DataType::Timestamp(unit, Some(_)) => Arc::new(Field::new(
-                        field.name(),
-                        DataType::Timestamp(unit.clone(), Some(Arc::from(crate::constant::LAKESOUL_TIMEZONE))),
-                        field.is_nullable(),
-                    )),
-                    _ => field.clone(),
-                }
-            })
+            .map(uniform_field)
             .collect::<Vec<_>>(),
     ))
 }
