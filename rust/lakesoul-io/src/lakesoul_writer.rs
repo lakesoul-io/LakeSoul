@@ -156,7 +156,10 @@ impl ExecutionPlan for ReceiverStreamExec {
     }
 
     fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        let builder = self.receiver_stream_builder.borrow_mut().take().unwrap();
+        let builder = self.receiver_stream_builder
+            .borrow_mut()
+            .take()
+            .unwrap();
         Ok(builder.build())
     }
 }
@@ -180,9 +183,10 @@ impl MultiPartAsyncWriter {
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
 
+        // get underlying multipart uploader
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-            16 * 1024 * 1024,
+            16 * 1024 * 1024, // 16kb
         ))));
         let schema: SchemaRef = config.schema.0.clone();
 
@@ -221,6 +225,7 @@ impl MultiPartAsyncWriter {
         batch: RecordBatch,
         arrow_writer: &mut ArrowWriter<InMemBuf>,
         in_mem_buf: &mut InMemBuf,
+        // underlying writer
         writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
     ) -> Result<()> {
         arrow_writer.write(&batch)?;
@@ -376,6 +381,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
 
     async fn flush_and_close(self: Box<Self>) -> Result<()> {
         let sender = self.sorter_sender;
+        // tell rx finish
         drop(sender);
         self.join_handle
             .await
@@ -398,6 +404,8 @@ impl AsyncBatchWriter for SortAsyncWriter {
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
+// inner is sort writer
+// multipart writer
 pub struct SyncSendableMutableLakeSoulWriter {
     inner: Arc<Mutex<SendableWriter>>,
     runtime: Arc<Runtime>,
@@ -429,8 +437,10 @@ impl SyncSendableMutableLakeSoulWriter {
 
             let schema = writer.schema.clone();
             let writer: Box<dyn AsyncBatchWriter + Send> = if !config.primary_keys.is_empty() {
+                // sort primary key table
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
             } else {
+                // else multipart
                 Box::new(writer)
             };
 
