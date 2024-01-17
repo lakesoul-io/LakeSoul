@@ -374,9 +374,9 @@ mod tests {
         let merged_result = common::collect(Box::pin(merge_stream)).await.unwrap();
 
         let mut all_rb = Vec::new();
-        for i in 0..files.len() {
+        for file in &files {
             let stream = session_ctx
-                .read_parquet(files[i].as_str(), Default::default())
+                .read_parquet(file.as_str(), Default::default())
                 .await
                 .unwrap()
                 .sort(vec![logical_col("int0").sort(true, true)])
@@ -407,7 +407,7 @@ mod tests {
         );
     }
 
-    ///! merge a series of record batches into a table using use_last
+    // merge a series of record batches into a table using use_last
     fn merge_with_use_last(results: &[RecordBatch]) -> Result<Table> {
         let mut table = Table::new();
         table.load_preset("||--+-++|    ++++++");
@@ -943,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn parquet_viewer() {
         let session_config = SessionConfig::default().with_batch_size(2);
-        let session_ctx = SessionContext::with_config(session_config);
+        let session_ctx = SessionContext::new_with_config(session_config);
         let stream = session_ctx
             .read_parquet(
                 "part-00000-58928ac0-5640-486e-bb94-8990262a1797_00000.c000.parquet",

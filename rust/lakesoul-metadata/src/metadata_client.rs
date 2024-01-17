@@ -322,6 +322,18 @@ impl MetaDataClient {
         Ok("public".to_string())
     }
 
+    pub async fn get_all_table_name_id_by_namespace(&self, namespace: &str) -> Result<Vec<TableNameId>> {
+        match self
+            .execute_query(
+                DaoType::ListTableNameByNamespace as i32,
+                namespace.to_string(),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.table_name_id),
+            Err(e) => Err(e),
+        }
+    }
     pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
         match self
             .execute_query(
