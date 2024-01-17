@@ -80,19 +80,21 @@ impl Parser {
             panic!("Invalid filter string");
         }
         let filter = &filter[1..filter.len() - 1];
-        let mut k: i8 = 0;
+        let mut k: usize = 0;
         let mut left_offset: usize = 0;
-        for (i, ch) in filter.chars().enumerate() {
+        let mut offset_counter: usize = 0;
+        for ch in filter.chars() {
             match ch {
                 '(' => k += 1,
                 ')' => k -= 1,
                 ',' => {
                     if k == 0 && left_offset == 0 {
-                        left_offset = i
+                        left_offset = offset_counter
                     }
                 }
                 _ => {}
             }
+            offset_counter += ch.len_utf8()
         }
         if k != 0 {
             panic!("Invalid filter string");
