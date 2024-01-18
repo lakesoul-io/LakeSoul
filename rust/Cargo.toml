@@ -4,11 +4,11 @@
 
 [workspace]
 members = [
-    "lakesoul-metadata", 
-    "lakesoul-metadata-c", 
-    "proto", 
-    "lakesoul-io", 
-    "lakesoul-io-c", 
+    "lakesoul-metadata",
+    "lakesoul-metadata-c",
+    "proto",
+    "lakesoul-io",
+    "lakesoul-io-c",
     "lakesoul-datafusion"
 ]
 resolver = "2"
@@ -16,18 +16,18 @@ resolver = "2"
 [profile.release]
 
 [workspace.dependencies]
-datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch"}
+datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
 datafusion-common = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
 arrow = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
 arrow-schema = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred"}
+arrow-array = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
 arrow-buffer = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
-parquet = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred"}
+parquet = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "arrow-rs-48-parquet-bufferred" }
 object_store = { git = "https://github.com/lakesoul-io/arrow-rs.git", branch = "object_store_0.7_opt", features = ["aws", "http"] }
 
 tokio-stream = "0.1.9"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["io", "compat"]}
+tokio-util = { version = "0.7", features = ["io", "compat"] }
 derivative = "2.2.0"
 atomic_refcell = "0.1.8"
 futures = "0.3"
@@ -36,8 +36,9 @@ async-trait = "0.1"
 serde_json = "1.0"
 log = "^0.4"
 prost = "0.11"
-uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"]}
-serde = { version = "1.0", features = ["derive", "std", "rc"]}
+uuid = { version = "1.4.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
+serde = { version = "1.0", features = ["derive", "std", "rc"] }
 rand = "^0.8"
 bytes = "1.4.0"
 half = "^2.1"
+tracing = "0.1.40"

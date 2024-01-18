@@ -520,3 +520,91 @@ pub fn table_name_id_from_table_info(table_info: &TableInfo) -> TableNameId {
         domain: table_info.domain.clone(),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use rand::{Rng, SeedableRng, thread_rng};
+    use rand::distributions::Alphanumeric;
+    use rand_chacha::ChaCha8Rng;
+    use proto::proto::entity::TableNameId;
+    use crate::{MetaDataClient, MetaDataClientRef};
+
+
+    fn random_table_name_id(table_namespace: Option<String>) -> TableNameId {
+        // let mut rng = ChaCha8Rng::seed_from_u64(state);
+        let mut rng = ChaCha8Rng::from_rng(thread_rng()).unwrap();
+        let table_name = (&mut rng).sample_iter(&Alphanumeric)
+            .take(30)
+            .map(char::from)
+            .collect::<String>();
+        let table_namespace = table_namespace.unwrap_or_else(|| {
+            (&mut rng).sample_iter(&Alphanumeric)
+                .take(30).
+                map(char::from)
+                .collect::<String>()
+        });
+
+        let table_id: String = (
+            0..=20).map(|_| {
+            rng.gen_range(0..=9)
+        }).map(|x| char::from_digit(x, 10).unwrap()).collect();
+
+
+        TableNameId {
+            table_name,
+            table_id,
+            table_namespace,
+            domain: "public".to_string(),
+        }
+    }
+
+
+    async fn init_data(client: MetaDataClientRef, ng: Vec<(Option<String>, i32)>) -> Vec<TableNameId> {
+        let mut res = vec![];
+
+        for (a, num) in ng {
+            for _ in 0..num {
+                let table_name_id = random_table_name_id(a.clone());
+                client.insert_table_name_id(&table_name_id).await.unwrap();
+                res.push(table_name_id);
+            }
+        }
+
+        res
+    }
+
+    async fn get_client() -> MetaDataClientRef {
+        let x = Arc::new(MetaDataClient::from_env().await.unwrap());
+        x.meta_cleanup().await.unwrap();
+        x
+    }
+
+
+    #[test_log::test(tokio::test)]
+    async fn test_get_all_table_name_id_by_namespace() {
+        let client = get_client().await;
+        let ng = vec![
+            (Some("lakesoul01".into()), 1),
+            (None, 1),
+            (Some("lakesoul02".into()), 2),
+            (None, 2),
+            (Some("lakesoul01".into()), 3),
+            (None, 3),
+        ];
+        let mut expected = init_data(Arc::clone(&client), ng).await;
+        expected.sort_by(|a, b| { a.table_namespace.cmp(&b.table_namespace) });
+        let mut actual = vec![];
+        let namespace_set = expected.iter()
+            .map(|t| t.table_namespace.clone())
+            .collect::<BTreeSet<String>>();
+        for ns in namespace_set {
+            let tmp = client.get_all_table_name_id_by_namespace(&ns).await.unwrap();
+            actual.extend(tmp);
+        }
+        assert_eq!(expected, actual);
+    }
+}
+
