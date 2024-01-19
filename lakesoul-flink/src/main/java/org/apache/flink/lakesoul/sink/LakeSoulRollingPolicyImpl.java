@@ -8,6 +8,8 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
 import org.apache.flink.table.data.RowData;
 
+import java.io.IOException;
+
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
 
@@ -37,8 +39,8 @@ public class LakeSoulRollingPolicyImpl extends CheckpointRollingPolicy<RowData, 
   }
 
   @Override
-  public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element) {
-    return false;
+  public boolean shouldRollOnEvent(PartFileInfo<String> partFileState, RowData element) throws IOException {
+    return partFileState.getSize() >= this.rollingSize;
   }
 
   @Override
