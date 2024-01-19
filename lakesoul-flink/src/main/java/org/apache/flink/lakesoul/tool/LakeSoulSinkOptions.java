@@ -28,9 +28,9 @@ public class LakeSoulSinkOptions {
 
     public static final String SORT_FIELD = "__sort_filed__";
 
-    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 20000L;
+    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 5000000L;
 
-    public static final Long DEFAULT_BUCKET_ROLLING_TIME = 2000000L;
+    public static final Long DEFAULT_BUCKET_ROLLING_TIME = 5 * 60 * 1000L;
 
     public static final String DELETE = "delete";
 
@@ -66,7 +66,7 @@ public class LakeSoulSinkOptions {
             .key("warehouse_path")
             .stringType()
             .defaultValue(new Path(System.getProperty("java.io.tmpdir"), "lakesoul").toString())
-            .withDescription("warehouse path for LakeSoul");
+            .withDescription("warehouse path for LakeSoul for command line tools");
 
     public static final ConfigOption<Integer> BUCKET_PARALLELISM = ConfigOptions
             .key("sink.parallelism")
@@ -81,22 +81,22 @@ public class LakeSoulSinkOptions {
             .withDescription("bucket number for table");
 
     public static final ConfigOption<Long> FILE_ROLLING_SIZE = ConfigOptions
-            .key("file_rolling_size")
+            .key("lakesoul.file.rolling.rows")
             .longType()
-            .defaultValue(20000L)
-            .withDescription("file rolling size ");
+            .defaultValue(DEFAULT_BUCKET_ROLLING_SIZE)
+            .withDescription("file rolling max rows");
 
     public static final ConfigOption<Long> FILE_ROLLING_TIME = ConfigOptions
-            .key("file_rolling_time")
+            .key("lakesoul.file.rolling.time.ms")
             .longType()
-            .defaultValue(Duration.ofMinutes(10).toMillis())
-            .withDescription("file rolling time ");
+            .defaultValue(DEFAULT_BUCKET_ROLLING_TIME)
+            .withDescription("file rolling time in milliseconds");
 
     public static final ConfigOption<Long> BUCKET_CHECK_INTERVAL = ConfigOptions
-            .key("bucket_check_interval")
+            .key("lakesoul.rolling.check.interval")
             .longType()
             .defaultValue(Duration.ofMinutes(1).toMillis())
-            .withDescription("file rolling time ");
+            .withDescription("file rolling check interval in milliseconds");
 
     public static final ConfigOption<Boolean> USE_CDC = ConfigOptions
             .key("use_cdc")

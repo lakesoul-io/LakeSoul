@@ -419,10 +419,9 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
-    // sess_conf.options_mut().execution.parquet.enable_page_index = true;
+    sess_conf.options_mut().execution.target_partitions = 1;
 
-    // limit memory for sort writer
-    let runtime = RuntimeEnv::new(RuntimeConfig::new().with_memory_limit(128 * 1024 * 1024, 1.0))?;
+    let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 
     // firstly parse default fs if exist
     let default_fs = config

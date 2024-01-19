@@ -5,8 +5,6 @@
 package org.apache.flink.lakesoul.sink.writer;
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
-import com.dmetasoul.lakesoul.lakesoul.memory.ArrowMemoryUtils;
-import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
@@ -48,7 +46,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     String path;
 
-    protected BufferAllocator allocator;
+    private long totalRows = 0;
 
     public NativeParquetWriter(RowType rowType,
                                List<String> primaryKeys,
@@ -60,8 +58,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.creationTime = creationTime;
         this.bucketID = bucketID;
         this.rowsInBatch = 0;
-        this.allocator = ArrowMemoryUtils.rootAllocator.newChildAllocator("NativeParquetWriter", 0, Long.MAX_VALUE);
-
 
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
@@ -71,7 +67,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
         nativeWriter.setRowGroupRowNumber(this.batchSize);
-        batch = VectorSchemaRoot.create(arrowSchema, this.allocator);
+        batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem()).toString();
         nativeWriter.addFile(this.path);
@@ -85,6 +81,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.lastUpdateTime = currentTime;
         this.arrowWriter.write(element);
         this.rowsInBatch++;
+        this.totalRows++;
         if (this.rowsInBatch >= this.batchSize) {
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
@@ -144,7 +141,6 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.rowsInBatch = 0;
         this.batch.clear();
         this.batch.close();
-        this.allocator.close();
         try {
             this.nativeWriter.close();
             this.nativeWriter = null;
@@ -157,11 +153,10 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     @Override
     public void dispose() {
         try {
-            this.nativeWriter.close();
-            this.nativeWriter = null;
             this.arrowWriter.finish();
             this.batch.close();
-            this.allocator.close();
+            this.nativeWriter.close();
+            this.nativeWriter = null;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -179,7 +174,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     @Override
     public long getSize() throws IOException {
-        return 0;
+        return totalRows;
     }
 
     @Override

@@ -294,7 +294,6 @@ public class FlinkUtil {
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
 
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
-        System.out.println(tableSchema);
         if (TableInfoDao.isArrowKindSchema(tableSchema)) {
             try {
                 arrowSchema = org.apache.arrow.vector.types.pojo.Schema.fromJSON(tableSchema);
