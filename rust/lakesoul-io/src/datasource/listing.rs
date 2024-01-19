@@ -24,7 +24,6 @@ use crate::transform::uniform_schema;
 
 pub struct LakeSoulListingTable {
     listing_table: Arc<ListingTable>,
-
     lakesoul_io_config: LakeSoulIOConfig,
 }
 

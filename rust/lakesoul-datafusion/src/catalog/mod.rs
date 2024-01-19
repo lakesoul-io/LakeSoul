@@ -7,16 +7,25 @@ use std::sync::{Arc};
 use std::time::SystemTime;
 use std::{env};
 use std::any::Any;
+use std::fmt::{Debug, Formatter, Pointer};
 
 
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider};
 use datafusion::catalog::schema::SchemaProvider;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
+use datafusion::prelude::SessionContext;
+use futures::future::try_maybe_done;
+use tokio::runtime::Runtime;
+use tracing::debug;
+use tracing::field::debug;
+use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
+use lakesoul_io::datasource::listing::LakeSoulListingTable;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::{MetaDataClientRef};
-use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
+use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, Namespace, TableInfo, Uuid};
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 use crate::serialize::arrow_java::{ArrowJavaSchema};
@@ -148,23 +157,72 @@ struct LakeSoulCatalog {
 }
 
 
-impl LakeSoulCatalog {}
+impl LakeSoulCatalog {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl CatalogProvider for LakeSoulCatalog {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema_names(&self) -> Vec<String> {
+        todo!()
+    }
+
+    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+        todo!()
+    }
+}
 
 
 /// A ['SchemaProvider`] that query pg to automatically discover tables
-#[derive(Debug)]
-struct LakeSoulNamespace {
+pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
+    runtime: Arc<Runtime>,
+    context: Arc<SessionContext>,
+    // primary key
+    namespace: String,
 }
 
+
 impl LakeSoulNamespace {
-    pub fn new(meta_data_client_ref: MetaDataClientRef) -> Self {
+    pub fn new(
+        meta_data_client_ref: MetaDataClientRef,
+        runtime: Arc<Runtime>,
+        context: Arc<SessionContext>,
+        namespace: &str) -> Self {
         Self {
-            metadata_client: meta_data_client_ref
+            metadata_client: meta_data_client_ref,
+            runtime,
+            context,
+            namespace: namespace.to_string(),
         }
     }
 
+
+    pub fn metadata_client(&self) -> MetaDataClientRef {
+        self.metadata_client.clone()
+    }
+    pub fn runtime(&self) -> Arc<Runtime> {
+        self.runtime.clone()
+    }
+    pub fn context(&self) -> Arc<SessionContext> {
+        self.context.clone()
+    }
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
 }
+
+impl Debug for LakeSoulNamespace {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LakeSoulNamespace{...}").finish()
+    }
+}
+
 
 #[async_trait]
 impl SchemaProvider for LakeSoulNamespace {
@@ -172,31 +230,61 @@ impl SchemaProvider for LakeSoulNamespace {
         self
     }
 
+    /// query table_name_id by namespace
+    /// ref: https://www.modb.pro/db/618126
     fn table_names(&self) -> Vec<String> {
-        // self.metadata_client.
-        todo!()
+        let client = self.metadata_client.clone();
+        let np = self.namespace.clone();
+        futures::executor::block_on(
+            async move {
+                self.runtime.spawn(async move {
+                    client.get_all_table_name_id_by_namespace(&np).await.unwrap()
+                }).await.unwrap().into_iter().map(|t| t.table_name).collect()
+            }
+        )
     }
 
     /// Search table by name
     /// return LakesoulListing table
-    async fn table(&self, _name: &str) -> Option<Arc<dyn TableProvider>> {
-        todo!()
+    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+        if let Ok(t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
+        {
+            let config = create_io_config_builder_from_table_info(Arc::new(t)).build();
+            let file_format = Arc::new(LakeSoulParquetFormat::new(
+                Arc::new(ParquetFormat::new()),
+                config.clone(),
+            ));
+            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
+                &self.context.state(),
+                config,
+                file_format,
+                false,
+            ).await {
+                debug!("create table provider success");
+                return Some(Arc::new(table_provider));
+            }
+            debug("create table provider fail");
+            return None;
+        } else {
+            debug("create table provider fail");
+            None
+        }
     }
 
-    fn table_exist(&self, _name: &str) -> bool {
-        todo!()
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use datafusion::prelude::SessionContext;
-
-    #[test]
-    fn simple() {
-        let ctx = SessionContext::new();
-        let vec = ctx.catalog_names();
-        println!("{vec:?}");
+    fn table_exist(&self, name: &str) -> bool {
+        let client = self.metadata_client.clone();
+        let name = name.to_string();
+        let np = self.namespace.clone();
+        futures::executor::block_on(
+            async move {
+                self.runtime.spawn(async move {
+                    if let Ok(t) = client.get_table_name_id_by_table_name(&name, &np).await {
+                        &t.table_name == &name
+                    } else {
+                        false
+                    }
+                }).await.unwrap()
+            }
+        )
     }
 }

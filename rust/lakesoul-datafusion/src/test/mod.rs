@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Arc;
-use log::debug;
+use tracing::info;
 
 use lakesoul_metadata::MetaDataClient;
 
@@ -24,6 +24,6 @@ fn init() {
         .block_on(async {
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
             client.meta_cleanup().await.unwrap();
-            debug!("clean metadata");
+            info!("clean metadata");
         })
 }
