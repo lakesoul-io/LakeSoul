@@ -867,7 +867,7 @@ mod tests {
             2,
             vec![
                 MergeOperator::UseLast,
-                MergeOperator::Sum,
+                MergeOperator::SumAll,
                 MergeOperator::UseLastNotNull,
                 MergeOperator::UseLast,
                 MergeOperator::UseLast,
