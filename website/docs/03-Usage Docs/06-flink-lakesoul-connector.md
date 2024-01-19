@@ -288,3 +288,12 @@ JOIN `lakesoul`.`default`.customers FOR SYSTEM_TIME AS OF o.proctime
 ON c_id = o_cid;
 ```
 In the example above, the Orders table is enriched with data from the Customers table. The FOR SYSTEM_TIME AS OF clause with the subsequent processing time attribute ensures that each row of the Orders table is joined with those Customers rows that match the join predicate at the point in time when the Orders row is processed by the join operator. It also prevents that the join result is updated when a joined Customer row is updated in the future. The lookup join also requires a mandatory equality join predicate, in the example above o.oc_id = c.id.
+
+## 5. Configurations
+The following configuration items can be placed in `$FLINK_HOME/conf/flink-conf.yaml` and take effect globally. You can also add it to the properties of the table creation statement. If there are the same configuration items in the configuration file and table creation properties, the table creation properties have a higher priority.
+
+| Configuration item              | Default value | Meaning                                                                                        |
+|---------------------------------|---------------|------------------------------------------------------------------------------------------------|
+| lakesoul.file.rolling.rows      | 5000000       | Sink Writer maximum number of rows in a single file                                            |
+| lakesoul.file.rolling.time.ms   | 300000        | Sink Writer interval for creating new files (milliseconds)                                     |
+| lakesoul.rolling.check.interval | 60000         | The interval at which Sink Writer checks whether a new file needs to be created (milliseconds) |

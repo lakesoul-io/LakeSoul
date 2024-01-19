@@ -730,7 +730,7 @@ mod tests {
             let read_conf = common_conf_builder
                 .clone()
                 .with_files(vec![
-                    "/home/chenxu/program/data/base-0/part-00000-ccbfddad-30ec-40c6-9fbd-86acc53dfeb9-c000.snappy.parquet".to_string()
+                    "large_file.snappy.parquet".to_string()
                 ])
                 .with_schema(Arc::new(Schema::new(vec![
                     Arc::new(Field::new("uuid", DataType::Utf8, false)),

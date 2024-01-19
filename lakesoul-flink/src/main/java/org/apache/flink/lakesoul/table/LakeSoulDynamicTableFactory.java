@@ -8,6 +8,7 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.lakesoul.source.LakeSoulLookupTableSource;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.TableId;
@@ -32,7 +33,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
-        Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
+        Configuration options = GlobalConfiguration.loadConfiguration();
+        options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
 
@@ -71,7 +73,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
-        Configuration options = (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions();
+        Configuration options = GlobalConfiguration.loadConfiguration();
+        options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
@@ -97,7 +100,11 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
 
         return new LakeSoulLookupTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(), isStreaming, pkColumns, catalogTable, options.toMap()
+                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(),
+                isStreaming,
+                pkColumns,
+                catalogTable,
+                options.toMap()
         );
     }
 }

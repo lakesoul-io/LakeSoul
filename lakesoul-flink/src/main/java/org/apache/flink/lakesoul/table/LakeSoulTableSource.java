@@ -38,7 +38,8 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 public class LakeSoulTableSource
-        implements SupportsFilterPushDown, SupportsPartitionPushDown, SupportsProjectionPushDown, ScanTableSource, SupportsRowLevelModificationScan {
+        implements SupportsFilterPushDown, SupportsPartitionPushDown, SupportsProjectionPushDown, ScanTableSource,
+        SupportsRowLevelModificationScan {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulTableSource.class);
 
@@ -232,7 +233,10 @@ public class LakeSoulTableSource
     }
 
     @Override
-    public RowLevelModificationScanContext applyRowLevelModificationScan(RowLevelModificationType rowLevelModificationType, @Nullable RowLevelModificationScanContext previousContext) {
+    public RowLevelModificationScanContext applyRowLevelModificationScan(
+            RowLevelModificationType rowLevelModificationType,
+            @Nullable
+            RowLevelModificationScanContext previousContext) {
         return null;
     }
 }
