@@ -52,8 +52,6 @@ impl LakeSoulReader {
                 "LakeSoulReader has wrong number of file".to_string(),
             ))
         } else {
-            // let source = LakeSoulParquetProvider::from_config(self.config.clone());
-            // let source = source.build_with_context(&self.sess_ctx).await.unwrap();
             let file_format = Arc::new(LakeSoulParquetFormat::new(
                 Arc::new(ParquetFormat::new()),
                 self.config.clone(),

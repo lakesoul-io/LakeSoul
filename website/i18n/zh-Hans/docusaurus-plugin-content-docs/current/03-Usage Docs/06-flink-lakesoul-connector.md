@@ -294,3 +294,12 @@ JOIN `lakesoul`.`default`.customers FOR SYSTEM_TIME AS OF o.proctime
 ON c_id = o_cid;
 ```
 在上面的示例中，Orders 表需要与 Customers 表的数据进行 Lookup Join。带有后续 process time 属性的 FOR SYSTEM_TIME AS OF 子句确保在联接运算符处理 Orders 行时，Orders 的每一行都与 join 条件匹配的 Customer 行连接。它还防止连接的 Customer 表在未来发生更新时变更连接结果。lookup join 还需要一个强制的相等连接条件，在上面的示例中是 o_c_id = c_id
+
+## 5. 配置项说明
+以下配置项可以放在 `$FLINK_HOME/conf/flink-conf.yaml` 中，全局生效。也可以添加在建表语句的参数中。如果配置文件和建表参数中有相同的配置项，则建表语句参数的优先级更高。
+
+| 配置项                             | 默认值     | 含义                            |
+|---------------------------------|---------|-------------------------------|
+| lakesoul.file.rolling.rows      | 5000000 | Sink Writer 单个文件行数上限          |
+| lakesoul.file.rolling.time.ms   | 300000  | Sink Writer 新建文件的间隔(毫秒)       |
+| lakesoul.rolling.check.interval | 60000   | Sink Writer 检查是否需要新建文件的间隔(毫秒) |

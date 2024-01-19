@@ -110,6 +110,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 ", bucketId='" + bucketId + '\'' +
                 ", identity=" + identity +
                 ", commitId='" + commitId + '\'' +
+                ", pendingFiles='" + pendingFiles + '\'' +
                 '}';
     }
 
