@@ -56,7 +56,7 @@ mod insert_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
 
-        let builder = create_io_config_builder(client, None, false).await?;
+        let builder = create_io_config_builder(client, None, false, "default").await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;

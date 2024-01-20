@@ -280,10 +280,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                     )))
                     .map_err(|e| External(Box::new(e)))?;
                 let endpoint_s = endpoint_url.to_string();
-                endpoint = endpoint_s
-                    .strip_suffix('/')
-                    .map(|s| s.to_string())
-                    .or(Some(endpoint_s));
+                endpoint = endpoint_s.strip_suffix('/').map(|s| s.to_string()).or(Some(endpoint_s));
             }
         }
     }
@@ -415,7 +412,8 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size);
+        .with_prefetch(config.prefetch_size)
+        .with_information_schema(true);
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'

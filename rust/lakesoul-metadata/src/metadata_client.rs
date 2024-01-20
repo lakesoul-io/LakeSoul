@@ -2,19 +2,21 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::{collections::HashMap, env, fs, vec};
-use std::fmt::{Debug, Formatter};
 
 use prost::Message;
-use proto::proto::entity::{self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo, TableInfo, TableNameId, TablePathId};
+use proto::proto::entity::{
+    self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo, TableInfo, TableNameId, TablePathId,
+};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use url::Url;
 
-use crate::error::Result;
+use crate::error::{LakeSoulMetaDataError, Result};
 use crate::{
     clean_meta_for_test, create_connection, execute_insert, execute_query, DaoType, PreparedStatementMap, PARAM_DELIM,
     PARTITION_DESC_DELIM,
@@ -35,7 +37,6 @@ impl Debug for MetaDataClient {
     }
 }
 
-
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
 impl MetaDataClient {
@@ -53,7 +54,7 @@ impl MetaDataClient {
                         .get("lakesoul.pg.url=")
                         .unwrap_or(&"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")[5..],
                 )
-                    .unwrap();
+                .unwrap();
                 Self::from_config(format!(
                     "host={} port={} dbname={} user={} password={}",
                     url.host_str().unwrap(),
@@ -62,14 +63,14 @@ impl MetaDataClient {
                     config_map.get("lakesoul.pg.username=").unwrap_or(&"lakesoul_test"),
                     config_map.get("lakesoul.pg.password=").unwrap_or(&"lakesoul_test")
                 ))
-                    .await
+                .await
             }
             Err(_) => {
                 Self::from_config(
                     "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
                         .to_string(),
                 )
-                    .await
+                .await
             }
         }
     }
@@ -88,7 +89,6 @@ impl MetaDataClient {
         })
     }
 
-
     pub async fn create_namespace(&self, namespace: Namespace) -> Result<()> {
         self.insert_namespace(&namespace).await?;
         Ok(())
@@ -104,39 +104,39 @@ impl MetaDataClient {
     }
 
     async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
-        for times in 0..self.max_retry {
+        for times in 0..self.max_retry as i64 {
             match execute_insert(
                 self.client.lock().await.deref_mut(),
                 self.prepared.lock().await.deref_mut(),
                 insert_type,
                 wrapper.clone(),
             )
-                .await
+            .await
             {
                 Ok(count) => return Ok(count),
-                Err(_) if times < self.max_retry - 1 => continue,
+                Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
-        Ok(0)
+        Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
     }
 
     async fn execute_query(&self, query_type: i32, joined_string: String) -> Result<JniWrapper> {
-        for times in 0..self.max_retry {
+        for times in 0..self.max_retry as i64 {
             match execute_query(
                 self.client.lock().await.deref_mut(),
                 self.prepared.lock().await.deref_mut(),
                 query_type,
                 joined_string.clone(),
             )
-                .await
+            .await
             {
                 Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
-                Err(_) if times < self.max_retry - 1 => continue,
+                Err(_) if times < self.max_retry as i64 - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
-        Ok(Default::default())
+        Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
     }
 
     async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {
@@ -147,9 +147,8 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
-
 
     async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
         self.execute_insert(
@@ -159,7 +158,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
 
     async fn insert_table_name_id(&self, table_name_id: &TableNameId) -> Result<i32> {
@@ -170,7 +169,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
 
     async fn insert_table_path_id(&self, table_path_id: &TablePathId) -> Result<i32> {
@@ -181,7 +180,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
 
     async fn insert_data_commit_info(&self, data_commit_info: &DataCommitInfo) -> Result<i32> {
@@ -192,7 +191,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
 
     async fn transaction_insert_partition_info(&self, partition_info_list: Vec<PartitionInfo>) -> Result<i32> {
@@ -203,7 +202,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-            .await
+        .await
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
@@ -330,7 +329,7 @@ impl MetaDataClient {
             },
             CommitOp::from_i32(commit_op).unwrap(),
         )
-            .await
+        .await
     }
 
     pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
@@ -340,10 +339,7 @@ impl MetaDataClient {
 
     pub async fn get_all_table_name_id_by_namespace(&self, namespace: &str) -> Result<Vec<TableNameId>> {
         match self
-            .execute_query(
-                DaoType::ListTableNameByNamespace as i32,
-                namespace.to_string(),
-            )
+            .execute_query(DaoType::ListTableNameByNamespace as i32, namespace.to_string())
             .await
         {
             Ok(wrapper) => Ok(wrapper.table_name_id),
@@ -351,14 +347,15 @@ impl MetaDataClient {
         }
     }
 
-    // TODO
     pub async fn get_all_namespace(&self) -> Result<Vec<Namespace>> {
-        self.execute_query(
-            DaoType::ListNamespaces as i32,
-            String::new(),
-        ).await.map(|wrapper| wrapper.namespace)
+        self.execute_query(DaoType::ListNamespaces as i32, String::new())
+            .await
+            .map(|wrapper| wrapper.namespace)
     }
 
+    pub async fn _get_namespace_by_namespace(&self) -> Result<Namespace> {
+        unimplemented!()
+    }
 
     pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
         match self

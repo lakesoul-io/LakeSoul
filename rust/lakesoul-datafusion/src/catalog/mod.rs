@@ -2,39 +2,27 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
-use std::sync::{Arc};
+use datafusion::catalog::TableReference;
+use std::env;
+use std::fmt::Debug;
+use std::sync::Arc;
 use std::time::SystemTime;
-use std::{env};
-use std::any::Any;
-use std::collections::HashSet;
-use std::fmt::{Debug, Formatter};
-
-
-use async_trait::async_trait;
-use datafusion::catalog::{CatalogProvider};
-use datafusion::catalog::schema::SchemaProvider;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::TableProvider;
-use datafusion::prelude::SessionContext;
-
-use tokio::runtime::{Handle};
-use tracing::debug;
-use tracing::field::debug;
-use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
-use lakesoul_io::datasource::listing::LakeSoulListingTable;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use lakesoul_metadata::{MetaDataClientRef};
+use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use crate::serialize::arrow_java::{ArrowJavaSchema};
+use crate::serialize::arrow_java::ArrowJavaSchema;
 // use crate::transaction::TransactionMetaInfo;
 use crate::error::Result;
 
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
+mod lakesoul_catalog;
+pub use lakesoul_catalog::*;
+mod lakesoul_namespace;
+pub use lakesoul_namespace::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
@@ -72,12 +60,13 @@ pub(crate) async fn create_io_config_builder(
     client: MetaDataClientRef,
     table_name: Option<&str>,
     fetch_files: bool,
+    namespace: &str,
 ) -> Result<LakeSoulIOConfigBuilder> {
     if let Some(table_name) = table_name {
-        let table_info = client.get_table_info_by_table_name(table_name, "default").await?;
+        let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
         let data_files = if fetch_files {
             client
-                .get_data_files_by_table_name(table_name, vec![], "default")
+                .get_data_files_by_table_name(table_name, vec![], namespace)
                 .await?
         } else {
             vec![]
@@ -113,7 +102,10 @@ pub(crate) async fn commit_data(
     partitions: Vec<(String, String)>,
     files: &[String],
 ) -> Result<()> {
-    let table_name_id = client.get_table_name_id_by_table_name(table_name, "default").await?;
+    let table_ref = TableReference::from(table_name);
+    let table_name_id = client
+        .get_table_name_id_by_table_name(table_ref.table(), table_ref.schema().unwrap_or("default"))
+        .await?;
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,
@@ -148,181 +140,4 @@ pub(crate) async fn commit_data(
         })
         .await?;
     Ok(())
-}
-
-
-/// A metadata wrapper
-pub struct LakeSoulCatalog {
-    metadata_client: MetaDataClientRef,
-    context: Arc<SessionContext>,
-}
-
-impl Debug for LakeSoulCatalog {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LakeSoulCatalog{..}").finish()
-    }
-}
-
-
-impl LakeSoulCatalog {
-    pub fn new(meta_data_client_ref: MetaDataClientRef,
-               context: Arc<SessionContext>,
-    ) -> Self {
-        Self {
-            metadata_client: meta_data_client_ref,
-            context,
-        }
-    }
-    pub fn metadata_client(&self) -> MetaDataClientRef {
-        self.metadata_client.clone()
-    }
-    pub fn context(&self) -> Arc<SessionContext> {
-        self.context.clone()
-    }
-}
-
-impl CatalogProvider for LakeSoulCatalog {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema_names(&self) -> Vec<String> {
-        let client = self.metadata_client.clone();
-        futures::executor::block_on(
-            async move {
-                Handle::current().spawn(async move {
-                    client.get_all_namespace().await.unwrap()
-                }).await.unwrap().into_iter().map(|t| t.namespace).collect()
-            }
-        )
-    }
-
-    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        let client = self.metadata_client.clone();
-        let names =
-            {
-                let client = client.clone();
-                futures::executor::block_on(
-                    async move {
-                        Handle::current().spawn(async move {
-                            client.get_all_namespace().await.unwrap()
-                        }).await.unwrap().into_iter().map(|t| t.namespace).collect::<HashSet<String>>()
-                    }
-                )
-            };
-        if !names.contains(name) {
-            None
-        } else {
-            Some(
-                Arc::new(LakeSoulNamespace::new(
-                    client.clone(),
-                    self.context.clone(),
-                    name,
-                ))
-            )
-        }
-    }
-}
-
-
-/// A ['SchemaProvider`] that query pg to automatically discover tables
-pub struct LakeSoulNamespace {
-    metadata_client: MetaDataClientRef,
-    context: Arc<SessionContext>,
-    // primary key
-    namespace: String,
-}
-
-
-impl LakeSoulNamespace {
-    pub fn new(
-        meta_data_client_ref: MetaDataClientRef,
-        context: Arc<SessionContext>,
-        namespace: &str) -> Self {
-        Self {
-            metadata_client: meta_data_client_ref,
-            context,
-            namespace: namespace.to_string(),
-        }
-    }
-
-    pub fn metadata_client(&self) -> MetaDataClientRef {
-        self.metadata_client.clone()
-    }
-
-    pub fn context(&self) -> Arc<SessionContext> {
-        self.context.clone()
-    }
-
-    pub fn namespace(&self) -> &str {
-        &self.namespace
-    }
-}
-
-impl Debug for LakeSoulNamespace {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LakeSoulNamespace{...}").finish()
-    }
-}
-
-
-#[async_trait]
-impl SchemaProvider for LakeSoulNamespace {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    /// query table_name_id by namespace
-    /// ref: https://www.modb.pro/db/618126
-    fn table_names(&self) -> Vec<String> {
-        let client = self.metadata_client.clone();
-        let np = self.namespace.clone();
-        futures::executor::block_on(
-            async move {
-                Handle::current().spawn(async move {
-                    client.get_all_table_name_id_by_namespace(&np).await.unwrap()
-                }).await.unwrap().into_iter().map(|t| t.table_name).collect()
-            }
-        )
-    }
-
-    /// Search table by name
-    /// return LakeSoulListing table
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        if let Ok(_t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
-        {
-            let config;
-            if let Ok(config_builder) = create_io_config_builder(self.metadata_client.clone(), Some(name), true)
-                .await {
-                config = config_builder.build();
-            } else {
-                return None;
-            }
-            // Maybe should change
-            let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
-                config.clone(),
-            ));
-            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
-                &self.context.state(),
-                config,
-                file_format,
-                // TODO care this
-                false,
-            ).await {
-                debug!("get table provider success");
-                return Some(Arc::new(table_provider));
-            }
-            debug("get table provider fail");
-            return None;
-        } else {
-            debug("get table provider fail");
-            None
-        }
-    }
-
-    fn table_exist(&self, name: &str) -> bool {
-        let set = self.table_names().into_iter().collect::<HashSet<String>>();
-        set.contains(name)
-    }
 }

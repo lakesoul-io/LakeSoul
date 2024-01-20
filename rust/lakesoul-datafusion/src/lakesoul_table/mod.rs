@@ -6,13 +6,14 @@ pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
 
-use arrow::{datatypes::SchemaRef};
+use arrow::datatypes::SchemaRef;
 use datafusion::{
     dataframe::DataFrame,
     datasource::TableProvider,
     execution::context::{SessionContext, SessionState},
     logical_expr::LogicalPlanBuilder,
 };
+use datafusion::sql::TableReference;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
@@ -75,14 +76,14 @@ impl LakeSoulTable {
 
     pub async fn execute_upsert(&self, record_batch: RecordBatch) -> Result<()> {
         let client = Arc::new(MetaDataClient::from_env().await?);
-        let builder = create_io_config_builder(client, None, false).await?;
+        let builder = create_io_config_builder(client, None, false, self.table_namespace()).await?;
         let sess_ctx =
             create_session_context_with_planner(&mut builder.clone().build(), Some(LakeSoulQueryPlanner::new_ref()))?;
 
         let schema = record_batch.schema();
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
-            self.table_name().to_string(),
+            TableReference::partial(self.table_namespace().to_string(),self.table_name().to_string()),
             schema.deref(),
             false,
         )?
@@ -99,7 +100,8 @@ impl LakeSoulTable {
     }
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
-        let config_builder = create_io_config_builder(self.client(), Some(self.table_name()), true).await?;
+        let config_builder =
+            create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace()).await?;
         let provider = Arc::new(
             LakeSoulTableProvider::try_new(&context.state(), config_builder.build(), self.table_info(), false).await?,
         );
@@ -107,9 +109,10 @@ impl LakeSoulTable {
     }
 
     pub async fn as_sink_provider(&self, session_state: &SessionState) -> Result<Arc<dyn TableProvider>> {
-        let config_builder = create_io_config_builder(self.client(), Some(self.table_name()), false)
-            .await?
-            .with_prefix(self.table_info.table_path.clone());
+        let config_builder =
+            create_io_config_builder(self.client(), Some(self.table_name()), false, self.table_namespace())
+                .await?
+                .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
             LakeSoulTableProvider::try_new(session_state, config_builder.build(), self.table_info(), true).await?,
         ))
@@ -133,6 +136,10 @@ impl LakeSoulTable {
 
     pub fn hash_bucket_num(&self) -> usize {
         self.properties.hash_bucket_num.unwrap_or(1)
+    }
+
+    pub fn table_namespace(&self) -> &str {
+        &self.table_info.table_namespace
     }
 
     pub fn schema(&self) -> SchemaRef {

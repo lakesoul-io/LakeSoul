@@ -32,7 +32,7 @@ use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
-use crate::{repartition::distributor_channels::partition_aware_channels, hash_utils::create_hashes};
+use crate::{hash_utils::create_hashes, repartition::distributor_channels::partition_aware_channels};
 
 use self::distributor_channels::{DistributionReceiver, DistributionSender};
 

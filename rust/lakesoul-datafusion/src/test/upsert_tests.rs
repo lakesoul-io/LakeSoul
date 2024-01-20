@@ -17,11 +17,9 @@ mod upsert_with_io_config_tests {
     use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
     use tokio::runtime::Builder;
 
-    
-
-    enum str_or_i32 {
-        v1(&'static str),
-        v2(i32),
+    enum StrOrI32 {
+        V1(&'static str),
+        V2(i32),
     }
 
     fn init_table(batch: RecordBatch, table_name: &str, pks: Vec<String>) -> LakeSoulIOConfigBuilder {
@@ -149,27 +147,27 @@ mod upsert_with_io_config_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_str_or_i32(names: Vec<&str>, values: Vec<&[str_or_i32]>) -> RecordBatch {
+    fn create_batch_str_or_i32(names: Vec<&str>, values: Vec<&[StrOrI32]>) -> RecordBatch {
         let values = values
             .into_iter()
             .map(|vec| match vec[0] {
-                str_or_i32::v1(_) => {
+                StrOrI32::V1(_) => {
                     let vec = vec
                         .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(v1) => Some(*v1),
-                            str_or_i32::v2(_v2) => None,
+                            StrOrI32::V1(v1) => Some(*v1),
+                            StrOrI32::V2(_v2) => None,
                         })
                         .map(|val| val.unwrap())
                         .collect::<Vec<&str>>();
                     Arc::new(StringArray::from(vec)) as ArrayRef
                 }
-                str_or_i32::v2(_) => {
+                StrOrI32::V2(_) => {
                     let vec = vec
                         .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(_v1) => None,
-                            str_or_i32::v2(v2) => Some(v2),
+                            StrOrI32::V1(_v1) => None,
+                            StrOrI32::V2(v2) => Some(v2),
                         })
                         .map(|val| *val.unwrap())
                         .collect::<Vec<i32>>();
@@ -628,8 +626,8 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_upsert_without_range_parqitions_i32() {
-        let table_name = "upsert_without_range_parqitions";
+    fn test_upsert_without_range_partitions_i32() {
+        let table_name = "upsert_without_range_partitions";
         let builder = init_table(
             create_batch_i32(
                 vec!["range", "hash", "value"],
@@ -667,8 +665,8 @@ mod upsert_with_io_config_tests {
     }
 
     #[test]
-    fn test_upsert_with_multiple_range_and_hash_parqitions_i32() {
-        let table_name = "upsert_with_multiple_range_and_hash_parqitions";
+    fn test_upsert_with_multiple_range_and_hash_partitions_i32() {
+        let table_name = "upsert_with_multiple_range_and_hash_partitions";
         let builder = init_table(
             create_batch_i32(
                 vec!["range1", "range2", "hash1", "hash2", "value"],
@@ -1289,14 +1287,14 @@ mod upsert_with_io_config_tests {
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v1("a1"), str_or_i32::v1("b1"), str_or_i32::v1("c1")],
-                &[str_or_i32::v2(1), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("a2"), str_or_i32::v1("b2"), str_or_i32::v1("c2")],
-                &[str_or_i32::v1("a"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V1("a1"), StrOrI32::V1("b1"), StrOrI32::V1("c1")],
+                &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("a2"), StrOrI32::V1("b2"), StrOrI32::V1("c2")],
+                &[StrOrI32::V1("a"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -1304,14 +1302,14 @@ mod upsert_with_io_config_tests {
             vec!["range", "hash1", "v1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v2(1), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("a11"), str_or_i32::v1("b11"), str_or_i32::v1("c11")],
-                &[str_or_i32::v1("a22"), str_or_i32::v1("b22"), str_or_i32::v1("c22")],
-                &[str_or_i32::v1("a"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("a11"), StrOrI32::V1("b11"), StrOrI32::V1("c11")],
+                &[StrOrI32::V1("a22"), StrOrI32::V1("b22"), StrOrI32::V1("c22")],
+                &[StrOrI32::V1("a"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -1319,14 +1317,14 @@ mod upsert_with_io_config_tests {
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v1("d1"), str_or_i32::v1("b111"), str_or_i32::v1("c111")],
-                &[str_or_i32::v2(4), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("d2"), str_or_i32::v1("b222"), str_or_i32::v1("c222")],
-                &[str_or_i32::v1("d"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V1("d1"), StrOrI32::V1("b111"), StrOrI32::V1("c111")],
+                &[StrOrI32::V2(4), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("d2"), StrOrI32::V1("b222"), StrOrI32::V1("c222")],
+                &[StrOrI32::V1("d"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -1371,7 +1369,7 @@ mod upsert_with_io_config_tests {
 
         check_upsert_string_or_i32(
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
-                ["range", "v1", "hash1", "v2", "hash2"]
+                ["range", "V1", "hash1", "V2", "hash2"]
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
@@ -1595,9 +1593,9 @@ mod upsert_with_metadata_tests {
 
     use crate::catalog::{create_io_config_builder, create_table};
 
-    enum str_or_i32 {
-        v1(&'static str),
-        v2(i32),
+    enum StrOrI32 {
+        V1(&'static str),
+        V2(i32),
     }
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
@@ -1654,27 +1652,27 @@ mod upsert_with_metadata_tests {
         RecordBatch::try_from_iter_with_nullable(iter).unwrap()
     }
 
-    fn create_batch_str_or_i32(names: Vec<&str>, values: Vec<&[str_or_i32]>) -> RecordBatch {
+    fn create_batch_str_or_i32(names: Vec<&str>, values: Vec<&[StrOrI32]>) -> RecordBatch {
         let values = values
             .into_iter()
             .map(|vec| match vec[0] {
-                str_or_i32::v1(_) => {
+                StrOrI32::V1(_) => {
                     let vec = vec
                         .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(v1) => Some(*v1),
-                            str_or_i32::v2(_v2) => None,
+                            StrOrI32::V1(v1) => Some(*v1),
+                            StrOrI32::V2(_v2) => None,
                         })
                         .map(|val| val.unwrap())
                         .collect::<Vec<&str>>();
                     Arc::new(StringArray::from(vec)) as ArrayRef
                 }
-                str_or_i32::v2(_) => {
+                StrOrI32::V2(_) => {
                     let vec = vec
                         .iter()
                         .map(|val| match val {
-                            str_or_i32::v1(_v1) => None,
-                            str_or_i32::v2(v2) => Some(v2),
+                            StrOrI32::V1(_v1) => None,
+                            StrOrI32::V2(v2) => Some(v2),
                         })
                         .map(|val| *val.unwrap())
                         .collect::<Vec<i32>>();
@@ -1705,7 +1703,7 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false).await?;
+        let builder = create_io_config_builder(client, None, false, "default").await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -1758,7 +1756,7 @@ mod upsert_with_metadata_tests {
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
         lakesoul_table.execute_upsert(batch).await?;
-        let builder = create_io_config_builder(client, None, false).await?;
+        let builder = create_io_config_builder(client, None, false, "default").await?;
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
@@ -1919,7 +1917,7 @@ mod upsert_with_metadata_tests {
     }
 
     async fn test_merge_different_columns_and_filter_partial_rows_i32() -> Result<()> {
-        let table_name = "merge-different_columns_and_filter_partial_rows_i32";
+        let table_name = "merge_different_columns_and_filter_partial_rows_i32";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -1991,7 +1989,7 @@ mod upsert_with_metadata_tests {
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
                 ["range", "hash", "value"]
                     .iter()
-                    .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
+                    .map(|col| Field::new(*col, DataType::Int32, true))
                     .collect::<Vec<_>>(),
             ))),
             table_name,
@@ -2046,7 +2044,7 @@ mod upsert_with_metadata_tests {
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
                 ["range", "hash", "value"]
                     .iter()
-                    .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
+                    .map(|col| Field::new(*col, DataType::Int32, true))
                     .collect::<Vec<_>>(),
             ))),
             table_name,
@@ -2092,7 +2090,7 @@ mod upsert_with_metadata_tests {
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
                 ["range", "hash", "value"]
                     .iter()
-                    .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
+                    .map(|col| Field::new(*col, DataType::Int32, true))
                     .collect::<Vec<_>>(),
             ))),
             table_name,
@@ -2162,7 +2160,7 @@ mod upsert_with_metadata_tests {
             RecordBatch::new_empty(SchemaRef::new(Schema::new(
                 ["range", "hash", "value"]
                     .iter()
-                    .map(|col| Field::new(*col, arrow::datatypes::DataType::Int32, true))
+                    .map(|col| Field::new(*col, DataType::Int32, true))
                     .collect::<Vec<_>>(),
             ))),
             table_name,
@@ -2221,8 +2219,8 @@ mod upsert_with_metadata_tests {
         Ok(())
     }
 
-    async fn test_upsert_without_range_parqitions_i32() -> Result<()> {
-        let table_name = "upsert_without_range_parqitions";
+    async fn test_upsert_without_range_partitions_i32() -> Result<()> {
+        let table_name = "upsert_without_range_partitions";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -2270,8 +2268,8 @@ mod upsert_with_metadata_tests {
         Ok(())
     }
 
-    async fn test_upsert_with_multiple_range_and_hash_parqitions_i32() -> Result<()> {
-        let table_name = "upsert_with_multiple_range_and_hash_parqitions";
+    async fn test_upsert_with_multiple_range_and_hash_partitions_i32() -> Result<()> {
+        let table_name = "upsert_with_multiple_range_and_hash_partitions";
         let client = Arc::new(MetaDataClient::from_env().await?);
 
         init_table(
@@ -3035,14 +3033,14 @@ mod upsert_with_metadata_tests {
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v1("a1"), str_or_i32::v1("b1"), str_or_i32::v1("c1")],
-                &[str_or_i32::v2(1), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("a2"), str_or_i32::v1("b2"), str_or_i32::v1("c2")],
-                &[str_or_i32::v1("a"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V1("a1"), StrOrI32::V1("b1"), StrOrI32::V1("c1")],
+                &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("a2"), StrOrI32::V1("b2"), StrOrI32::V1("c2")],
+                &[StrOrI32::V1("a"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -3050,14 +3048,14 @@ mod upsert_with_metadata_tests {
             vec!["range", "hash1", "v1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v2(1), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("a11"), str_or_i32::v1("b11"), str_or_i32::v1("c11")],
-                &[str_or_i32::v1("a22"), str_or_i32::v1("b22"), str_or_i32::v1("c22")],
-                &[str_or_i32::v1("a"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("a11"), StrOrI32::V1("b11"), StrOrI32::V1("c11")],
+                &[StrOrI32::V1("a22"), StrOrI32::V1("b22"), StrOrI32::V1("c22")],
+                &[StrOrI32::V1("a"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -3065,14 +3063,14 @@ mod upsert_with_metadata_tests {
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
                 &[
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
-                    str_or_i32::v1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
+                    StrOrI32::V1("range"),
                 ],
-                &[str_or_i32::v1("d1"), str_or_i32::v1("b111"), str_or_i32::v1("c111")],
-                &[str_or_i32::v2(4), str_or_i32::v2(2), str_or_i32::v2(3)],
-                &[str_or_i32::v1("d2"), str_or_i32::v1("b222"), str_or_i32::v1("c222")],
-                &[str_or_i32::v1("d"), str_or_i32::v1("b"), str_or_i32::v1("c")],
+                &[StrOrI32::V1("d1"), StrOrI32::V1("b111"), StrOrI32::V1("c111")],
+                &[StrOrI32::V2(4), StrOrI32::V2(2), StrOrI32::V2(3)],
+                &[StrOrI32::V1("d2"), StrOrI32::V1("b222"), StrOrI32::V1("c222")],
+                &[StrOrI32::V1("d"), StrOrI32::V1("b"), StrOrI32::V1("c")],
             ],
         );
 
@@ -3084,9 +3082,9 @@ mod upsert_with_metadata_tests {
                     .into_iter()
                     .map(|name| {
                         if name == "hash1" {
-                            Field::new(name, arrow::datatypes::DataType::Int32, true)
+                            Field::new(name, DataType::Int32, true)
                         } else {
-                            Field::new(name, arrow::datatypes::DataType::Utf8, true)
+                            Field::new(name, DataType::Utf8, true)
                         }
                     })
                     .collect::<Vec<Field>>(),
@@ -3106,9 +3104,9 @@ mod upsert_with_metadata_tests {
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
-                            Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                            Field::new(*col, DataType::Int32, true)
                         } else {
-                            Field::new(*col, arrow::datatypes::DataType::Utf8, true)
+                            Field::new(*col, DataType::Utf8, true)
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -3136,9 +3134,9 @@ mod upsert_with_metadata_tests {
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
-                            Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                            Field::new(*col, DataType::Int32, true)
                         } else {
-                            Field::new(*col, arrow::datatypes::DataType::Utf8, true)
+                            Field::new(*col, DataType::Utf8, true)
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -3166,9 +3164,9 @@ mod upsert_with_metadata_tests {
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
-                            Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                            Field::new(*col, DataType::Int32, true)
                         } else {
-                            Field::new(*col, arrow::datatypes::DataType::Utf8, true)
+                            Field::new(*col, DataType::Utf8, true)
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -3196,9 +3194,9 @@ mod upsert_with_metadata_tests {
                     .iter()
                     .map(|col| {
                         if *col == "hash1" {
-                            Field::new(*col, arrow::datatypes::DataType::Int32, true)
+                            Field::new(*col, DataType::Int32, true)
                         } else {
-                            Field::new(*col, arrow::datatypes::DataType::Utf8, true)
+                            Field::new(*col, DataType::Utf8, true)
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -3377,8 +3375,8 @@ mod upsert_with_metadata_tests {
         test_merge_different_columns_and_filter_partial_rows_i32().await?;
         test_merge_one_file_with_empty_batch_i32().await?;
         test_merge_multi_files_with_empty_batch_i32().await?;
-        test_upsert_without_range_parqitions_i32().await?;
-        test_upsert_with_multiple_range_and_hash_parqitions_i32().await?;
+        test_upsert_without_range_partitions_i32().await?;
+        test_upsert_with_multiple_range_and_hash_partitions_i32().await?;
         test_filter_requested_columns_upsert_1_times_i32().await?;
         test_filter_requested_columns_upsert_2_times_i32().await?;
         test_filter_requested_columns_upsert_3_times_i32().await?;

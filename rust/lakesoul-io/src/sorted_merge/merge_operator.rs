@@ -89,10 +89,16 @@ impl MergeOperator {
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
                 MergeOperator::SumAll => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder),
                 MergeOperator::SumLast => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder),
-                MergeOperator::JoinedLastByComma => concat_last_with_string_type(ranges, append_array_data_builder, ','),
-                MergeOperator::JoinedLastBySemicolon => concat_last_with_string_type(ranges, append_array_data_builder, ';'),
+                MergeOperator::JoinedLastByComma => {
+                    concat_last_with_string_type(ranges, append_array_data_builder, ',')
+                }
+                MergeOperator::JoinedLastBySemicolon => {
+                    concat_last_with_string_type(ranges, append_array_data_builder, ';')
+                }
                 MergeOperator::JoinedAllByComma => concat_all_with_string_type(ranges, append_array_data_builder, ','),
-                MergeOperator::JoinedAllBySemicolon => concat_all_with_string_type(ranges, append_array_data_builder, ';'),
+                MergeOperator::JoinedAllBySemicolon => {
+                    concat_all_with_string_type(ranges, append_array_data_builder, ';')
+                }
             },
         }
     }
@@ -132,28 +138,70 @@ fn sum_all_with_primitive_type(
 ) -> MergeResult {
     match dt {
         DataType::UInt8 => {
-            sum_all_with_primitive_type_and_append_value!(UInt8Type, u8, UInt8Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                UInt8Type,
+                u8,
+                UInt8Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt16 => {
-            sum_all_with_primitive_type_and_append_value!(UInt16Type, u16, UInt16Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                UInt16Type,
+                u16,
+                UInt16Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt32 => {
-            sum_all_with_primitive_type_and_append_value!(UInt32Type, u32, UInt32Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                UInt32Type,
+                u32,
+                UInt32Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt64 => {
-            sum_all_with_primitive_type_and_append_value!(UInt64Type, u64, UInt64Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                UInt64Type,
+                u64,
+                UInt64Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int8 => {
             sum_all_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
         }
         DataType::Int16 => {
-            sum_all_with_primitive_type_and_append_value!(Int16Type, i16, Int16Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                Int16Type,
+                i16,
+                Int16Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int32 => {
-            sum_all_with_primitive_type_and_append_value!(Int32Type, i32, Int32Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                Int32Type,
+                i32,
+                Int32Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int64 => {
-            sum_all_with_primitive_type_and_append_value!(Int64Type, i64, Int64Builder, append_array_data_builder, ranges)
+            sum_all_with_primitive_type_and_append_value!(
+                Int64Type,
+                i64,
+                Int64Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Float32 => sum_all_with_primitive_type_and_append_value!(
             Float32Type,
@@ -180,28 +228,70 @@ fn sum_last_with_primitive_type(
 ) -> MergeResult {
     match dt {
         DataType::UInt8 => {
-            sum_last_with_primitive_type_and_append_value!(UInt8Type, u8, UInt8Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                UInt8Type,
+                u8,
+                UInt8Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt16 => {
-            sum_last_with_primitive_type_and_append_value!(UInt16Type, u16, UInt16Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                UInt16Type,
+                u16,
+                UInt16Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt32 => {
-            sum_last_with_primitive_type_and_append_value!(UInt32Type, u32, UInt32Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                UInt32Type,
+                u32,
+                UInt32Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::UInt64 => {
-            sum_last_with_primitive_type_and_append_value!(UInt64Type, u64, UInt64Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                UInt64Type,
+                u64,
+                UInt64Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int8 => {
             sum_last_with_primitive_type_and_append_value!(Int8Type, i8, Int8Builder, append_array_data_builder, ranges)
         }
         DataType::Int16 => {
-            sum_last_with_primitive_type_and_append_value!(Int16Type, i16, Int16Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                Int16Type,
+                i16,
+                Int16Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int32 => {
-            sum_last_with_primitive_type_and_append_value!(Int32Type, i32, Int32Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                Int32Type,
+                i32,
+                Int32Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Int64 => {
-            sum_last_with_primitive_type_and_append_value!(Int64Type, i64, Int64Builder, append_array_data_builder, ranges)
+            sum_last_with_primitive_type_and_append_value!(
+                Int64Type,
+                i64,
+                Int64Builder,
+                append_array_data_builder,
+                ranges
+            )
         }
         DataType::Float32 => sum_last_with_primitive_type_and_append_value!(
             Float32Type,
@@ -220,7 +310,6 @@ fn sum_last_with_primitive_type(
         _ => panic!("{} doesn't support MergeOperator::Sum", dt),
     }
 }
-
 
 fn concat_all_with_string_type(
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
@@ -314,7 +403,6 @@ fn concat_last_with_string_type(
     }
 }
 
-
 #[macro_export]
 macro_rules! sum_all_with_primitive_type_and_append_value {
     ($primitive_type_name:ty, $native_ty:ty, $primitive_builder_type:ty, $builder:ident, $ranges:ident) => {{
@@ -397,7 +485,6 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
         }
     }};
 }
-
 
 #[cfg(test)]
 mod tests {

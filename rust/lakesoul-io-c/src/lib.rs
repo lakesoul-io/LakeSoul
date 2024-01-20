@@ -632,7 +632,7 @@ pub extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
-) -> *const c_char  {
+) -> *const c_char {
     unsafe {
         let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
         let mut ffi_array = FFI_ArrowArray::empty();
@@ -649,8 +649,7 @@ pub extern "C" fn write_record_batch_blocked(
         let result: lakesoul_io::Result<()> = result_fn();
         match result {
             Ok(_) => std::ptr::null(),
-            Err(e) =>
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            Err(e) => CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
         }
     }
 }

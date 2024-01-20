@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -14,7 +13,7 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::PhysicalExpr;
 
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::{ExecutionPlan};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use async_trait::async_trait;
@@ -53,8 +52,11 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 ..
             }) => {
                 let name = table_name.table();
+                let schema = table_name.schema();
                 // let schema = session_state.schema_for_ref(table_name)?;
-                let lakesoul_table = LakeSoulTable::for_name(name).await.unwrap();
+                let lakesoul_table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), name)
+                    .await
+                    .unwrap();
                 match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
                         let physical_input = self.create_physical_plan(input, session_state).await?;
@@ -125,8 +127,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         input_schema: &Schema,
         session_state: &SessionState,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        self
-        .default_planner
-        .create_physical_expr(expr, input_dfschema, input_schema, session_state)
+        self.default_planner
+            .create_physical_expr(expr, input_dfschema, input_schema, session_state)
     }
 }

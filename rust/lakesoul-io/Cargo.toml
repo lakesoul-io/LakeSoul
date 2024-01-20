@@ -11,12 +11,12 @@ edition = "2021"
 datafusion = { workspace = true }
 object_store = { workspace = true }
 
-tokio-stream =  {workspace = true }
+tokio-stream = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 derivative = { workspace = true }
 atomic_refcell = { workspace = true }
-arrow = { workspace = true, features = ["prettyprint"]}
+arrow = { workspace = true, features = ["prettyprint"] }
 arrow-schema = { workspace = true, features = ["serde"] }
 arrow-array = { workspace = true, features = ["chrono-tz"] }
 arrow-buffer = { workspace = true }
@@ -33,7 +33,7 @@ hdrs = { git = "https://github.com/lakesoul-io/hdrs.git", branch = "main", featu
 lazy_static = "1.4.0"
 chrono = "0.4"
 serde_json = { workspace = true }
-tracing =  {version = "0.1.40"}
+tracing = "0.1.40"
 proto = { path = "../proto" }
 parking_lot = "0.12.1"
 

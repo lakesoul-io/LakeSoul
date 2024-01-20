@@ -32,7 +32,6 @@ where
     }
 }
 
-
 const C1: u32 = 0x85eb_ca6b;
 const C2: u32 = 0xc2b2_ae35;
 const R1: u32 = 16;
