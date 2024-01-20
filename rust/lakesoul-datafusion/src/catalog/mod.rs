@@ -287,11 +287,17 @@ impl SchemaProvider for LakeSoulNamespace {
     }
 
     /// Search table by name
-    /// return LakesoulListing table
+    /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
         if let Ok(t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
         {
-            let config = create_io_config_builder_from_table_info(Arc::new(t)).build();
+            let config;
+            if let Ok(config_builder) = create_io_config_builder(self.metadata_client.clone(), Some(name), true)
+                .await {
+                config = config_builder.build();
+            } else {
+                return None;
+            }
             // Maybe should change
             let file_format = Arc::new(LakeSoulParquetFormat::new(
                 Arc::new(ParquetFormat::new()),
@@ -301,6 +307,7 @@ impl SchemaProvider for LakeSoulNamespace {
                 &self.context.state(),
                 config,
                 file_format,
+                // TODO care this
                 false,
             ).await {
                 debug!("get table provider success");
