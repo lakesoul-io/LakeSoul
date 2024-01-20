@@ -2,12 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 package org.apache.flink.lakesoul.entry;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
-import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
@@ -94,7 +90,7 @@ public class SyncDatabase {
 
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
-                String mysqlType = "TEXT";
+                String mysqlType = "VARCHAR(255)";
                 if (pk!=null){
                     if (pk.contains(fieldNames[i])) {
                         mysqlType = "VARCHAR(100)";
@@ -107,7 +103,8 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "BINARY";
             } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
-            } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
+            }
+            else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
@@ -231,11 +228,12 @@ public class SyncDatabase {
         TableResult schemaResult = tEnvs.executeSql(
                 "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
         DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
-        String[] mysqlFieldTypes = getDorisFieldTypes(fieldDataTypes);
+
         String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
-        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
-        String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
+        String[] mysqlFieldTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
+        //String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
+        String createTableSql = pgAndMsqlCreateTableSql(mysqlFieldTypes, fieldNames, targetTableName, tablePk);
 
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
@@ -243,7 +241,7 @@ public class SyncDatabase {
         statement.executeUpdate(createTableSql.toString());
 
         StringBuilder coulmns = new StringBuilder();
-        for (int i = 0; i < fieldDataTypes.length; i++) {
+        for (int i = 0; i < mysqlFieldTypes.length; i++) {
             coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
             if (i< fieldDataTypes.length-1){
                 coulmns.append(",");
