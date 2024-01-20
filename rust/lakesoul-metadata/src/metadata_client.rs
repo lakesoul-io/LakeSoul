@@ -8,9 +8,7 @@ use std::{collections::HashMap, env, fs, vec};
 use std::fmt::{Debug, Formatter};
 
 use prost::Message;
-use proto::proto::entity::{
-    self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, PartitionInfo, TableInfo, TableNameId, TablePathId,
-};
+use proto::proto::entity::{self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo, TableInfo, TableNameId, TablePathId};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
@@ -90,6 +88,12 @@ impl MetaDataClient {
         })
     }
 
+
+    pub async fn create_namespace(&self, namespace: Namespace) -> Result<()> {
+        self.insert_namespace(&namespace).await?;
+        Ok(())
+    }
+
     pub async fn create_table(&self, table_info: TableInfo) -> Result<()> {
         self.insert_table_path_id(&table_path_id_from_table_info(&table_info))
             .await?;
@@ -134,6 +138,18 @@ impl MetaDataClient {
         }
         Ok(Default::default())
     }
+
+    async fn insert_namespace(&self, namespace: &Namespace) -> Result<i32> {
+        self.execute_insert(
+            DaoType::InsertNamespace as i32,
+            JniWrapper {
+                namespace: vec![namespace.clone()],
+                ..Default::default()
+            },
+        )
+            .await
+    }
+
 
     async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
         self.execute_insert(
@@ -334,6 +350,16 @@ impl MetaDataClient {
             Err(e) => Err(e),
         }
     }
+
+    // TODO
+    pub async fn get_all_namespace(&self) -> Result<Vec<Namespace>> {
+        self.execute_query(
+            DaoType::ListNamespaces as i32,
+            String::new(),
+        ).await.map(|wrapper| wrapper.namespace)
+    }
+
+
     pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
         match self
             .execute_query(
