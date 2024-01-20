@@ -7,6 +7,8 @@ use std::sync::{Arc};
 use std::time::SystemTime;
 use std::{env};
 use std::any::Any;
+use std::collections::HashSet;
+use std::fmt::{Debug, Formatter};
 
 
 use async_trait::async_trait;
@@ -323,3 +325,4 @@ impl SchemaProvider for LakeSoulNamespace {
         let set = self.table_names().into_iter().collect::<HashSet<String>>();
         set.contains(name)
     }
+}
