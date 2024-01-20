@@ -15,7 +15,7 @@ mod hash_tests;
 
 mod catalog_tests;
 
-#[ctor::ctor]
+// #[ctor::ctor]
 fn init() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

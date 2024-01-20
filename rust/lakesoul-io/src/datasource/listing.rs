@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion_common::{FileTypeWriterOptions, Result};
+use tracing::{debug, instrument};
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
@@ -26,6 +28,13 @@ pub struct LakeSoulListingTable {
     listing_table: Arc<ListingTable>,
     lakesoul_io_config: LakeSoulIOConfig,
 }
+
+impl Debug for LakeSoulListingTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LakeSoulListingTable{..}").finish()
+    }
+}
+
 
 impl LakeSoulListingTable {
     pub fn new(listing_table: Arc<ListingTable>, lakesoul_io_config: LakeSoulIOConfig) -> Self {
@@ -129,6 +138,7 @@ impl TableProvider for LakeSoulListingTable {
         TableType::Base
     }
 
+    #[instrument]
     async fn scan(
         &self,
         state: &SessionState,
@@ -137,6 +147,7 @@ impl TableProvider for LakeSoulListingTable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        debug!("listing scan start");
         self.listing_table.scan(state, projection, filters, limit).await
     }
 
