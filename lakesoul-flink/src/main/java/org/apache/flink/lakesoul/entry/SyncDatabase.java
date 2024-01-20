@@ -77,7 +77,7 @@ public class SyncDatabase {
                 createTableQuery.append(", ");
             }
         }
-        if (pk!=null){
+        if (pk != null) {
             createTableQuery.append(" ,PRIMARY KEY(").append(pk);
             createTableQuery.append(")");
         }
@@ -91,7 +91,7 @@ public class SyncDatabase {
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "VARCHAR(255)";
-                if (pk!=null){
+                if (pk != null) {
                     if (pk.contains(fieldNames[i])) {
                         mysqlType = "VARCHAR(100)";
                     }
@@ -103,8 +103,7 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "BINARY";
             } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
-            }
-            else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
@@ -119,7 +118,7 @@ public class SyncDatabase {
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
-                if (pk!=null){
+                if (pk != null) {
                     if (pk.contains(fieldNames[i])) {
                         mysqlType = "VARCHAR(100)";
                     }
@@ -143,13 +142,12 @@ public class SyncDatabase {
     public static String[] getDorisFieldTypes(DataType[] fieldTypes) {
         String[] stringFieldTypes = new String[fieldTypes.length];
         for (int i = 0; i < fieldTypes.length; i++) {
-            if (fieldTypes[i].getLogicalType() instanceof TimestampType){
+            if (fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "DATETIME";
-            }
-            else if (fieldTypes[i].getLogicalType() instanceof VarCharType){
+            } else if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 stringFieldTypes[i] = "VARCHAR";
 
-            }   else {
+            } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
         }
@@ -165,7 +163,7 @@ public class SyncDatabase {
         StringBuilder stringBuilder = new StringBuilder();
         for (int i = 0; i < primaryKeys.size(); i++) {
             stringBuilder.append(primaryKeys.get(i));
-            if (i<primaryKeys.size()-1){
+            if (i < primaryKeys.size() - 1) {
                 stringBuilder.append(",");
             }
         }
@@ -204,8 +202,8 @@ public class SyncDatabase {
                 "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
         // Move data from LakeSoul to MySQL
         tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO postgres_catalog.`" + targetDatabase+ "`.`" + targetTableName +
-                "` SELECT * FROM lakeSoul.`"  +sourceDatabase + "`.`" + sourceTableName + "`";
+        String insertQuery = "INSERT INTO postgres_catalog.`" + targetDatabase + "`.`" + targetTableName +
+                "` SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
 
         tEnvs.executeSql(insertQuery);
         statement.close();
@@ -243,21 +241,21 @@ public class SyncDatabase {
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < mysqlFieldTypes.length; i++) {
             coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
-            if (i< fieldDataTypes.length-1){
+            if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
             }
         }
         String sql;
-        if (tablePk!=null){
+        if (tablePk != null) {
             sql = String.format(
                     "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
                     targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password);
-        }else {
+        } else {
             sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
                     targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password);
         }
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
 
         statement.close();
         conn.close();
@@ -284,7 +282,7 @@ public class SyncDatabase {
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             coulmns.append("`").append(fieldNames[i]).append("` ").append(dorisFieldTypes[i]);
-            if (i< fieldDataTypes.length-1){
+            if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
             }
         }
@@ -292,6 +290,6 @@ public class SyncDatabase {
                 "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s')",
                 targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
     }
 }
