@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use std::{env};
 use std::any::Any;
 use std::collections::HashSet;
-use std::fmt::{Debug, Formatter, Pointer};
+use std::fmt::{Debug, Formatter};
 
 
 use async_trait::async_trait;
@@ -17,8 +17,8 @@ use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
-use futures::future::{ok, try_maybe_done};
-use tokio::runtime::{Handle, Runtime};
+
+use tokio::runtime::{Handle};
 use tracing::debug;
 use tracing::field::debug;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
@@ -26,7 +26,7 @@ use lakesoul_io::datasource::listing::LakeSoulListingTable;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::{MetaDataClientRef};
-use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, Namespace, TableInfo, Uuid};
+use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 use crate::serialize::arrow_java::{ArrowJavaSchema};
@@ -289,7 +289,7 @@ impl SchemaProvider for LakeSoulNamespace {
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        if let Ok(t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
+        if let Ok(_t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
         {
             let config;
             if let Ok(config_builder) = create_io_config_builder(self.metadata_client.clone(), Some(name), true)
