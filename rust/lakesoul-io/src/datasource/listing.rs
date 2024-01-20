@@ -154,8 +154,8 @@ impl TableProvider for LakeSoulListingTable {
                     if let Ok(cols) = f.to_columns() {
                         if self.lakesoul_io_config.parquet_filter_pushdown
                             && cols
-                                .iter()
-                                .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
+                            .iter()
+                            .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
                         {
                             // use primary key
                             Ok(TableProviderFilterPushDown::Inexact)

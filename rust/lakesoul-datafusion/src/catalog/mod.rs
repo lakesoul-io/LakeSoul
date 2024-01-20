@@ -7,6 +7,7 @@ use std::sync::{Arc};
 use std::time::SystemTime;
 use std::{env};
 use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter, Pointer};
 
 
@@ -16,8 +17,8 @@ use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
-use futures::future::try_maybe_done;
-use tokio::runtime::Runtime;
+use futures::future::{ok, try_maybe_done};
+use tokio::runtime::{Handle, Runtime};
 use tracing::debug;
 use tracing::field::debug;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
@@ -151,15 +152,32 @@ pub(crate) async fn commit_data(
 
 
 /// A metadata wrapper
-#[derive(Debug)]
-struct LakeSoulCatalog {
-    // metadata_client: MetaDataClientRef,
+pub struct LakeSoulCatalog {
+    metadata_client: MetaDataClientRef,
+    context: Arc<SessionContext>,
+}
+
+impl Debug for LakeSoulCatalog {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LakeSoulCatalog{..}").finish()
+    }
 }
 
 
 impl LakeSoulCatalog {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(meta_data_client_ref: MetaDataClientRef,
+               context: Arc<SessionContext>,
+    ) -> Self {
+        Self {
+            metadata_client: meta_data_client_ref,
+            context,
+        }
+    }
+    pub fn metadata_client(&self) -> MetaDataClientRef {
+        self.metadata_client.clone()
+    }
+    pub fn context(&self) -> Arc<SessionContext> {
+        self.context.clone()
     }
 }
 
@@ -169,11 +187,40 @@ impl CatalogProvider for LakeSoulCatalog {
     }
 
     fn schema_names(&self) -> Vec<String> {
-        todo!()
+        let client = self.metadata_client.clone();
+        futures::executor::block_on(
+            async move {
+                Handle::current().spawn(async move {
+                    client.get_all_namespace().await.unwrap()
+                }).await.unwrap().into_iter().map(|t| t.namespace).collect()
+            }
+        )
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        todo!()
+        let client = self.metadata_client.clone();
+        let names =
+            {
+                let client = client.clone();
+                futures::executor::block_on(
+                    async move {
+                        Handle::current().spawn(async move {
+                            client.get_all_namespace().await.unwrap()
+                        }).await.unwrap().into_iter().map(|t| t.namespace).collect::<HashSet<String>>()
+                    }
+                )
+            };
+        if !names.contains(name) {
+            None
+        } else {
+            Some(
+                Arc::new(LakeSoulNamespace::new(
+                    client.clone(),
+                    self.context.clone(),
+                    name,
+                ))
+            )
+        }
     }
 }
 
@@ -181,7 +228,6 @@ impl CatalogProvider for LakeSoulCatalog {
 /// A ['SchemaProvider`] that query pg to automatically discover tables
 pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
-    runtime: Arc<Runtime>,
     context: Arc<SessionContext>,
     // primary key
     namespace: String,
@@ -191,27 +237,23 @@ pub struct LakeSoulNamespace {
 impl LakeSoulNamespace {
     pub fn new(
         meta_data_client_ref: MetaDataClientRef,
-        runtime: Arc<Runtime>,
         context: Arc<SessionContext>,
         namespace: &str) -> Self {
         Self {
             metadata_client: meta_data_client_ref,
-            runtime,
             context,
             namespace: namespace.to_string(),
         }
     }
 
-
     pub fn metadata_client(&self) -> MetaDataClientRef {
         self.metadata_client.clone()
     }
-    pub fn runtime(&self) -> Arc<Runtime> {
-        self.runtime.clone()
-    }
+
     pub fn context(&self) -> Arc<SessionContext> {
         self.context.clone()
     }
+
     pub fn namespace(&self) -> &str {
         &self.namespace
     }
@@ -237,7 +279,7 @@ impl SchemaProvider for LakeSoulNamespace {
         let np = self.namespace.clone();
         futures::executor::block_on(
             async move {
-                self.runtime.spawn(async move {
+                Handle::current().spawn(async move {
                     client.get_all_table_name_id_by_namespace(&np).await.unwrap()
                 }).await.unwrap().into_iter().map(|t| t.table_name).collect()
             }
@@ -250,6 +292,7 @@ impl SchemaProvider for LakeSoulNamespace {
         if let Ok(t) = self.metadata_client.get_table_info_by_table_name(name, &self.namespace).await
         {
             let config = create_io_config_builder_from_table_info(Arc::new(t)).build();
+            // Maybe should change
             let file_format = Arc::new(LakeSoulParquetFormat::new(
                 Arc::new(ParquetFormat::new()),
                 config.clone(),
@@ -260,31 +303,19 @@ impl SchemaProvider for LakeSoulNamespace {
                 file_format,
                 false,
             ).await {
-                debug!("create table provider success");
+                debug!("get table provider success");
                 return Some(Arc::new(table_provider));
             }
-            debug("create table provider fail");
+            debug("get table provider fail");
             return None;
         } else {
-            debug("create table provider fail");
+            debug("get table provider fail");
             None
         }
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        let client = self.metadata_client.clone();
-        let name = name.to_string();
-        let np = self.namespace.clone();
-        futures::executor::block_on(
-            async move {
-                self.runtime.spawn(async move {
-                    if let Ok(t) = client.get_table_name_id_by_table_name(&name, &np).await {
-                        &t.table_name == &name
-                    } else {
-                        false
-                    }
-                }).await.unwrap()
-            }
-        )
+        let set = self.table_names().into_iter().collect::<HashSet<String>>();
+        set.contains(name)
     }
 }
