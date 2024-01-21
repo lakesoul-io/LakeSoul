@@ -41,8 +41,6 @@ public class SyncDatabase {
         String password = parameter.get(TARGET_DB_PASSWORD.key());
         int sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
         boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
-        //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
-
         String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
         Configuration conf = new Configuration();
         conf.setString(RestOptions.BIND_PORT, "8081-8089");
@@ -87,7 +85,6 @@ public class SyncDatabase {
 
     public static String[] getMysqlFieldsTypes(DataType[] fieldTypes, String[] fieldNames, String pk) {
         String[] stringFieldTypes = new String[fieldTypes.length];
-
         for (int i = 0; i < fieldTypes.length; i++) {
             String typeName = fieldTypes[i].getLogicalType().toString();
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
