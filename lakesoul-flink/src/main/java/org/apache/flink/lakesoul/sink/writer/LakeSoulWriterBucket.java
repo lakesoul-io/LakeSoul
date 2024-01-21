@@ -123,7 +123,7 @@ public class LakeSoulWriterBucket {
     }
 
     public boolean isActive() {
-        return inProgressPartWriter != null || pendingFiles.size() > 0;
+        return inProgressPartWriter != null || !pendingFiles.isEmpty();
     }
 
     void merge(final LakeSoulWriterBucket bucket) throws IOException {
@@ -133,19 +133,15 @@ public class LakeSoulWriterBucket {
         bucket.closePartFile();
         pendingFiles.addAll(bucket.pendingFiles);
 
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Merging buckets for bucket id={}", bucketId);
-        }
+        LOG.info("Merging buckets for bucket id={}", bucketId);
     }
 
     void write(RowData element, long currentTime, long tsMs) throws IOException {
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug(
-                        "Opening new part file for bucket id={} due to element {}.",
-                        bucketId,
-                        element);
-            }
+            LOG.info(
+                    "Opening new part file for bucket id={} at {}.",
+                    bucketId,
+                    tsMs);
             inProgressPartWriter = rollPartFile(currentTime);
             this.tsMs = tsMs;
         }
@@ -157,10 +153,8 @@ public class LakeSoulWriterBucket {
         // we always close part file and do not keep in-progress file
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug(
-                        "Closing in-progress part file for bucket id={} on checkpoint.", bucketId);
-            }
+            LOG.info(
+                    "Closing in-progress part file for bucket id={} on checkpoint.", bucketId);
             closePartFile();
         }
 
@@ -173,7 +167,7 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 bucketId,
                 tmpPending,
-                time, tableId, tsMs,dmlType));
+                time, tableId, tsMs, dmlType));
         pendingFiles.clear();
 
         return committables;
@@ -196,17 +190,15 @@ public class LakeSoulWriterBucket {
     void onProcessingTime(long timestamp) throws IOException {
         if (inProgressPartWriter != null
                 && rollingPolicy.shouldRollOnProcessingTime(inProgressPartWriter, timestamp)) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug(
-                        "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
-                                "policy "
-                                + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
-                        bucketId,
-                        uniqueId,
-                        inProgressPartWriter.getCreationTime(),
-                        inProgressPartWriter.getLastUpdateTime(),
-                        timestamp);
-            }
+            LOG.info(
+                    "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
+                            "policy "
+                            + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
+                    bucketId,
+                    uniqueId,
+                    inProgressPartWriter.getCreationTime(),
+                    inProgressPartWriter.getLastUpdateTime(),
+                    timestamp);
 
             closePartFile();
         }
@@ -217,12 +209,10 @@ public class LakeSoulWriterBucket {
 
         final Path partFilePath = assembleNewPartPath();
 
-        if (LOG.isDebugEnabled()) {
-            LOG.debug(
-                    "Opening new part file \"{}\" for bucket id={}.",
-                    partFilePath.getName(),
-                    bucketId);
-        }
+        LOG.info(
+                "Opening new part file \"{}\" for bucket id={}.",
+                partFilePath.getName(),
+                bucketId);
 
         return bucketWriter.openNewInProgressFile(bucketId, partFilePath, currentTime);
     }
@@ -250,10 +240,13 @@ public class LakeSoulWriterBucket {
 
     private void closePartFile() throws IOException {
         if (inProgressPartWriter != null) {
+            long start = System.currentTimeMillis();
             InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                     inProgressPartWriter.closeForCommit();
             pendingFiles.add(pendingFileRecoverable);
             inProgressPartWriter = null;
+            LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
+                    (System.currentTimeMillis() - start));
         }
     }
 

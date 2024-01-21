@@ -5,17 +5,15 @@ package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.external.NameSpaceManager;
 import com.dmetasoul.lakesoul.meta.external.mysql.MysqlDBManager;
-import com.dmetasoul.lakesoul.meta.external.oracle.OracleDBManager;
 import com.ververica.cdc.connectors.base.options.StartupOptions;
 import com.ververica.cdc.connectors.base.source.jdbc.JdbcIncrementalSource;
-//import com.ververica.cdc.connectors.mysql.source.MySqlSource;
-//import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
+import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
@@ -64,7 +62,7 @@ public class JdbcCDC {
         host = parameter.get(SOURCE_DB_HOST.key());
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         //Postgres Oracle
-        if (!dbType.equals("mysql")) {
+        if (dbType.equals("orcale") || dbType.equalsIgnoreCase("postgresql")) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
@@ -72,6 +70,9 @@ public class JdbcCDC {
                 tableList[i] = tables[i].toUpperCase();
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
+        }
+        if (dbType.equalsIgnoreCase("sqlserver")){
+            tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
         pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
         //flink
@@ -134,6 +135,9 @@ public class JdbcCDC {
         }
         if (dbType.equalsIgnoreCase("oracle")) {
             oracleCdc(lakeSoulRecordConvert, conf, env);
+        }
+        if (dbType.equalsIgnoreCase("sqlserver")){
+            sqlserverCdc(lakeSoulRecordConvert, conf, env);
         }
 
     }
@@ -243,5 +247,33 @@ public class JdbcCDC {
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Oracle Database " + dbName);
+    }
+
+    public static void sqlserverCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env) throws Exception {
+        SqlServerSourceBuilder.SqlServerIncrementalSource<String> sqlServerSource =
+                new SqlServerSourceBuilder()
+                        .hostname(host)
+                        .port(port)
+                        .databaseList(dbName)
+                        .tableList(tableList)
+                        .username(userName)
+                        .password(passWord)
+                        .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
+                        .startupOptions(StartupOptions.initial())
+                        .build();
+        NameSpaceManager manager = new NameSpaceManager();
+        manager.importOrSyncLakeSoulNamespace(dbName);
+        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        context.env = env;
+        context.conf = conf;
+        LakeSoulMultiTableSinkStreamBuilder
+                builder =
+                new LakeSoulMultiTableSinkStreamBuilder(sqlServerSource, context, lakeSoulRecordConvert);
+
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Sqlserver Source");
+
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
+        DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        env.execute("LakeSoul CDC Sink From sqlserver Database " + dbName);
     }
 }

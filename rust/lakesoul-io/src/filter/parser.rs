@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow_schema::{DataType, Field, SchemaRef};
+use arrow_schema::{DataType, Field, SchemaRef, Fields};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
 use std::ops::Not;
+use std::sync::Arc;
 
 pub struct Parser {}
 
@@ -25,50 +26,28 @@ impl Parser {
             let inner = Parser::parse(right, schema);
             Expr::not(inner)
         } else {
-            let column = qualified_col_name(left.as_str(), schema.clone());
-            let column = datafusion::common::Column::new_unqualified(column);
-            match schema.column_with_name(&column.name.clone()) {
-                None => Expr::Literal(ScalarValue::Boolean(Some(false))),
-                Some((_, field)) => {
-                    if matches!(field.data_type(), DataType::Struct(_)) {
-                        col(column).is_not_null()
-                    } else if right == "null" {
-                        match op.as_str() {
-                            "eq" => col(column).is_null(),
-                            "noteq" => col(column).is_not_null(),
-                            _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
-                        }
-                    } else {
-                        match op.as_str() {
-                            "eq" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).eq(value)
-                            }
-                            "noteq" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).not_eq(value)
-                            }
-                            "gt" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).gt(value)
-                            }
-                            "gteq" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).gt_eq(value)
-                            }
-                            "lt" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).lt(value)
-                            }
-                            "lteq" => {
-                                let value = Parser::parse_literal(field, right);
-                                col(column).lt_eq(value)
-                            }
-
-                            _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
-                        }
+            let expr_filed = qualified_expr(left.as_str(), schema.clone());
+            if let Some((expr, field)) = expr_filed {
+                if right == "null" {
+                    match op.as_str() {
+                        "eq" => expr.is_null(),
+                        "noteq" => expr.is_not_null(),
+                        _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                     }
-                }
+                } else {
+                    let value = Parser::parse_literal(field, right);
+                    match op.as_str() {
+                        "eq" => expr.eq(value),
+                        "noteq" => expr.not_eq(value),
+                        "gt" => expr.gt(value),
+                        "gteq" => expr.gt_eq(value),
+                        "lt" => expr.lt(value),
+                        "lteq" => expr.lt_eq(value),
+                        _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
+                    }
+                } 
+            } else {
+                Expr::Literal(ScalarValue::Boolean(Some(false)))
             }
         }
     }
@@ -80,19 +59,21 @@ impl Parser {
             panic!("Invalid filter string");
         }
         let filter = &filter[1..filter.len() - 1];
-        let mut k: i8 = 0;
+        let mut k: usize = 0;
         let mut left_offset: usize = 0;
-        for (i, ch) in filter.chars().enumerate() {
+        let mut offset_counter: usize = 0;
+        for ch in filter.chars() {
             match ch {
                 '(' => k += 1,
                 ')' => k -= 1,
                 ',' => {
                     if k == 0 && left_offset == 0 {
-                        left_offset = i
+                        left_offset = offset_counter
                     }
                 }
                 _ => {}
             }
+            offset_counter += ch.len_utf8()
         }
         if k != 0 {
             panic!("Invalid filter string");
@@ -105,7 +86,7 @@ impl Parser {
         }
     }
 
-    fn parse_literal(field: &Field, value: String) -> Expr {
+    fn parse_literal(field: Arc<Field>, value: String) -> Expr {
         let data_type = field.data_type().clone();
         match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -172,17 +153,37 @@ impl Parser {
     }
 }
 
-fn qualified_col_name(column: &str, schema: SchemaRef) -> &str {
-    if let Ok(_field) = schema.field_with_name(column) {
-        return column;
-    } else if let Some(dot) = column.find('.') {
-        if let Ok(field) = schema.field_with_name(&column[..dot]) {
-            if matches!(field.data_type(), DataType::Struct(_)) {
-                return &column[..dot];
-            }
+fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
+    if let Ok(field) = schema.field_with_name(expr_str) {
+        Some((col(datafusion::common::Column::new_unqualified(expr_str)), Arc::new(field.clone())))
+        
+    } else {
+        let mut expr: Option<(Expr, Arc<Field>)> = None;
+        let mut root = "".to_owned();
+        let mut sub_fields: &Fields = schema.fields();
+        for expr_substr in expr_str.split('.').into_iter() {
+            root = if root.is_empty() {
+                expr_substr.to_owned()
+            } else {
+                format!("{}.{}", root, expr_substr)
+            };
+            if let Some((_, field)) = sub_fields.find(&root) {
+                
+                expr = if let Some((folding_exp, _)) = expr {
+                    Some((folding_exp.field(field.name()), field.clone()))
+                } else {
+                    Some((col(datafusion::common::Column::new_unqualified(field.name())), field.clone()))
+                };
+                root = "".to_owned();
+                
+                sub_fields = match field.data_type() {
+                    DataType::Struct(struct_sub_fields) => &struct_sub_fields,
+                    _ => sub_fields
+                };
+            } 
         }
-    }
-    column
+        expr
+    } 
 }
 
 #[cfg(test)]

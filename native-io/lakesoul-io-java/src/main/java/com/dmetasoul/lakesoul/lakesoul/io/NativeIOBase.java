@@ -61,20 +61,17 @@ public class NativeIOBase implements AutoCloseable {
     }
 
     public void addFile(String file) {
-        Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, file);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, ptr);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, file);
     }
 
     public void addColumn(String column) {
         assert ioConfigBuilder != null;
-        Pointer columnPtr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, column);
-        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, columnPtr);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, column);
     }
 
     public void setPrimaryKeys(Iterable<String> primaryKeys) {
         for (String pk : primaryKeys) {
-            Pointer ptr = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, pk);
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, ptr);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, pk);
         }
     }
 
@@ -120,9 +117,7 @@ public class NativeIOBase implements AutoCloseable {
     public void setObjectStoreOption(String key, String value) {
         assert ioConfigBuilder != null;
         if (key != null && value != null) {
-            Pointer ptrKey = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, key);
-            Pointer ptrValue = LibLakeSoulIO.buildStringPointer(libLakeSoulIO, value);
-            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, ptrKey, ptrValue);
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_object_store_option(ioConfigBuilder, key, value);
         }
     }
 
@@ -166,7 +161,7 @@ public class NativeIOBase implements AutoCloseable {
 
         @Override
         public void invoke(Boolean status, String err) {
-            if (err!=null) {
+            if (err != null) {
                 System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.BooleanCallback.invoke]" + err);
             }
             callback.accept(status, err);
@@ -198,7 +193,7 @@ public class NativeIOBase implements AutoCloseable {
 
         @Override
         public void invoke(Integer status, String err) {
-            if (err!=null) {
+            if (err != null) {
                 System.err.println("[ERROR][com.dmetasoul.lakesoul.io.lakesoul.NativeIOBase.IntegerCallback.invoke]" + err);
             }
             callback.accept(status, err);
