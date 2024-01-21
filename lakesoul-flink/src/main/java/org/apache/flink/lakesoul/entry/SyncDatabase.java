@@ -89,6 +89,7 @@ public class SyncDatabase {
         String[] stringFieldTypes = new String[fieldTypes.length];
 
         for (int i = 0; i < fieldTypes.length; i++) {
+            String typeName = fieldTypes[i].getLogicalType().toString();
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "VARCHAR(255)";
                 if (pk != null) {
@@ -101,10 +102,14 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "FLOAT";
             } else if (fieldTypes[i].getLogicalType() instanceof BinaryType) {
                 stringFieldTypes[i] = "BINARY";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType || fieldTypes[i].getLogicalType() instanceof TimestampType) {
+                stringFieldTypes[i] = "TIMESTAMP";
+            } else if (fieldTypes[i].getLogicalType().toString().equals("TIMESTAMP_LTZ(6)")) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
+            } else if (fieldTypes[i].getLogicalType().toString().equals("BYTES")) {
+                stringFieldTypes[i] = "VARBINARY(40)";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
@@ -240,7 +245,11 @@ public class SyncDatabase {
 
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < mysqlFieldTypes.length; i++) {
-            coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
+            if (mysqlFieldTypes[i].equals("VARBINARY(40)")) {
+                coulmns.append("`").append(fieldNames[i]).append("` ").append("BYTES");
+            } else {
+                coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
+            }
             if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
             }
