@@ -99,7 +99,7 @@ impl MetaDataClient {
             .await
             {
                 Ok(count) => return Ok(count),
-                Err(_) if times < self.max_retry => continue,
+                Err(_) if times < self.max_retry - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
@@ -117,7 +117,7 @@ impl MetaDataClient {
             .await
             {
                 Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
-                Err(_) if times < self.max_retry => continue,
+                Err(_) if times < self.max_retry - 1 => continue,
                 Err(e) => return Err(e),
             };
         }
