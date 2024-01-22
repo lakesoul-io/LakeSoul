@@ -17,6 +17,7 @@ use object_store::{ClientOptions, RetryConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use datafusion::optimizer::push_down_filter::PushDownFilter;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -444,11 +445,23 @@ pub fn create_session_context_with_planner(
     config.files = normalized_filenames;
 
     // create session context
-    let state = if let Some(planner) = planner {
+    let mut state = if let Some(planner) = planner {
         SessionState::new_with_config_rt(sess_conf, Arc::new(runtime)).with_query_planner(planner)
     } else {
         SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
     };
+    // only keep projection/filter rules as others are unnecessary
+    let physical_opt_rules = state.physical_optimizers().iter().filter_map(|r| {
+        // this rule is private mod in datafusion, so we use name to filter out it
+        if r.name() == "ProjectionPushdown" {
+            Some(r.clone())
+        } else {
+            None
+        }
+    }).collect();
+    state = state.with_analyzer_rules(vec![])
+        .with_optimizer_rules(vec![Arc::new(PushDownFilter {})])
+        .with_physical_optimizer_rules(physical_opt_rules);
 
     Ok(SessionContext::new_with_state(state))
 }
