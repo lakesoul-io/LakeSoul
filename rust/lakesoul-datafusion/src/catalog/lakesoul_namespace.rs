@@ -11,9 +11,7 @@ use datafusion::prelude::SessionContext;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
 use lakesoul_io::datasource::listing::LakeSoulListingTable;
 use lakesoul_metadata::MetaDataClientRef;
-use proto::proto::entity::Namespace;
 use std::any::Any;
-use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
@@ -140,7 +138,7 @@ impl SchemaProvider for LakeSoulNamespace {
 
     fn table_exist(&self, name: &str) -> bool {
         // table name is primary key for `table_name_id`
-        self.table_names().into_iter().find(|s| s == name).is_some()
+        self.table_names().into_iter().any(|s| s == name)
     }
 }
 

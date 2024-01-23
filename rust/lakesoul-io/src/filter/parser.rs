@@ -163,7 +163,7 @@ fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>
         let mut expr: Option<(Expr, Arc<Field>)> = None;
         let mut root = "".to_owned();
         let mut sub_fields: &Fields = schema.fields();
-        for expr_substr in expr_str.split('.').into_iter() {
+        for expr_substr in expr_str.split('.') {
             root = if root.is_empty() {
                 expr_substr.to_owned()
             } else {

@@ -2,21 +2,20 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(test)]
 mod catalog_tests {
-    use crate::catalog::LakeSoulTableProperty;
-    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace};
+    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace,LakeSoulTableProperty};
     use crate::lakesoul_table::LakeSoulTable;
     use crate::serialize::arrow_java::ArrowJavaSchema;
     use arrow::array::{ArrayRef, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::schema::SchemaProvider;
-    use datafusion::catalog::{CatalogList, CatalogProvider};
     use lakesoul_io::lakesoul_io_config::create_session_context;
-    use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
-    use proto::proto::entity::{Namespace, TableInfo, TableNameId};
-    use rand::distributions::{Alphanumeric, Standard};
+    use proto::proto::entity::{Namespace, TableInfo};
+    use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use std::env;
@@ -100,13 +99,11 @@ mod catalog_tests {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
-            let mut config = LakeSoulIOConfigBuilder::new().build();
             // insert data;
             let batch = create_batch_i32(
                 vec!["range", "hash", "value"],
                 vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
             );
-            let table_name = "test_table_01";
             let pks = vec!["range".to_string(), "hash".to_string()];
             let schema = SchemaRef::new(Schema::new(
                 ["range", "hash", "value"]

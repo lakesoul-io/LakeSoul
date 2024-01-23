@@ -346,7 +346,7 @@ pub fn merge_stream(
         let merge_stream = SortedStreamMerger::new_from_streams(
             streams,
             merge_schema,
-            primary_keys.iter().map(String::clone).collect(),
+            primary_keys.iter().cloned().collect(),
             batch_size,
             merge_ops,
         )

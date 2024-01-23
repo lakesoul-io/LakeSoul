@@ -4,7 +4,7 @@
 
 use crate::catalog::LakeSoulNamespace;
 use datafusion::catalog::schema::SchemaProvider;
-use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
+use datafusion::catalog::CatalogProvider;
 use datafusion::prelude::SessionContext;
 use lakesoul_metadata::MetaDataClientRef;
 use std::any::Any;
