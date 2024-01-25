@@ -13,13 +13,14 @@ use proto::proto::entity::{
 };
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
+use tracing::debug;
 
 use url::Url;
 
 use crate::error::{LakeSoulMetaDataError, Result};
 use crate::{
-    clean_meta_for_test, create_connection, execute_insert, execute_query, DaoType, PreparedStatementMap, PARAM_DELIM,
-    PARTITION_DESC_DELIM,
+    clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
+    PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
 };
 
 pub struct MetaDataClient {
@@ -103,6 +104,57 @@ impl MetaDataClient {
         Ok(())
     }
 
+    pub async fn delete_namespace_by_namespace(&self, namespace: &str) -> Result<()> {
+        debug!("delete namespace {}", namespace);
+        self.execute_update(
+            DaoType::DeleteNamespaceByNamespace as i32,
+            [namespace].join(PARAM_DELIM),
+        )
+        .await?;
+        Ok(())
+    }
+
+    // Use transaction?
+    pub async fn delete_table_by_table_info_cascade(&self, table_info: &TableInfo) -> Result<()> {
+        self.delete_table_name_id_by_table_id(&table_info.table_id).await?;
+        self.delete_table_path_id_by_table_id(&table_info.table_id).await?;
+        self.delete_partition_info_by_table_id(&table_info.table_id).await?;
+        self.delete_data_commit_info_by_table_id(&table_info.table_id).await?;
+        self.delete_table_info_by_id_and_path(&table_info.table_id, &table_info.table_path)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_table_path_id_by_table_id(&self, table_id: &str) -> Result<i32> {
+        self.execute_update(DaoType::DeleteTablePathIdByTableId as i32, [table_id].join(PARAM_DELIM))
+            .await
+    }
+
+    pub async fn delete_table_name_id_by_table_id(&self, table_id: &str) -> Result<i32> {
+        self.execute_update(DaoType::DeleteTableNameIdByTableId as i32, [table_id].join(PARAM_DELIM))
+            .await
+    }
+
+    pub async fn delete_partition_info_by_table_id(&self, table_id: &str) -> Result<i32> {
+        self.execute_update(
+            DaoType::DeletePartitionInfoByTableId as i32,
+            [table_id].join(PARAM_DELIM),
+        )
+        .await
+    }
+    pub async fn delete_data_commit_info_by_table_id(&self, table_id: &str) -> Result<i32> {
+        self.execute_update(
+            DaoType::DeleteDataCommitInfoByTableId as i32,
+            [table_id].join(PARAM_DELIM),
+        )
+        .await
+    }
+
+    pub async fn delete_table_info_by_id_and_path(&self, id: &str, path: &str) -> Result<i32> {
+        self.execute_update(DaoType::DeleteTableInfoByIdAndPath as i32, [id, path].join(PARAM_DELIM))
+            .await
+    }
+
     async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
             match execute_insert(
@@ -110,6 +162,24 @@ impl MetaDataClient {
                 self.prepared.lock().await.deref_mut(),
                 insert_type,
                 wrapper.clone(),
+            )
+            .await
+            {
+                Ok(count) => return Ok(count),
+                Err(_) if times < self.max_retry as i64 - 1 => continue,
+                Err(e) => return Err(e),
+            };
+        }
+        Err(LakeSoulMetaDataError::Internal("unreachable".to_string()))
+    }
+
+    async fn execute_update(&self, update_type: i32, joined_string: String) -> Result<i32> {
+        for times in 0..self.max_retry as i64 {
+            match execute_update(
+                self.client.lock().await.deref_mut(),
+                self.prepared.lock().await.deref_mut(),
+                update_type,
+                joined_string.clone(),
             )
             .await
             {
@@ -353,8 +423,13 @@ impl MetaDataClient {
             .map(|wrapper| wrapper.namespace)
     }
 
-    pub async fn _get_namespace_by_namespace(&self) -> Result<Namespace> {
-        unimplemented!()
+    pub async fn get_namespace_by_namespace(&self, namespace: &str) -> Result<Namespace> {
+        self.execute_query(
+            DaoType::SelectNamespaceByNamespace as i32,
+            [namespace].join(PARAM_DELIM),
+        )
+        .await
+        .map(|wrapper| wrapper.namespace[0].clone())
     }
 
     pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
@@ -378,7 +453,7 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::Internal(
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
                 format!("Table '{}' not found", table_name),
             )),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
@@ -391,7 +466,7 @@ impl MetaDataClient {
             .execute_query(DaoType::SelectTablePathIdByTablePath as i32, table_path.to_string())
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::Internal(
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
                 format!("Table '{}' not found", table_path),
             )),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),

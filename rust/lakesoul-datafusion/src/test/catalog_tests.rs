@@ -4,13 +4,14 @@
 
 #[cfg(test)]
 mod catalog_tests {
-    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace,LakeSoulTableProperty};
+    use crate::catalog::{LakeSoulCatalog, LakeSoulNamespace, LakeSoulTableProperty};
     use crate::lakesoul_table::LakeSoulTable;
     use crate::serialize::arrow_java::ArrowJavaSchema;
     use arrow::array::{ArrayRef, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::schema::SchemaProvider;
+    use datafusion::catalog::CatalogProvider;
     use lakesoul_io::lakesoul_io_config::create_session_context;
     use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
@@ -94,8 +95,23 @@ mod catalog_tests {
         ret
     }
 
+    fn table_info(table_name: &str, namespace: &str, schema: SchemaRef) -> TableInfo {
+        let path = format!("{}{}/{}", env::temp_dir().to_str().unwrap(), namespace, table_name);
+        let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
+        TableInfo {
+            table_id: "table_000000001".into(),
+            table_namespace: "hello".to_string(),
+            table_name: table_name.to_string(),
+            table_path: format!("file://{}", path),
+            table_schema: schema.clone(),
+            properties: "{}".into(),
+            partitions: ";range,hash".to_string(),
+            domain: "public".to_string(),
+        }
+    }
+
     #[test]
-    fn test_lakesoul_catalog() {
+    fn test_catalog_api() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
@@ -120,6 +136,63 @@ mod catalog_tests {
             let sc = Arc::new(create_session_context(&mut config).unwrap());
             let data = random_tables(random_namespace(4), schema.clone());
 
+            let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
+            let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
+            // id, path, name must be unique
+            for (np, tables) in data.iter() {
+                // client.create_namespace(np.clone()).await.unwrap();
+                let old = catalog
+                    .register_schema(&np.namespace, dummy_schema_provider.clone())
+                    .unwrap();
+                assert!(old.is_none());
+                for t in tables {
+                    client.create_table(t.clone()).await.unwrap();
+                    let lakesoul_table = LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name)
+                        .await
+                        .unwrap();
+                    lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
+                }
+            }
+            assert!(sc.register_catalog("lakesoul", catalog.clone()).is_none());
+            for (np, tables) in data.iter() {
+                let schema = LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
+                let names = schema.table_names();
+                debug!("{names:?}");
+                assert_eq!(names.len(), tables.len());
+                for name in names {
+                    assert!(schema.table_exist(&name));
+                    assert!(schema.table(&name).await.is_some());
+                    assert!(schema.deregister_table(&name).unwrap().is_some());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_catalog_sql() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+            // insert data;
+            let batch = create_batch_i32(
+                vec!["range", "hash", "value"],
+                vec![&[20201101, 20201101, 20201101, 20201102], &[1, 2, 3, 4], &[1, 2, 3, 4]],
+            );
+            let pks = vec!["range".to_string(), "hash".to_string()];
+            let schema = SchemaRef::new(Schema::new(
+                ["range", "hash", "value"]
+                    .into_iter()
+                    .map(|name| Field::new(name, DataType::Int32, true))
+                    .collect::<Vec<Field>>(),
+            ));
+
+            let mut config = LakeSoulIOConfigBuilder::new()
+                .with_schema(schema.clone())
+                .with_primary_keys(pks)
+                .build();
+
+            let sc = Arc::new(create_session_context(&mut config).unwrap());
+
             let expected = &[
                 "+----------+------+-------+",
                 "| range    | hash | value |",
@@ -131,9 +204,31 @@ mod catalog_tests {
                 "+----------+------+-------+",
             ];
 
-            // id, path, name must unique
+            let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
+            {
+                let before = {
+                    let sql = "show tables";
+                    let df = sc.sql(sql).await.unwrap();
+                    df.collect().await.unwrap()
+                };
+                sc.register_catalog("lakesoul", catalog.clone());
+                let after = {
+                    let sql = "show tables";
+                    let df = sc.sql(sql).await.unwrap();
+                    df.collect().await.unwrap()
+                };
+                assert_ne!(after, before);
+            }
+            let data = random_tables(random_namespace(4), schema.clone());
             for (np, tables) in data.iter() {
-                client.create_namespace(np.clone()).await.unwrap();
+                {
+                    // create schema
+                    let sql = format!("create schema lakesoul.{}", np.namespace);
+                    let df = sc.sql(&sql).await.unwrap();
+                    df.collect().await.unwrap();
+                    let ret = client.get_namespace_by_namespace(&np.namespace).await.unwrap();
+                    assert_eq!(np.namespace, ret.namespace);
+                }
                 for t in tables {
                     client.create_table(t.clone()).await.unwrap();
                     let lakesoul_table = LakeSoulTable::for_namespace_and_name(&np.namespace, &t.table_name)
@@ -141,22 +236,6 @@ mod catalog_tests {
                         .unwrap();
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
-            }
-
-            let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
-
-            // test show_tables
-            {
-                let before = {
-                    let df = sc.sql("show tables").await.unwrap();
-                    df.collect().await.unwrap()
-                };
-                sc.register_catalog("lakesoul", catalog.clone());
-                let after = {
-                    let df = sc.sql("show tables").await.unwrap();
-                    df.collect().await.unwrap()
-                };
-                assert_ne!(before, after);
             }
             for (np, tables) in data.iter() {
                 let schema = LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
@@ -178,6 +257,12 @@ mod catalog_tests {
                         let df = sc.sql(&q).await.unwrap();
                         let record = df.collect().await.unwrap();
                         assert!(record.len() > 0);
+                    }
+                    {
+                        // drop table
+                        let sql = format!("drop table lakesoul.{}.{}", np.namespace, name);
+                        let df = sc.sql(&sql).await.unwrap();
+                        assert!(df.collect().await.is_ok())
                     }
                 }
             }

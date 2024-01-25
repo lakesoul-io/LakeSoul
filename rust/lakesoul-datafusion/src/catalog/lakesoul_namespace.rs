@@ -3,27 +3,34 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::catalog::create_io_config_builder;
+use crate::error::Result;
 use async_trait::async_trait;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
+use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
 use lakesoul_io::datasource::listing::LakeSoulListingTable;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use tokio::runtime::Handle;
+use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::field::debug;
 
-/// A ['SchemaProvider`] that query pg to automatically discover tables
+/// A [`SchemaProvider`] that query pg to automatically discover tables.
+/// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.
+/// May have race condition
 pub struct LakeSoulNamespace {
     metadata_client: MetaDataClientRef,
     context: Arc<SessionContext>,
     // primary key
     namespace: String,
+    namespace_lock: Arc<RwLock<()>>,
 }
 
 impl LakeSoulNamespace {
@@ -32,6 +39,7 @@ impl LakeSoulNamespace {
             metadata_client: meta_data_client_ref,
             context,
             namespace: namespace.to_string(),
+            namespace_lock: Arc::new(RwLock::new(())),
         }
     }
 
@@ -45,6 +53,12 @@ impl LakeSoulNamespace {
 
     pub fn namespace(&self) -> &str {
         &self.namespace
+    }
+
+    /// Dangerous
+    /// Should use transaction?
+    fn _delete_all_tables(&self) -> Result<()> {
+        unimplemented!()
     }
 }
 
@@ -61,25 +75,29 @@ impl SchemaProvider for LakeSoulNamespace {
     }
 
     /// query table_name_id by namespace
-    /// ref: https://www.modb.pro/db/618126
     fn table_names(&self) -> Vec<String> {
         let client = self.metadata_client.clone();
         let np = self.namespace.clone();
+        let lock = self.namespace_lock.clone();
         futures::executor::block_on(async move {
             Handle::current()
-                .spawn(async move { client.get_all_table_name_id_by_namespace(&np).await.unwrap() })
+                .spawn(async move {
+                    let _guard = lock.read().await;
+                    client.get_all_table_name_id_by_namespace(&np).await.unwrap()
+                })
                 .await
                 .unwrap()
-                .into_iter()
-                .map(|t| t.table_name)
-                .collect()
         })
+        .into_iter()
+        .map(|v| v.table_name)
+        .collect()
     }
 
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
-        if let Ok(_t) = self
+        let _guard = self.namespace_lock.read().await;
+        if let Ok(_) = self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
             .await
@@ -132,8 +150,59 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If no table of that name exists, returns Ok(None).
     #[allow(unused_variables)]
     fn deregister_table(&self, name: &str) -> lakesoul_io::lakesoul_io_config::Result<Option<Arc<dyn TableProvider>>> {
-        // the type info of dyn TableProvider is not enough or use AST??????
-        unimplemented!("schema provider does not support deregistering tables")
+        let client = self.metadata_client.clone();
+        let table_name = name.to_string();
+        let np = self.namespace.clone();
+        let cxt = self.context.clone();
+        let lock = self.namespace_lock.clone();
+        futures::executor::block_on(async move {
+            Handle::current()
+                .spawn(async move {
+                    // get table info
+                    let _guard = lock.write().await;
+                    match client.get_table_info_by_table_name(&table_name, &np).await {
+                        Ok(table_info) => {
+                            let config;
+                            if let Ok(config_builder) =
+                                create_io_config_builder(client.clone(), Some(&table_name), true, &np).await
+                            {
+                                config = config_builder.build();
+                            } else {
+                                return Err(DataFusionError::External("get table provider config failed".into()));
+                            }
+                            // Maybe should change
+                            let file_format = Arc::new(LakeSoulParquetFormat::new(
+                                Arc::new(ParquetFormat::new()),
+                                config.clone(),
+                            ));
+                            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
+                                &cxt.state(),
+                                config,
+                                file_format,
+                                // care this
+                                false,
+                            )
+                            .await
+                            {
+                                debug!("get table provider success");
+                                client
+                                    .delete_table_by_table_info_cascade(&table_info)
+                                    .await
+                                    .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
+                                return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
+                            }
+                            debug("get table provider fail");
+                            return Err(DataFusionError::External("get table provider failed".into()));
+                        }
+                        Err(e) => match e {
+                            LakeSoulMetaDataError::NotFound(_) => Ok(None),
+                            _ => Err(DataFusionError::External("get table info failed".into())),
+                        },
+                    }
+                })
+                .await
+                .unwrap()
+        })
     }
 
     fn table_exist(&self, name: &str) -> bool {
@@ -141,6 +210,3 @@ impl SchemaProvider for LakeSoulNamespace {
         self.table_names().into_iter().any(|s| s == name)
     }
 }
-
-#[cfg(test)]
-mod test {}
