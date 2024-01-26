@@ -16,6 +16,7 @@ use datafusion::physical_plan::common::AbortOnDropSingle;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
+use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
         file_format::{parquet::ParquetFormat, FileFormat},
@@ -263,7 +264,7 @@ impl LakeSoulHashSinkExec {
                 .iter()
                 .map(|(column, value)| (column.to_string(), value.to_string()))
                 .collect::<Vec<_>>();
-            commit_data(client.clone(), &table_name, partition_desc, &files)
+            commit_data(client.clone(), &table_name, partition_desc, files)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
         }
@@ -292,14 +293,12 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         Partitioning::UnknownPartitioning(1)
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn unbounded_output(&self, _children: &[bool]) -> Result<bool> {
+        Ok(_children[0])
     }
 
-    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        // DataSink is responsible for dynamically partitioning its
-        // own input at execution time.
-        vec![false]
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
+        None
     }
 
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -329,6 +328,12 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         vec![false]
     }
 
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        // DataSink is responsible for dynamically partitioning its
+        // own input at execution time.
+        vec![false]
+    }
+
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![self.input.clone()]
     }
@@ -343,17 +348,13 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         }))
     }
 
-    fn unbounded_output(&self, _children: &[bool]) -> Result<bool> {
-        Ok(_children[0])
-    }
-
     /// Execute the plan and return a stream of `RecordBatch`es for
     /// the specified partition.
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         if partition != 0 {
-            return Err(DataFusionError::NotImplemented(format!(
-                "FileSinkExec can only be called on partition 0!"
-            )));
+            return Err(DataFusionError::NotImplemented(
+                "FileSinkExec can only be called on partition 0!".to_string(),
+            ));
         }
         let num_input_partitions = self.input.output_partitioning().partition_count();
 
@@ -380,10 +381,14 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             join_handles.push(sink_task);
         }
 
+        let table_ref = TableReference::Partial {
+            schema: self.table_info().table_namespace.clone().into(),
+            table: self.table_info().table_name.clone().into(),
+        };
         let join_handle = AbortOnDropSingle::new(tokio::spawn(Self::wait_for_commit(
             join_handles,
             self.metadata_client(),
-            self.table_info().table_name.clone(),
+            table_ref.to_string(),
             partitioned_file_path_and_row_count,
         )));
 
@@ -403,7 +408,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let stream = futures::stream::once(async move {
             match join_handle.await {
                 Ok(Ok(count)) => Ok(make_count_batch(count)),
-                other => Ok(make_count_batch(u64::MAX)),
+                _other => Ok(make_count_batch(u64::MAX)),
             }
         })
         .boxed();

@@ -181,9 +181,10 @@ impl MultiPartAsyncWriter {
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;
 
+        // get underlying multipart uploader
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-            16 * 1024 * 1024,
+            16 * 1024 * 1024, // 16kb
         ))));
         let schema: SchemaRef = config.schema.0.clone();
 
@@ -222,6 +223,7 @@ impl MultiPartAsyncWriter {
         batch: RecordBatch,
         arrow_writer: &mut ArrowWriter<InMemBuf>,
         in_mem_buf: &mut InMemBuf,
+        // underlying writer
         writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
     ) -> Result<()> {
         arrow_writer.write(&batch)?;
@@ -347,7 +349,6 @@ impl SortAsyncWriter {
         let join_handle = tokio::task::spawn(async move {
             let mut err = None;
             while let Some(batch) = sorted_stream.next().await {
-
                 match batch {
                     Ok(batch) => {
                         async_writer.write_record_batch(batch).await?;
@@ -355,7 +356,7 @@ impl SortAsyncWriter {
                     // received abort signal
                     Err(e) => {
                         err = Some(e);
-                        break
+                        break;
                     }
                 }
             }
@@ -364,11 +365,12 @@ impl SortAsyncWriter {
                 match result {
                     Ok(_) => match e {
                         Internal(ref err_msg) if err_msg == "external abort" => Ok(()),
-                        _ => Err(e)
+                        _ => Err(e),
                     },
-                    Err(abort_err) => {
-                        Err(Internal(format!("Abort failed {:?}, previous error {:?}", abort_err, e)))
-                    }
+                    Err(abort_err) => Err(Internal(format!(
+                        "Abort failed {:?}, previous error {:?}",
+                        abort_err, e
+                    ))),
                 }
             } else {
                 async_writer.flush_and_close().await?;
@@ -391,17 +393,13 @@ impl AsyncBatchWriter for SortAsyncWriter {
         if let Some(err) = &self.err {
             return Err(Internal(format!("SortAsyncWriter alread failed with error {:?}", err)));
         }
-        let send_result = self.sorter_sender
-            .send(Ok(batch))
-            .await;
+        let send_result = self.sorter_sender.send(Ok(batch)).await;
         match send_result {
             Ok(_) => Ok(()),
             // channel has been closed, indicating error happened during sort write
             Err(e) => {
                 if let Some(join_handle) = self.join_handle.take() {
-                    let result = join_handle
-                        .await
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                    let result = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
                     self.err = result.err();
                     Err(Internal(format!("Write to SortAsyncWriter failed: {:?}", self.err)))
                 } else {
@@ -416,9 +414,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
         if let Some(join_handle) = self.join_handle {
             let sender = self.sorter_sender;
             drop(sender);
-            join_handle
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?
+            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
         } else {
             Err(Internal("SortAsyncWriter has been aborted, cannot flush".to_string()))
         }
@@ -433,9 +429,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
             drop(sender);
-            join_handle
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?
+            join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
         } else {
             // previouse error has already aborted writer
             Ok(())
@@ -445,6 +439,8 @@ impl AsyncBatchWriter for SortAsyncWriter {
 
 pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 
+// inner is sort writer
+// multipart writer
 pub struct SyncSendableMutableLakeSoulWriter {
     inner: Arc<Mutex<SendableWriter>>,
     runtime: Arc<Runtime>,
@@ -476,8 +472,10 @@ impl SyncSendableMutableLakeSoulWriter {
 
             let schema = writer.schema.clone();
             let writer: Box<dyn AsyncBatchWriter + Send> = if !config.primary_keys.is_empty() {
+                // sort primary key table
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
             } else {
+                // else multipart
                 Box::new(writer)
             };
 
@@ -541,11 +539,11 @@ mod tests {
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
     use arrow_array::Array;
+    use arrow_schema::{DataType, Field, Schema};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs::File;
     use std::sync::Arc;
-    use arrow_schema::{DataType, Field, Schema};
     use tokio::runtime::Builder;
 
     #[test]
@@ -729,9 +727,7 @@ mod tests {
                 .with_max_row_group_size(250000);
             let read_conf = common_conf_builder
                 .clone()
-                .with_files(vec![
-                    "large_file.snappy.parquet".to_string()
-                ])
+                .with_files(vec!["large_file.snappy.parquet".to_string()])
                 .with_schema(Arc::new(Schema::new(vec![
                     Arc::new(Field::new("uuid", DataType::Utf8, false)),
                     Arc::new(Field::new("ip", DataType::Utf8, false)),
@@ -750,9 +746,7 @@ mod tests {
 
             let write_conf = common_conf_builder
                 .clone()
-                .with_files(vec![
-                    "/home/chenxu/program/data/large_file_written.parquet".to_string(),
-                ])
+                .with_files(vec!["/home/chenxu/program/data/large_file_written.parquet".to_string()])
                 .with_primary_key("uuid".to_string())
                 .with_schema(schema)
                 .build();

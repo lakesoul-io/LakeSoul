@@ -32,7 +32,7 @@ use arrow_array::{builder::UInt64Builder, ArrayRef, RecordBatch};
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
-use crate::{repartition::distributor_channels::partition_aware_channels, hash_utils::create_hashes};
+use crate::{hash_utils::create_hashes, repartition::distributor_channels::partition_aware_channels};
 
 use self::distributor_channels::{DistributionReceiver, DistributionSender};
 
@@ -440,15 +440,8 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
         self.input.schema()
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.input.clone()]
-    }
-
-    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-        let repartition =
-            RepartitionByRangeAndHashExec::try_new(children.swap_remove(0), self.hash_partitioning.clone())?;
-
-        Ok(Arc::new(repartition))
+    fn output_partitioning(&self) -> Partitioning {
+        self.hash_partitioning.clone()
     }
 
     /// Specifies whether this plan generates an infinite stream of records.
@@ -456,10 +449,6 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
     /// infinite, returns an error to indicate this.
     fn unbounded_output(&self, children: &[bool]) -> Result<bool> {
         Ok(children[0])
-    }
-
-    fn output_partitioning(&self) -> Partitioning {
-        self.hash_partitioning.clone()
     }
 
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
@@ -473,6 +462,17 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
     fn maintains_input_order(&self) -> Vec<bool> {
         // We preserve ordering when input partitioning is 1
         vec![self.input().output_partitioning().partition_count() <= 1]
+    }
+
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![self.input.clone()]
+    }
+
+    fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+        let repartition =
+            RepartitionByRangeAndHashExec::try_new(children.swap_remove(0), self.hash_partitioning.clone())?;
+
+        Ok(Arc::new(repartition))
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {

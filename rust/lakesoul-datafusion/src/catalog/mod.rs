@@ -2,22 +2,30 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
+use datafusion::catalog::TableReference;
+use std::env;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::{env, path::PathBuf};
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo, Uuid};
 
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
-use crate::serialize::arrow_java::{schema_from_metadata_str, ArrowJavaSchema};
+use crate::serialize::arrow_java::ArrowJavaSchema;
 // use crate::transaction::TransactionMetaInfo;
 use crate::error::Result;
 
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
+mod lakesoul_catalog;
+//  used in catalog_test, but still say unused_imports, i think it is a bug about rust-lint.
+// this is a workaround
+#[cfg(test)]
+pub use lakesoul_catalog::*;
+mod lakesoul_namespace;
+pub use lakesoul_namespace::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
@@ -55,12 +63,13 @@ pub(crate) async fn create_io_config_builder(
     client: MetaDataClientRef,
     table_name: Option<&str>,
     fetch_files: bool,
+    namespace: &str,
 ) -> Result<LakeSoulIOConfigBuilder> {
     if let Some(table_name) = table_name {
-        let table_info = client.get_table_info_by_table_name(table_name, "default").await?;
+        let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
         let data_files = if fetch_files {
             client
-                .get_data_files_by_table_name(table_name, vec![], "default")
+                .get_data_files_by_table_name(table_name, vec![], namespace)
                 .await?
         } else {
             vec![]
@@ -96,7 +105,10 @@ pub(crate) async fn commit_data(
     partitions: Vec<(String, String)>,
     files: &[String],
 ) -> Result<()> {
-    let table_name_id = client.get_table_name_id_by_table_name(table_name, "default").await?;
+    let table_ref = TableReference::from(table_name);
+    let table_name_id = client
+        .get_table_name_id_by_table_name(table_ref.table(), table_ref.schema().unwrap_or("default"))
+        .await?;
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,

@@ -7,7 +7,6 @@ mod hash_tests {
 
     #[test]
     fn hash_value_test() {
-        
         // let hash = "321".hash_one(HASH_SEED) as i32;
         // dbg!(hash);
         assert_eq!(1.hash_one(HASH_SEED) as i32, -559580957);
@@ -19,7 +18,6 @@ mod hash_tests {
         assert_eq!(2u64.hash_one(HASH_SEED) as i32, -797927272);
         assert_eq!(3u64.hash_one(HASH_SEED) as i32, 519220707);
         assert_eq!(4u64.hash_one(HASH_SEED) as i32, 1344313940);
-
 
         assert_eq!(1.0f32.hash_one(HASH_SEED) as i32, -466301895);
         assert_eq!(2.0f32.hash_one(HASH_SEED) as i32, 1199227445);
@@ -51,7 +49,5 @@ mod hash_tests {
         assert_eq!(false.hash_one(HASH_SEED) as i32, 933211791);
 
         assert_eq!(1065353216.hash_one(HASH_SEED) as i32, -466301895);
-        
     }
-
 }
