@@ -17,7 +17,11 @@ services:
       POSTGRES_USER: lakesoul_test
       POSTGRES_DB: lakesoul_test
     command:
-      --max_connections=4096
+      - "postgres"
+      - "-c"
+      - "max_connections=4096"
+      - "-c"
+      - "default_transaction_isolation=serializable"
     volumes:
       - ./meta_init.sql:/docker-entrypoint-initdb.d/meta_init.sql
       - ./meta_cleanup.sql:/meta_cleanup.sql
@@ -121,6 +125,3 @@ networks:
     driver: bridge
     ipam:
       driver: default
-      config:
-        - subnet: 10.16.1.0/16
-          gateway: 10.16.1.1

@@ -229,23 +229,20 @@ class CompactionSuite extends QueryTest
 
       assert(!rangeInfo.groupBy(_.file_bucket_id).forall(_._2.length == 1))
 
-
       LakeSoulTable.forPath(tableName).compaction("range=1")
 
-      println(SparkUtil.allDataInfo(sm.updateSnapshot())
-        .filter(_.range_partitions.equals("range=1"))
-        .groupBy(_.file_bucket_id))
+      val allDataInfo = SparkUtil.allDataInfo(sm.updateSnapshot())
+      println(allDataInfo.mkString("Array(", ", ", ")"))
 
-      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+      assert(allDataInfo
         .filter(_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length == 1)
       )
 
-      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+      assert(allDataInfo
         .filter(!_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length != 1)
       )
-
     })
   }
   test("compaction with call - simple condition") {
@@ -282,20 +279,18 @@ class CompactionSuite extends QueryTest
       */
       sql("call LakeSoulTable.compaction(condition=>map('range',1),tablePath=>'" + tableName + "')")
 
-      println(SparkUtil.allDataInfo(sm.updateSnapshot())
-        .filter(_.range_partitions.equals("range=1"))
-        .groupBy(_.file_bucket_id))
+      val allDataInfo = SparkUtil.allDataInfo(sm.updateSnapshot())
+      println(allDataInfo.mkString("Array(", ", ", ")"))
 
-      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+      assert(allDataInfo
         .filter(_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length == 1)
       )
 
-      assert(SparkUtil.allDataInfo(sm.updateSnapshot())
+      assert(allDataInfo
         .filter(!_.range_partitions.equals("range=1"))
         .groupBy(_.file_bucket_id).forall(_._2.length != 1)
       )
-
     })
   }
 
