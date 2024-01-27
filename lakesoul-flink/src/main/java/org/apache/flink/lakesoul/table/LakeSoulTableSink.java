@@ -115,14 +115,11 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
         //rowData key tools
         RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
-        LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
         //bucket file name config
         OutputFileConfig fileNameConfig = OutputFileConfig.builder().withPartSuffix(".parquet").build();
         //file rolling rule
         LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(flinkConf.getLong(FILE_ROLLING_SIZE),
                 flinkConf.getLong(FILE_ROLLING_TIME));
-        //redistribution by partitionKey
-        dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
         //rowData sink fileSystem Task
         LakeSoulMultiTablesSink<RowData> sink = LakeSoulMultiTablesSink.forOneTableBulkFormat(path,
                         new TableSchemaIdentity(new TableId(io.debezium.relational.TableId.parse(summaryName)), rowType,
@@ -132,7 +129,14 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                         ), flinkConf)
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
-        return dataStream.sinkTo(sink).setParallelism(bucketParallelism);
+        if (!primaryKeyList.isEmpty()) {
+            //redistribution by partitionKey
+            LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
+            dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
+            return dataStream.sinkTo(sink).setParallelism(bucketParallelism);
+        } else {
+            return dataStream.sinkTo(sink);
+        }
     }
 
     @Override
