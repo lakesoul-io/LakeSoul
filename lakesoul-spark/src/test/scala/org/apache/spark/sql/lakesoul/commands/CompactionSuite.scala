@@ -230,6 +230,7 @@ class CompactionSuite extends QueryTest
       assert(!rangeInfo.groupBy(_.file_bucket_id).forall(_._2.length == 1))
 
       LakeSoulTable.forPath(tableName).compaction("range=1")
+      Thread.sleep(1000)
 
       val allDataInfo = SparkUtil.allDataInfo(sm.updateSnapshot())
       println(allDataInfo.mkString("Array(", ", ", ")"))
@@ -278,6 +279,7 @@ class CompactionSuite extends QueryTest
       * call LakeSoulTable.compaction(tableName=>'lakesoul',cleanOld=>true)
       */
       sql("call LakeSoulTable.compaction(condition=>map('range',1),tablePath=>'" + tableName + "')")
+      Thread.sleep(1000)
 
       val allDataInfo = SparkUtil.allDataInfo(sm.updateSnapshot())
       println(allDataInfo.mkString("Array(", ", ", ")"))
