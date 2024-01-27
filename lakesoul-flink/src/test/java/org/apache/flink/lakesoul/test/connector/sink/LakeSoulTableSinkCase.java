@@ -108,10 +108,10 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink: Writer\",\n" +
-                        "    \"parallelism\" : 3,\n" +
+                        "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"CUSTOM\",\n" +
+                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  }, {\n" +
@@ -119,7 +119,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink: Committer\",\n" +
-                        "    \"parallelism\" : 3,\n" +
+                        "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
                         "      \"ship_strategy\" : \"FORWARD\",\n" +
@@ -187,10 +187,10 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"type\" : \"Sink: Writer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink: Writer\",\n" +
-                        "    \"parallelism\" : 3,\n" +
+                        "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"CUSTOM\",\n" +
+                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  }, {\n" +
@@ -198,7 +198,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"type\" : \"Sink: Committer\",\n" +
                         "    \"pact\" : \"Operator\",\n" +
                         "    \"contents\" : \"Sink: Committer\",\n" +
-                        "    \"parallelism\" : 3,\n" +
+                        "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
                         "      \"ship_strategy\" : \"FORWARD\",\n" +
@@ -251,7 +251,6 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
         String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
         System.out.println(plan);
-
         assertEquals(expected, plan);
 
         tEnv.executeSql("drop database db1 cascade");

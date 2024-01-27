@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.test.schema;
 
 import com.alibaba.fastjson.JSON;
+import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -131,7 +132,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
                 "[+I[a, BIGINT, true, null, null, null]]",
                 "[+I[a, TINYINT, true, null, null, null]]",
                 "[+I[10000000000], +I[20000000000]]",
-                "[+I[null], +I[null], +I[3], +I[4]]"
+                "[+I[3], +I[4], +I[null], +I[null]]"
         );
     }
 
@@ -452,10 +453,13 @@ public class SchemaMigrationTest extends AbstractTestBase {
         testCatalog.setCurrentTable(beforeTable);
         testEnv.executeSql(beforeInsertSql).await();
         List<Row> desc_test_sink_before = CollectionUtil.iteratorToList(validateEnv.executeSql("desc test_sink").collect());
+        desc_test_sink_before.sort(Comparator.comparing(Row::toString));
         if (beforeExpectedDescription != null)
             assertThat(desc_test_sink_before.toString()).isEqualTo(beforeExpectedDescription);
         List<Row> select_test_sink_before = CollectionUtil.iteratorToList(validateEnv.executeSql("select * from test_sink").collect());
+
         select_test_sink_before.sort(Comparator.comparing(Row::toString));
+
         if (beforeExpectedValue != null)
             assertThat(select_test_sink_before.toString()).isEqualTo(beforeExpectedValue);
         validateEnv.executeSql("select * from test_sink").print();
@@ -463,10 +467,11 @@ public class SchemaMigrationTest extends AbstractTestBase {
         testCatalog.setCurrentTable(afterTable);
         testEnv.executeSql(afterInsertSql).await();
         List<Row> desc_test_sink_after = CollectionUtil.iteratorToList(validateEnv.executeSql("desc test_sink").collect());
+        desc_test_sink_after.sort(Comparator.comparing(Row::toString));
         if (afterExpectedDescription != null)
             assertThat(desc_test_sink_after.toString()).isEqualTo(afterExpectedDescription);
         List<Row> select_test_sink_after = CollectionUtil.iteratorToList(validateEnv.executeSql("select * from test_sink").collect());
-        select_test_sink_before.sort(Comparator.comparing(Row::toString));
+        select_test_sink_after.sort(Comparator.comparing(Row::toString));
         if (afterExpectedValue != null)
             assertThat(select_test_sink_after.toString()).isEqualTo(afterExpectedValue);
         validateEnv.executeSql("select * from test_sink").print();
