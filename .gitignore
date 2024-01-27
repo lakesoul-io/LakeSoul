@@ -31,6 +31,6 @@ __pycache__/
 /python/lakesoul/metadata/generated/entity_pb2_grpc.py
 /python/build/
 /python/lakesoul.egg-info/
-/python/*.whl
+*.whl
 /wheelhouse/
 /rust/.idea
