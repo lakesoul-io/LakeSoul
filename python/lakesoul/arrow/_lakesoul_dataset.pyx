@@ -5,6 +5,7 @@
 # cython: language_level = 3
 
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 from libcpp.memory cimport shared_ptr
 from libcpp.memory cimport make_shared
 
@@ -42,9 +43,21 @@ cdef class LakeSoulDataset(Dataset):
         for maybe_fragment in c_fragments:
             yield LakeSoulFragment.wrap(GetResultValue(move(maybe_fragment)))
 
-    def _add_file_url(self, file_url):
-        cdef string cpp_string = file_url.encode('utf-8')
-        self.lakesoul_dataset.AddFileUrl(cpp_string)
+    def _add_file_urls(self, file_urls):
+        cdef vector[string] files
+        cdef string cpp_string
+        for file in file_urls:
+            cpp_string = file.encode('utf-8')
+            files.push_back(cpp_string)
+        self.lakesoul_dataset.AddFileUrls(files)
+
+    def _add_primary_keys(self, pks):
+        cdef vector[string] primary_keys
+        cdef string cpp_string
+        for pk in pks:
+            cpp_string = pk.encode('utf-8')
+            primary_keys.push_back(cpp_string)
+        self.lakesoul_dataset.AddPrimaryKeys(primary_keys)
 
     def _add_partition_key_value(self, key, value):
         cdef string key_cpp_string = key.encode('utf-8')
@@ -57,13 +70,6 @@ cdef class LakeSoulDataset(Dataset):
     def _set_thread_num(self, thread_num):
         self.lakesoul_dataset.SetThreadNum(thread_num)
 
-    def scanner(self, *args, **kwargs):
-        # LakeSoul already uses threads, moreover using Arrow threads
-        # will make LakeSoulDataReader being destructed in an asynchronous
-        # context, so we set use_threads to False to avoid Arrow threads.
-        kwargs['use_threads'] = False
-        return super().scanner(*args, **kwargs)
-
 cdef class LakeSoulFragment(Fragment):
     cdef void init(self, const shared_ptr[CFragment]& sp):
         Fragment.init(self, sp)
@@ -74,10 +80,3 @@ cdef class LakeSoulFragment(Fragment):
         cdef LakeSoulFragment self = LakeSoulFragment.__new__(LakeSoulFragment)
         self.init(sp)
         return self
-
-    def scanner(self, *args, **kwargs):
-        # LakeSoul already uses threads, moreover using Arrow threads
-        # will make LakeSoulDataReader being destructed in an asynchronous
-        # context, so we set use_threads to False to avoid Arrow threads.
-        kwargs['use_threads'] = False
-        return super().scanner(*args, **kwargs)

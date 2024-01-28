@@ -26,6 +26,8 @@ public:
     void AddFileUrl(const std::string& file_url);
     void AddFileUrls(const std::vector<std::string>& file_urls);
 
+    void AddPrimaryKeys(const std::vector<std::string>& pks);
+
     void AddPartitionKeyValue(const std::string& key, const std::string& value);
     void AddPartitionKeyValues(const std::vector<std::pair<std::string, std::string>>& key_values);
 
@@ -40,6 +42,7 @@ public:
 private:
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<std::string> file_urls_;
+    std::vector<std::string> primary_keys_;
     std::vector<std::pair<std::string, std::string>> partition_info_;
     std::shared_ptr<lakesoul::LakeSoulDataReader> data_reader_;
     int batch_size_ = 16;

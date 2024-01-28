@@ -23,7 +23,9 @@ arrow::Result<std::shared_ptr<arrow::dataset::Dataset>>
 LakeSoulDataset::ReplaceSchema(std::shared_ptr<arrow::Schema> schema) const
 {
     auto dataset = std::make_shared<LakeSoulDataset>(std::move(schema));
-    dataset->AddFileUrls(file_urls_);
+    for (const auto& files : file_urls_) {
+        dataset->AddFileUrls(files);
+    }
     arrow::Result<std::shared_ptr<arrow::dataset::Dataset>> result(std::move(dataset));
     return result;
 }
@@ -32,26 +34,32 @@ LakeSoulDataset::ReplaceSchema(std::shared_ptr<arrow::Schema> schema) const
 arrow::Result<arrow::dataset::FragmentIterator>
 LakeSoulDataset::GetFragmentsImpl(arrow::compute::Expression predicate)
 {
-    auto fragment = std::make_shared<LakeSoulFragment>(this->schema());
-    fragment->AddFileUrls(file_urls_);
-    fragment->AddPartitionKeyValues(partition_info_);
-    fragment->SetBatchSize(batch_size_);
-    fragment->SetThreadNum(thread_num_);
-    fragment->CreateDataReader();
     std::vector<std::shared_ptr<arrow::dataset::Fragment>> fragments;
-    fragments.push_back(fragment);
+    fragments.reserve(file_urls_.size());
+    for (size_t i = 0; i < file_urls_.size(); ++i) {
+        const auto files = file_urls_.at(i);
+        const auto pks = primary_keys_.at(i);
+        auto fragment = std::make_shared<LakeSoulFragment>(this->schema());
+        fragment->AddFileUrls(files);
+        fragment->AddPrimaryKeys(pks);
+        fragment->AddPartitionKeyValues(partition_info_);
+        fragment->SetBatchSize(batch_size_);
+        fragment->SetThreadNum(thread_num_);
+        fragment->CreateDataReader();
+        fragments.push_back(fragment);
+    }
+    fragments_ = fragments;
     arrow::Result<arrow::dataset::FragmentIterator> result(arrow::MakeVectorIterator(std::move(fragments)));
     return result;
 }
 
-void LakeSoulDataset::AddFileUrl(const std::string& file_url)
-{
-    file_urls_.push_back(file_url);
-}
-
 void LakeSoulDataset::AddFileUrls(const std::vector<std::string>& file_urls)
 {
-    file_urls_.insert(file_urls_.end(), file_urls.begin(), file_urls.end());
+    file_urls_.push_back(file_urls);
+}
+
+void LakeSoulDataset::AddPrimaryKeys(const std::vector<std::string>& pks) {
+    primary_keys_.push_back(pks);
 }
 
 void LakeSoulDataset::AddPartitionKeyValue(const std::string& key, const std::string& value)

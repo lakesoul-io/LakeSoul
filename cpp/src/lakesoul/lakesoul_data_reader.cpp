@@ -13,9 +13,11 @@ namespace lakesoul {
 
 LakeSoulDataReader::LakeSoulDataReader(std::shared_ptr<arrow::Schema> schema,
                                        const std::vector<std::string>& file_urls,
+                                       const std::vector<std::string>& primary_keys,
                                        const std::vector<std::pair<std::string, std::string>>& partition_info)
     : schema_(std::move(schema))
     , file_urls_(file_urls)
+    , primary_keys_(primary_keys)
     , partition_info_(partition_info)
 {
 }
@@ -55,6 +57,9 @@ lakesoul::IOConfig* LakeSoulDataReader::CreateIOConfig()
     lakesoul::IOConfigBuilder* builder = lakesoul::new_lakesoul_io_config_builder();
     for (const std::string& file_url : file_urls_)
         builder = lakesoul::lakesoul_config_builder_add_single_file(builder, file_url.c_str());
+    for (const std::string& pk : primary_keys_) {
+        builder = lakesoul::lakesoul_config_builder_add_single_primary_key(builder, pk.c_str());
+    }
     builder = lakesoul::lakesoul_config_builder_set_batch_size(builder, batch_size_);
     builder = lakesoul::lakesoul_config_builder_set_thread_num(builder, thread_num_);
     builder = lakesoul::lakesoul_config_builder_set_schema(builder, reinterpret_cast<lakesoul::c_ptrdiff_t>(&c_schema));
@@ -80,7 +85,6 @@ std::shared_ptr<lakesoul::CResult<lakesoul::Reader>> LakeSoulDataReader::CreateR
     std::shared_ptr<lakesoul::CResult<lakesoul::Reader>> reader(result, [](lakesoul::CResult<lakesoul::Reader>* ptr)
     {
         lakesoul::free_lakesoul_reader(ptr);
-        //std::cerr << "lakesoul::free_lakesoul_reader called\n";
     });
     const char* err = lakesoul::check_reader_created(result);
     if (err != nullptr)
@@ -165,8 +169,8 @@ arrow::Future<std::shared_ptr<arrow::RecordBatch>> LakeSoulDataReader::ReadRecor
         }
         else if (n == 0)
         {
-            closure->future.MarkFinished(nullptr);
             closure->reader->finished_ = true;
+            closure->future.MarkFinished(nullptr);
         }
         else
         {
