@@ -255,8 +255,8 @@ impl TableProvider for LakeSoulListingTable {
             // A plan can produce finite number of rows even if it has unbounded sources, like LIMIT
             // queries. Thus, we can check if the plan is streaming to ensure file sink input is
             // unbounded. When `unbounded_input` flag is `true` for sink, we occasionally call `yield_now`
-            // to consume data at the input. When `unbounded_input` flag is `false` (e.g non-streaming data),
-            // all of the data at the input is sink after execution finishes. See discussion for rationale:
+            // to consume data at the input. When `unbounded_input` flag is `false` (e.g. non-streaming data),
+            // all the data at the input is sink after execution finishes. See discussion for rationale:
             // https://github.com/apache/arrow-datafusion/pull/7610#issuecomment-1728979918
             unbounded_input: false,
             single_file_output: self.options().single_file,

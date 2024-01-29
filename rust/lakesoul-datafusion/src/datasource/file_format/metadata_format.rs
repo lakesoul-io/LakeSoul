@@ -36,6 +36,7 @@ use rand::distributions::DistString;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use crate::catalog::commit_data;
 use crate::lakesoul_table::helpers::{create_io_config_builder_from_table_info, get_columnar_value};
@@ -148,7 +149,7 @@ pub struct LakeSoulHashSinkExec {
     metadata_client: MetaDataClientRef,
 }
 
-impl fmt::Debug for LakeSoulHashSinkExec {
+impl Debug for LakeSoulHashSinkExec {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LakeSoulHashSinkExec schema: {:?}", self.count_schema)
     }
@@ -267,13 +268,14 @@ impl LakeSoulHashSinkExec {
             commit_data(client.clone(), &table_name, partition_desc, files)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            debug!("table: {} insert success at {:?}",&table_name,std::time::SystemTime::now())
         }
         Ok(count)
     }
 }
 
 impl DisplayAs for LakeSoulHashSinkExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LakeSoulHashSinkExec")
     }
 }
@@ -308,9 +310,9 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     }
 
     fn required_input_ordering(&self) -> Vec<Option<Vec<PhysicalSortRequirement>>> {
-        // The input order is either exlicitly set (such as by a ListingTable),
+        // The input order is either explicitly set (such as by a ListingTable),
         // or require that the [FileSinkExec] gets the data in the order the
-        // input produced it (otherwise the optimizer may chose to reorder
+        // input produced it (otherwise the optimizer may choose to reorder
         // the input which could result in unintended / poor UX)
         //
         // More rationale:
@@ -417,7 +419,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     }
 }
 
-/// Create a output record batch with a count
+/// Create an output record batch with a count
 ///
 /// ```text
 /// +-------+,
