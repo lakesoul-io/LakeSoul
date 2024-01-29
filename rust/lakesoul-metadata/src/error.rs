@@ -30,6 +30,7 @@ pub enum LakeSoulMetaDataError {
     ProstEncodeError(prost::EncodeError),
     Other(GenericError),
     Internal(String),
+    NotFound(String),
 }
 
 impl From<tokio_postgres::Error> for LakeSoulMetaDataError {
@@ -98,6 +99,7 @@ impl Display for LakeSoulMetaDataError {
             LakeSoulMetaDataError::Other(ref desc) => {
                 write!(f, "Other error: {desc}")
             }
+            LakeSoulMetaDataError::NotFound(ref desc) => write!(f, "not found err:{desc}"),
             LakeSoulMetaDataError::Internal(ref desc) => {
                 write!(
                     f,
@@ -120,6 +122,7 @@ impl Error for LakeSoulMetaDataError {
             LakeSoulMetaDataError::ProstDecodeError(e) => Some(e),
             LakeSoulMetaDataError::ProstEncodeError(e) => Some(e),
             LakeSoulMetaDataError::Other(e) => Some(e.as_ref()),
+            LakeSoulMetaDataError::NotFound(_) => None,
             LakeSoulMetaDataError::Internal(_) => None,
         }
     }

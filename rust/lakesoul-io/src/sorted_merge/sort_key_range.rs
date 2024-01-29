@@ -14,8 +14,8 @@ use arrow::{
 };
 use smallvec::{smallvec, SmallVec};
 
-// A range in one arrow::record_batch::RecordBatch with same sorted primary key
-// This is the unit to be sorted in min heap
+/// A range in one arrow::record_batch::RecordBatch with same sorted primary key
+/// This is the unit to be sorted in min heap
 pub struct SortKeyBatchRange {
     pub(crate) begin_row: usize, // begin row in this batch, included
     pub(crate) end_row: usize,   // not included
@@ -102,7 +102,7 @@ impl SortKeyBatchRange {
         current
     }
 
-    //create a SortKeyArrayRange with specific column index of SortKeyBatchRange
+    /// create a SortKeyArrayRange with specific column index of SortKeyBatchRange
     pub fn column(&self, idx: usize) -> SortKeyArrayRange {
         SortKeyArrayRange {
             begin_row: self.begin_row,
@@ -187,8 +187,8 @@ impl Clone for SortKeyArrayRange {
     }
 }
 
-// Multiple ranges with same sorted primary key from variant source record_batch. 
-// These ranges will be merged into ONE row of target record_batch finnally.
+/// Multiple ranges with same sorted primary key from variant source record_batch.
+/// These ranges will be merged into ONE row of target record_batch finally.
 #[derive(Debug, Clone)]
 pub struct SortKeyBatchRanges {
     // vector with length=column_num that holds a Vector of SortKeyArrayRange to be merged for each column

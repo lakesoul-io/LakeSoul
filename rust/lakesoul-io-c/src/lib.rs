@@ -632,7 +632,7 @@ pub extern "C" fn write_record_batch_blocked(
     writer: NonNull<CResult<Writer>>,
     schema_addr: c_ptrdiff_t,
     array_addr: c_ptrdiff_t,
-) -> *const c_char  {
+) -> *const c_char {
     unsafe {
         let writer = NonNull::new_unchecked(writer.as_ref().ptr as *mut SyncSendableMutableLakeSoulWriter);
         let mut ffi_array = FFI_ArrowArray::empty();
@@ -649,8 +649,7 @@ pub extern "C" fn write_record_batch_blocked(
         let result: lakesoul_io::Result<()> = result_fn();
         match result {
             Ok(_) => std::ptr::null(),
-            Err(e) =>
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+            Err(e) => CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
         }
     }
 }
@@ -876,9 +875,9 @@ mod tests {
             }
         }
 
-        start_reader(reader, reader_callback.clone());
+        start_reader(reader, reader_callback);
         unsafe {
-            assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
+            assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
@@ -930,7 +929,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_i32_callback.clone(),
+                reader_i32_callback,
             );
             wait_callback();
 
@@ -951,7 +950,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback.clone(),
+                writer_callback,
             );
             wait_callback();
 
@@ -1004,9 +1003,9 @@ mod tests {
             }
         }
 
-        start_reader(reader, reader_callback.clone());
+        start_reader(reader, reader_callback);
         unsafe {
-            assert_eq!(READER_FINISHED, false, "{:?}", READER_FAILED.as_ref());
+            assert!(!READER_FINISHED, "{:?}", READER_FAILED.as_ref());
         }
 
         let schema_ffi = FFI_ArrowSchema::empty();
@@ -1062,7 +1061,7 @@ mod tests {
                 reader,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                reader_i32_callback.clone(),
+                reader_i32_callback,
             );
             wait_callback();
 
@@ -1083,7 +1082,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback.clone(),
+                writer_callback,
             );
             wait_callback();
 

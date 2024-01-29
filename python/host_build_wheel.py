@@ -124,7 +124,7 @@ class LakeSoulWheelHostBuilder(object):
 
     def _repair_wheel(self):
         pa_abi_tag = self._get_pyarrow_abi_tag()
-        args = [self._get_python_path(), '-m', 'auditwheel', 'repair', '--plat', 'manylinux2014_x86_64']
+        args = [self._get_python_path(), '-m', 'auditwheel', 'repair', '--plat', 'linux_x86_64']
         args += ['--exclude', 'libarrow_python.so']
         args += ['--exclude', 'libarrow_dataset.so.%s' % pa_abi_tag]
         args += ['--exclude', 'libarrow_acero.so.%s' % pa_abi_tag]

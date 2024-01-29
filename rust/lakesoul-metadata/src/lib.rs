@@ -17,6 +17,7 @@ pub use tokio::runtime::{Builder, Runtime};
 use postgres_types::{FromSql, ToSql};
 use tokio::spawn;
 pub use tokio_postgres::{Client, NoTls, Statement};
+use tokio_postgres::{Error, Row};
 
 pub use metadata_client::{MetaDataClient, MetaDataClientRef};
 
@@ -55,7 +56,7 @@ impl DataFileOp {
     fn from_proto_data_file_op(data_file_op: &entity::DataFileOp) -> Self {
         DataFileOp {
             path: data_file_op.path.clone(),
-            file_op: proto::proto::entity::FileOp::from_i32(data_file_op.file_op)
+            file_op: entity::FileOp::from_i32(data_file_op.file_op)
                 .unwrap()
                 .as_str_name()
                 .to_string(),
@@ -67,7 +68,7 @@ impl DataFileOp {
     fn as_proto_data_file_op(&self) -> entity::DataFileOp {
         entity::DataFileOp {
             path: self.path.clone(),
-            file_op: proto::proto::entity::FileOp::from_str_name(self.file_op.as_str()).unwrap() as i32,
+            file_op: entity::FileOp::from_str_name(self.file_op.as_str()).unwrap() as i32,
             size: self.size,
             file_exist_cols: self.file_exist_cols.clone(),
         }
@@ -165,29 +166,29 @@ async fn get_prepared_statement(
         let result = {
             let statement = match dao_type {
                 // Select Namespace
-                DaoType::SelectNamespaceByNamespace => 
+                DaoType::SelectNamespaceByNamespace =>
                     "select namespace, properties, comment, domain 
                     from namespace 
                     where namespace = $1::TEXT",
-                DaoType::ListNamespaces => 
+                DaoType::ListNamespaces =>
                     "select namespace, properties, comment, domain 
                     from namespace",
 
                 // Select TablePathId
-                DaoType::SelectTablePathIdByTablePath => 
+                DaoType::SelectTablePathIdByTablePath =>
                     "select table_path, table_id, table_namespace, domain 
                     from table_path_id 
                     where table_path = $1::TEXT",
-                DaoType::ListAllTablePath => 
+                DaoType::ListAllTablePath =>
                     "select table_path, table_id, table_namespace, domain 
                     from table_path_id",
-                DaoType::ListAllPathTablePathByNamespace => 
+                DaoType::ListAllPathTablePathByNamespace =>
                     "select table_path 
                     from table_path_id 
                     where table_namespace = $1::TEXT ",
 
                 // Select TableNameId
-                DaoType::SelectTableNameIdByTableName => 
+                DaoType::SelectTableNameIdByTableName =>
                     "select table_name, table_id, table_namespace, domain 
                     from table_name_id 
                     where table_name = $1::TEXT and table_namespace = $2::TEXT",
@@ -197,11 +198,11 @@ async fn get_prepared_statement(
                     where table_namespace = $1::TEXT",
 
                 // Select TableInfo
-                DaoType::SelectTableInfoByTableId => 
+                DaoType::SelectTableInfoByTableId =>
                     "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain  
                     from table_info 
                     where table_id = $1::TEXT",
-                DaoType::SelectTableInfoByTableNameAndNameSpace => 
+                DaoType::SelectTableInfoByTableNameAndNameSpace =>
                     "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain 
                     from table_info 
                     where table_name = $1::TEXT and table_namespace=$2::TEXT",
@@ -209,7 +210,7 @@ async fn get_prepared_statement(
                     "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain 
                     from table_info 
                     where table_path = $1::TEXT",
-                DaoType::SelectTableInfoByIdAndTablePath => 
+                DaoType::SelectTableInfoByIdAndTablePath =>
                     "select table_id, table_name, table_path, table_schema, properties, partitions, table_namespace, domain 
                     from table_info 
                     where table_id = $1::TEXT and table_path=$2::TEXT",
@@ -224,12 +225,12 @@ async fn get_prepared_statement(
                         select table_id,partition_desc,max(version) from partition_info 
                         where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t 
                         left join partition_info m on t.table_id = m.table_id 
-                        and t.partition_desc = m.partition_desc and t.max = m.version",    
+                        and t.partition_desc = m.partition_desc and t.max = m.version",
                 DaoType::ListPartitionByTableIdAndDesc =>
                     "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain 
                     from partition_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT ",
-                DaoType::ListPartitionByTableId => 
+                DaoType::ListPartitionByTableId =>
                     "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain 
                     from (
                         select table_id,partition_desc,max(version) 
@@ -256,10 +257,10 @@ async fn get_prepared_statement(
                     "select table_id, partition_desc, commit_id, file_ops, commit_op, timestamp, committed, domain 
                     from data_commit_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID",
-            
+
 
                 // Insert
-                DaoType::InsertNamespace => 
+                DaoType::InsertNamespace =>
                     "insert into namespace(
                         namespace,
                         properties, 
@@ -277,7 +278,7 @@ async fn get_prepared_statement(
                         table_namespace, 
                         domain) 
                     values($1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::JSON, $6::TEXT, $7::TEXT, $8::TEXT)",
-                DaoType::InsertTableNameId => 
+                DaoType::InsertTableNameId =>
                     "insert into table_name_id(
                         table_id, 
                         table_name, 
@@ -302,7 +303,7 @@ async fn get_prepared_statement(
                         domain
                     ) 
                     values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
-                DaoType::InsertDataCommitInfo => 
+                DaoType::InsertDataCommitInfo =>
                     "insert into data_commit_info(
                         table_id, 
                         partition_desc,
@@ -316,7 +317,7 @@ async fn get_prepared_statement(
                     values($1::TEXT, $2::TEXT, $3::UUID, $4::_data_file_op, $5::TEXT, $6::BIGINT, $7::BOOL, $8::TEXT)",
 
                 // Query Scalar
-                DaoType::GetLatestTimestampFromPartitionInfo => 
+                DaoType::GetLatestTimestampFromPartitionInfo =>
                     "select max(timestamp) as timestamp 
                     from partition_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT",
@@ -348,25 +349,24 @@ async fn get_prepared_statement(
                     "delete from table_name_id 
                     where table_id = $1::TEXT",
 
-                DaoType::DeleteTableInfoByIdAndPath => 
+                DaoType::DeleteTableInfoByIdAndPath =>
                     "delete from table_info 
                     where table_id = $1::TEXT and table_path = $2::TEXT",
                 DaoType::UpdateTableInfoPropertiesById =>
                     "update table_info 
                     set properties = $2::JSON where table_id = $1::TEXT",
 
-
-                DaoType::DeleteTablePathIdByTablePath => 
+                DaoType::DeleteTablePathIdByTablePath =>
                     "delete from table_path_id 
                     where table_path = $1::TEXT ",
-                DaoType::DeleteTablePathIdByTableId => 
+                DaoType::DeleteTablePathIdByTableId =>
                     "delete from table_path_id 
                     where table_id = $1::TEXT ",
 
-                DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId => 
+                DaoType::DeleteOneDataCommitInfoByTableIdAndPartitionDescAndCommitId =>
                     "delete from data_commit_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and commit_id = $3::UUID ",
-                DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc => 
+                DaoType::DeleteDataCommitInfoByTableIdAndPartitionDesc =>
                     "delete from data_commit_info 
                     where table_id = $1::TEXT and partition_desc = $2::TEXT",
                 DaoType::DeleteDataCommitInfoByTableId =>
@@ -391,9 +391,8 @@ async fn get_prepared_statement(
                 DaoType::ListDataCommitInfoByTableIdAndPartitionDescAndCommitList |
                 DaoType::DeleteDataCommitInfoByTableIdAndPartitionDescAndCommitIdList |
                 DaoType::ListPartitionDescByTableIdAndParList => "",
-                
-                // _ => todo!(),
 
+                /* _ => todo!(), */
             };
             client.prepare(statement).await
         };
@@ -405,6 +404,28 @@ async fn get_prepared_statement(
             Err(err) => Err(LakeSoulMetaDataError::from(err)),
         }
     }
+}
+
+fn get_params(joined_string: String) -> Vec<String> {
+    joined_string
+        .split(PARAM_DELIM)
+        .collect::<Vec<&str>>()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>()
+}
+
+fn separate_uuid(concated_uuid: &str) -> Result<Vec<String>> {
+    let uuid_num = concated_uuid.len() / 32;
+    let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
+    let mut idx = 0;
+    for _ in 0..uuid_num {
+        let high = u64::from_str_radix(&concated_uuid[idx..idx + 16], 16)?;
+        let low = u64::from_str_radix(&concated_uuid[idx + 16..idx + 32], 16)?;
+        uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
+        idx += 32;
+    }
+    Ok(uuid_list)
 }
 
 pub async fn execute_query(
@@ -420,12 +441,7 @@ pub async fn execute_query(
     let query_type = DaoType::try_from(query_type).unwrap();
     let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
-    let params = joined_string
-        .split(PARAM_DELIM)
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|str| str.to_string())
-        .collect::<Vec<String>>();
+    let params = get_params(joined_string);
 
     let rows = match query_type {
         DaoType::ListNamespaces | DaoType::ListAllTablePath if params.len() == 1 && params[0].is_empty() => {
@@ -569,18 +585,11 @@ pub async fn execute_query(
             if concated_uuid.len() % 32 != 0 {
                 eprintln!("Invalid params of query_type={:?}, params={:?}", query_type, params);
                 return Err(LakeSoulMetaDataError::from(std::io::Error::from(
-                    std::io::ErrorKind::InvalidInput,
+                    ErrorKind::InvalidInput,
                 )));
             }
-            let uuid_num = concated_uuid.len() / 32;
-            let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
-            let mut idx = 0;
-            for _ in 0..uuid_num {
-                let high = u64::from_str_radix(&concated_uuid[idx..idx + 16], 16)?;
-                let low = u64::from_str_radix(&concated_uuid[idx + 16..idx + 32], 16)?;
-                uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
-                idx += 32;
-            }
+
+            let uuid_list = separate_uuid(concated_uuid)?;
 
             let uuid_str_list = "'".to_owned() + &uuid_list.join("','") + "'";
 
@@ -647,14 +656,14 @@ pub async fn execute_query(
         ResultType::TableNameId => {
             let table_name_id: Vec<entity::TableNameId> = rows
                 .iter()
-                .map(|row| proto::proto::entity::TableNameId {
+                .map(|row| entity::TableNameId {
                     table_name: row.get(0),
                     table_id: row.get(1),
                     table_namespace: row.get(2),
                     domain: row.get(3),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 table_name_id,
                 ..Default::default()
             }
@@ -662,14 +671,14 @@ pub async fn execute_query(
         ResultType::TablePathId => {
             let table_path_id: Vec<entity::TablePathId> = rows
                 .iter()
-                .map(|row| proto::proto::entity::TablePathId {
+                .map(|row| entity::TablePathId {
                     table_path: row.get(0),
                     table_id: row.get(1),
                     table_namespace: row.get(2),
                     domain: row.get(3),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 table_path_id,
                 ..Default::default()
             }
@@ -677,12 +686,12 @@ pub async fn execute_query(
         ResultType::TablePathIdWithOnlyPath => {
             let table_path_id: Vec<entity::TablePathId> = rows
                 .iter()
-                .map(|row| proto::proto::entity::TablePathId {
+                .map(|row| entity::TablePathId {
                     table_path: row.get(0),
                     ..Default::default()
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 table_path_id,
                 ..Default::default()
             }
@@ -691,14 +700,14 @@ pub async fn execute_query(
         ResultType::Namespace => {
             let namespace: Vec<entity::Namespace> = rows
                 .iter()
-                .map(|row| proto::proto::entity::Namespace {
+                .map(|row| entity::Namespace {
                     namespace: row.get(0),
                     properties: row.get::<_, serde_json::Value>(1).to_string(),
                     comment: row.get::<_, Option<String>>(2).unwrap_or(String::from("")),
                     domain: row.get(3),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 namespace,
                 ..Default::default()
             }
@@ -706,7 +715,7 @@ pub async fn execute_query(
         ResultType::TableInfo => {
             let table_info: Vec<entity::TableInfo> = rows
                 .iter()
-                .map(|row| proto::proto::entity::TableInfo {
+                .map(|row| entity::TableInfo {
                     table_id: row.get(0),
                     table_name: row.get(1),
                     table_path: row.get(2),
@@ -717,7 +726,7 @@ pub async fn execute_query(
                     domain: row.get(7),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 table_info,
                 ..Default::default()
             }
@@ -725,25 +734,18 @@ pub async fn execute_query(
         ResultType::PartitionInfo => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| proto::proto::entity::PartitionInfo {
+                .map(|row| entity::PartitionInfo {
                     table_id: row.get(0),
                     partition_desc: row.get(1),
                     version: row.get::<_, i32>(2),
-                    commit_op: proto::proto::entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
-                    snapshot: row
-                        .get::<_, Vec<uuid::Uuid>>(4)
-                        .iter()
-                        .map(|uuid| {
-                            let (high, low) = uuid.as_u64_pair();
-                            entity::Uuid { high, low }
-                        })
-                        .collect::<Vec<entity::Uuid>>(),
+                    commit_op: entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
+                    snapshot: row_to_uuid_list(row),
                     timestamp: row.get::<_, i64>(5),
                     expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
                     domain: row.get(7),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 partition_info,
                 ..Default::default()
             }
@@ -752,25 +754,18 @@ pub async fn execute_query(
         ResultType::PartitionInfoWithoutTimestamp => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| proto::proto::entity::PartitionInfo {
+                .map(|row| entity::PartitionInfo {
                     table_id: row.get(0),
                     partition_desc: row.get(1),
                     version: row.get::<_, i32>(2),
-                    commit_op: proto::proto::entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
-                    snapshot: row
-                        .get::<_, Vec<uuid::Uuid>>(4)
-                        .iter()
-                        .map(|uuid| {
-                            let (high, low) = uuid.as_u64_pair();
-                            entity::Uuid { high, low }
-                        })
-                        .collect::<Vec<entity::Uuid>>(),
+                    commit_op: entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
+                    snapshot: row_to_uuid_list(row),
                     expression: row.get::<_, Option<String>>(5).unwrap_or(String::from("")),
                     domain: row.get(6),
                     ..Default::default()
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 partition_info,
                 ..Default::default()
             }
@@ -778,12 +773,12 @@ pub async fn execute_query(
         ResultType::PartitionInfoWithOnlyCommitOp => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| proto::proto::entity::PartitionInfo {
-                    commit_op: proto::proto::entity::CommitOp::from_str_name(row.get(0)).unwrap() as i32,
+                .map(|row| entity::PartitionInfo {
+                    commit_op: entity::CommitOp::from_str_name(row.get(0)).unwrap() as i32,
                     ..Default::default()
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 partition_info,
                 ..Default::default()
             }
@@ -791,7 +786,7 @@ pub async fn execute_query(
         ResultType::DataCommitInfo => {
             let data_commit_info: Vec<entity::DataCommitInfo> = rows
                 .iter()
-                .map(|row| proto::proto::entity::DataCommitInfo {
+                .map(|row| entity::DataCommitInfo {
                     table_id: row.get(0),
                     partition_desc: row.get(1),
                     commit_id: {
@@ -803,13 +798,13 @@ pub async fn execute_query(
                         .iter()
                         .map(|data_file_op| data_file_op.as_proto_data_file_op())
                         .collect::<Vec<entity::DataFileOp>>(),
-                    commit_op: proto::proto::entity::CommitOp::from_str_name(row.get(4)).unwrap() as i32,
+                    commit_op: entity::CommitOp::from_str_name(row.get(4)).unwrap() as i32,
                     timestamp: row.get(5),
                     committed: row.get(6),
                     domain: row.get(7),
                 })
                 .collect();
-            proto::proto::entity::JniWrapper {
+            entity::JniWrapper {
                 data_commit_info,
                 ..Default::default()
             }
@@ -1067,7 +1062,6 @@ pub async fn execute_insert(
                             ],
                         )
                         .await;
-
                     if let Some(e) = result.err() {
                         eprintln!("transaction insert error, err = {:?}", e);
                         return match transaction.rollback().await {
@@ -1105,7 +1099,7 @@ pub async fn execute_update(
 ) -> Result<i32> {
     if update_type < DAO_TYPE_UPDATE_OFFSET {
         eprintln!("Invalid update_type_index: {:?}", update_type);
-        return Err(LakeSoulMetaDataError::from(std::io::ErrorKind::InvalidInput));
+        return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
     let update_type = DaoType::try_from(update_type).unwrap();
     let statement = get_prepared_statement(client, prepared, &update_type).await?;
@@ -1198,15 +1192,8 @@ pub async fn execute_update(
                 eprintln!("Invalid params of update_type={:?}, params={:?}", update_type, params);
                 return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
-            let uuid_num = concated_uuid.len() / 32;
-            let mut uuid_list = Vec::<String>::with_capacity(uuid_num);
-            let mut idx = 0;
-            for _ in 0..uuid_num {
-                let high = u64::from_str_radix(&concated_uuid[idx..idx + 16], 16)?;
-                let low = u64::from_str_radix(&concated_uuid[idx + 16..idx + 32], 16)?;
-                uuid_list.push(uuid::Uuid::from_u64_pair(high, low).to_string());
-                idx += 32;
-            }
+
+            let uuid_list = separate_uuid(concated_uuid)?;
 
             let uuid_str_list = "'".to_owned() + &uuid_list.join("','") + "'";
 
@@ -1230,6 +1217,20 @@ pub async fn execute_update(
     }
 }
 
+fn ts_string(res: Result<Option<Row>, Error>) -> Result<Option<String>> {
+    match res {
+        Ok(Some(row)) => {
+            let ts = row.get::<_, Option<i64>>(0);
+            match ts {
+                Some(ts) => Ok(Some(format!("{}", ts))),
+                None => Ok(None),
+            }
+        }
+        Err(e) => Err(LakeSoulMetaDataError::from(e)),
+        Ok(None) => Ok(None),
+    }
+}
+
 pub async fn execute_query_scalar(
     client: &mut Client,
     prepared: &mut PreparedStatementMap,
@@ -1243,27 +1244,12 @@ pub async fn execute_query_scalar(
     let query_type = DaoType::try_from(query_type).unwrap();
     let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
-    let params = joined_string
-        .split(PARAM_DELIM)
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|str| str.to_string())
-        .collect::<Vec<String>>();
+    let params = get_params(joined_string);
 
     match query_type {
         DaoType::GetLatestTimestampFromPartitionInfoWithoutPartitionDesc if params.len() == 1 => {
             let result = client.query_opt(&statement, &[&params[0]]).await;
-            match result {
-                Ok(Some(row)) => {
-                    let ts = row.get::<_, Option<i64>>(0);
-                    match ts {
-                        Some(ts) => Ok(Some(format!("{}", ts))),
-                        None => Ok(None),
-                    }
-                }
-                Err(e) => Err(LakeSoulMetaDataError::from(e)),
-                Ok(None) => Ok(None),
-            }
+            ts_string(result)
         }
         DaoType::GetLatestTimestampFromPartitionInfo if params.len() == 2 => {
             let result = client.query_opt(&statement, &[&params[0], &params[1]]).await;
@@ -1293,17 +1279,7 @@ pub async fn execute_query_scalar(
             let result = client
                 .query_opt(&statement, &[&params[0], &params[1], &i64::from_str(&params[2])?])
                 .await;
-            match result {
-                Ok(Some(row)) => {
-                    let ts = row.get::<_, Option<i64>>(0);
-                    match ts {
-                        Some(ts) => Ok(Some(format!("{}", ts))),
-                        None => Ok(None),
-                    }
-                }
-                Err(e) => Err(LakeSoulMetaDataError::from(e)),
-                Ok(None) => Ok(None),
-            }
+            ts_string(result)
         }
 
         _ => {
@@ -1330,6 +1306,7 @@ pub async fn clean_meta_for_test(client: &Client) -> Result<i32> {
     }
 }
 
+///  Create a pg connection, return pg client
 pub async fn create_connection(config: String) -> Result<Client> {
     let (client, connection) = match tokio_postgres::connect(config.as_str(), NoTls).await {
         Ok((client, connection)) => (client, connection),
@@ -1348,10 +1325,21 @@ pub async fn create_connection(config: String) -> Result<Client> {
     Ok(client)
 }
 
+fn row_to_uuid_list(row: &Row) -> Vec<entity::Uuid> {
+    row.get::<_, Vec<uuid::Uuid>>(4)
+        .iter()
+        .map(|uuid| {
+            let (high, low) = uuid.as_u64_pair();
+            entity::Uuid { high, low }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use prost::Message;
     use proto::proto::entity;
+
     #[tokio::test]
     async fn test_entity() -> std::io::Result<()> {
         let namespace = entity::Namespace {
@@ -1381,7 +1369,7 @@ mod tests {
 
         let meta_info = entity::MetaInfo {
             list_partition: vec![],
-            table_info: core::option::Option::None,
+            table_info: None,
             read_partition_info: vec![],
         };
         println!("{:?}", meta_info);
@@ -1398,4 +1386,7 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_client() {}
 }

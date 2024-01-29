@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow_schema::{DataType, Field, SchemaRef, Fields};
+use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
@@ -45,7 +45,7 @@ impl Parser {
                         "lteq" => expr.lt_eq(value),
                         _ => Expr::Literal(ScalarValue::Boolean(Some(true))),
                     }
-                } 
+                }
             } else {
                 Expr::Literal(ScalarValue::Boolean(Some(false)))
             }
@@ -155,35 +155,39 @@ impl Parser {
 
 fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
     if let Ok(field) = schema.field_with_name(expr_str) {
-        Some((col(datafusion::common::Column::new_unqualified(expr_str)), Arc::new(field.clone())))
-        
+        Some((
+            col(datafusion::common::Column::new_unqualified(expr_str)),
+            Arc::new(field.clone()),
+        ))
     } else {
         let mut expr: Option<(Expr, Arc<Field>)> = None;
         let mut root = "".to_owned();
         let mut sub_fields: &Fields = schema.fields();
-        for expr_substr in expr_str.split('.').into_iter() {
+        for expr_substr in expr_str.split('.') {
             root = if root.is_empty() {
                 expr_substr.to_owned()
             } else {
                 format!("{}.{}", root, expr_substr)
             };
             if let Some((_, field)) = sub_fields.find(&root) {
-                
                 expr = if let Some((folding_exp, _)) = expr {
                     Some((folding_exp.field(field.name()), field.clone()))
                 } else {
-                    Some((col(datafusion::common::Column::new_unqualified(field.name())), field.clone()))
+                    Some((
+                        col(datafusion::common::Column::new_unqualified(field.name())),
+                        field.clone(),
+                    ))
                 };
                 root = "".to_owned();
-                
+
                 sub_fields = match field.data_type() {
                     DataType::Struct(struct_sub_fields) => &struct_sub_fields,
-                    _ => sub_fields
+                    _ => sub_fields,
                 };
-            } 
+            }
         }
         expr
-    } 
+    }
 }
 
 #[cfg(test)]

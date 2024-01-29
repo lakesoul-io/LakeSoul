@@ -59,6 +59,7 @@ impl LakeSoulParquetProvider {
     pub async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
         let mut plans = vec![];
         let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema().unwrap();
+        // one file is a table scan
         for i in 0..self.config.files.len() {
             let file = self.config.files[i].clone();
             let df = context.read_parquet(file, Default::default()).await.unwrap();
@@ -108,27 +109,6 @@ impl TableProvider for LakeSoulParquetProvider {
         TableType::Base
     }
 
-    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
-        if self.config.primary_keys.is_empty() {
-            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
-        } else {
-            filters
-                .iter()
-                .map(|f| {
-                    if let Ok(cols) = f.to_columns() {
-                        if cols.iter().all(|col| self.config.primary_keys.contains(&col.name)) {
-                            Ok(TableProviderFilterPushDown::Inexact)
-                        } else {
-                            Ok(TableProviderFilterPushDown::Unsupported)
-                        }
-                    } else {
-                        Ok(TableProviderFilterPushDown::Unsupported)
-                    }
-                })
-                .collect()
-        }
-    }
-
     async fn scan(
         &self,
         _state: &SessionState,
@@ -158,8 +138,8 @@ impl TableProvider for LakeSoulParquetProvider {
                 df.select(projected_cols)?
             };
 
-            let phycical_plan = df.create_physical_plan().await.unwrap();
-            inputs.push(phycical_plan);
+            let physical_plan = df.create_physical_plan().await.unwrap();
+            inputs.push(physical_plan);
         }
 
         let full_schema = SchemaRef::new(Schema::new(
@@ -184,6 +164,27 @@ impl TableProvider for LakeSoulParquetProvider {
         ));
 
         self.create_physical_plan(projections, full_schema, inputs).await
+    }
+
+    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
+        if self.config.primary_keys.is_empty() {
+            Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        } else {
+            filters
+                .iter()
+                .map(|f| {
+                    if let Ok(cols) = f.to_columns() {
+                        if cols.iter().all(|col| self.config.primary_keys.contains(&col.name)) {
+                            Ok(TableProviderFilterPushDown::Inexact)
+                        } else {
+                            Ok(TableProviderFilterPushDown::Unsupported)
+                        }
+                    } else {
+                        Ok(TableProviderFilterPushDown::Unsupported)
+                    }
+                })
+                .collect()
+        }
     }
 }
 
@@ -239,7 +240,7 @@ impl LakeSoulParquetScanExec {
 }
 
 impl DisplayAs for LakeSoulParquetScanExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LakeSoulParquetScanExec")
     }
 }
@@ -329,7 +330,7 @@ pub fn merge_stream(
                     }
                 })
                 .collect::<Vec<_>>(),
-        )); //merge_schema
+        )); // merge_schema
         let merge_ops = schema
             .fields()
             .iter()
@@ -345,7 +346,7 @@ pub fn merge_stream(
         let merge_stream = SortedStreamMerger::new_from_streams(
             streams,
             merge_schema,
-            primary_keys.iter().map(String::clone).collect(),
+            primary_keys.iter().cloned().collect(),
             batch_size,
             merge_ops,
         )
@@ -395,6 +396,7 @@ pub async fn prune_filter_and_execute(
         })?;
         // column pruning
         let df = df.select(cols)?;
+        // return a stream
         df.execute_stream().await
     }
 }
@@ -475,7 +477,7 @@ mod tests {
     async fn query(db: LakeSoulParquetProvider, filter: Option<Expr>) -> Result<()> {
         // create local execution context
         let config = SessionConfig::default();
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
 
         let db = db.build_with_context(&ctx).await.unwrap();
 
@@ -530,7 +532,7 @@ mod tests {
         let results = ctx
             .sql("SELECT * FROM lakesoul")
             .await?
-            .filter(col("value").gt(datafusion::prelude::Expr::Literal(ScalarValue::Int32(Some(1)))))?
+            .filter(col("value").gt(Expr::Literal(ScalarValue::Int32(Some(1)))))?
             .select(vec![col("hash")])?
             .explain(true, false)?
             .collect()

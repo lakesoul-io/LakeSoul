@@ -96,6 +96,7 @@ jobs:
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -164,6 +165,7 @@ jobs:
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -232,6 +234,7 @@ jobs:
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 1
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Init PG RBAC
         run: |
           ./script/meta_rbac_init_for_local_test.sh -j 1
@@ -312,6 +315,7 @@ jobs:
       - name: Init PG
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -380,7 +384,7 @@ jobs:
       - name: Init PG
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
-
+          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Init PG RBAC ROW POLICY
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test

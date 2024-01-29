@@ -271,7 +271,7 @@
     "description": "The title of the tag list page"
   },
   "homepage.documentBtnLink": {
-    "message": "/zh-Hans/docs/intro/"
+    "message": "/zh-Hans/docs/intro"
   },
   "homepage.documentBtn": {
     "message": "文档教程"

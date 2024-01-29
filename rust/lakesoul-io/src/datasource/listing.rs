@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,14 +19,20 @@ use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion_common::{FileTypeWriterOptions, Result};
+use tracing::{debug, instrument};
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::transform::uniform_schema;
 
 pub struct LakeSoulListingTable {
     listing_table: Arc<ListingTable>,
-
     lakesoul_io_config: LakeSoulIOConfig,
+}
+
+impl Debug for LakeSoulListingTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LakeSoulListingTable{..}").finish()
+    }
 }
 
 impl LakeSoulListingTable {
@@ -59,6 +66,7 @@ impl LakeSoulListingTable {
                 // .with_table_partition_cols(table_partition_cols);
 
                 let mut objects = vec![];
+
                 for url in &table_paths {
                     objects.push(store.head(url.prefix()).await?);
                 }
@@ -129,6 +137,19 @@ impl TableProvider for LakeSoulListingTable {
         TableType::Base
     }
 
+    #[instrument]
+    async fn scan(
+        &self,
+        state: &SessionState,
+        projection: Option<&Vec<usize>>,
+        // filters and limit can be used here to inject some push-down operations if needed
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        debug!("listing scan start");
+        self.listing_table.scan(state, projection, filters, limit).await
+    }
+
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
         if self.lakesoul_io_config.primary_keys.is_empty() {
             if self.lakesoul_io_config.parquet_filter_pushdown {
@@ -146,6 +167,7 @@ impl TableProvider for LakeSoulListingTable {
                                 .iter()
                                 .all(|col| self.lakesoul_io_config.primary_keys.contains(&col.name))
                         {
+                            // use primary key
                             Ok(TableProviderFilterPushDown::Inexact)
                         } else {
                             Ok(TableProviderFilterPushDown::Unsupported)
@@ -156,17 +178,6 @@ impl TableProvider for LakeSoulListingTable {
                 })
                 .collect()
         }
-    }
-
-    async fn scan(
-        &self,
-        state: &SessionState,
-        projection: Option<&Vec<usize>>,
-        // filters and limit can be used here to inject some push-down operations if needed
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        self.listing_table.scan(state, projection, filters, limit).await
     }
 
     async fn insert_into(
@@ -201,9 +212,9 @@ impl TableProvider for LakeSoulListingTable {
         // .await?;
 
         // let file_groups = file_list_stream.try_collect::<Vec<_>>().await?;
-        //if we are writing a single output_partition to a table backed by a single file
-        //we can append to that file. Otherwise, we can write new files into the directory
-        //adding new files to the listing table in order to insert to the table.
+        // if we are writing a single output_partition to a table backed by a single file
+        //  we can append to that file. Otherwise, we can write new files into the directory
+        //  adding new files to the listing table in order to insert to the table.
         let _input_partitions = input.output_partitioning().partition_count();
         // let writer_mode = match self.options().insert_mode {
         //     ListingTableInsertMode::AppendToFile => {

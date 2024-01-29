@@ -37,6 +37,7 @@ impl MergeParquetExec {
         metadata_size_hint: Option<usize>,
         io_config: LakeSoulIOConfig,
     ) -> Self {
+        // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
             let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint));

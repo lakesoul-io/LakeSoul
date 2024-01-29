@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{error::Error, fmt::Display, result, sync::Arc};
+use tokio::task::JoinError;
 
 use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
@@ -22,6 +23,7 @@ pub enum LakeSoulError {
     DataFusionError(DataFusionError),
     ArrowError(ArrowError),
     SerdeJsonError(serde_json::Error),
+    TokioJoinError(tokio::task::JoinError),
     Internal(String),
 }
 
@@ -49,6 +51,12 @@ impl From<serde_json::Error> for LakeSoulError {
     }
 }
 
+impl From<tokio::task::JoinError> for LakeSoulError {
+    fn from(err: JoinError) -> Self {
+        Self::TokioJoinError(err)
+    }
+}
+
 impl Display for LakeSoulError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
@@ -56,6 +64,7 @@ impl Display for LakeSoulError {
             LakeSoulError::DataFusionError(ref desc) => write!(f, "DataFusion error: {desc}"),
             LakeSoulError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"),
             LakeSoulError::ArrowError(ref desc) => write!(f, "arrow error: {desc}"),
+            LakeSoulError::TokioJoinError(ref desc) => write!(f, "tokio error: {desc}"),
             LakeSoulError::Internal(ref desc) => {
                 write!(
                     f,
@@ -74,6 +83,7 @@ impl Error for LakeSoulError {
             LakeSoulError::DataFusionError(e) => Some(e),
             LakeSoulError::SerdeJsonError(e) => Some(e),
             LakeSoulError::ArrowError(e) => Some(e),
+            LakeSoulError::TokioJoinError(e) => Some(e),
             LakeSoulError::Internal(_) => None,
         }
     }

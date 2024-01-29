@@ -11,7 +11,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{
     new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit, FieldRef, Fields};
+use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{ArrowError, External};
 
@@ -29,7 +29,7 @@ pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
         DataType::Struct(fields) => Arc::new(Field::new(
             orig_field.name(),
             DataType::Struct(Fields::from(fields.iter().map(uniform_field).collect::<Vec<_>>())),
-            orig_field.is_nullable()
+            orig_field.is_nullable(),
         )),
         _ => orig_field.clone(),
     }
@@ -38,11 +38,7 @@ pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
 /// adjust time zone to UTC
 pub fn uniform_schema(orig_schema: SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
-        orig_schema
-            .fields()
-            .iter()
-            .map(uniform_field)
-            .collect::<Vec<_>>(),
+        orig_schema.fields().iter().map(uniform_field).collect::<Vec<_>>(),
     ))
 }
 
@@ -121,7 +117,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-        .map_err(ArrowError)
+    .map_err(ArrowError)
 }
 
 pub fn transform_array(
@@ -151,10 +147,10 @@ pub fn transform_array(
                 .with_timezone_opt(Some(target_tz))
                 .into_data(),
         }),
-        DataType::Struct(target_child_fileds) => {
+        DataType::Struct(target_child_fields) => {
             let orig_array = as_struct_array(&array);
             let mut child_array = vec![];
-            target_child_fileds.iter().try_for_each(|field| -> Result<()> {
+            target_child_fields.iter().try_for_each(|field| -> Result<()> {
                 match orig_array.column_by_name(field.name()) {
                     Some(array) => {
                         child_array.push((

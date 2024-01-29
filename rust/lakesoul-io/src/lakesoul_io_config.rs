@@ -280,10 +280,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                     )))
                     .map_err(|e| External(Box::new(e)))?;
                 let endpoint_s = endpoint_url.to_string();
-                endpoint = endpoint_s
-                    .strip_suffix('/')
-                    .map(|s| s.to_string())
-                    .or(Some(endpoint_s));
+                endpoint = endpoint_s.strip_suffix('/').map(|s| s.to_string()).or(Some(endpoint_s));
             }
         }
     }
@@ -415,12 +412,15 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size);
+        .with_prefetch(config.prefetch_size)
+        .with_information_schema(true)
+        .with_create_default_catalog_and_schema(true);
 
     sess_conf.options_mut().optimizer.enable_round_robin_repartition = false; // if true, the record_batches poll from stream become unordered
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
+    // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
     let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
 
@@ -451,15 +451,20 @@ pub fn create_session_context_with_planner(
         SessionState::new_with_config_rt(sess_conf, Arc::new(runtime))
     };
     // only keep projection/filter rules as others are unnecessary
-    let physical_opt_rules = state.physical_optimizers().iter().filter_map(|r| {
-        // this rule is private mod in datafusion, so we use name to filter out it
-        if r.name() == "ProjectionPushdown" {
-            Some(r.clone())
-        } else {
-            None
-        }
-    }).collect();
-    state = state.with_analyzer_rules(vec![])
+    let physical_opt_rules = state
+        .physical_optimizers()
+        .iter()
+        .filter_map(|r| {
+            // this rule is private mod in datafusion, so we use name to filter out it
+            if r.name() == "ProjectionPushdown" {
+                Some(r.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    state = state
+        .with_analyzer_rules(vec![])
         .with_optimizer_rules(vec![Arc::new(PushDownFilter {})])
         .with_physical_optimizer_rules(physical_opt_rules);
 
