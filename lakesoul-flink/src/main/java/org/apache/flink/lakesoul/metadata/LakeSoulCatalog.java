@@ -249,7 +249,7 @@ public class LakeSoulCatalog implements Catalog {
                         uniqueConstraint -> String.join(LAKESOUL_HASH_PARTITION_SPLITTER,
                                 uniqueConstraint.getColumns()))
                 .orElse("");
-        Map<String, String> tableOptions = table.getOptions();
+        Map<String, String> tableOptions = new HashMap<>(table.getOptions());
 
         // adding cdc options
         if (!"".equals(primaryKeys)) {
