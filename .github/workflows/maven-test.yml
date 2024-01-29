@@ -380,7 +380,6 @@ jobs:
       - name: Init PG
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
-
       - name: Init PG RBAC ROW POLICY
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_rbac_init.sql lakesoul_test

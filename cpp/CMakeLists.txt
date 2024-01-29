@@ -125,7 +125,8 @@ endif()
 add_library(liblakesoul_io_c SHARED IMPORTED)
 set_target_properties(liblakesoul_io_c PROPERTIES
     IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/../rust/target/release/liblakesoul_io_c.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c")
+    INTERFACE_INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/../rust/lakesoul-io-c"
+    IMPORTED_NO_SONAME TRUE)
 
 add_library(libarrow SHARED IMPORTED)
 set_target_properties(libarrow PROPERTIES

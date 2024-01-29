@@ -342,7 +342,12 @@ impl MetaDataClient {
                         }
                     })
                     .collect::<Vec<PartitionInfo>>();
-                self.transaction_insert_partition_info(new_partition_list).await?;
+                let val = self.transaction_insert_partition_info(new_partition_list).await?;
+                let vec = self
+                    .get_all_partition_info(&table_info.table_id.as_str())
+                    .await
+                    .unwrap();
+                debug!("val = {val} ,get partition list after finished: {:?}", vec);
                 Ok(())
             }
             _ => {
@@ -495,7 +500,13 @@ impl MetaDataClient {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<String>>();
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
+        debug!("table_info: {:?}", table_info);
         let partition_list = self.get_all_partition_info(table_info.table_id.as_str()).await?;
+        debug!(
+            "{} 's partition_list: {:?}",
+            table_info.table_id.as_str(),
+            partition_list
+        );
         let mut data_commit_info_list = Vec::<String>::new();
         for idx in 0..partition_list.len() {
             let partition_info = partition_list.get(idx).unwrap();
