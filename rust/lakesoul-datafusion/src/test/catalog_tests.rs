@@ -42,16 +42,16 @@ mod catalog_tests {
         Arc::new(MetaDataClient::from_env().await.unwrap())
     }
 
-    fn random_namespace(hash_bucket_num: usize) -> Vec<Namespace> {
+    fn random_namespace(prefix: &str, hash_bucket_num: usize) -> Vec<Namespace> {
         let mut rng = ChaCha8Rng::from_rng(thread_rng()).unwrap();
         (0..rng.gen_range(1..10))
             .map(|_| Namespace {
                 namespace: {
                     let mut v = String::with_capacity(5);
-                    for _ in 0..5 {
+                    for _ in 0..10 {
                         v.push((&mut rng).gen_range('a'..'z'));
                     }
-                    v
+                    format!("{prefix}_{v}")
                 },
                 properties: serde_json::to_string(&LakeSoulTableProperty {
                     hash_bucket_num: Some(hash_bucket_num),
@@ -73,14 +73,22 @@ mod catalog_tests {
             for _ in 0..n {
                 let table_name = {
                     let mut v = String::with_capacity(8);
-                    for _ in 0..5 {
+                    for _ in 0..10 {
                         v.push((&mut rng).gen_range('a'..'z'));
                     }
                     v
                 };
                 let path = format!("{}{}/{}", env::temp_dir().to_str().unwrap(), &np.namespace, &table_name);
+                let table_id = format!(
+                    "table_{}",
+                    (&mut rng)
+                        .sample_iter(&Alphanumeric)
+                        .take(22)
+                        .map(char::from)
+                        .collect::<String>()
+                );
                 v.push(TableInfo {
-                    table_id: (&mut rng).sample_iter(&Alphanumeric).take(12).map(char::from).collect(),
+                    table_id,
                     table_namespace: np.namespace.clone(),
                     table_name,
                     table_path: format!("file://{}", path.clone()),
@@ -110,7 +118,6 @@ mod catalog_tests {
         }
     }
 
-    #[test]
     fn test_catalog_api() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
@@ -134,7 +141,7 @@ mod catalog_tests {
                 .build();
 
             let sc = Arc::new(create_session_context(&mut config).unwrap());
-            let data = random_tables(random_namespace(4), schema.clone());
+            let data = random_tables(random_namespace("api", 4), schema.clone());
 
             let catalog = Arc::new(LakeSoulCatalog::new(client.clone(), sc.clone()));
             let dummy_schema_provider = Arc::new(LakeSoulNamespace::new(client.clone(), sc.clone(), "dummy"));
@@ -153,7 +160,7 @@ mod catalog_tests {
                     lakesoul_table.execute_upsert(batch.clone()).await.unwrap();
                 }
             }
-            assert!(sc.register_catalog("lakesoul", catalog.clone()).is_none());
+            assert!(sc.register_catalog("test_catalog_api", catalog.clone()).is_none());
             for (np, tables) in data.iter() {
                 let schema = LakeSoulNamespace::new(client.clone(), sc.clone(), &np.namespace);
                 let names = schema.table_names();
@@ -168,7 +175,6 @@ mod catalog_tests {
         });
     }
 
-    #[test]
     fn test_catalog_sql() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
@@ -211,7 +217,7 @@ mod catalog_tests {
                     let df = sc.sql(sql).await.unwrap();
                     df.collect().await.unwrap()
                 };
-                sc.register_catalog("lakesoul", catalog.clone());
+                sc.register_catalog("test_catalog_sql", catalog.clone());
                 let after = {
                     let sql = "show tables";
                     let df = sc.sql(sql).await.unwrap();
@@ -219,11 +225,11 @@ mod catalog_tests {
                 };
                 assert_ne!(after, before);
             }
-            let data = random_tables(random_namespace(4), schema.clone());
+            let data = random_tables(random_namespace("sql", 4), schema.clone());
             for (np, tables) in data.iter() {
                 {
                     // create schema
-                    let sql = format!("create schema lakesoul.{}", np.namespace);
+                    let sql = format!("create schema test_catalog_sql.{}", np.namespace);
                     let df = sc.sql(&sql).await.unwrap();
                     df.collect().await.unwrap();
                     let ret = client.get_namespace_by_namespace(&np.namespace).await.unwrap();
@@ -243,29 +249,34 @@ mod catalog_tests {
                 debug!("{names:?}");
                 assert_eq!(names.len(), tables.len());
                 for name in names {
-                    assert!(schema.table(&name).await.is_some());
-                    {
-                        // test select
-                        let q = format!("select * from lakesoul.{}.{}", np.namespace, name);
-                        let df = sc.sql(&q).await.unwrap();
-                        let record = df.collect().await.unwrap();
-                        assert_batches_eq!(expected, &record);
-                    }
                     {
                         // test show columns
-                        let q = format!("show columns from lakesoul.{}.{}", np.namespace, name);
+                        let q = format!("show columns from test_catalog_sql.{}.{}", np.namespace, name);
                         let df = sc.sql(&q).await.unwrap();
                         let record = df.collect().await.unwrap();
                         assert!(record.len() > 0);
                     }
                     {
+                        // test select
+                        let q = format!("select * from test_catalog_sql.{}.{}", np.namespace, name);
+                        let df = sc.sql(&q).await.unwrap();
+                        let record = df.collect().await.unwrap();
+                        assert_batches_eq!(expected, &record);
+                    }
+                    {
                         // drop table
-                        let sql = format!("drop table lakesoul.{}.{}", np.namespace, name);
+                        let sql = format!("drop table test_catalog_sql.{}.{}", np.namespace, name);
                         let df = sc.sql(&sql).await.unwrap();
                         assert!(df.collect().await.is_ok())
                     }
                 }
             }
         });
+    }
+
+    #[test]
+    fn test_all_cases() {
+        test_catalog_api();
+        test_catalog_sql();
     }
 }

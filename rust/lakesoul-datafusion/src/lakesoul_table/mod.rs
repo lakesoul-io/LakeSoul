@@ -7,13 +7,13 @@ pub mod helpers;
 use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
+use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
     datasource::TableProvider,
     execution::context::{SessionContext, SessionState},
     logical_expr::LogicalPlanBuilder,
 };
-use datafusion::sql::TableReference;
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
@@ -83,7 +83,7 @@ impl LakeSoulTable {
         let schema = record_batch.schema();
         let logical_plan = LogicalPlanBuilder::insert_into(
             sess_ctx.read_batch(record_batch)?.into_unoptimized_plan(),
-            TableReference::partial(self.table_namespace().to_string(),self.table_name().to_string()),
+            TableReference::partial(self.table_namespace().to_string(), self.table_name().to_string()),
             schema.deref(),
             false,
         )?

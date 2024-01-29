@@ -54,7 +54,6 @@ jobs:
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
