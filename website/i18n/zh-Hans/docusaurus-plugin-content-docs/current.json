@@ -14,5 +14,9 @@
   "sidebar.tutorialSidebar.category.Usage Docs": {
     "message": "使用文档",
     "description": "The label for category Usage Docs in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.High Avaliability": {
+    "message": "高可用",
+    "description": "The label for category High Avaliability in sidebar tutorialSidebar"
   }
 }
