@@ -14,5 +14,9 @@
   "sidebar.tutorialSidebar.category.Usage Docs": {
     "message": "使用文档",
     "description": "The label for category Usage Docs in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Deployment": {
+    "message": "生产部署",
+    "description": "The label for category Deployment in sidebar tutorialSidebar"
   }
 }
