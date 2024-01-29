@@ -1,4 +1,4 @@
-# 配置 Postgres 高可用集群
+# 部署 PostgreSQL 高可用集群
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -8,7 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 使用Pigsty安装部署
 
-官方介绍： https://doc.pigsty.cc/#/zh/README
+我们推荐使用自动化工具部署 PostgreSQL 高可用集群，例如 Pigsty。
+
+Pigsty 官方介绍： https://doc.pigsty.cc/#/zh/README
 
 ### 下载Pigsty安装包
 ```ini

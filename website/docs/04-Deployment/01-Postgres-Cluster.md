@@ -1,4 +1,4 @@
-# Setup Postgres Cluster
+# Deploy HA PostgreSQL Cluster
 
 <!--
 SPDX-FileCopyrightText: 2023 LakeSoul Contributors
@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 ## Pigsty
+
+We recommend using automation tools such as Pigsty to deploy a production PostgreSQL cluster with HA.
 
 Pigsty Introduction : https://doc.pigsty.cc/
 
