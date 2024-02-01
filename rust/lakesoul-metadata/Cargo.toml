@@ -24,7 +24,8 @@ uuid = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
-
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 test-log = "0.2.14"

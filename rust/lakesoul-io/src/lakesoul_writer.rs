@@ -157,7 +157,11 @@ impl ExecutionPlan for ReceiverStreamExec {
     }
 
     fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        let builder = self.receiver_stream_builder.borrow_mut().take().unwrap();
+        let builder = self
+            .receiver_stream_builder
+            .borrow_mut()
+            .take()
+            .ok_or(DataFusionError::Internal("empty receiver stream".to_string()))?;
         Ok(builder.build())
     }
 }
@@ -167,7 +171,10 @@ impl MultiPartAsyncWriter {
         if config.files.is_empty() {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
-        let file_name = &config.files.last().unwrap();
+        let file_name = &config
+            .files
+            .last()
+            .ok_or(DataFusionError::Internal("wrong file name".to_string()))?;
 
         // local style path should have already been handled in create_session_context,
         // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
@@ -280,7 +287,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         if v.len() > 0 {
             MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
         }
-        // shutdown multi part async writer to complete the upload
+        // shutdown multi-part async writer to complete the upload
         this.writer.flush().await?;
         this.writer.shutdown().await?;
         Ok(())
@@ -391,7 +398,7 @@ impl SortAsyncWriter {
 impl AsyncBatchWriter for SortAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         if let Some(err) = &self.err {
-            return Err(Internal(format!("SortAsyncWriter alread failed with error {:?}", err)));
+            return Err(Internal(format!("SortAsyncWriter already failed with error {:?}", err)));
         }
         let send_result = self.sorter_sender.send(Ok(batch)).await;
         match send_result {
@@ -431,7 +438,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
             drop(sender);
             join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
         } else {
-            // previouse error has already aborted writer
+            // previous error has already aborted writer
             Ok(())
         }
     }

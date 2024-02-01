@@ -13,7 +13,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
 use datafusion::error::Result;
-use datafusion_common::DataFusionError::{ArrowError, External};
+use datafusion_common::DataFusionError::{ArrowError, External, Internal};
 
 use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING};
 
@@ -254,7 +254,12 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
 
 fn date_str_to_epoch_days(value: &str) -> Result<i32> {
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|e| External(Box::new(e)))?;
-    let datetime = date.and_hms_opt(12, 12, 12).unwrap();
-    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).unwrap();
+    let datetime = date
+        .and_hms_opt(12, 12, 12)
+        .ok_or(Internal("invalid h/m/s".to_string()))?;
+    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
+    ))?;
+
     Ok(datetime.signed_duration_since(epoch_time).num_days() as i32)
 }

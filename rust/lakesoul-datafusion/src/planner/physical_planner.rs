@@ -56,7 +56,8 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 // let schema = session_state.schema_for_ref(table_name)?;
                 let lakesoul_table = LakeSoulTable::for_namespace_and_name(schema.unwrap_or("default"), name)
                     .await
-                    .unwrap();
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
                 match lakesoul_table.as_sink_provider(session_state).await {
                     Ok(provider) => {
                         let physical_input = self.create_physical_plan(input, session_state).await?;

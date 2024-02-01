@@ -118,7 +118,7 @@ impl<T> std::error::Error for SendError<T> {}
 ///
 /// This handle can be cloned. All clones will write into the same channel. Dropping the last sender will close the
 /// channel. In this case, the [receiver](DistributionReceiver) will still be able to poll the remaining data, but will
-/// receive `None` afterwards.
+/// receive `None` afterward.
 #[derive(Debug)]
 pub struct DistributionSender<T> {
     /// To prevent lock inversion / deadlock, channel lock is always acquired prior to gate lock
@@ -239,7 +239,7 @@ impl<T> Drop for DistributionReceiver<T> {
         let mut guard_gate = self.gate.lock();
         guard_channel.recv_alive = false;
 
-        // Note: n_senders check is here so we don't double-clear the signal
+        // Note: n_senders check is here, so we don't double-clear the signal
         if guard_channel.data.is_empty() && (guard_channel.n_senders > 0) {
             // channel is gone, so we need to clear our signal
             guard_gate.empty_channels -= 1;

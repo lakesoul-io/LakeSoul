@@ -31,6 +31,7 @@ pub fn create_sort_exprs(
         .collect::<Result<Vec<_>>>()
 }
 
+//noinspection ALL
 pub fn create_hash_partitioning(
     columns: &[String],
     partitioning_num: usize,

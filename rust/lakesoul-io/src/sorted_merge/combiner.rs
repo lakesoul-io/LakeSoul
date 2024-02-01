@@ -188,7 +188,7 @@ impl MinHeapSortKeyBatchRangeCombiner {
                     self.const_empty_array.get(field.data_type()),
                 )
             })
-            .collect();
+            .collect::<ArrowResult<Vec<ArrayRef>>>()?;
 
         self.in_progress.clear();
 
@@ -212,7 +212,7 @@ fn merge_sort_key_array_ranges(
     batch_idx_to_flatten_array_idx: &HashMap<usize, usize>,
     merge_operator: &MergeOperator,
     empty_array: ArrayRef,
-) -> ArrayRef {
+) -> ArrowResult<ArrayRef> {
     assert_eq!(ranges.len(), capacity);
     let data_type = (*field.data_type()).clone();
     let mut append_array_data_builder: Box<dyn ArrayBuilder> = match data_type {
@@ -242,13 +242,14 @@ fn merge_sort_key_array_ranges(
     let extend_list: Vec<(usize, usize)> = ranges
         .iter()
         .map(|ranges_per_row| {
-            match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder) {
+            let res = match merge_operator.merge(data_type.clone(), ranges_per_row, &mut append_array_data_builder)? {
                 MergeResult::AppendValue(row_idx) => (append_idx, row_idx),
                 MergeResult::AppendNull => (null_idx, 0),
                 MergeResult::Extend(batch_idx, row_idx) => (batch_idx_to_flatten_array_idx[&batch_idx], row_idx),
-            }
+            };
+            Ok(res)
         })
-        .collect();
+        .collect::<ArrowResult<Vec<_>>>()?;
 
     let append_array = match append_array_data_builder.len() {
         0 => empty_array,
@@ -264,5 +265,4 @@ fn merge_sort_key_array_ranges(
             .as_slice(),
         extend_list.as_slice(),
     )
-    .unwrap()
 }

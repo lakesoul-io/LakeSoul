@@ -54,13 +54,17 @@ impl MetaDataClient {
                     &config_map
                         .get("lakesoul.pg.url=")
                         .unwrap_or(&"jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")[5..],
-                )
-                .unwrap();
+                )?;
                 Self::from_config(format!(
                     "host={} port={} dbname={} user={} password={}",
-                    url.host_str().unwrap(),
-                    url.port().unwrap(),
-                    url.path_segments().unwrap().next().unwrap(),
+                    url.host_str()
+                        .ok_or(LakeSoulMetaDataError::Internal("url host missing".to_string()))?,
+                    url.port()
+                        .ok_or(LakeSoulMetaDataError::Internal("url port missing".to_string()))?,
+                    url.path_segments()
+                        .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?
+                        .next()
+                        .ok_or(LakeSoulMetaDataError::Internal("url path missing".to_string()))?,
                     config_map.get("lakesoul.pg.username=").unwrap_or(&"lakesoul_test"),
                     config_map.get("lakesoul.pg.password=").unwrap_or(&"lakesoul_test")
                 ))
@@ -280,7 +284,10 @@ impl MetaDataClient {
     }
 
     pub async fn commit_data(&self, meta_info: MetaInfo, commit_op: CommitOp) -> Result<()> {
-        let table_info = meta_info.table_info.unwrap();
+        let table_info = meta_info
+            .table_info
+            .ok_or(LakeSoulMetaDataError::Internal("table info missing".to_string()))?;
+
         if !table_info.table_name.is_empty() {
             // todo: updateTableShortName
         }
@@ -320,33 +327,30 @@ impl MetaDataClient {
                         match cur_map.get(partition_desc) {
                             Some(cur_partition_info) => {
                                 let mut cur_partition_info = cur_partition_info.clone();
-                                cur_partition_info.domain = self.get_table_domain(&table_info.table_id).unwrap();
+                                cur_partition_info.domain = self.get_table_domain(&table_info.table_id)?;
                                 cur_partition_info
                                     .snapshot
                                     .extend_from_slice(&partition_info.snapshot[..]);
                                 cur_partition_info.version += 1;
                                 cur_partition_info.commit_op = commit_op as i32;
                                 cur_partition_info.expression = partition_info.expression.clone();
-                                cur_partition_info
+                                Ok(cur_partition_info)
                             }
-                            None => PartitionInfo {
+                            None => Ok(PartitionInfo {
                                 table_id: table_info.table_id.clone(),
                                 partition_desc: partition_desc.clone(),
                                 version: 0,
                                 snapshot: Vec::from(&partition_info.snapshot[..]),
-                                domain: self.get_table_domain(&table_info.table_id).unwrap(),
+                                domain: self.get_table_domain(&table_info.table_id)?,
                                 commit_op: commit_op as i32,
                                 expression: partition_info.expression.clone(),
                                 ..Default::default()
-                            },
+                            }),
                         }
                     })
-                    .collect::<Vec<PartitionInfo>>();
+                    .collect::<Result<Vec<PartitionInfo>>>()?;
                 let val = self.transaction_insert_partition_info(new_partition_list).await?;
-                let vec = self
-                    .get_all_partition_info(&table_info.table_id.as_str())
-                    .await
-                    .unwrap();
+                let vec = self.get_all_partition_info(table_info.table_id.as_str()).await?;
                 debug!("val = {val} ,get partition list after finished: {:?}", vec);
                 Ok(())
             }
@@ -373,7 +377,10 @@ impl MetaDataClient {
         let table_id = &data_commit_info.table_id;
         let partition_desc = &data_commit_info.partition_desc;
         let commit_op = data_commit_info.commit_op;
-        let commit_id = &data_commit_info.commit_id.clone().unwrap();
+        let commit_id = &data_commit_info
+            .commit_id
+            .clone()
+            .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".to_string()))?;
         let commit_id_str = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
         match self
             .get_single_data_commit_info(table_id, partition_desc, &commit_id_str)
@@ -402,7 +409,7 @@ impl MetaDataClient {
                 }],
                 ..Default::default()
             },
-            CommitOp::from_i32(commit_op).unwrap(),
+            CommitOp::from_i32(commit_op).ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".to_string()))?,
         )
         .await
     }
@@ -508,8 +515,7 @@ impl MetaDataClient {
             partition_list
         );
         let mut data_commit_info_list = Vec::<String>::new();
-        for idx in 0..partition_list.len() {
-            let partition_info = partition_list.get(idx).unwrap();
+        for partition_info in &partition_list {
             let partition_desc = partition_info.partition_desc.clone();
             if partition_filter.contains(&partition_desc) {
                 continue;

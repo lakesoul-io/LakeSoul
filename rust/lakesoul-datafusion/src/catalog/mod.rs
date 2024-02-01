@@ -15,12 +15,12 @@ use proto::proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp, TableIn
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 use crate::serialize::arrow_java::ArrowJavaSchema;
 // use crate::transaction::TransactionMetaInfo;
-use crate::error::Result;
+use crate::error::{LakeSoulError, Result};
 
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
 mod lakesoul_catalog;
-//  used in catalog_test, but still say unused_imports, i think it is a bug about rust-lint.
+//  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
 // this is a workaround
 #[cfg(test)]
 pub use lakesoul_catalog::*;
@@ -37,8 +37,14 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
         .create_table(TableInfo {
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_name: table_name.to_string(),
-            table_path: format!("file://{}default/{}", env::temp_dir().to_str().unwrap(), table_name),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(&config.schema().into()).unwrap(),
+            table_path: format!(
+                "file://{}default/{}",
+                env::temp_dir()
+                    .to_str()
+                    .ok_or(LakeSoulError::Internal("can not get $TMPDIR".to_string()))?,
+                table_name
+            ),
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(&config.schema().into())?,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(4),
@@ -74,16 +80,20 @@ pub(crate) async fn create_io_config_builder(
         } else {
             vec![]
         };
-        Ok(create_io_config_builder_from_table_info(Arc::new(table_info)).with_files(data_files))
+        create_io_config_builder_from_table_info(Arc::new(table_info)).map(|builder| builder.with_files(data_files))
     } else {
         Ok(LakeSoulIOConfigBuilder::new())
     }
 }
 
-pub(crate) fn parse_table_info_partitions(partitions: String) -> (Vec<String>, Vec<String>) {
-    let (range_keys, hash_keys) = partitions.split_at(partitions.find(';').unwrap());
+pub(crate) fn parse_table_info_partitions(partitions: String) -> Result<(Vec<String>, Vec<String>)> {
+    let (range_keys, hash_keys) = partitions.split_at(
+        partitions
+            .find(';')
+            .ok_or(LakeSoulError::Internal("wrong partition format".to_string()))?,
+    );
     let hash_keys = &hash_keys[1..];
-    (
+    Ok((
         range_keys
             .split(',')
             .collect::<Vec<&str>>()
@@ -96,7 +106,7 @@ pub(crate) fn parse_table_info_partitions(partitions: String) -> (Vec<String>, V
             .iter()
             .filter_map(|str| if str.is_empty() { None } else { Some(str.to_string()) })
             .collect::<Vec<String>>(),
-    )
+    ))
 }
 
 pub(crate) async fn commit_data(
@@ -130,10 +140,7 @@ pub(crate) async fn commit_data(
                 })
                 .collect(),
             commit_op: CommitOp::AppendCommit as i32,
-            timestamp: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
+            timestamp: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64,
             commit_id: {
                 let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
                 Some(Uuid { high, low })

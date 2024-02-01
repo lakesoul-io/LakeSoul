@@ -7,6 +7,7 @@ use datafusion::catalog::schema::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::Namespace;
 use std::any::Any;
@@ -107,7 +108,7 @@ impl CatalogProvider for LakeSoulCatalog {
             Handle::current()
                 .spawn(async move { client.create_namespace(np).await })
                 .await
-                .expect("tokio join error in register schema")
+                .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?
         });
         Ok(schema)
     }

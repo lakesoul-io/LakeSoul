@@ -63,7 +63,7 @@ mod insert_tests {
         let schema = SchemaRef::new(dataframe.schema().into());
 
         let dataframe = if let Some(f) = filters {
-            dataframe.filter(Parser::parse(f.clone(), schema))?
+            dataframe.filter(Parser::parse(f.clone(), schema)?)?
         } else {
             dataframe
         };

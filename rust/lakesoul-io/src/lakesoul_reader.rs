@@ -374,7 +374,7 @@ mod tests {
         let mut row_cnt: usize = 0;
 
         while let Some(rb) = reader.next_rb().await {
-            row_cnt += &rb.unwrap().num_rows();
+            row_cnt += &rb?.num_rows();
         }
 
         Ok(row_cnt)
