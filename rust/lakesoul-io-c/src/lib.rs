@@ -731,7 +731,7 @@ pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntim
     convert_to_opaque(runtime)
 }
 
-// runtime is usually moved to create reader/writer
+// runtime is usually moved to create reader/writer,
 // so you don't need to free it unless it's used independently
 #[no_mangle]
 pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {

@@ -210,6 +210,7 @@ impl LakeSoulHashSinkExec {
             let file_absolute_path = format!("{}/part-{}_{:0>4}.parquet", table_info.table_path, write_id, partition);
             if !partitioned_writer.contains_key(&columnar_value) {
                 let mut config = create_io_config_builder_from_table_info(table_info.clone())
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?
                     .with_files(vec![file_absolute_path.clone()])
                     .with_schema(batch.schema())
                     .build();
@@ -268,7 +269,11 @@ impl LakeSoulHashSinkExec {
             commit_data(client.clone(), &table_name, partition_desc, files)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
-            debug!("table: {} insert success at {:?}",&table_name,std::time::SystemTime::now())
+            debug!(
+                "table: {} insert success at {:?}",
+                &table_name,
+                std::time::SystemTime::now()
+            )
         }
         Ok(count)
     }

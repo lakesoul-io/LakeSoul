@@ -138,7 +138,7 @@ impl ExecutionPlan for MergeParquetExec {
 
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
-            let input = self.inputs.get(i).unwrap();
+            let input = &self.inputs[i];
             let input_partition_count = input.output_partitioning().partition_count();
             if input_partition_count != 1 {
                 return Err(DataFusionError::Internal(format!(
@@ -146,7 +146,7 @@ impl ExecutionPlan for MergeParquetExec {
                                 InsertExec needs only a single partition."
                 )));
             }
-            let stream = input.execute(partition, context.clone()).unwrap();
+            let stream = input.execute(partition, context.clone())?;
             stream_init_futs.push(stream);
         }
 

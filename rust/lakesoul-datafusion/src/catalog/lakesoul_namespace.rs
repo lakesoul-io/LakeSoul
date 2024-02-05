@@ -100,10 +100,11 @@ impl SchemaProvider for LakeSoulNamespace {
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
         let _guard = self.namespace_lock.read().await;
-        if let Ok(_) = self
+        if self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
             .await
+            .is_ok()
         {
             debug!("call table() on table: {}.{}", &self.namespace, name);
             let config;
@@ -192,7 +193,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                 return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
                             }
                             debug("get table provider fail");
-                            return Err(DataFusionError::External("get table provider failed".into()));
+                            Err(DataFusionError::External("get table provider failed".into()))
                         }
                         Err(e) => match e {
                             LakeSoulMetaDataError::NotFound(_) => Ok(None),

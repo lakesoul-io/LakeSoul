@@ -37,7 +37,7 @@ use super::file_format::LakeSoulMetaDataParquetFormat;
 /// 2. Hive-style partitioning support, where a path such as
 /// `/files/date=1/1/2022/data.parquet` is injected as a `date` column.
 ///
-/// 3. Projection pushdown for formats that support it such as such as
+/// 3. Projection pushdown for formats that support it such as
 /// Parquet
 ///
 /// ```
@@ -56,7 +56,7 @@ impl LakeSoulTableProvider {
         as_sink: bool,
     ) -> crate::error::Result<Self> {
         let schema = schema_from_metadata_str(&table_info.table_schema);
-        let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone());
+        let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
 
         let file_format: Arc<dyn FileFormat> = match as_sink {
             true => {

@@ -39,6 +39,7 @@ parking_lot = "0.12.1"
 
 half = { workspace = true }
 log = "0.4.20"
+anyhow = { workspace = true, features = [] }
 
 
 [features]

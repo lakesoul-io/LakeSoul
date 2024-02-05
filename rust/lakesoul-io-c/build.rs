@@ -2,8 +2,8 @@ extern crate cbindgen;
 
 use std::env;
 
-fn main() {
-    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_dir = env::var("CARGO_MANIFEST_DIR")?;
 
     cbindgen::Builder::new()
         .with_crate(crate_dir)
@@ -14,4 +14,5 @@ fn main() {
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file("lakesoul_c_bindings.h");
+    Ok(())
 }

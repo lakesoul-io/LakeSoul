@@ -44,7 +44,7 @@ impl LakeSoulTable {
     pub async fn for_path_snapshot(path: String) -> Result<Self> {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let table_info = client.get_table_info_by_table_path(&path).await?;
-        Self::new_with_client_and_table_info(client, table_info).await
+        Self::try_new_with_client_and_table_info(client, table_info).await
     }
 
     pub async fn for_name(table_name: &str) -> Result<Self> {
@@ -54,15 +54,15 @@ impl LakeSoulTable {
     pub async fn for_namespace_and_name(namespace: &str, table_name: &str) -> Result<Self> {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
-        Self::new_with_client_and_table_info(client, table_info).await
+        Self::try_new_with_client_and_table_info(client, table_info).await
     }
 
-    pub async fn new_with_client_and_table_info(client: MetaDataClientRef, table_info: TableInfo) -> Result<Self> {
+    pub async fn try_new_with_client_and_table_info(client: MetaDataClientRef, table_info: TableInfo) -> Result<Self> {
         let table_schema = schema_from_metadata_str(&table_info.table_schema);
 
         let table_name = table_info.table_name.clone();
-        let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties).unwrap();
-        let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone());
+        let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+        let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
 
         Ok(Self {
             client,

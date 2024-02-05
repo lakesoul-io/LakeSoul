@@ -18,7 +18,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::{datasource::TableProvider, logical_expr::Expr};
 
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
-use datafusion_common::{FileTypeWriterOptions, Result};
+use datafusion_common::{DataFusionError, FileTypeWriterOptions, Result};
 use tracing::{debug, instrument};
 
 use crate::lakesoul_io_config::LakeSoulIOConfig;
@@ -58,7 +58,10 @@ impl LakeSoulListingTable {
                     .map(ListingTableUrl::parse)
                     .collect::<Result<Vec<_>>>()?;
                 // Create default parquet options
-                let object_store_url = table_paths.first().unwrap().object_store();
+                let object_store_url = table_paths
+                    .first()
+                    .ok_or(DataFusionError::Internal("no table path".to_string()))?
+                    .object_store();
                 let store = session_state.runtime_env().object_store(object_store_url.clone())?;
                 let target_schema = uniform_schema(lakesoul_io_config.schema());
 
@@ -232,7 +235,7 @@ impl TableProvider for LakeSoulListingTable {
         //     }
         //     ListingTableInsertMode::Error => {
         //         return Err(DataFusionError::Plan(
-        //             format!("Invalid plan attempting write to table with TableWriteMode::Error!")
+        //             format!("Invalid plan attempting to write to table with TableWriteMode::Error!")
         //         ));
         //     }
         // };

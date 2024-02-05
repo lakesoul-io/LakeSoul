@@ -1286,11 +1286,7 @@ mod upsert_with_io_config_tests {
         let batch1 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V1("a1"), StrOrI32::V1("b1"), StrOrI32::V1("c1")],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("a2"), StrOrI32::V1("b2"), StrOrI32::V1("c2")],
@@ -1301,11 +1297,7 @@ mod upsert_with_io_config_tests {
         let batch2 = create_batch_str_or_i32(
             vec!["range", "hash1", "v1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("a11"), StrOrI32::V1("b11"), StrOrI32::V1("c11")],
                 &[StrOrI32::V1("a22"), StrOrI32::V1("b22"), StrOrI32::V1("c22")],
@@ -1316,11 +1308,7 @@ mod upsert_with_io_config_tests {
         let batch3 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V1("d1"), StrOrI32::V1("b111"), StrOrI32::V1("c111")],
                 &[StrOrI32::V2(4), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("d2"), StrOrI32::V1("b222"), StrOrI32::V1("c222")],
@@ -1710,7 +1698,7 @@ mod upsert_with_metadata_tests {
         let schema = SchemaRef::new(dataframe.schema().into());
 
         let dataframe = if let Some(f) = filters {
-            dataframe.filter(Parser::parse(f.clone(), schema))?
+            dataframe.filter(Parser::parse(f.clone(), schema)?)?
         } else {
             dataframe
         };
@@ -1763,7 +1751,7 @@ mod upsert_with_metadata_tests {
         let schema = SchemaRef::new(dataframe.schema().into());
 
         let dataframe = if let Some(f) = filters {
-            dataframe.filter(Parser::parse(f.clone(), schema))?
+            dataframe.filter(Parser::parse(f.clone(), schema)?)?
         } else {
             dataframe
         };
@@ -3032,11 +3020,7 @@ mod upsert_with_metadata_tests {
         let batch1 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V1("a1"), StrOrI32::V1("b1"), StrOrI32::V1("c1")],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("a2"), StrOrI32::V1("b2"), StrOrI32::V1("c2")],
@@ -3047,11 +3031,7 @@ mod upsert_with_metadata_tests {
         let batch2 = create_batch_str_or_i32(
             vec!["range", "hash1", "v1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V2(1), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("a11"), StrOrI32::V1("b11"), StrOrI32::V1("c11")],
                 &[StrOrI32::V1("a22"), StrOrI32::V1("b22"), StrOrI32::V1("c22")],
@@ -3062,11 +3042,7 @@ mod upsert_with_metadata_tests {
         let batch3 = create_batch_str_or_i32(
             vec!["range", "v1", "hash1", "v2", "hash2"],
             vec![
-                &[
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                    StrOrI32::V1("range"),
-                ],
+                &[StrOrI32::V1("range"), StrOrI32::V1("range"), StrOrI32::V1("range")],
                 &[StrOrI32::V1("d1"), StrOrI32::V1("b111"), StrOrI32::V1("c111")],
                 &[StrOrI32::V2(4), StrOrI32::V2(2), StrOrI32::V2(3)],
                 &[StrOrI32::V1("d2"), StrOrI32::V1("b222"), StrOrI32::V1("c222")],

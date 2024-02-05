@@ -176,7 +176,7 @@ impl BatchPartitioner {
                         .map(|c| arrow::compute::take(c.as_ref(), &indices, None).map_err(DataFusionError::ArrowError))
                         .collect::<Result<Vec<ArrayRef>>>()?;
 
-                    let batch = RecordBatch::try_new(batch.schema(), columns).unwrap();
+                    let batch = RecordBatch::try_new(batch.schema(), columns)?;
 
                     // bind timer so it drops w/ this iterator
                     let _ = &timer;
@@ -368,11 +368,11 @@ impl RepartitionByRangeAndHashExec {
             // Thus, heuristically yield after producing num_partition
             // batches
             //
-            // In round robin this is ideal as each input will get a
+            // In round-robin this is ideal as each input will get a
             // new batch. In hash partitioning it may yield too often
             // on uneven distributions even if some partition can not
             // make progress, but parallelism is going to be limited
-            // in that case anyways
+            // in that case anyway
             if batches_until_yield == 0 {
                 tokio::task::yield_now().await;
                 batches_until_yield = partitioner.num_partitions();
@@ -553,7 +553,10 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
 
         // now return stream for the specified *output* partition which will
         // read from the channel
-        let (_tx, rx, reservation) = state.channels.remove(&partition).expect("partition not used yet");
+        let (_tx, rx, reservation) = state
+            .channels
+            .remove(&partition)
+            .ok_or(DataFusionError::Internal("partition not used yet".to_string()))?;
 
         // Store streams from all the input partitions:
         let input_streams = rx

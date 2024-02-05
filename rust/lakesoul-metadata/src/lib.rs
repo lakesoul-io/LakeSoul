@@ -53,25 +53,28 @@ struct DataFileOp {
 }
 
 impl DataFileOp {
-    fn from_proto_data_file_op(data_file_op: &entity::DataFileOp) -> Self {
-        DataFileOp {
+    fn from_proto_data_file_op(data_file_op: &entity::DataFileOp) -> Result<Self> {
+        Ok(DataFileOp {
             path: data_file_op.path.clone(),
             file_op: entity::FileOp::from_i32(data_file_op.file_op)
-                .unwrap()
+                .ok_or(LakeSoulMetaDataError::ProstDecodeError(prost::DecodeError::new(
+                    "file_op decode failed",
+                )))?
                 .as_str_name()
                 .to_string(),
             size: data_file_op.size,
             file_exist_cols: data_file_op.file_exist_cols.clone(),
-        }
+        })
     }
 
-    fn as_proto_data_file_op(&self) -> entity::DataFileOp {
-        entity::DataFileOp {
+    fn as_proto_data_file_op(&self) -> Result<entity::DataFileOp> {
+        Ok(entity::DataFileOp {
             path: self.path.clone(),
-            file_op: entity::FileOp::from_str_name(self.file_op.as_str()).unwrap() as i32,
+            file_op: entity::FileOp::from_str_name(self.file_op.as_str())
+                .ok_or(LakeSoulMetaDataError::Internal("unknown file_op".into()))? as i32,
             size: self.size,
             file_exist_cols: self.file_exist_cols.clone(),
-        }
+        })
     }
 }
 
@@ -438,7 +441,7 @@ pub async fn execute_query(
         eprintln!("Invalid query_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let query_type = DaoType::try_from(query_type).unwrap();
+    let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = get_params(joined_string);
@@ -584,9 +587,7 @@ pub async fn execute_query(
             let concated_uuid = &params[2];
             if concated_uuid.len() % 32 != 0 {
                 eprintln!("Invalid params of query_type={:?}, params={:?}", query_type, params);
-                return Err(LakeSoulMetaDataError::from(std::io::Error::from(
-                    ErrorKind::InvalidInput,
-                )));
+                return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
             }
 
             let uuid_list = separate_uuid(concated_uuid)?;
@@ -734,17 +735,21 @@ pub async fn execute_query(
         ResultType::PartitionInfo => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| entity::PartitionInfo {
-                    table_id: row.get(0),
-                    partition_desc: row.get(1),
-                    version: row.get::<_, i32>(2),
-                    commit_op: entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
-                    snapshot: row_to_uuid_list(row),
-                    timestamp: row.get::<_, i64>(5),
-                    expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
-                    domain: row.get(7),
+                .map(|row| {
+                    Ok(entity::PartitionInfo {
+                        table_id: row.get(0),
+                        partition_desc: row.get(1),
+                        version: row.get::<_, i32>(2),
+                        commit_op: entity::CommitOp::from_str_name(row.get(3))
+                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
+                            as i32,
+                        snapshot: row_to_uuid_list(row),
+                        timestamp: row.get::<_, i64>(5),
+                        expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
+                        domain: row.get(7),
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<entity::PartitionInfo>>>()?;
             entity::JniWrapper {
                 partition_info,
                 ..Default::default()
@@ -754,17 +759,21 @@ pub async fn execute_query(
         ResultType::PartitionInfoWithoutTimestamp => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| entity::PartitionInfo {
-                    table_id: row.get(0),
-                    partition_desc: row.get(1),
-                    version: row.get::<_, i32>(2),
-                    commit_op: entity::CommitOp::from_str_name(row.get(3)).unwrap() as i32,
-                    snapshot: row_to_uuid_list(row),
-                    expression: row.get::<_, Option<String>>(5).unwrap_or(String::from("")),
-                    domain: row.get(6),
-                    ..Default::default()
+                .map(|row| {
+                    Ok(entity::PartitionInfo {
+                        table_id: row.get(0),
+                        partition_desc: row.get(1),
+                        version: row.get::<_, i32>(2),
+                        commit_op: entity::CommitOp::from_str_name(row.get(3))
+                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
+                            as i32,
+                        snapshot: row_to_uuid_list(row),
+                        expression: row.get::<_, Option<String>>(5).unwrap_or(String::from("")),
+                        domain: row.get(6),
+                        ..Default::default()
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<entity::PartitionInfo>>>()?;
             entity::JniWrapper {
                 partition_info,
                 ..Default::default()
@@ -773,11 +782,15 @@ pub async fn execute_query(
         ResultType::PartitionInfoWithOnlyCommitOp => {
             let partition_info: Vec<entity::PartitionInfo> = rows
                 .iter()
-                .map(|row| entity::PartitionInfo {
-                    commit_op: entity::CommitOp::from_str_name(row.get(0)).unwrap() as i32,
-                    ..Default::default()
+                .map(|row| {
+                    Ok(entity::PartitionInfo {
+                        commit_op: entity::CommitOp::from_str_name(row.get(0))
+                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
+                            as i32,
+                        ..Default::default()
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<entity::PartitionInfo>>>()?;
             entity::JniWrapper {
                 partition_info,
                 ..Default::default()
@@ -786,24 +799,28 @@ pub async fn execute_query(
         ResultType::DataCommitInfo => {
             let data_commit_info: Vec<entity::DataCommitInfo> = rows
                 .iter()
-                .map(|row| entity::DataCommitInfo {
-                    table_id: row.get(0),
-                    partition_desc: row.get(1),
-                    commit_id: {
-                        let (high, low) = row.get::<_, uuid::Uuid>(2).as_u64_pair();
-                        Some(entity::Uuid { high, low })
-                    },
-                    file_ops: row
-                        .get::<_, Vec<DataFileOp>>(3)
-                        .iter()
-                        .map(|data_file_op| data_file_op.as_proto_data_file_op())
-                        .collect::<Vec<entity::DataFileOp>>(),
-                    commit_op: entity::CommitOp::from_str_name(row.get(4)).unwrap() as i32,
-                    timestamp: row.get(5),
-                    committed: row.get(6),
-                    domain: row.get(7),
+                .map(|row| {
+                    Ok(entity::DataCommitInfo {
+                        table_id: row.get(0),
+                        partition_desc: row.get(1),
+                        commit_id: {
+                            let (high, low) = row.get::<_, uuid::Uuid>(2).as_u64_pair();
+                            Some(entity::Uuid { high, low })
+                        },
+                        file_ops: row
+                            .get::<_, Vec<DataFileOp>>(3)
+                            .iter()
+                            .map(|data_file_op| data_file_op.as_proto_data_file_op())
+                            .collect::<Result<Vec<entity::DataFileOp>>>()?,
+                        commit_op: entity::CommitOp::from_str_name(row.get(4))
+                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
+                            as i32,
+                        timestamp: row.get(5),
+                        committed: row.get(6),
+                        domain: row.get(7),
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<entity::DataCommitInfo>>>()?;
             entity::JniWrapper {
                 data_commit_info,
                 ..Default::default()
@@ -823,7 +840,7 @@ pub async fn execute_insert(
         eprintln!("Invalid insert_type_index: {:?}", insert_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let insert_type = DaoType::try_from(insert_type).unwrap();
+    let insert_type = DaoType::try_from(insert_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let statement = get_prepared_statement(client, prepared, &insert_type).await?;
 
     let result = match insert_type {
@@ -912,8 +929,11 @@ pub async fn execute_insert(
                 .file_ops
                 .iter()
                 .map(DataFileOp::from_proto_data_file_op)
-                .collect::<Vec<DataFileOp>>();
-            let commit_id = data_commit_info.commit_id.as_ref().unwrap();
+                .collect::<Result<Vec<DataFileOp>>>()?;
+            let commit_id = data_commit_info
+                .commit_id
+                .as_ref()
+                .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".into()))?;
             let _uuid = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
 
             client
@@ -955,8 +975,7 @@ pub async fn execute_insert(
                     Err(e) => return Err(LakeSoulMetaDataError::from(e)),
                 };
 
-                for i in 0..partition_info_list.len() {
-                    let partition_info = partition_info_list.get(i).unwrap();
+                for partition_info in &partition_info_list {
                     let snapshot = partition_info
                         .snapshot
                         .iter()
@@ -1037,14 +1056,16 @@ pub async fn execute_insert(
                     Err(e) => return Err(LakeSoulMetaDataError::from(e)),
                 };
 
-                for i in 0..data_commit_info_list.len() {
-                    let data_commit_info = data_commit_info_list.get(i).unwrap();
+                for data_commit_info in &data_commit_info_list {
                     let file_ops = data_commit_info
                         .file_ops
                         .iter()
                         .map(DataFileOp::from_proto_data_file_op)
-                        .collect::<Vec<DataFileOp>>();
-                    let commit_id = data_commit_info.commit_id.as_ref().unwrap();
+                        .collect::<Result<Vec<DataFileOp>>>()?;
+                    let commit_id = data_commit_info
+                        .commit_id
+                        .as_ref()
+                        .ok_or(LakeSoulMetaDataError::Internal("commit_id missing".to_string()))?;
                     let _uuid = uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low);
 
                     let result = transaction
@@ -1101,7 +1122,7 @@ pub async fn execute_update(
         eprintln!("Invalid update_type_index: {:?}", update_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let update_type = DaoType::try_from(update_type).unwrap();
+    let update_type = DaoType::try_from(update_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let statement = get_prepared_statement(client, prepared, &update_type).await?;
 
     let params = joined_string
@@ -1241,7 +1262,7 @@ pub async fn execute_query_scalar(
         eprintln!("Invalid update_scalar_type_index: {:?}", query_type);
         return Err(LakeSoulMetaDataError::from(ErrorKind::InvalidInput));
     }
-    let query_type = DaoType::try_from(query_type).unwrap();
+    let query_type = DaoType::try_from(query_type).map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?;
     let statement = get_prepared_statement(client, prepared, &query_type).await?;
 
     let params = get_params(joined_string);
