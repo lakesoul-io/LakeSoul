@@ -142,12 +142,15 @@ object ConsistencyCI {
     spark.sql("CREATE NAMESPACE IF NOT EXISTS tpch")
     spark.sql("USE tpch")
 
-    //    load_data(spark)
+    load_data(spark)
 
     tpchTable.foreach(tup => {
-      //      val sparkDF = spark.sql(s"select * from ${tup._1}")
+      val sparkDF = spark.sql(s"select * from ${tup._1}")
       val rustDF = spark.sql(s"select * from default.${tup._1}")
-      rustDF.show()
+      println(s"${tup._1} sparkDF: ")
+      sparkDF.show
+      println(s"${tup._1} rustDF: ")
+      rustDF.show
       //      val diff1 = sparkDF.rdd.subtract(rustDF.rdd)
       //      val diff2 = rustDF.rdd.subtract(sparkDF.rdd)
       //      val result = diff1.count() == 0 && diff2.count() == 0

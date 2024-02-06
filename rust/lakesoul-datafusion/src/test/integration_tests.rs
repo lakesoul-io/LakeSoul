@@ -5,7 +5,6 @@
 mod integration_tests {
     use std::{path::Path, sync::Arc};
 
-    use arrow::util::pretty::print_batches;
     use datafusion::{execution::context::SessionContext, datasource::{TableProvider, file_format::{FileFormat, csv::CsvFormat}, listing::{ListingOptions, ListingTableUrl, ListingTableConfig, ListingTable}}};
     use lakesoul_io::lakesoul_io_config::{create_session_context_with_planner, LakeSoulIOConfigBuilder};
     use lakesoul_metadata::MetaDataClient;
