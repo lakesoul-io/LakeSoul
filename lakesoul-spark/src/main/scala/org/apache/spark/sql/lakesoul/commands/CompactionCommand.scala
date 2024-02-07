@@ -166,7 +166,12 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
         if (hasNoDeltaFile) {
           logInfo("== Compaction: This partition has been compacted or has no delta file.")
         } else {
-          executeCompaction(sparkSession, tc, files, snapshotManagement.snapshot.getPartitionInfoArray)
+          val partitionInfo = SparkMetaVersion.getSinglePartitionInfo(
+            snapshotManagement.getTableInfoOnly.table_id,
+            partitionSet.head,
+            ""
+          )
+          executeCompaction(sparkSession, tc, files, Array(partitionInfo))
         }
 
       })
