@@ -280,7 +280,15 @@ impl MetaDataClient {
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
-        clean_meta_for_test(self.client.lock().await.deref_mut()).await
+        clean_meta_for_test(self.client.lock().await.deref_mut()).await?;
+        self.insert_namespace(
+            &Namespace { 
+                namespace: "default".to_string(), 
+                properties: "{}".to_string(), 
+                comment: "".to_string(), 
+                domain: "public".to_string() 
+            }
+        ).await
     }
 
     pub async fn commit_data(&self, meta_info: MetaInfo, commit_op: CommitOp) -> Result<()> {

@@ -29,6 +29,7 @@ pub use lakesoul_namespace::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LakeSoulTableProperty {
+    #[serde(rename = "hashBucketNum")]
     pub hash_bucket_num: Option<usize>,
 }
 
@@ -38,7 +39,7 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_name: table_name.to_string(),
             table_path: format!(
-                "file://{}default/{}",
+                "file:{}default/{}",
                 env::temp_dir()
                     .to_str()
                     .ok_or(LakeSoulError::Internal("can not get $TMPDIR".to_string()))?,

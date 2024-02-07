@@ -95,13 +95,13 @@ object SparkMetaVersion {
     import scala.util.parsing.json.JSON
     val configuration = JSON.parseFull(properties)
     val configurationMap = configuration match {
-      case Some(map: collection.immutable.Map[String, String]) => map
+      case Some(map: collection.immutable.Map[String, Any]) => map.toSeq.map(kv => (kv._1, kv._2.toString)).toMap
     }
 
     // table may have no partition at all or only have range or hash partition
-    val partitionCols = DBUtil.parseTableInfoPartitions(partitions);
-    val bucket_num = configurationMap.get("hashBucketNum") match {
-      case Some(value) => value.toInt
+    val partitionCols = DBUtil.parseTableInfoPartitions(partitions)
+    val bucket_num = configurationMap.get(LakeSoulOptions.HASH_BUCKET_NUM) match {
+      case Some(value) => value.toDouble.toInt
       case _ => -1
     }
     TableInfo(

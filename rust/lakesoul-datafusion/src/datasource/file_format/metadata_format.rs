@@ -205,7 +205,7 @@ impl LakeSoulHashSinkExec {
         let mut partitioned_writer = HashMap::<Vec<(String, ScalarValue)>, Box<MultiPartAsyncWriter>>::new();
         let mut partitioned_file_path_and_row_count_locked = partitioned_file_path_and_row_count.lock().await;
         while let Some(batch) = data.next().await.transpose()? {
-            // dbg!(&batch);
+            dbg!(&batch.num_rows());
             let columnar_value = get_columnar_value(&batch);
             let file_absolute_path = format!("{}/part-{}_{:0>4}.parquet", table_info.table_path, write_id, partition);
             if !partitioned_writer.contains_key(&columnar_value) {

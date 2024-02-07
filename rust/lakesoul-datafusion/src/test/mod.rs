@@ -12,6 +12,8 @@ mod insert_tests;
 mod upsert_tests;
 // mod compaction_tests;
 // mod streaming_tests;
+#[cfg(feature = "ci")]
+mod integration_tests;
 
 mod catalog_tests;
 

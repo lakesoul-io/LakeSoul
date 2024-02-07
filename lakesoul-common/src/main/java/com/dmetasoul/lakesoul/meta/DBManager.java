@@ -156,7 +156,7 @@ public class DBManager {
         return tablePathIdDao.listAllPathByNamespace(tableNamespace);
     }
 
-    public List<TableInfo> getTableInfosByNamespace(String tableNamespace){
+    public List<TableInfo> getTableInfosByNamespace(String tableNamespace) {
         return tableInfoDao.selectByNamespace(tableNamespace);
     }
 
@@ -233,7 +233,7 @@ public class DBManager {
     }
 
     private void getSnapshotAndFilePathInfo(String tableId, String partitionDesc, List<DataFileOp> fileOps, List<String> deleteFilePathList,
-                         List<PartitionInfo> filterPartitionInfo, Set<Uuid> snapshotList) {
+                                            List<PartitionInfo> filterPartitionInfo, Set<Uuid> snapshotList) {
         filterPartitionInfo.forEach(p -> snapshotList.addAll(p.getSnapshotList()));
         List<DataCommitInfo> filterDataCommitInfo =
                 dataCommitInfoDao.selectByTableIdPartitionDescCommitList(tableId, partitionDesc, snapshotList.stream().collect(Collectors.toList()));

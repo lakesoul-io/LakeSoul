@@ -12,6 +12,7 @@ mod error;
 mod lakesoul_table;
 mod planner;
 mod serialize;
+mod benchmarks;
 
 #[cfg(test)]
 mod test;
