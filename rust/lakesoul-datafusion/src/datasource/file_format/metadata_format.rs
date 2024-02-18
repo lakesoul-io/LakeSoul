@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, UInt64Array};
+use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
@@ -12,7 +12,6 @@ use datafusion::common::{FileType, Statistics};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
-use datafusion::physical_plan::common::AbortOnDropSingle;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
@@ -140,7 +139,8 @@ pub struct LakeSoulHashSinkExec {
     input: Arc<dyn ExecutionPlan>,
 
     /// Schema describing the structure of the output data.
-    count_schema: SchemaRef,
+    sink_schema: SchemaRef,
+
     /// Optional required sort order for output data.
     sort_order: Option<Vec<PhysicalSortRequirement>>,
 
@@ -151,7 +151,7 @@ pub struct LakeSoulHashSinkExec {
 
 impl Debug for LakeSoulHashSinkExec {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "LakeSoulHashSinkExec schema: {:?}", self.count_schema)
+        write!(f, "LakeSoulHashSinkExec schema: {:?}", self.sink_schema)
     }
 }
 
@@ -165,7 +165,7 @@ impl LakeSoulHashSinkExec {
     ) -> Result<Self> {
         Ok(Self {
             input,
-            count_schema: make_count_schema(),
+            sink_schema: make_sink_schema(),
             sort_order,
             table_info,
             metadata_client,
@@ -205,7 +205,7 @@ impl LakeSoulHashSinkExec {
         let mut partitioned_writer = HashMap::<Vec<(String, ScalarValue)>, Box<MultiPartAsyncWriter>>::new();
         let mut partitioned_file_path_and_row_count_locked = partitioned_file_path_and_row_count.lock().await;
         while let Some(batch) = data.next().await.transpose()? {
-            dbg!(&batch.num_rows());
+            debug!("write record_batch with {} rows", batch.num_rows());
             let columnar_value = get_columnar_value(&batch);
             let file_absolute_path = format!("{}/part-{}_{:0>4}.parquet", table_info.table_path, write_id, partition);
             if !partitioned_writer.contains_key(&columnar_value) {
@@ -293,7 +293,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
     /// Get the schema for this execution plan
     fn schema(&self) -> SchemaRef {
-        self.count_schema.clone()
+        self.sink_schema.clone()
     }
 
     fn output_partitioning(&self) -> Partitioning {
@@ -348,7 +348,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
             input: children[0].clone(),
-            count_schema: self.count_schema.clone(),
+            sink_schema: self.sink_schema.clone(),
             sort_order: self.sort_order.clone(),
             table_info: self.table_info.clone(),
             metadata_client: self.metadata_client.clone(),
@@ -392,18 +392,18 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             schema: self.table_info().table_namespace.clone().into(),
             table: self.table_info().table_name.clone().into(),
         };
-        let join_handle = AbortOnDropSingle::new(tokio::spawn(Self::wait_for_commit(
+        let join_handle = tokio::spawn(Self::wait_for_commit(
             join_handles,
             self.metadata_client(),
             table_ref.to_string(),
             partitioned_file_path_and_row_count,
-        )));
+        ));
 
         // });
 
         // let abort_helper = Arc::new(AbortOnDropMany(join_handles));
 
-        let count_schema = self.count_schema.clone();
+        let sink_schema = self.sink_schema.clone();
         // let count = futures::future::join_all(join_handles).await;
         // for (columnar_values, result) in partitioned_file_path_and_row_count.lock().await.iter() {
         //     match commit_data(self.metadata_client(), self.table_info().table_name.as_str(), &result.0).await {
@@ -414,32 +414,39 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
         let stream = futures::stream::once(async move {
             match join_handle.await {
-                Ok(Ok(count)) => Ok(make_count_batch(count)),
-                _other => Ok(make_count_batch(u64::MAX)),
+                Ok(Ok(count)) => Ok(make_sink_batch(count, String::from(""))),
+                Ok(Err(e)) => {
+                    debug!("{}", e.to_string());
+                    Ok(make_sink_batch(u64::MAX, e.to_string()))
+                }
+                Err(e) => {
+                    debug!("{}", e.to_string());
+                    Ok(make_sink_batch(u64::MAX, e.to_string()))
+                }
             }
         })
         .boxed();
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(count_schema, stream)))
+        Ok(Box::pin(RecordBatchStreamAdapter::new(sink_schema, stream)))
     }
 }
 
-/// Create an output record batch with a count
-///
-/// ```text
-/// +-------+,
-/// | count |,
-/// +-------+,
-/// | 6     |,
-/// +-------+,
-/// ```
-fn make_count_batch(count: u64) -> RecordBatch {
-    let array = Arc::new(UInt64Array::from(vec![count])) as ArrayRef;
 
-    RecordBatch::try_from_iter_with_nullable(vec![("count", array, false)]).unwrap()
+fn make_sink_batch(count: u64, msg: String) -> RecordBatch {
+    let count_array = Arc::new(UInt64Array::from(vec![count])) as ArrayRef;
+    let msg_array = Arc::new(StringArray::from(vec![msg])) as ArrayRef;
+    RecordBatch::try_from_iter_with_nullable(
+        vec![
+            ("count", count_array, false), 
+            ("msg", msg_array, false)
+        ]).unwrap()
 }
 
-fn make_count_schema() -> SchemaRef {
+fn make_sink_schema() -> SchemaRef {
     // define a schema.
-    Arc::new(Schema::new(vec![Field::new("count", DataType::UInt64, false)]))
+    Arc::new(Schema::new(vec![
+        Field::new("count", DataType::UInt64, false),
+        Field::new("msg", DataType::Utf8, false),
+        ])
+    )
 }

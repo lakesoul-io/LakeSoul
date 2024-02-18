@@ -78,7 +78,7 @@ mod catalog_tests {
                     }
                     v
                 };
-                let path = format!("{}{}/{}", env::temp_dir().to_str().unwrap(), &np.namespace, &table_name);
+                let path = format!("{}{}/{}", env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(), &np.namespace, &table_name);
                 let table_id = format!(
                     "table_{}",
                     (&mut rng)
@@ -104,7 +104,7 @@ mod catalog_tests {
     }
 
     fn table_info(table_name: &str, namespace: &str, schema: SchemaRef) -> TableInfo {
-        let path = format!("{}{}/{}", env::temp_dir().to_str().unwrap(), namespace, table_name);
+        let path = format!("{}{}/{}", env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(), namespace, table_name);
         let schema = serde_json::to_string::<ArrowJavaSchema>(&schema.into()).unwrap();
         TableInfo {
             table_id: "table_000000001".into(),

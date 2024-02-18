@@ -67,7 +67,7 @@ mod upsert_with_io_config_tests {
         builder: LakeSoulIOConfigBuilder,
     ) -> LakeSoulIOConfigBuilder {
         let file = [
-            env::temp_dir().to_str().unwrap(),
+            env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(),
             table_name,
             format!(
                 "{}.parquet",
