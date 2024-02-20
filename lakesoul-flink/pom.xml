@@ -571,6 +571,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.thoughtworks.paranamer:paranamer</include>
                             <include>org.furyio:fury-core</include>
                             <include>com.google.guava:guava</include>
+                            <include>com.google.guava:failureaccess</include>
 
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>
