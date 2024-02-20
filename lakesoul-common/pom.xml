@@ -231,12 +231,6 @@ SPDX-License-Identifier: Apache-2.0
             <scope>runtime</scope>
             <classifier>native</classifier>
         </dependency>
-
-        <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>32.0.0-jre</version>
-        </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client-api</artifactId>
