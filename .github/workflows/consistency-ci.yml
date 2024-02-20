@@ -118,7 +118,7 @@ jobs:
           git clone https://github.com/databricks/tpch-dbgen.git
           cd tpch-dbgen
           make
-          ./dbgen -f -s 0.001
+          ./dbgen -f -s 0.1
           mv *.tbl ../lakesoul/test_files/tpch/data
       - name: Verify that benchmark queries return expected results
         run: |

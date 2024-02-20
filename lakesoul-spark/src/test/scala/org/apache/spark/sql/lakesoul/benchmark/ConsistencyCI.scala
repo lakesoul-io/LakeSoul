@@ -151,16 +151,16 @@ object ConsistencyCI {
       sparkDF.show
       println(s"${tup._1} rustDF: ")
       rustDF.show
-      //      val diff1 = sparkDF.rdd.subtract(rustDF.rdd)
-      //      val diff2 = rustDF.rdd.subtract(sparkDF.rdd)
-      //      val result = diff1.count() == 0 && diff2.count() == 0
-      //      if (!result) {
-      //        println("sparkDF: ")
-      //        println(sparkDF.collectAsList())
-      //        println("rustDF: ")
-      //        println(rustDF.collectAsList())
-      //        System.exit(1)
-      //      }
+      val diff1 = sparkDF.rdd.subtract(rustDF.rdd)
+      val diff2 = rustDF.rdd.subtract(sparkDF.rdd)
+      val result = diff1.count() == 0 && diff2.count() == 0
+      if (!result) {
+        println("sparkDF: ")
+        println(sparkDF.collectAsList())
+        println("rustDF: ")
+        println(rustDF.collectAsList())
+        System.exit(1)
+      }
     })
 
   }

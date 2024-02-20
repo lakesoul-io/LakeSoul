@@ -7,7 +7,6 @@ pub mod helpers;
 use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::{SchemaRef, Schema};
-use datafusion::dataframe;
 use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
