@@ -26,6 +26,9 @@ url = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+regex = "1.10.3"
+serde = { workspace = true }
+
 
 [dev-dependencies]
 test-log = "0.2.14"

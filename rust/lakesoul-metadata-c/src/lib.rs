@@ -7,31 +7,36 @@
 extern crate core;
 
 use core::ffi::c_ptrdiff_t;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
-use std::ptr::NonNull;
+use std::ptr::{NonNull, null, null_mut};
 
-use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
+use log::debug;
 use prost::bytes::BufMut;
 use prost::Message;
+
+use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
+use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::transfusion::SplitDesc;
 use proto::proto::entity;
 
 #[repr(C)]
-pub struct Result<OpaqueT> {
+pub struct CResult<OpaqueT> {
     ptr: *mut OpaqueT,
     err: *const c_char,
 }
 
-impl<OpaqueT> Result<OpaqueT> {
+impl<OpaqueT> CResult<OpaqueT> {
     pub fn new<T>(obj: T) -> Self {
-        Result {
+        CResult {
             ptr: convert_to_opaque_raw::<T, OpaqueT>(obj),
             err: std::ptr::null(),
         }
     }
 
     pub fn error(err_msg: &str) -> Self {
-        Result {
+        CResult {
             ptr: std::ptr::null_mut(),
             err: CString::new(err_msg).unwrap().into_raw(),
         }
@@ -40,6 +45,7 @@ impl<OpaqueT> Result<OpaqueT> {
     pub fn free<T>(&mut self) {
         unsafe {
             if !self.ptr.is_null() {
+                // Invoking `std::mem::drop` with a value that implements `Copy` does nothing
                 drop(from_opaque::<OpaqueT, T>(NonNull::new_unchecked(self.ptr)));
             }
             if !self.err.is_null() {
@@ -48,6 +54,44 @@ impl<OpaqueT> Result<OpaqueT> {
         }
     }
 }
+
+pub type ResultCallback = extern "C" fn(bool, *const c_char);
+
+pub type IntegerResultCallBack = extern "C" fn(i32, *const c_char);
+
+// pub type DataResultCallback = extern "C" fn(bool, *const c_char, *const c_void);
+
+/// for jnr
+/// can use as_ptr instead of into_raw?
+#[allow(unused)]
+fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
+    callback(status, err);
+    // release error string
+    if !err.is_null() {
+        unsafe {
+            let _ = CString::from_raw(err as *mut c_char);
+        }
+    }
+}
+
+fn call_integer_result_callback(callback: IntegerResultCallBack, status: i32, err: *const c_char) {
+    // release error string
+    callback(status, err);
+    if !err.is_null() {
+        unsafe {
+            let _ = CString::from_raw(err as *mut c_char);
+        }
+    }
+}
+
+// #[repr(C)]
+// struct CVoid {
+//     data: *const c_void,
+// }
+
+// unsafe impl Send for CVoid {}
+
+// unsafe impl Sync for CVoid {}
 
 #[repr(C)]
 pub struct PreparedStatement {
@@ -89,14 +133,12 @@ fn string_from_ptr(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() }
 }
 
-pub type ResultCallback<T> = extern "C" fn(T, *const c_char);
-
 #[no_mangle]
 pub extern "C" fn execute_insert(
     callback: extern "C" fn(i32, *const c_char),
-    runtime: NonNull<Result<TokioRuntime>>,
-    client: NonNull<Result<TokioPostgresClient>>,
-    prepared: NonNull<Result<PreparedStatement>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    prepared: NonNull<CResult<PreparedStatement>>,
     insert_type: i32,
     addr: c_ptrdiff_t,
     len: i32,
@@ -118,9 +160,9 @@ pub extern "C" fn execute_insert(
 #[no_mangle]
 pub extern "C" fn execute_update(
     callback: extern "C" fn(i32, *const c_char),
-    runtime: NonNull<Result<TokioRuntime>>,
-    client: NonNull<Result<TokioPostgresClient>>,
-    prepared: NonNull<Result<PreparedStatement>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    prepared: NonNull<CResult<PreparedStatement>>,
     update_type: i32,
     joined_string: *const c_char,
 ) {
@@ -140,9 +182,9 @@ pub extern "C" fn execute_update(
 #[no_mangle]
 pub extern "C" fn execute_query_scalar(
     callback: extern "C" fn(*const c_char, *const c_char),
-    runtime: NonNull<Result<TokioRuntime>>,
-    client: NonNull<Result<TokioPostgresClient>>,
-    prepared: NonNull<Result<PreparedStatement>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    prepared: NonNull<CResult<PreparedStatement>>,
     update_type: i32,
     joined_string: *const c_char,
 ) {
@@ -172,12 +214,12 @@ pub extern "C" fn execute_query_scalar(
 #[no_mangle]
 pub extern "C" fn execute_query(
     callback: extern "C" fn(i32, *const c_char),
-    runtime: NonNull<Result<TokioRuntime>>,
-    client: NonNull<Result<TokioPostgresClient>>,
-    prepared: NonNull<Result<PreparedStatement>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    prepared: NonNull<CResult<PreparedStatement>>,
     query_type: i32,
     joined_string: *const c_char,
-) -> NonNull<Result<BytesResult>> {
+) -> NonNull<CResult<BytesResult>> {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
     let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
@@ -189,11 +231,11 @@ pub extern "C" fn execute_query(
         Ok(u8_vec) => {
             let len = u8_vec.len();
             callback(len as i32, CString::new("").unwrap().into_raw());
-            convert_to_nonnull(Result::<BytesResult>::new::<Vec<u8>>(u8_vec))
+            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
         }
         Err(e) => {
             callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw());
-            convert_to_nonnull(Result::<BytesResult>::new::<Vec<u8>>(vec![]))
+            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
         }
     }
 }
@@ -201,7 +243,7 @@ pub extern "C" fn execute_query(
 #[no_mangle]
 pub extern "C" fn export_bytes_result(
     callback: extern "C" fn(bool, *const c_char),
-    bytes: NonNull<Result<BytesResult>>,
+    bytes: NonNull<CResult<BytesResult>>,
     len: i32,
     addr: c_ptrdiff_t,
 ) {
@@ -228,15 +270,15 @@ pub extern "C" fn export_bytes_result(
 }
 
 #[no_mangle]
-pub extern "C" fn free_bytes_result(bytes: NonNull<Result<BytesResult>>) {
+pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
     from_nonnull(bytes).free::<Vec<u8>>();
 }
 
 #[no_mangle]
 pub extern "C" fn clean_meta_for_test(
     callback: extern "C" fn(i32, *const c_char),
-    runtime: NonNull<Result<TokioRuntime>>,
-    client: NonNull<Result<TokioPostgresClient>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    client: NonNull<CResult<TokioPostgresClient>>,
 ) {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
@@ -248,18 +290,18 @@ pub extern "C" fn clean_meta_for_test(
 }
 
 #[no_mangle]
-pub extern "C" fn create_tokio_runtime() -> NonNull<Result<TokioRuntime>> {
+pub extern "C" fn create_tokio_runtime() -> NonNull<CResult<TokioRuntime>> {
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
         .max_blocking_threads(8)
         .build()
         .unwrap();
-    convert_to_nonnull(Result::<TokioRuntime>::new(runtime))
+    convert_to_nonnull(CResult::<TokioRuntime>::new(runtime))
 }
 
 #[no_mangle]
-pub extern "C" fn free_tokio_runtime(runtime: NonNull<Result<TokioRuntime>>) {
+pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
@@ -267,8 +309,8 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<Result<TokioRuntime>>) {
 pub extern "C" fn create_tokio_postgres_client(
     callback: extern "C" fn(bool, *const c_char),
     config: *const c_char,
-    runtime: NonNull<Result<TokioRuntime>>,
-) -> NonNull<Result<TokioPostgresClient>> {
+    runtime: NonNull<CResult<TokioRuntime>>,
+) -> NonNull<CResult<TokioPostgresClient>> {
     let config = string_from_ptr(config);
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
 
@@ -277,39 +319,145 @@ pub extern "C" fn create_tokio_postgres_client(
     let result = match result {
         Ok(client) => {
             callback(true, CString::new("").unwrap().into_raw());
-            Result::<TokioPostgresClient>::new(client)
+            CResult::<TokioPostgresClient>::new(client)
         }
         Err(e) => {
             callback(false, CString::new(e.to_string().as_str()).unwrap().into_raw());
-            Result::<TokioPostgresClient>::error(format!("{}", e).as_str())
+            CResult::<TokioPostgresClient>::error(format!("{}", e).as_str())
         }
     };
     convert_to_nonnull(result)
 }
 
 #[no_mangle]
-pub extern "C" fn free_tokio_postgres_client(client: NonNull<Result<TokioPostgresClient>>) {
+pub extern "C" fn free_tokio_postgres_client(client: NonNull<CResult<TokioPostgresClient>>) {
     from_nonnull(client).free::<Client>();
 }
 
 #[no_mangle]
-pub extern "C" fn create_prepared_statement() -> NonNull<Result<PreparedStatement>> {
+pub extern "C" fn create_prepared_statement() -> NonNull<CResult<PreparedStatement>> {
     let prepared = PreparedStatementMap::new();
-    convert_to_nonnull(Result::<PreparedStatement>::new(prepared))
+    convert_to_nonnull(CResult::<PreparedStatement>::new(prepared))
 }
 
 #[no_mangle]
-pub extern "C" fn free_prepared_statement(prepared: NonNull<Result<PreparedStatement>>) {
+pub extern "C" fn free_prepared_statement(prepared: NonNull<CResult<PreparedStatement>>) {
     from_nonnull(prepared).free::<PreparedStatementMap>();
 }
 
 #[no_mangle]
-pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<Result<MetaDataClient>> {
+pub extern "C" fn create_lakesoul_metadata_client() -> NonNull<CResult<MetaDataClient>> {
     let client = MetaDataClient::from_env();
-    convert_to_nonnull(Result::<MetaDataClient>::new(client))
+    convert_to_nonnull(CResult::<MetaDataClient>::new(client))
 }
 
 #[no_mangle]
-pub extern "C" fn free_lakesoul_metadata_client(prepared: NonNull<Result<MetaDataClient>>) {
-    from_nonnull(prepared).free::<MetaDataClient>();
+pub extern "C" fn free_lakesoul_metadata_client(client: NonNull<CResult<MetaDataClient>>) {
+    from_nonnull(client).free::<MetaDataClient>();
+}
+
+/// # Safety
+/// check nothing
+fn c_char2str<'a>(ptr: *const c_char) -> &'a str {
+    unsafe {
+        let c_str = CStr::from_ptr(ptr);
+        c_str.to_str().unwrap()
+    }
+}
+
+/// USE: JNR
+/// return split(partition) desc array in json format by table_name, namespace , filter(WIP)
+/// 0: success
+/// -100: ffi::restore error
+/// -1: error
+#[no_mangle]
+pub extern "C" fn create_split_desc_array(
+    callback: IntegerResultCallBack,
+    client: NonNull<CResult<TokioPostgresClient>>,
+    prepared: NonNull<CResult<PreparedStatement>>,
+    runtime: NonNull<CResult<TokioRuntime>>,
+    table_name: *const c_char,
+    namespace: *const c_char,
+) -> *mut c_char {
+    let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
+    let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
+    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_ref() };
+    let table_name = c_char2str(table_name);
+    let namespace = c_char2str(namespace);
+    let result: Result<*mut c_char, LakeSoulMetaDataError> = runtime.block_on(async {
+        let ret = lakesoul_metadata::transfusion::split_desc_array(client, prepared, table_name, namespace).await?;
+        let v = serde_json::to_vec(&ret)?;
+        Ok(CString::new(v)
+            .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?
+            .into_raw())
+    });
+
+    let (ret, status, e) = match result {
+        Ok(ptr) => (ptr, 0, null()),
+        Err(e) => match e {
+            LakeSoulMetaDataError::FfiError(ffi) => {
+                (null_mut(), -100, CString::new(ffi).unwrap().into_raw() as *const c_char)
+            }
+            other => (
+                null_mut(),
+                -1,
+                CString::new(other.to_string()).unwrap().into_raw() as *const c_char,
+            ),
+        },
+    };
+    call_integer_result_callback(callback, status, e);
+    ret
+}
+
+/// # Safety
+/// caller should keep it safe
+#[no_mangle]
+pub unsafe extern "C" fn free_split_desc_array(json: *mut c_char) {
+    free_c_string(json)
+}
+
+#[no_mangle]
+pub extern "C" fn debug(callback: extern "C" fn(bool, *const c_char)) -> *mut c_char {
+    debug!("in debug");
+    let x = vec![
+        SplitDesc {
+            file_paths: vec!["hello jnr".into()],
+            primary_keys: vec![],
+            partition_desc: HashMap::new(),
+            table_schema: "".to_string(),
+        };1];
+    let array = lakesoul_metadata::transfusion::SplitDescArray(x);
+    let json_vec = serde_json::to_vec(&array).unwrap();
+    let c_string = CString::new(json_vec).unwrap();
+    let x = CString::new("oops").unwrap().into_raw();
+    callback(false, x);
+    unsafe {
+        let _s = CString::from_raw(x);
+    }
+    c_string.into_raw()
+}
+
+/// # Safety
+/// c_string should be valid
+#[no_mangle]
+pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
+    unsafe {
+        // only check ptr is not null
+        if c_string.is_null() {
+            debug!("early return due to null ptr");
+            return;
+        }
+        debug!("free c string start");
+        let _s = CString::from_raw(c_string);
+        debug!("free c string finished");
+    }
+}
+
+/// init a global logger for rust code
+/// now use RUST_LOG=LEVEL to activate
+/// TODO use tokio::tracing
+/// TODO add logger format
+#[no_mangle]
+pub extern "C" fn rust_logger_init() {
+    let _ = env_logger::try_init();
 }

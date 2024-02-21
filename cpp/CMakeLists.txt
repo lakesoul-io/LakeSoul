@@ -5,6 +5,8 @@
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 project(LakeSoulCPP VERSION 1.0.0.0 LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Find Python interpreter
 find_package(Python REQUIRED COMPONENTS Interpreter)
 message(STATUS "Found Python ${Python_VERSION} at ${Python_EXECUTABLE}")
