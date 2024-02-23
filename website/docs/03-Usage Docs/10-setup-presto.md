@@ -7,7 +7,7 @@ Available since version 2.4.
 LakeSoul implements Presto Connector and currently supports reading tables. It can read tables without primary keys and tables with primary keys (including [CDC format tables](04-cdc-ingestion-table.mdx)). When reading, Merge on Read will be automatically executed to obtain the latest data.
 
 ## Download Jar package
-You can download the Presto package from the Github Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-presto-2.5.1-presto-0.28.jar
+You can download the Presto package from the Github Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-presto-presto-0.28-VAR::VERSION.jar
 
 ## Configure Presto
 Create a new lakesoul subdirectory in the plugin subdirectory under the Presto directory. Place the jar downloaded above into this subdirectory.

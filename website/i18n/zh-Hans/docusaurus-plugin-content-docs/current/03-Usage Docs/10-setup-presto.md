@@ -7,7 +7,7 @@
 LakeSoul 实现了 Presto Connector，目前支持读取湖仓表，能够读取无主键表、有主键表（包括 [CDC 格式表](04-cdc-ingestion-table.mdx)），读取时会自动执行 Merge on Read 获取最新的数据。
 
 ## 下载 Jar 包
-可以从 Github Release 页面下载 Presto 的包：https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-presto-2.5.1-presto-0.28.jar
+可以从 Github Release 页面下载 Presto 的包：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-presto-presto-0.28-VAR::VERSION.jar
 
 ## 配置 Presto
 在 Presto 目录下的 plugin 子目录下，新建 lakesoul 子目录。将上面下载好的 jar 放入该子目录。

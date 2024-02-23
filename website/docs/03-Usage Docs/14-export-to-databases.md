@@ -6,7 +6,7 @@ SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 ## Target database that supports exporting from the lake
-Starting from LakeSoul 2.5.1, it supports single-table data synchronization out of the lake in batch or stream mode into other databases. It now supports export of LakeSoul tables to MySQL, Doris, and PostgreSQL, as well as databases which have compatible protocols with them.
+Starting from LakeSoul 2.5, it supports single-table data synchronization out of the lake in batch or stream mode into other databases. It now supports export of LakeSoul tables to MySQL, Doris, and PostgreSQL, as well as databases which have compatible protocols with them.
 
 ## Parameter Configurations
 
@@ -34,7 +34,7 @@ Synchronize table to MySQL task
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.5.1-flink-1.17.jar \
+    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:mysql://172.17.0.4:3306/ \
     --target_db.db_type mysql \
     --target_db.db_name test \
@@ -50,7 +50,7 @@ Synchronize table to postgresql task
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.5.1-flink-1.17.jar \
+    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:postgresql://172.17.0.2:5432/ \
     --target_db.db_name test \
     --target_db.db_type postgres \
@@ -65,7 +65,7 @@ Synchronize table to postgresql task
 Synchronize table to doris task
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.5.1-flink-1.17.jar \
+    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
     --target_db.url "jdbc:mysql://172.17.0.2:9030/" \
     --source_db.db_name test \
     --target_db.db_name test \
