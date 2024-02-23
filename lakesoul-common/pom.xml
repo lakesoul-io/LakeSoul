@@ -116,7 +116,7 @@ SPDX-License-Identifier: Apache-2.0
     </build>
 
     <properties>
-        <postgresql.version>42.5.1</postgresql.version>
+        <postgresql.version>42.5.5</postgresql.version>
         <local.scope>provided</local.scope>
         <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
         <protoc.version>3.5.1</protoc.version>
