@@ -90,7 +90,7 @@ $FLINK_HOME/bin/start-cluster.sh
 ```bash
 ./bin/flink run -ys 1 -yjm 1G -ytm 2G \
    -c org.apache.flink.lakesoul.entry.MysqlCdc \
-   lakesoul-flink-2.5.1-flink-1.17.jar \
+   lakesoul-flink-flink-1.17-VAR::VERSION.jar \
    --source_db.host localhost \
    --source_db.port 3306 \
    --source_db.db_name test_cdc \
@@ -105,7 +105,7 @@ $FLINK_HOME/bin/start-cluster.sh
    --server_time_zone UTC
 ```
 
-其中 lakesoul-flink 的 jar 包可以从 [Github Release](https://github.com/lakesoul-io/LakeSoul/releases/) 页面下载。如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-2.5.1-flink-1.17.jar
+其中 lakesoul-flink 的 jar 包可以从 [Github Release](https://github.com/lakesoul-io/LakeSoul/releases/) 页面下载。如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-flink-1.17-VAR::VERSION.jar
 
 在 http://localhost:8081 Flink 作业页面中，点击 Running Job，进入查看 LakeSoul 作业是否已经处于 `Running` 状态。
 
