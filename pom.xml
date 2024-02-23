@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-parent</artifactId>
-    <version>2.5.1</version>
+    <version>${revision}</version>
     <inceptionYear>2022</inceptionYear>
     <modules>
         <module>lakesoul-common</module>
@@ -51,6 +51,7 @@ SPDX-License-Identifier: Apache-2.0
     </developers>
 
     <properties>
+        <revision>2.5.2</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>

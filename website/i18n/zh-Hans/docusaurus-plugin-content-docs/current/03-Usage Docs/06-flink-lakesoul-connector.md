@@ -24,14 +24,14 @@ flink.warehouse.dir: "s3://bucket/path"
 ```
 如果指定了 warehouse 路径，则表路径默认为 `warehouse_dir/table_name`。如果建表时在属性中指定了 `path` 属性，则优先使用该属性作为表的存储路径。
 
-Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-2.5.1-flink-1.17.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
+Flink 引入 LakeSoul 依赖的方法：下載 lakesoul-flink-flink-1.17-VAR::VERSION.jar，放入 `$FLINK_HOME/lib` ，或在启动时指定 jar 的路径。
 
 为了使用 Flink 创建 LakeSoul 表，推荐使用 Flink SQL Client，支持直接使用 Flink SQL 命令操作 LakeSoul 表，本文档中 Flink SQL 是在 Flink SQL Client 界面直接输入语句；Table API 需要在 Java 项目中编写使用。
 
 切换到 Flink 文件夹下，执行命令开启 SQL Client 客户端。
 ```bash
 # 启动 Flink SQL Client
-bin/sql-client.sh embedded -j lakesoul-flink-2.5.1-flink-1.17.jar
+bin/sql-client.sh embedded -j lakesoul-flink-flink-1.17-VAR::VERSION.jar
 ```
 
 ## 2. DDL

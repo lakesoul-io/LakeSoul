@@ -12,13 +12,13 @@ SPDX-License-Identifier: Apache-2.0
     <parent>
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
-        <version>2.5.1</version>
+        <version>${revision}</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <modelVersion>4.0.0</modelVersion>
     <artifactId>lakesoul-io-java</artifactId>
-    <version>2.5.1</version>
+    <version>${revision}</version>
     <packaging>jar</packaging>
 
     <properties>
@@ -31,9 +31,9 @@ SPDX-License-Identifier: Apache-2.0
 
     <dependencies>
         <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>fastjson</artifactId>
-            <version>1.2.83</version>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-common</artifactId>
+            <version>${revision}</version>
         </dependency>
 
         <dependency>
@@ -82,13 +82,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_${scala.binary.version}</artifactId>
             <version>${scalatest.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>4.13.2</version>
             <scope>test</scope>
         </dependency>
 
@@ -242,73 +235,6 @@ SPDX-License-Identifier: Apache-2.0
                             </execution>
                         </executions>
                     </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-shade-plugin</artifactId>
-                        <version>3.2.4</version>
-                        <executions>
-                            <execution>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>shade</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                        <configuration>
-                            <artifactSet>
-                                <includes>
-                                    <include>com.dmetasoul:lakesoul-common</include>
-                                    <include>org.scala-lang:scala-library</include>
-                                    <include>org.scala-lang:scala-reflect</include>
-                                    <include>com.github.jnr:jnr-ffi</include>
-                                    <include>com.github.jnr:jffi</include>
-                                    <include>cglib:*</include>
-                                    <include>com.alibaba:fastjson</include>
-                                    <include>org.ow2.asm:*</include>
-                                    <include>com.zaxxer:HikariCP</include>
-                                    <include>org.postgresql:postgresql</include>
-                                </includes>
-                            </artifactSet>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                                <filter>
-                                    <artifact>com.github.jnr:jnr-ffi</artifact>
-                                    <excludes>
-                                        <exclude>com.github.jnr:jffi</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                            <relocations>
-                                <relocation>
-                                    <pattern>org.apache.spark.sql</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.org.apache.spark.sql</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>com.zaxxer.hikari</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.postgresql</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.ow2.asm</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.objectweb.asm</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
-                                </relocation>
-                            </relocations>
-                        </configuration>
-                    </plugin>
                 </plugins>
             </build>
         </profile>
@@ -459,34 +385,73 @@ SPDX-License-Identifier: Apache-2.0
                     <compileOrder>Mixed</compileOrder>
                 </configuration>
             </plugin>
-            <!--            <plugin>-->
-            <!--                <groupId>org.apache.maven.plugins</groupId>-->
-            <!--                <artifactId>maven-shade-plugin</artifactId>-->
-            <!--                <version>3.2.4</version>-->
-            <!--                <executions>-->
-            <!--                    <execution>-->
-            <!--                        <phase>package</phase>-->
-            <!--                        <goals>-->
-            <!--                            <goal>shade</goal>-->
-            <!--                        </goals>-->
-            <!--                    </execution>-->
-            <!--                </executions>-->
-            <!--                <configuration>-->
-            <!--                    <artifactSet>-->
-            <!--                        <includes>-->
-            <!--                            <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>-->
-            <!--                        </includes>-->
-            <!--                        <excludes>-->
-            <!--                            <exclude>org.apache.logging.log4j:*</exclude>-->
-            <!--                            <exclude>org.slf4j:*</exclude>-->
-            <!--                        </excludes>-->
-            <!--                    </artifactSet>-->
-            <!--                    <transformers>-->
-            <!--                        <transformer-->
-            <!--                                implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>-->
-            <!--                    </transformers>-->
-            <!--                </configuration>-->
-            <!--            </plugin>-->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.2.4</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <artifactSet>
+                        <includes>
+                            <include>com.dmetasoul:lakesoul-common</include>
+                            <include>org.scala-lang:scala-library</include>
+                            <include>org.scala-lang:scala-reflect</include>
+                            <include>com.github.jnr:jnr-ffi</include>
+                            <include>com.github.jnr:jffi</include>
+                            <include>cglib:*</include>
+                            <include>com.alibaba:fastjson</include>
+                            <include>org.ow2.asm:*</include>
+                            <include>com.zaxxer:HikariCP</include>
+                            <include>org.postgresql:postgresql</include>
+                        </includes>
+                    </artifactSet>
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
+                            <artifact>com.github.jnr:jnr-ffi</artifact>
+                            <excludes>
+                                <exclude>com.github.jnr:jffi</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                    <relocations>
+                        <relocation>
+                            <pattern>org.apache.spark.sql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.spark.sql</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.postgresql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.ow2.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.objectweb.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

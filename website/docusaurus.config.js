@@ -7,6 +7,7 @@
 
 const lightCodeTheme = require('prism-react-renderer').themes.github;
 const darkCodeTheme = require('prism-react-renderer').themes.dracula;
+const variableInjector = require('./variable-inject')
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -50,6 +51,14 @@ const config = {
           // Remove this to remove the "edit this page" links.
           editUrl:
             'https://github.com/lakesoul-io/LakeSoul/tree/main/website/',
+          remarkPlugins: [
+            [variableInjector, {
+              replacements: {
+                VERSION: '2.5.2',
+                CURRENT_YEAR: new Date().getFullYear()
+              }
+            }]
+          ],
         },
         blog: {
           showReadingTime: true,
