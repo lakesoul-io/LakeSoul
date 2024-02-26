@@ -34,7 +34,7 @@ public class DBConnector {
                     "; url=" + dataBaseProperty.getUrl() +
                     " ; user=" + config.getUsername());
             System.err.println("Please verify your meta connection configs according to doc: " +
-                    "https://lakesoul-io.github.io/docs/Usage%20Docs/setup-meta-env");
+                    "https://lakesoul-io.github.io/docs/Getting%20Started/setup-local-env");
             t.printStackTrace();
             throw t;
         }
