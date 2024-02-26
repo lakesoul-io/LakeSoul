@@ -12,6 +12,8 @@ on:
     paths-ignore:
       - "javadoc/**"
       - "website/**"
+      - "cpp/**"
+      - "python/**"
       - "**.md"
     branches:
       - 'main'
@@ -19,6 +21,8 @@ on:
     paths-ignore:
       - "javadoc/**"
       - "website/**"
+      - "cpp/**"
+      - "python/**"
       - "**.md"
     branches:
       - 'main'
