@@ -55,6 +55,13 @@ class RBACOperationSuite extends QueryTest
     }
   }
 
+  override def beforeAll(): Unit = {
+    resetMetaConn("lakesoul_test", "lakesoul_test", "public")
+    val m = new DBManager()
+    m.cleanMeta()
+    super.beforeAll()
+  }
+
   override def afterEach(): Unit = {
     resetMetaConn("lakesoul_test", "lakesoul_test", "public")
     val m = new DBManager()
@@ -67,6 +74,7 @@ class RBACOperationSuite extends QueryTest
     // create
     spark.sql("create database if not exists database1")
     val df = spark.sql("show databases").toDF()
+    df.show
     assert(df.count() == 1)
     // drop: coming soon
     //    spark.sql("drop database database1").collect()
