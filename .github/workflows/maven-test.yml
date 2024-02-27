@@ -12,6 +12,8 @@ on:
     paths-ignore:
       - "javadoc/**"
       - "website/**"
+      - "cpp/**"
+      - "python/**"
       - "**.md"
     branches:
       - 'main'
@@ -19,6 +21,8 @@ on:
     paths-ignore:
       - "javadoc/**"
       - "website/**"
+      - "cpp/**"
+      - "python/**"
       - "**.md"
     branches:
       - 'main'
@@ -259,7 +263,7 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
-          mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperatinSuite' -Dsurefire.failIfNoSpecifiedTests=false
+          mvn -B test -pl lakesoul-spark -am -Pcross-build --file pom.xml -Dtest='RBACOperationSuite' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |

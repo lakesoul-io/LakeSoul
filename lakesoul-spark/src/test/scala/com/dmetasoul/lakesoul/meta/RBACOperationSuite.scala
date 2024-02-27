@@ -40,8 +40,8 @@ class RBACOperationSuite extends QueryTest
     System.setProperty(DBUtil.usernameKey, username)
     System.setProperty(DBUtil.passwordKey, password)
     System.setProperty(DBUtil.domainKey, domain)
-    DBConnector.closeAllConnections
-    NativeMetadataJavaClient.closeAll
+    DBConnector.closeAllConnections()
+    NativeMetadataJavaClient.closeAll()
   }
 
   def login(username: String, password: String, domain: String): Unit = {
@@ -53,6 +53,13 @@ class RBACOperationSuite extends QueryTest
         e.printStackTrace()
         throw new RuntimeException(e)
     }
+  }
+
+  override def beforeAll(): Unit = {
+    resetMetaConn("lakesoul_test", "lakesoul_test", "public")
+    val m = new DBManager()
+    m.cleanMeta()
+    super.beforeAll()
   }
 
   override def afterEach(): Unit = {
@@ -67,7 +74,8 @@ class RBACOperationSuite extends QueryTest
     // create
     spark.sql("create database if not exists database1")
     val df = spark.sql("show databases").toDF()
-    assert(df.count() == 2)
+    df.show
+    assert(df.count() == 1)
     // drop: coming soon
     //    spark.sql("drop database database1").collect()
     //    val df2 = spark.sql("show databases").toDF()
@@ -188,7 +196,7 @@ class RBACOperationSuite extends QueryTest
     println(err2.getMessage)
     assert(err2.getMessage.contains("permission denied for table namespace"))
 
-    assert(spark.sql("show databases").toDF().count() == 2)
+    assert(spark.sql("show databases").toDF().count() == 1)
 
     // create & drop table
     spark.sql("create table if not exists table1 ( id int, foo string, bar string ) using lakesoul ")
