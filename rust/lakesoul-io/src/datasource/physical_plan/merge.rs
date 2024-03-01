@@ -241,15 +241,9 @@ pub fn merge_stream(
     Ok(merge_stream)
 }
 
-fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef, primary_keys: &[String]) -> Vec<Expr> {
-    let mut exprs = primary_keys
-        .iter()
-        .map(|pk| Expr::Column(datafusion::common::Column::new_unqualified(pk)))
-        .collect::<Vec<_>>();
+fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec<Expr> {
+    let mut exprs = Vec::new();
     for field in request_schema.fields() {
-        if primary_keys.contains(field.name()) {
-            continue;
-        }
         if df_schema.field_with_unqualified_name(field.name()).is_ok() {
             exprs.push(Expr::Column(datafusion::common::Column::new_unqualified(field.name())));
         }
@@ -265,7 +259,7 @@ pub async fn prune_filter_and_execute(
 ) -> Result<SendableRecordBatchStream> {
     let df_schema = df.schema().clone();
     // find columns requested and prune others
-    let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone(), &[]);
+    let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
     if cols.is_empty() {
         Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
     } else {

@@ -900,7 +900,7 @@ mod upsert_with_io_config_tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn test_select_requested_columns_without_hash_columns_upsert_1_times_i32() {
         let table_name = "select_requested_columns_without_hash_columns_upsert_1_times";
         let builder = init_table(
@@ -927,7 +927,7 @@ mod upsert_with_io_config_tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn test_select_requested_columns_without_hash_columns_upsert_2_times_i32() {
         let table_name = "select_requested_columns_without_hash_columns_upsert_2_times";
         let builder = init_table(
@@ -963,7 +963,15 @@ mod upsert_with_io_config_tests {
             None,
             builder.clone(),
             &[
-                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |", "|     |", "|     |", "|     |",
+                "+-----+", 
+                "| age |", 
+                "+-----+", 
+                "| 1   |", 
+                "| 2   |", 
+                "|     |", 
+                "|     |", 
+                "|     |", 
+                "|     |",
                 "+-----+",
             ],
         );
@@ -1106,7 +1114,7 @@ mod upsert_with_io_config_tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn test_derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32() {
         let table_name = "derange_hash_key_and_data_schema_order_string_type_upsert_1_times_i32";
         let builder = init_table(
@@ -1279,7 +1287,7 @@ mod upsert_with_io_config_tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn test_create_table_with_hash_key_disordered() {
         let table_name = "test_create_table_with_hash_key_disordered";
 

@@ -12,7 +12,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
-use datafusion::common::{FileType, Statistics};
+use datafusion::common::{project_schema, FileType, Statistics};
 use datafusion::datasource::physical_plan::ParquetExec;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
@@ -33,7 +33,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, PhysicalExpr},
 };
 use futures::StreamExt;
-use lakesoul_io::datasource::file_format::flatten_file_scan_config;
+use lakesoul_io::datasource::file_format::{compute_project_column_indices, flatten_file_scan_config};
 use lakesoul_io::datasource::physical_plan::MergeParquetExec;
 use lakesoul_io::helpers::partition_desc_from_file_scan_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
@@ -129,9 +129,14 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         for field in &conf.table_partition_cols {
             builder.push(Field::new(field.name(), field.data_type().clone(), false));
         }
-        let projection = conf.projection.clone();
         
-        let target_schema = Arc::new(builder.finish());
+        let table_schema = Arc::new(builder.finish());
+        
+        let projection = conf.projection.clone();
+        let target_schema = project_schema(&table_schema, projection.as_ref())?;
+
+        let merged_projection = compute_project_column_indices(table_schema.clone(), target_schema.clone(), self.conf.primary_keys_slice());
+        let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
         // files to read
         let flatten_conf =
@@ -163,9 +168,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             }
         }
 
-        let target_schema = SchemaRef::new(
+        let merged_schema = SchemaRef::new(
             Schema::new(
-                target_schema
+                merged_schema
                     .fields()
                     .iter()
                     .map(|field| {
@@ -182,7 +187,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         let mut partitioned_exec = Vec::new();
         for (_, (partition_columnar_values, inputs)) in inputs_map {
             let merge_exec = Arc::new(MergeParquetExec::new_with_inputs(
-                target_schema.clone(),
+                merged_schema.clone(),
                 inputs,
                 self.conf.clone(),
                 partition_columnar_values.clone(),
@@ -195,12 +200,12 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             partitioned_exec.first().unwrap().clone()
         };
 
-        if let Some(projection) = projection {
+        if target_schema.fields().len() < merged_schema.fields().len() {
             let mut projection_expr = vec![];
-            for idx in projection {
+            for field in target_schema.fields() {
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(target_schema.field(idx).name(), &target_schema)?,
-                    target_schema.field(idx).name().clone(),
+                    datafusion::physical_expr::expressions::col(field.name(), &merged_schema)?,
+                    field.name().clone(),
                 ));
             }
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))

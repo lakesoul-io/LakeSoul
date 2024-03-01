@@ -23,6 +23,7 @@ use tracing::{debug, instrument};
 
 use crate::helpers::listing_table_from_lakesoul_io_config;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
+use crate::transform::uniform_schema;
 
 pub struct LakeSoulListingTable {
     listing_table: Arc<ListingTable>,
@@ -48,8 +49,7 @@ impl LakeSoulListingTable {
         let (file_schema, listing_table) = listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?;
         let file_schema = file_schema
             .ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
-        let target_schema = lakesoul_io_config.schema();
-        let table_schema = Self::compute_table_schema(file_schema, target_schema);
+        let table_schema = Self::compute_table_schema(file_schema, lakesoul_io_config.schema());
 
         Ok(Self {
             listing_table,
@@ -67,6 +67,7 @@ impl LakeSoulListingTable {
     }
 
     pub fn compute_table_schema(file_schema: SchemaRef, target_schema: SchemaRef) -> SchemaRef {
+        let target_schema = uniform_schema(target_schema);
         let mut builder = SchemaBuilder::from(target_schema.fields());
             for field in file_schema.fields() {
                 if target_schema.field_with_name(field.name()).is_err() {

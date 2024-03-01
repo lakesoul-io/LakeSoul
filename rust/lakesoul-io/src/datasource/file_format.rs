@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 
-use arrow_schema::ArrowError;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
@@ -16,7 +15,7 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_expr::PhysicalSortRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
+use datafusion_common::{project_schema, FileType, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
@@ -101,27 +100,30 @@ impl FileFormat for LakeSoulParquetFormat {
         let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), self.conf.schema());
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
+
+        let merged_projection = compute_project_column_indices(table_schema.clone(), target_schema.clone(), self.conf.primary_keys_slice());
+        let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
+
         // files to read
         let flatten_conf =
             flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
 
 
         let merge_exec = Arc::new(MergeParquetExec::new(
-            target_schema.clone(),
+            merged_schema.clone(),
             flatten_conf,
             predicate,
             self.parquet_format.metadata_size_hint(state.config_options()),
             self.conf.clone(),
         )?);
-        if let Some(projection) = projection {
+        
+        if target_schema.fields().len() < merged_schema.fields().len() {
+
             let mut projection_expr = vec![];
-            for idx in projection {
-                if idx >= target_schema.fields().len() {
-                    return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(format!("column idx={} out of bound of {}, target_schema={}", idx, target_schema, self.conf.schema()))));
-                }
+            for field in target_schema.fields() {
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(target_schema.field(idx).name(), &target_schema)?,
-                    target_schema.field(idx).name().clone(),
+                    datafusion::physical_expr::expressions::col(field.name(), &merged_schema)?,
+                    field.name().clone(),
                 ));
             }
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, merge_exec)?))
@@ -190,13 +192,13 @@ pub async fn flatten_file_scan_config(
     Ok(flatten_configs)
 }
 
-fn compute_project_column_indices(
-    file_schema: SchemaRef,
+pub fn compute_project_column_indices(
+    schema: SchemaRef,
     projected_schema: SchemaRef,
     primary_keys: &[String],
 ) -> Option<Vec<usize>> {
     Some(
-        file_schema
+        schema
             .fields()
             .iter()
             .enumerate()
