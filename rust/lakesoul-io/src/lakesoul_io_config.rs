@@ -95,6 +95,10 @@ impl LakeSoulIOConfig {
         &self.primary_keys
     }
 
+    pub fn range_partitions_slice(&self) -> &[String] {
+        &self.range_partitions
+    }
+
     pub fn files_slice(&self) -> &[String] {
         &self.files
     }
@@ -141,6 +145,12 @@ impl LakeSoulIOConfigBuilder {
         self.config.primary_keys = pks;
         self
     }
+
+    pub fn with_range_partition(mut self, range_partition: String) -> Self {
+        self.config.range_partitions.push(range_partition);
+        self
+    }
+
 
     pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
         self.config.range_partitions = range_partitions;

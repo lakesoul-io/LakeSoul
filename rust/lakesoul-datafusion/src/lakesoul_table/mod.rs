@@ -7,6 +7,7 @@ pub mod helpers;
 use std::{ops::Deref, sync::Arc};
 
 use arrow::datatypes::{SchemaRef, Schema};
+use arrow_cast::pretty::pretty_format_batches;
 use datafusion::sql::TableReference;
 use datafusion::{
     dataframe::DataFrame,
@@ -17,6 +18,7 @@ use datafusion::{
 use lakesoul_io::{lakesoul_io_config::create_session_context_with_planner, lakesoul_reader::RecordBatch};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use proto::proto::entity::TableInfo;
+use tracing::debug;
 
 use crate::{
     catalog::{create_io_config_builder, parse_table_info_partitions, LakeSoulTableProperty},
@@ -33,6 +35,7 @@ pub struct LakeSoulTable {
     table_name: String,
     table_schema: SchemaRef,
     primary_keys: Vec<String>,
+    range_partitions: Vec<String>,
     properties: LakeSoulTableProperty,
 }
 
@@ -62,7 +65,7 @@ impl LakeSoulTable {
 
         let table_name = table_info.table_name.clone();
         let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
-        let (_, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
+        let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
 
         Ok(Self {
             client,
@@ -70,6 +73,7 @@ impl LakeSoulTable {
             table_name,
             table_schema,
             primary_keys: hash_partitions,
+            range_partitions,
             properties,
         })
     }
@@ -114,20 +118,20 @@ impl LakeSoulTable {
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
-        let _results = dataframe
+        let results = dataframe
             // .explain(true, false)?
             .collect()
             .await?;
 
+        debug!("{}", pretty_format_batches(&results)?);
         Ok(())
-        // Ok(print_batches(&results)?)
     }
 
     pub async fn to_dataframe(&self, context: &SessionContext) -> Result<DataFrame> {
         let config_builder =
             create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace()).await?;
         let provider = Arc::new(
-            LakeSoulTableProvider::try_new(&context.state(), config_builder.build(), self.table_info(), false).await?,
+            LakeSoulTableProvider::try_new(&context.state(), self.client(), config_builder.build(), self.table_info(), false).await?,
         );
         Ok(context.read_table(provider)?)
     }
@@ -138,7 +142,7 @@ impl LakeSoulTable {
                 .await?
                 .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
-            LakeSoulTableProvider::try_new(session_state, config_builder.build(), self.table_info(), true).await?,
+            LakeSoulTableProvider::try_new(session_state, self.client(), config_builder.build(), self.table_info(), true).await?,
         ))
     }
 
@@ -156,6 +160,10 @@ impl LakeSoulTable {
 
     pub fn primary_keys(&self) -> &Vec<String> {
         &self.primary_keys
+    }
+
+    pub fn range_partitions(&self) -> &Vec<String> {
+        &self.range_partitions
     }
 
     pub fn hash_bucket_num(&self) -> usize {

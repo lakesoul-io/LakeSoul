@@ -30,6 +30,10 @@ pub enum LakeSoulError {
     TokioJoinError(#[from] tokio::task::JoinError),
     #[error("sys time error: {0}")]
     SysTimeError(#[from] std::time::SystemTimeError),
+    // #[error("object store path error: {0}")]
+    // ObjectStorePathError(#[from] object_store::path::Error),
+    // #[error("object store error: {0}")]
+    // ObjectStoreError(#[from] object_store::path::Error),
     #[error(
         "Internal error: {0}.\nThis was likely caused by a bug in LakeSoul's \
     code and we would welcome that you file an bug report in our issue tracker"

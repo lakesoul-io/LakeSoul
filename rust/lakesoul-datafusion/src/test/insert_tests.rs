@@ -12,12 +12,13 @@ mod insert_tests {
         datatypes::{DataType, Field, Schema, SchemaRef},
         record_batch::RecordBatch,
     };
-    use datafusion::assert_batches_eq;
-    use lakesoul_io::filter::parser::Parser;
+    use datafusion::logical_expr::Expr;
+    use datafusion::prelude::col;
     use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
     use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
     use crate::lakesoul_table::LakeSoulTable;
+    use crate::test::assert_batches_eq;
     use crate::{
         catalog::{create_io_config_builder, create_table},
         error::Result,
@@ -38,7 +39,8 @@ mod insert_tests {
         // todo: partitioned table is replaced by primary key table currently
         let builder = LakeSoulIOConfigBuilder::new()
             .with_schema(schema.clone())
-            .with_primary_keys(partition_key.into_iter().map(String::from).collect());
+            // .with_primary_keys(partition_key.into_iter().map(String::from).collect());
+            .with_range_partitions(partition_key.into_iter().map(String::from).collect());
         create_table(client, table_name, builder.build()).await
     }
 
@@ -51,7 +53,7 @@ mod insert_tests {
         client: MetaDataClientRef,
         table_name: &str,
         selected_cols: Vec<&str>,
-        filters: Option<String>,
+        filters: Option<Expr>,
         expected: &[&str],
     ) -> Result<()> {
         let lakesoul_table = LakeSoulTable::for_name(table_name).await?;
@@ -60,10 +62,9 @@ mod insert_tests {
         let sess_ctx = create_session_context(&mut builder.clone().build())?;
 
         let dataframe = lakesoul_table.to_dataframe(&sess_ctx).await?;
-        let schema = SchemaRef::new(dataframe.schema().into());
 
         let dataframe = if let Some(f) = filters {
-            dataframe.filter(Parser::parse(f.clone(), schema)?)?
+            dataframe.filter(f)?
         } else {
             dataframe
         };
@@ -74,14 +75,16 @@ mod insert_tests {
             dataframe.select_columns(&selected_cols)?
         };
 
-        let result = dataframe.collect().await?;
+        // print_batches(&dataframe.clone().explain(true, false)?.collect().await?);
 
-        assert_batches_eq!(expected, &result);
+        let results = dataframe.collect().await?;
+
+        assert_batches_eq(table_name, expected, &results);
         Ok(())
     }
 
     fn create_batch_i32(names: Vec<&str>, values: Vec<&[i32]>) -> RecordBatch {
-        let values = values
+        let values: Vec<Arc<dyn Array>> = values
             .into_iter()
             .map(|vec| Arc::new(Int32Array::from(Vec::from(vec))) as ArrayRef)
             .collect::<Vec<ArrayRef>>();
@@ -175,7 +178,7 @@ mod insert_tests {
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some("and(noteq(id, null), lteq(id, 2))".to_string()),
+            Some(col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(Some(2))))),
             &[
                 "+------+----+",
                 "| data | id |",
@@ -198,7 +201,7 @@ mod insert_tests {
             client.clone(),
             table_name,
             vec!["data", "id"],
-            Some("and(noteq(id, null), lteq(id, 2))".to_string()),
+            Some(col("id").lt_eq(Expr::Literal(datafusion::scalar::ScalarValue::Int32(Some(2))))),
             &[
                 "+------+----+",
                 "| data | id |",
@@ -359,7 +362,7 @@ mod insert_tests {
             ),
             (
                 "Float64",
-                Arc::new(Float64Array::from(vec![1.0, -1.0])) as ArrayRef,
+                Arc::new(Float64Array::from(vec![3000.6, 300.6])) as ArrayRef,
                 true,
             ),
             ("Int8", Arc::new(Int8Array::from(vec![1i8, -2i8])) as ArrayRef, true),
@@ -438,22 +441,22 @@ mod insert_tests {
             ),
             (
                 "Time32Millisecond",
-                Arc::new(Time32MillisecondArray::from(vec![1i32, -2i32])) as ArrayRef,
+                Arc::new(Time32MillisecondArray::from(vec![1i32, 2i32])) as ArrayRef,
                 true,
             ),
             (
                 "Time32Second",
-                Arc::new(Time32SecondArray::from(vec![1i32, -2i32])) as ArrayRef,
+                Arc::new(Time32SecondArray::from(vec![1i32, 2i32])) as ArrayRef,
                 true,
             ),
             (
                 "Time64Microsecond",
-                Arc::new(Time64MicrosecondArray::from(vec![1i64, -2i64])) as ArrayRef,
+                Arc::new(Time64MicrosecondArray::from(vec![1i64, 2i64])) as ArrayRef,
                 true,
             ),
             (
                 "Time64Nanosecond",
-                Arc::new(Time64NanosecondArray::from(vec![1i64, -2i64])) as ArrayRef,
+                Arc::new(Time64NanosecondArray::from(vec![1i64, 2i64])) as ArrayRef,
                 true,
             ),
             (
@@ -501,12 +504,12 @@ mod insert_tests {
         init_table(client.clone(), record_batch.schema(), table_name).await?;
         do_insert(record_batch, table_name).await?;
         check_insert(client.clone(), table_name, vec![], None, &[
-            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------+-----------------------------------------------------------------------------+----------------------------------------------------------------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
-            "| Boolean | Binary | Date32     | Date64              | Decimal128    | Decimal256   | FixedSizeBinary | FixedSizeList | Float32 | Float64 | Int8 | Int16 | Int32 | Int64 | Map                | Null | LargeBinary | LargeString | List      | String | Struct            | Time32Millisecond                                                           | Time32Second                                                           | Time64Microsecond                                                           | Time64Nanosecond                                                           | TimestampMicrosecond       | TimestampMillisecond    | TimestampNanosecond           | TimestampSecond     | UInt8 | UInt16 | UInt32 | UInt64 |",
-            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------+-----------------------------------------------------------------------------+----------------------------------------------------------------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
-            "| true    | 01     | 1970-01-02 | 1970-01-01T00:00:00 | 0.0000000001  | 0.0000000000 | 01              | [0, 1, 2]     | 1.0     | 1.0     | 1    | 1     | 1     | 1     | {joe: 1}           |      | 01          | 1           | [0, 1, 2] | 1      | {b: false, c: 42} | 00:00:00.001                                                                | 00:00:01                                                               | 00:00:00.000001                                                             | 00:00:00.000000001                                                         | 1970-01-01T00:00:00.000001 | 1970-01-01T00:00:00.001 | 1970-01-01T00:00:00.000000001 | 1970-01-01T00:00:01 | 1     | 1      | 1      | 1      |",
-            "| false   | 0203   | 1969-12-30 | 1970-01-01T00:00:00 | -0.0000000002 |              | 02              |               | -1.0    | -1.0    | -2   | -2    | -2    | -2    | {blogs: 2, foo: 4} |      | 0203        |             |           |        | {b: true, c: 31}  | ERROR: Cast error: Failed to convert -2 to temporal for Time32(Millisecond) | ERROR: Cast error: Failed to convert -2 to temporal for Time32(Second) | ERROR: Cast error: Failed to convert -2 to temporal for Time64(Microsecond) | ERROR: Cast error: Failed to convert -2 to temporal for Time64(Nanosecond) | 1969-12-31T23:59:59.999998 | 1969-12-31T23:59:59.998 | 1969-12-31T23:59:59.999999998 | 1969-12-31T23:59:58 | 2     | 2      | 2      | 2      |",
-            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------+-----------------------------------------------------------------------------+----------------------------------------------------------------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+"
+            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-------------------+--------------+-------------------+--------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
+            "| Boolean | Binary | Date32     | Date64              | Decimal128    | Decimal256   | FixedSizeBinary | FixedSizeList | Float32 | Float64 | Int8 | Int16 | Int32 | Int64 | Map                | Null | LargeBinary | LargeString | List      | String | Struct            | Time32Millisecond | Time32Second | Time64Microsecond | Time64Nanosecond   | TimestampMicrosecond       | TimestampMillisecond    | TimestampNanosecond           | TimestampSecond     | UInt8 | UInt16 | UInt32 | UInt64 |",
+            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-------------------+--------------+-------------------+--------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
+            "| true    | 01     | 1970-01-02 | 1970-01-01T00:00:00 | 0.0000000001  | 0.0000000000 | 01              | [0, 1, 2]     | 1.0     | 3000.6  | 1    | 1     | 1     | 1     | {joe: 1}           |      | 01          | 1           | [0, 1, 2] | 1      | {b: false, c: 42} | 00:00:00.001      | 00:00:01     | 00:00:00.000001   | 00:00:00.000000001 | 1970-01-01T00:00:00.000001 | 1970-01-01T00:00:00.001 | 1970-01-01T00:00:00.000000001 | 1970-01-01T00:00:01 | 1     | 1      | 1      | 1      |",
+            "| false   | 0203   | 1969-12-30 | 1970-01-01T00:00:00 | -0.0000000002 |              | 02              |               | -1.0    | 300.6   | -2   | -2    | -2    | -2    | {blogs: 2, foo: 4} |      | 0203        |             |           |        | {b: true, c: 31}  | 00:00:00.002      | 00:00:02     | 00:00:00.000002   | 00:00:00.000000002 | 1969-12-31T23:59:59.999998 | 1969-12-31T23:59:59.998 | 1969-12-31T23:59:59.999999998 | 1969-12-31T23:59:58 | 2     | 2      | 2      | 2      |",
+            "+---------+--------+------------+---------------------+---------------+--------------+-----------------+---------------+---------+---------+------+-------+-------+-------+--------------------+------+-------------+-------------+-----------+--------+-------------------+-------------------+--------------+-------------------+--------------------+----------------------------+-------------------------+-------------------------------+---------------------+-------+--------+--------+--------+",
         ]).await
     }
 

@@ -68,6 +68,7 @@ pub struct MultiPartAsyncWriter {
     _config: LakeSoulIOConfig,
     object_store: Arc<dyn ObjectStore>,
     path: Path,
+    absolute_path: String,
     num_rows: u64,
 }
 
@@ -217,6 +218,7 @@ impl MultiPartAsyncWriter {
             _config: config.clone(),
             object_store,
             path,
+            absolute_path: file_name.to_string(),
             num_rows: 0,
         })
     }
@@ -259,6 +261,10 @@ impl MultiPartAsyncWriter {
 
     pub fn path(&self) -> Path {
         self.path.clone()
+    }
+
+    pub fn absolute_path(&self) -> String {
+        self.absolute_path.clone()
     }
 
     pub fn task_ctx(&self) -> Arc<TaskContext> {

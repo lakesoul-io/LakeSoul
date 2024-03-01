@@ -23,7 +23,6 @@ pub struct MergeParquetExec {
     primary_keys: Arc<Vec<String>>,
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
-    config: FileScanConfig,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
 }
 
@@ -31,12 +30,11 @@ impl MergeParquetExec {
     /// Create a new Parquet reader execution plan provided file list and schema.
     pub fn new(
         schema: SchemaRef,
-        config: FileScanConfig,
         flatten_configs: Vec<FileScanConfig>,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         metadata_size_hint: Option<usize>,
         io_config: LakeSoulIOConfig,
-    ) -> Self {
+    ) -> Result<Self> {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
@@ -68,15 +66,34 @@ impl MergeParquetExec {
         let default_column_value = Arc::new(io_config.default_column_value);
         let merge_operators = Arc::new(io_config.merge_operators);
 
-        Self {
+        Ok(Self {
             schema,
             inputs,
-            config,
             primary_keys,
             default_column_value,
             merge_operators,
-        }
+        })
     }
+
+    pub fn new_with_inputs(
+        schema: SchemaRef,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        io_config: LakeSoulIOConfig,
+        default_column_value: Arc<HashMap<String, String>>,
+    ) -> Result<Self> {
+
+        let primary_keys = Arc::new(io_config.primary_keys);
+        let merge_operators = Arc::new(io_config.merge_operators);
+
+        Ok(Self {
+            schema,
+            inputs,
+            primary_keys,
+            default_column_value,
+            merge_operators,
+        })
+    }
+
 
     pub fn primary_keys(&self) -> Arc<Vec<String>> {
         self.primary_keys.clone()
@@ -125,7 +142,6 @@ impl ExecutionPlan for MergeParquetExec {
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
-            config: self.config.clone(),
         }))
     }
 

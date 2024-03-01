@@ -323,7 +323,7 @@ pub fn merge_stream(
             default_column_value,
         ))
     } else {
-        let merge_schema: SchemaRef = Arc::new(Schema::new(
+        let merge_schema = Arc::new(Schema::new(
             schema
                 .fields
                 .iter()

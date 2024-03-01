@@ -53,7 +53,12 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
             })?,
             partitions: format!(
                 "{};{}",
-                "",
+                config
+                    .range_partitions_slice()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
                 config
                     .primary_keys_slice()
                     .iter()
@@ -77,7 +82,7 @@ pub(crate) async fn create_io_config_builder(
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
         let data_files = if fetch_files {
             client
-                .get_data_files_by_table_name(table_name, vec![], namespace)
+                .get_data_files_by_table_name(table_name, namespace)
                 .await?
         } else {
             vec![]
@@ -114,7 +119,7 @@ pub(crate) fn parse_table_info_partitions(partitions: String) -> Result<(Vec<Str
 pub(crate) async fn commit_data(
     client: MetaDataClientRef,
     table_name: &str,
-    partitions: Vec<(String, String)>,
+    partition_desc: String,
     files: &[String],
 ) -> Result<()> {
     let table_ref = TableReference::from(table_name);
@@ -124,15 +129,7 @@ pub(crate) async fn commit_data(
     client
         .commit_data_commit_info(DataCommitInfo {
             table_id: table_name_id.table_id,
-            partition_desc: if partitions.is_empty() {
-                "-5".to_string()
-            } else {
-                partitions
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
+            partition_desc,
             file_ops: files
                 .iter()
                 .map(|file| DataFileOp {

@@ -102,20 +102,20 @@ impl FileFormat for LakeSoulParquetFormat {
         for field in &conf.table_partition_cols {
             builder.push(Field::new(field.name(), field.data_type().clone(), false));
         }
+
+        let projection = conf.projection.clone();
         // files to read
-        let (summary_conf, flatten_conf) =
+        let flatten_conf =
             flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice()).await?;
-        let projection = summary_conf.projection.clone();
         let merge_schema = Arc::new(builder.finish());
 
         let merge_exec = Arc::new(MergeParquetExec::new(
             merge_schema.clone(),
-            summary_conf,
             flatten_conf,
             predicate,
             self.parquet_format.metadata_size_hint(state.config_options()),
             self.conf.clone(),
-        ));
+        )?);
         if let Some(projection) = projection {
             let mut projection_expr = vec![];
             for idx in projection {
@@ -147,13 +147,12 @@ impl FileFormat for LakeSoulParquetFormat {
     }
 }
 
-async fn flatten_file_scan_config(
+pub async fn flatten_file_scan_config(
     state: &SessionState,
     format: Arc<ParquetFormat>,
     conf: FileScanConfig,
     primary_keys: &[String],
-) -> Result<(FileScanConfig, Vec<FileScanConfig>)> {
-    let summary_conf = conf.clone();
+) -> Result<Vec<FileScanConfig>> {
     let object_store_url = conf.object_store_url.clone();
     let store = state.runtime_env().object_store(object_store_url.clone())?;
     let projected_schema = project_schema(&conf.file_schema.clone(), conf.projection.as_ref())?;
@@ -171,7 +170,7 @@ async fn flatten_file_scan_config(
             let projection =
                 compute_project_column_indices(file_schema.clone(), projected_schema.clone(), primary_keys);
             let limit = conf.limit;
-            let table_partition_cols = vec![];
+            let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
             let infinite_source = conf.infinite_source;
             let config = FileScanConfig {
@@ -188,7 +187,7 @@ async fn flatten_file_scan_config(
             flatten_configs.push(config);
         }
     }
-    Ok((summary_conf, flatten_configs))
+    Ok(flatten_configs)
 }
 
 fn compute_project_column_indices(
