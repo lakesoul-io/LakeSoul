@@ -131,11 +131,12 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         }
         let projection = conf.projection.clone();
         
+        let target_schema = Arc::new(builder.finish());
+
         // files to read
         let flatten_conf =
-            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice()).await?;
+            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
         
-        let merge_schema = Arc::new(builder.finish());
 
         let mut inputs_map: HashMap<String, (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>) > = HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
@@ -150,36 +151,21 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     column_nullable.insert(field.name().clone());
                 }
             }
-            let single_exec = if partition_desc.eq("-5") {
-                parquet_exec
-            } else {
-                // let mut builder = SchemaBuilder::from(parquet_exec.schema().fields());
-                // for field in &config.table_partition_cols {
-                //     builder.push(field.clone())
-                // }
-
-                // Arc::new(DefaultColumnExec::new(
-                //     parquet_exec,
-                //     Arc::new(builder.finish()),
-                //     partition_columnar_value.clone(),
-                // )?) as Arc<dyn ExecutionPlan>
-                parquet_exec
-            };
 
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc)
             {
-                inputs.push(single_exec);
+                inputs.push(parquet_exec);
             } else {
                 inputs_map.insert(
                     partition_desc.clone(),
-                    (partition_columnar_value.clone(), vec![single_exec]),
+                    (partition_columnar_value.clone(), vec![parquet_exec]),
                 );
             }
         }
 
         let target_schema = SchemaRef::new(
             Schema::new(
-                merge_schema
+                target_schema
                     .fields()
                     .iter()
                     .map(|field| {
@@ -213,8 +199,8 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             let mut projection_expr = vec![];
             for idx in projection {
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(merge_schema.field(idx).name(), &merge_schema)?,
-                    merge_schema.field(idx).name().clone(),
+                    datafusion::physical_expr::expressions::col(target_schema.field(idx).name(), &target_schema)?,
+                    target_schema.field(idx).name().clone(),
                 ));
             }
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))

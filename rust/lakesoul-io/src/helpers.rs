@@ -99,7 +99,7 @@ pub async fn listing_table_from_lakesoul_io_config(
     lakesoul_io_config: LakeSoulIOConfig,
     file_format: Arc<dyn FileFormat>,
     as_sink: bool
-) -> Result<ListingTable> {
+) -> Result<(Option<SchemaRef>, Arc<ListingTable>)> {
     let config = match as_sink {
         false => {
             // Parse the path
@@ -158,6 +158,6 @@ pub async fn listing_table_from_lakesoul_io_config(
         }
     };
 
-    ListingTable::try_new(config)
+    Ok((config.file_schema.clone(), Arc::new(ListingTable::try_new(config)?)))
 }
 

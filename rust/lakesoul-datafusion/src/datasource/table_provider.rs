@@ -96,7 +96,7 @@ impl LakeSoulTableProvider {
                 lakesoul_io_config.clone()
             ).await?);
 
-        let listing_table = Arc::new(listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?);
+        let (_, listing_table) = listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?;
         
         Ok(Self {
             listing_table,

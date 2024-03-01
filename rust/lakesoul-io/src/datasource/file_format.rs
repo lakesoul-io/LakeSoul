@@ -6,8 +6,9 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::datatypes::{Field, SchemaBuilder, SchemaRef};
+use arrow::datatypes::SchemaRef;
 
+use arrow_schema::ArrowError;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
@@ -15,13 +16,13 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_expr::PhysicalSortRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, FileType, Result, Statistics};
+use datafusion_common::{project_schema, DataFusionError, FileType, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
 use async_trait::async_trait;
 
-use crate::datasource::physical_plan::MergeParquetExec;
+use crate::datasource::{listing::LakeSoulListingTable, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 
 /// LakeSoul `FileFormat` implementation for supporting Apache Parquet
@@ -97,20 +98,16 @@ impl FileFormat for LakeSoulParquetFormat {
             .then(|| filters.cloned())
             .flatten();
 
-        let file_schema = conf.file_schema.clone();
-        let mut builder = SchemaBuilder::from(file_schema.fields());
-        for field in &conf.table_partition_cols {
-            builder.push(Field::new(field.name(), field.data_type().clone(), false));
-        }
-
+        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), self.conf.schema());
         let projection = conf.projection.clone();
+        let target_schema = project_schema(&table_schema, projection.as_ref())?;
         // files to read
         let flatten_conf =
-            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice()).await?;
-        let merge_schema = Arc::new(builder.finish());
+            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
+
 
         let merge_exec = Arc::new(MergeParquetExec::new(
-            merge_schema.clone(),
+            target_schema.clone(),
             flatten_conf,
             predicate,
             self.parquet_format.metadata_size_hint(state.config_options()),
@@ -119,9 +116,12 @@ impl FileFormat for LakeSoulParquetFormat {
         if let Some(projection) = projection {
             let mut projection_expr = vec![];
             for idx in projection {
+                if idx >= target_schema.fields().len() {
+                    return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(format!("column idx={} out of bound of {}, target_schema={}", idx, target_schema, self.conf.schema()))));
+                }
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(merge_schema.field(idx).name(), &merge_schema)?,
-                    merge_schema.field(idx).name().clone(),
+                    datafusion::physical_expr::expressions::col(target_schema.field(idx).name(), &target_schema)?,
+                    target_schema.field(idx).name().clone(),
                 ));
             }
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, merge_exec)?))
@@ -152,10 +152,10 @@ pub async fn flatten_file_scan_config(
     format: Arc<ParquetFormat>,
     conf: FileScanConfig,
     primary_keys: &[String],
+    target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
     let object_store_url = conf.object_store_url.clone();
     let store = state.runtime_env().object_store(object_store_url.clone())?;
-    let projected_schema = project_schema(&conf.file_schema.clone(), conf.projection.as_ref())?;
 
     let mut flatten_configs = vec![];
     for i in 0..conf.file_groups.len() {
@@ -168,7 +168,7 @@ pub async fn flatten_file_scan_config(
                 .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
                 .await?;
             let projection =
-                compute_project_column_indices(file_schema.clone(), projected_schema.clone(), primary_keys);
+                compute_project_column_indices(file_schema.clone(), target_schema.clone(), primary_keys);
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
@@ -191,17 +191,17 @@ pub async fn flatten_file_scan_config(
 }
 
 fn compute_project_column_indices(
-    schema: SchemaRef,
-    project_schema: SchemaRef,
+    file_schema: SchemaRef,
+    projected_schema: SchemaRef,
     primary_keys: &[String],
 ) -> Option<Vec<usize>> {
     Some(
-        schema
+        file_schema
             .fields()
             .iter()
             .enumerate()
             .filter_map(|(idx, field)| {
-                if project_schema.field_with_name(field.name()).is_ok() | primary_keys.contains(field.name()) {
+                if projected_schema.field_with_name(field.name()).is_ok() | primary_keys.contains(field.name()) {
                     Some(idx)
                 } else {
                     None
