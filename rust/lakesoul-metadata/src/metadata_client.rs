@@ -507,13 +507,8 @@ impl MetaDataClient {
     pub async fn get_data_files_by_table_name(
         &self,
         table_name: &str,
-        partitions: Vec<(&str, &str)>,
         namespace: &str,
     ) -> Result<Vec<String>> {
-        let partition_filter = partitions
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<String>>();
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
         debug!("table_info: {:?}", table_info);
         let partition_list = self.get_all_partition_info(table_info.table_id.as_str()).await?;
@@ -522,29 +517,43 @@ impl MetaDataClient {
             table_info.table_id.as_str(),
             partition_list
         );
-        let mut data_commit_info_list = Vec::<String>::new();
-        for partition_info in &partition_list {
-            let partition_desc = partition_info.partition_desc.clone();
-            if partition_filter.contains(&partition_desc) {
-                continue;
-            } else {
-                let _data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
-                // let data_commit_info_list = Vec::<DataCommitInfo>::new();
-                let _data_file_list = _data_commit_info_list
-                    .iter()
-                    .flat_map(|data_commit_info| {
-                        data_commit_info
-                            .file_ops
-                            .iter()
-                            .map(|file_op| file_op.path.clone())
-                            .collect::<Vec<String>>()
-                    })
-                    .collect::<Vec<String>>();
-                data_commit_info_list.extend_from_slice(&_data_file_list);
-            }
-        }
-        Ok(data_commit_info_list)
+        self.get_data_files_of_partitions(partition_list).await
     }
+
+    pub async fn get_data_files_of_partitions(
+        &self, 
+        partition_list: Vec<PartitionInfo>, 
+    ) -> Result<Vec<String>> {
+        let mut data_files = Vec::<String>::new();
+        for partition_info in &partition_list {
+            let _data_file_list = self.get_data_files_of_single_partition(partition_info).await?;
+            data_files.extend_from_slice(&_data_file_list);
+            
+        }
+        Ok(data_files)
+
+    }
+
+    pub async fn get_data_files_of_single_partition(
+        &self, 
+        partition_info: &PartitionInfo, 
+    ) -> Result<Vec<String>> {
+        let data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
+        // let data_commit_info_list = Vec::<DataCommitInfo>::new();
+        let data_file_list = data_commit_info_list
+            .iter()
+            .flat_map(|data_commit_info| {
+                data_commit_info
+                    .file_ops
+                    .iter()
+                    .map(|file_op| file_op.path.clone())
+                    .collect::<Vec<String>>()
+            })
+            .collect::<Vec<String>>();
+        Ok(data_file_list)
+
+    }
+
 
     async fn get_data_commit_info_of_single_partition(
         &self,

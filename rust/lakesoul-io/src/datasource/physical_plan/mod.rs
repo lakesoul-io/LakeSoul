@@ -5,5 +5,6 @@
 pub use empty_schema::EmptySchemaScanExec;
 pub use merge::MergeParquetExec;
 
+pub mod defatul_column;
 mod empty_schema;
-mod merge;
+pub mod merge;

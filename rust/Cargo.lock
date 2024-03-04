@@ -1625,6 +1625,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
+ "arrow-arith",
+ "arrow-cast",
  "async-trait",
  "bytes",
  "chrono",

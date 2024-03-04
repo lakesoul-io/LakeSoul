@@ -11,6 +11,7 @@ use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
+use datafusion::optimizer::push_down_projection::PushDownProjection;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::{External, ObjectStore};
 use derivative::Derivative;
@@ -95,6 +96,10 @@ impl LakeSoulIOConfig {
         &self.primary_keys
     }
 
+    pub fn range_partitions_slice(&self) -> &[String] {
+        &self.range_partitions
+    }
+
     pub fn files_slice(&self) -> &[String] {
         &self.files
     }
@@ -141,6 +146,12 @@ impl LakeSoulIOConfigBuilder {
         self.config.primary_keys = pks;
         self
     }
+
+    pub fn with_range_partition(mut self, range_partition: String) -> Self {
+        self.config.range_partitions.push(range_partition);
+        self
+    }
+
 
     pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
         self.config.range_partitions = range_partitions;
@@ -471,7 +482,7 @@ pub fn create_session_context_with_planner(
         .collect();
     state = state
         .with_analyzer_rules(vec![])
-        .with_optimizer_rules(vec![Arc::new(PushDownFilter {})])
+        .with_optimizer_rules(vec![Arc::new(PushDownFilter {}), Arc::new(PushDownProjection {})])
         .with_physical_optimizer_rules(physical_opt_rules);
 
     Ok(SessionContext::new_with_state(state))
