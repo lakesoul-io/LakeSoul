@@ -12,6 +12,8 @@ import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils.TableInfo
 import org.apache.spark.sql.types.StructType
 
+import java.net.URI
+
 object MergePartitionedFileUtil {
   def notSplitFiles(sparkSession: SparkSession,
                     file: FileStatus,
@@ -45,10 +47,11 @@ object MergePartitionedFileUtil {
                          requestPartitionFields: Array[String]): MergePartitionedFile = {
     val hosts = getBlockHosts(getBlockLocations(file), 0, file.getLen)
 
-    val filePathStr = filePath
+    val fs = filePath
       .getFileSystem(sparkSession.sessionState.newHadoopConf())
+    val filePathStr = fs
       .makeQualified(filePath).toString
-    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(f.path))
+    val touchedFileInfo = fileInfo.find(f => filePathStr.equals(fs.makeQualified(new Path(new URI(f.path))).toString))
       .getOrElse(throw LakeSoulErrors.filePathNotFoundException(filePathStr, fileInfo.mkString(",")))
 
     val touchedFileSchema = requestFilesSchemaMap(touchedFileInfo.range_version).fieldNames

@@ -229,7 +229,6 @@ impl LakeSoulTableProvider {
         let mut file_groups = Vec::new();
 
         while let Some((partition, object_metas)) = futures.next().await.transpose()? {
-            dbg!(&object_metas);
             let cols = self.table_partition_cols().iter().map(|x| x.0.as_str());
             let parsed = parse_partitions_for_partition_desc(&partition.partition_desc, cols);
 

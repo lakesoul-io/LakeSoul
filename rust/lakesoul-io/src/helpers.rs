@@ -110,7 +110,6 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .iter()
                 .map(ListingTableUrl::parse)
                 .collect::<Result<Vec<_>>>()?;
-            dbg!(&table_paths);
             // Create default parquet options
             let object_store_url = table_paths
                 .first()

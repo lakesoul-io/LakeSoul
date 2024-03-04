@@ -8,7 +8,7 @@ use arrow::{array::{Array, ArrayRef, AsArray, StringBuilder}, compute::prep_null
 use arrow_cast::cast;
 use arrow_arith::boolean::and;
 
-use datafusion::{common::{DFField, DFSchema}, datasource::listing::ListingTableUrl, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
+use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
 use tracing::{debug, trace};

@@ -80,7 +80,7 @@ mod integration_tests {
             create_table(client.clone(), &table, builder.build()).await?;
             let lakesoul_table = LakeSoulTable::for_name(table).await?;
             lakesoul_table.upsert_dataframe(dataframe).await?;
-            print_batches(&lakesoul_table.to_dataframe(&ctx).await?.collect().await?);
+            // print_batches(&lakesoul_table.to_dataframe(&ctx).await?.collect().await?);
             dbg!(table);
         }
 
