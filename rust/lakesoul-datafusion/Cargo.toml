@@ -33,6 +33,8 @@ bytes = { workspace = true }
 tracing = "0.1.40"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+url = { workspace = true }
+
 
 [dev-dependencies]
 ctor = "0.2"

@@ -9,6 +9,8 @@ use datafusion::{
     datasource::{file_format::FileFormat, listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl}, physical_plan::FileScanConfig}, execution::context::SessionState, logical_expr::col, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::PhysicalExpr, physical_planner::create_physical_sort_expr
 };
 use datafusion_common::{DFSchema, DataFusionError, Result};
+use object_store::path::Path;
+use url::Url;
 
 use crate::{lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
 
@@ -108,6 +110,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .iter()
                 .map(ListingTableUrl::parse)
                 .collect::<Result<Vec<_>>>()?;
+            dbg!(&table_paths);
             // Create default parquet options
             let object_store_url = table_paths
                 .first()
@@ -124,7 +127,7 @@ pub async fn listing_table_from_lakesoul_io_config(
             let mut objects = vec![];
 
             for url in &table_paths {
-                objects.push(store.head(url.prefix()).await?);
+                objects.push(store.head(&Path::from(<ListingTableUrl as AsRef<Url>>::as_ref(url).path())).await?);
             }
             // Resolve the schema
             let resolved_schema = file_format.infer_schema(session_state, &store, &objects).await?;

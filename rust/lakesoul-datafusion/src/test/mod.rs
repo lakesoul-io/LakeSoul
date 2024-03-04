@@ -16,6 +16,9 @@ mod upsert_tests;
 #[cfg(feature = "ci")]
 mod integration_tests;
 
+#[cfg(feature = "ci")]
+mod benchmarks;
+
 mod catalog_tests;
 
 // in cargo test, this executed only once
