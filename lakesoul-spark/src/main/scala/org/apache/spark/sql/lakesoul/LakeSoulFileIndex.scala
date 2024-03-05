@@ -150,7 +150,7 @@ case class BatchDataSoulFileIndexV2(override val spark: SparkSession,
 
 object LakeSoulFileIndexUtils {
   def absolutePath(child: String, tableName: String): Path = {
-    val p = new Path(new URI(child))
+    val p = new Path(child)
     if (p.isAbsolute) {
       p
     } else {
