@@ -6,7 +6,6 @@
 // after finished. remove above attr
 extern crate core;
 
-mod benchmarks;
 mod catalog;
 mod datasource;
 mod error;

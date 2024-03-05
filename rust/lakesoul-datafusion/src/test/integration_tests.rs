@@ -5,7 +5,6 @@
 mod integration_tests {
     use std::{path::Path, sync::Arc};
 
-    use arrow_cast::pretty::print_batches;
     use datafusion::{execution::context::SessionContext, datasource::{TableProvider, file_format::{FileFormat, csv::CsvFormat}, listing::{ListingOptions, ListingTableUrl, ListingTableConfig, ListingTable}}};
     use lakesoul_io::lakesoul_io_config::{create_session_context_with_planner, LakeSoulIOConfigBuilder};
     use lakesoul_metadata::MetaDataClient;
@@ -80,7 +79,7 @@ mod integration_tests {
             create_table(client.clone(), &table, builder.build()).await?;
             let lakesoul_table = LakeSoulTable::for_name(table).await?;
             lakesoul_table.upsert_dataframe(dataframe).await?;
-            // print_batches(&lakesoul_table.to_dataframe(&ctx).await?.collect().await?);
+            // arrow_cast::pretty::print_batches(&lakesoul_table.to_dataframe(&ctx).await?.collect().await?);
             dbg!(table);
         }
 
