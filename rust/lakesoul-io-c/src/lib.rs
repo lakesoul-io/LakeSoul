@@ -17,10 +17,9 @@ pub use arrow::array::StructArray;
 use arrow::datatypes::Schema;
 use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
-
-use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use tokio::runtime::{Builder, Runtime};
 
+use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
 
@@ -493,7 +492,9 @@ pub extern "C" fn next_record_batch_blocked(
 struct Cvoid {
     data: *const c_void,
 }
+
 unsafe impl Send for Cvoid {}
+
 unsafe impl Sync for Cvoid {}
 
 #[no_mangle]
@@ -740,6 +741,14 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
 
 #[cfg(test)]
 mod tests {
+    use core::ffi::c_ptrdiff_t;
+    use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
+    use std::ptr::NonNull;
+    use std::sync::{Condvar, Mutex};
+
+    use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+
     use crate::{
         create_lakesoul_io_config_from_builder, create_lakesoul_reader_from_config, create_lakesoul_writer_from_config,
         flush_and_close_writer, free_lakesoul_reader, lakesoul_config_builder_add_single_file,
@@ -748,12 +757,6 @@ mod tests {
         lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
         next_record_batch, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch, IOConfigBuilder,
     };
-    use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
-    use core::ffi::c_ptrdiff_t;
-    use std::ffi::{CStr, CString};
-    use std::os::raw::c_char;
-    use std::ptr::NonNull;
-    use std::sync::{Condvar, Mutex};
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
         unsafe {
@@ -796,6 +799,7 @@ mod tests {
     }
 
     static mut CALL_BACK_I32_CV: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
+
     #[no_mangle]
     pub extern "C" fn reader_i32_callback(status: i32, err: *const c_char) {
         unsafe {

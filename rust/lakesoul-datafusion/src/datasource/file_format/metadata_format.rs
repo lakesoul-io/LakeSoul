@@ -561,15 +561,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
     }
 }
 
-
 fn make_sink_batch(count: u64, msg: String) -> RecordBatch {
     let count_array = Arc::new(UInt64Array::from(vec![count])) as ArrayRef;
     let msg_array = Arc::new(StringArray::from(vec![msg])) as ArrayRef;
-    RecordBatch::try_from_iter_with_nullable(
-        vec![
-            ("count", count_array, false), 
-            ("msg", msg_array, false)
-        ]).unwrap()
+    RecordBatch::try_from_iter_with_nullable(vec![("count", count_array, false), ("msg", msg_array, false)]).unwrap()
 }
 
 fn make_sink_schema() -> SchemaRef {
@@ -577,6 +572,5 @@ fn make_sink_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("count", DataType::UInt64, false),
         Field::new("msg", DataType::Utf8, false),
-        ])
-    )
+    ]))
 }
