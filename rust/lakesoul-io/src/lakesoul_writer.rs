@@ -184,7 +184,7 @@ impl MultiPartAsyncWriter {
                 task_context
                     .runtime_env()
                     .object_store(ObjectStoreUrl::parse(&url[..url::Position::BeforePath])?)?,
-                Path::from(url.path()),
+                Path::from_url_path(url.path())?,
             )),
             Err(e) => Err(DataFusionError::External(Box::new(e))),
         }?;

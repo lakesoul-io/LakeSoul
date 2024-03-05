@@ -46,7 +46,6 @@ use rand::distributions::DistString;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::debug;
-use url::Url;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, create_io_config_builder_from_table_info, get_columnar_values};
@@ -335,15 +334,12 @@ impl LakeSoulHashSinkExec {
             let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
             let partition_desc = columnar_values_to_partition_desc(&columnar_values);
             let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
-            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);
-
-            let file_absolute_path = Url::parse(file_absolute_path.as_str()).map_err(|e| DataFusionError::External(Box::new(e)))?;
-            
+            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);            
 
             if !partitioned_writer.contains_key(&partition_desc) {
                 let mut config = create_io_config_builder_from_table_info(table_info.clone())
                     .map_err(|e| DataFusionError::External(Box::new(e)))?
-                    .with_files(vec![file_absolute_path.to_string()])
+                    .with_files(vec![file_absolute_path])
                     .with_schema(batch_excluding_range.schema())
                     .build();
 
