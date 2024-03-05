@@ -8,10 +8,11 @@ use arrow::{array::{Array, ArrayRef, AsArray, StringBuilder}, compute::prep_null
 use arrow_cast::cast;
 use arrow_arith::boolean::and;
 
-use datafusion::{common::{DFField, DFSchema}, datasource::listing::ListingTableUrl, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
+use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
 use lakesoul_metadata::MetaDataClientRef;
-use object_store::{ObjectMeta, ObjectStore};
+use object_store::{path::Path, ObjectMeta, ObjectStore};
 use tracing::{debug, trace};
+use url::Url;
 
 use crate::error::Result;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
@@ -200,7 +201,7 @@ pub async fn listing_partition_info(partition_info: PartitionInfo, store: &dyn O
         .get_data_files_of_single_partition(&partition_info).await.map_err(|_| DataFusionError::External("listing partition info failed".into()))?;
     let mut files = Vec::new();
     for path in paths {
-        let result = store.head(ListingTableUrl::parse(path.clone())?.prefix()).await?;
+        let result = store.head(&Path::from_url_path(Url::parse(path.as_str()).map_err(|e| DataFusionError::External(Box::new(e)))?.path())?).await?;
         files.push(result);
     }
     Ok((partition_info, files))

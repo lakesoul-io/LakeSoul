@@ -20,7 +20,7 @@ object ConsistencyCI {
         StructField("c_mktsegment", StringType, nullable = false),
         StructField("c_comment", StringType, nullable = false),
       )),
-      "c_custkey, c_name"),
+      "c_custkey, c_name", Some("c_nationkey")),
     ("part",
       StructType(Array(
         StructField("p_partkey", LongType, nullable = false),
@@ -33,7 +33,7 @@ object ConsistencyCI {
         StructField("p_retailprice", DecimalType(15, 2), nullable = false),
         StructField("p_comment", StringType, nullable = false),
       )),
-      "p_partkey, p_name"),
+      "p_partkey, p_name", Option.empty),
     ("supplier",
       StructType(Array(
         StructField("s_suppkey", LongType, nullable = false),
@@ -44,7 +44,7 @@ object ConsistencyCI {
         StructField("s_acctbal", DecimalType(15, 2), nullable = false),
         StructField("s_comment", StringType, nullable = false),
       )),
-      "s_suppkey, s_name"),
+      "s_suppkey, s_name", Some("s_nationkey")),
     ("partsupp",
       StructType(Array(
         StructField("ps_partkey", LongType, nullable = false),
@@ -53,7 +53,7 @@ object ConsistencyCI {
         StructField("ps_supplycost", DecimalType(15, 2), nullable = false),
         StructField("ps_comment", StringType, nullable = false),
       )),
-      "ps_partkey, ps_suppkey"),
+      "ps_partkey, ps_suppkey", Option.empty),
     ("orders",
       StructType(Array(
         StructField("o_orderkey", LongType, nullable = false),
@@ -66,7 +66,7 @@ object ConsistencyCI {
         StructField("o_shippriority", IntegerType, nullable = false),
         StructField("o_comment", StringType, nullable = false),
       )),
-      "o_orderkey, o_custkey"),
+      "o_orderkey, o_custkey", Some("o_orderpriority")),
 
     ("nation",
       StructType(Array(
@@ -75,14 +75,14 @@ object ConsistencyCI {
         StructField("n_regionkey", LongType, nullable = false),
         StructField("n_comment", StringType, nullable = false),
       )),
-      "n_nationkey, n_name"),
+      "n_nationkey, n_name", Some("n_regionkey")),
     ("region",
       StructType(Array(
         StructField("r_regionkey", LongType, nullable = false),
         StructField("r_name", StringType, nullable = false),
         StructField("r_comment", StringType, nullable = false),
       )),
-      "r_regionkey, r_name"),
+      "r_regionkey, r_name", Option.empty),
     ("lineitem",
       StructType(Array(
         StructField("l_orderkey", LongType, nullable = false),
@@ -102,7 +102,7 @@ object ConsistencyCI {
         StructField("l_shipmode", StringType, nullable = false),
         StructField("l_comment", StringType, nullable = false),
       )),
-      "l_orderkey, l_partkey"),
+      "l_orderkey, l_partkey", Option.empty),
   )
 
   def load_data(spark: SparkSession): Unit = {
@@ -110,17 +110,29 @@ object ConsistencyCI {
     val tpchPath = System.getenv("TPCH_DATA")
     val lakeSoulPath = "/tmp/lakesoul/tpch"
     tpchTable.foreach(tup => {
-      val (name, schema, hashPartitions) = tup
+      val (name, schema, hashPartitions, rangePartitions) = tup
       val df = spark.read.option("delimiter", "|")
         .schema(schema)
         .csv(s"$tpchPath/$name.tbl")
       //      df.show
-      df.write.format("lakesoul")
-        .option("shortTableName", name)
-        .option("hashPartitions", hashPartitions)
-        .option("hashBucketNum", 5)
-        .mode("Overwrite")
-        .save(s"$lakeSoulPath/$name")
+      rangePartitions match {
+        case Some(value) =>
+          df.write.format("lakesoul")
+            .option("shortTableName", name)
+            .option("hashPartitions", hashPartitions)
+            .option("rangePartitions", value)
+            .option("hashBucketNum", 5)
+            .mode("Overwrite")
+            .save(s"$lakeSoulPath/$name")
+        case None =>
+          df.write.format("lakesoul")
+            .option("shortTableName", name)
+            .option("hashPartitions", hashPartitions)
+            .option("hashBucketNum", 5)
+            .mode("Overwrite")
+            .save(s"$lakeSoulPath/$name")
+      }
+
     })
 
   }

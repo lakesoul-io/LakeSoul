@@ -334,12 +334,12 @@ impl LakeSoulHashSinkExec {
             let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
             let partition_desc = columnar_values_to_partition_desc(&columnar_values);
             let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
-            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);
+            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);            
 
             if !partitioned_writer.contains_key(&partition_desc) {
                 let mut config = create_io_config_builder_from_table_info(table_info.clone())
                     .map_err(|e| DataFusionError::External(Box::new(e)))?
-                    .with_files(vec![file_absolute_path.clone()])
+                    .with_files(vec![file_absolute_path])
                     .with_schema(batch_excluding_range.schema())
                     .build();
 
@@ -392,7 +392,6 @@ impl LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count = partitioned_file_path_and_row_count.lock().await;
 
         for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
-            // let partition_desc = columnar_values_to_partition_desc(columnar_values);
             commit_data(client.clone(), &table_name, partition_desc.clone(), files)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;

@@ -3,34 +3,95 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod run;
-use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder};
+use arrow::datatypes::{Schema, SchemaBuilder, Field, DataType};
 
 pub const TPCH_TABLES: &[&str] = &[
-    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
+    "part", "supplier", "partsupp", "customer", 
+    "orders", 
+    "lineitem",
+     "nation", "region",
 ];
 
-/// The `.tbl` file contains a trailing column
 pub fn get_tbl_tpch_table_primary_keys(table: &str) -> Vec<String> {
     match table {
-        "part" => vec![String::from("p_partkey"), String::from("p_name")],
+        "part" => vec![
+            String::from("p_partkey"),
+            String::from("p_name"),
+        ],
 
-        "supplier" => vec![String::from("s_suppkey"), String::from("s_name")],
+        "supplier" => vec![
+            String::from("s_suppkey"),
+            String::from("s_name"),
+        ],
 
-        "partsupp" => vec![String::from("ps_partkey"), String::from("ps_suppkey")],
+        "partsupp" => vec![
+            String::from("ps_partkey"),
+            String::from("ps_suppkey"),
+        ],
 
-        "customer" => vec![String::from("c_custkey"), String::from("c_name")],
+        "customer" => vec![
+            String::from("c_custkey"),
+            String::from("c_name"),
+        ],
 
-        "orders" => vec![String::from("o_orderkey"), String::from("o_custkey")],
+        "orders" => vec![
+            String::from("o_orderkey"),
+            String::from("o_custkey"),
+        ],
 
-        "lineitem" => vec![String::from("l_orderkey"), String::from("l_partkey")],
+        "lineitem" => vec![
+            String::from("l_orderkey"),
+            String::from("l_partkey"),
+        ],
 
-        "nation" => vec![String::from("n_nationkey"), String::from("n_name")],
+        "nation" => vec![
+            String::from("n_nationkey"),
+            String::from("n_name"),
+        ],
 
-        "region" => vec![String::from("r_regionkey"), String::from("r_name")],
+        "region" => vec![
+            String::from("r_regionkey"),
+            String::from("r_name"),
+        ],
 
         _ => unimplemented!(),
     }
 }
+
+pub fn get_tbl_tpch_table_range_partitions(table: &str) -> Vec<String> {
+    match table {
+        "part" => vec![],
+
+        "supplier" => vec![
+            String::from("s_nationkey"),
+        ],
+
+        "partsupp" => vec![],
+
+        "customer" => vec![
+            String::from("c_nationkey"),
+        ],
+
+        "orders" => vec![
+            // String::from("o_orderdate"),
+            String::from("o_orderpriority"),
+        ],
+
+        "lineitem" => vec![
+        ],
+
+        "nation" => vec![
+            String::from("n_regionkey"),
+        ],
+
+        "region" => vec![
+        ],
+
+        _ => unimplemented!(),
+    }
+}
+
+
 
 /// The `.tbl` file contains a trailing column
 pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
@@ -134,3 +195,5 @@ pub fn get_tpch_table_schema(table: &str) -> Schema {
         _ => unimplemented!(),
     }
 }
+
+
