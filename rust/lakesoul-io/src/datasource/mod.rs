@@ -5,5 +5,4 @@
 pub mod empty_schema;
 pub mod file_format;
 pub mod listing;
-pub mod parquet_source;
-mod physical_plan;
+pub mod physical_plan;

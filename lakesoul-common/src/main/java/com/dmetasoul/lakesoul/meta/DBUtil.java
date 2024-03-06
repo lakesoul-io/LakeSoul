@@ -285,7 +285,7 @@ public class DBUtil {
         config.setConnectionTimeout(10000);
         config.setIdleTimeout(60000);
         config.setMaximumPoolSize(8);
-        config.setKeepaliveTime(10000);
+        config.setKeepaliveTime(30000);
         config.setMinimumIdle(1);
         config.addDataSourceProperty("cachePrepStmts", "true");
         config.addDataSourceProperty("prepStmtCacheSize", "250");

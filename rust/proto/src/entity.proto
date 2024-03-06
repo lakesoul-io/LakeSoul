@@ -96,7 +96,7 @@ enum FileOp {
 
 //  Singleton Data File information
 message DataFileOp {
-  //  Physical qualified path of a parquet file
+  //  Physical qualified non-percent-encoded path of a parquet file, 
   string path = 1;
   //  Specific operation of this file
   FileOp file_op = 2;

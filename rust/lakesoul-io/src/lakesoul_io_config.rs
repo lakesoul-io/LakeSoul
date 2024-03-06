@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -9,6 +10,8 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
+use datafusion::optimizer::push_down_filter::PushDownFilter;
+use datafusion::optimizer::push_down_projection::PushDownProjection;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::{External, ObjectStore};
 use derivative::Derivative;
@@ -17,7 +20,6 @@ use object_store::{ClientOptions, RetryConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use datafusion::optimizer::push_down_filter::PushDownFilter;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -94,6 +96,10 @@ impl LakeSoulIOConfig {
         &self.primary_keys
     }
 
+    pub fn range_partitions_slice(&self) -> &[String] {
+        &self.range_partitions
+    }
+
     pub fn files_slice(&self) -> &[String] {
         &self.files
     }
@@ -140,6 +146,12 @@ impl LakeSoulIOConfigBuilder {
         self.config.primary_keys = pks;
         self
     }
+
+    pub fn with_range_partition(mut self, range_partition: String) -> Self {
+        self.config.range_partitions.push(range_partition);
+        self
+    }
+
 
     pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
         self.config.range_partitions = range_partitions;
@@ -276,7 +288,9 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
                     .set_host(Some(&*format!(
                         "{}.{}",
                         bucket,
-                        endpoint_url.host_str().expect("endpoint should contains host")
+                        endpoint_url
+                            .host_str()
+                            .ok_or(External(anyhow!("endpoint host missing").into()))?
                     )))
                     .map_err(|e| External(Box::new(e)))?;
                 let endpoint_s = endpoint_url.to_string();
@@ -350,9 +364,12 @@ fn register_object_store(path: &str, config: &mut LakeSoulIOConfig, runtime: &Ru
                     return Ok(path.to_owned());
                 }
                 if !config.object_store_options.contains_key("fs.s3a.bucket") {
-                    config
-                        .object_store_options
-                        .insert("fs.s3a.bucket".to_string(), url.host_str().unwrap().to_string());
+                    config.object_store_options.insert(
+                        "fs.s3a.bucket".to_string(),
+                        url.host_str()
+                            .ok_or(DataFusionError::Internal("host str missing".to_string()))?
+                            .to_string(),
+                    );
                 }
                 register_s3_object_store(&url, config, runtime)?;
                 Ok(path.to_owned())
@@ -465,7 +482,7 @@ pub fn create_session_context_with_planner(
         .collect();
     state = state
         .with_analyzer_rules(vec![])
-        .with_optimizer_rules(vec![Arc::new(PushDownFilter {})])
+        .with_optimizer_rules(vec![Arc::new(PushDownFilter {}), Arc::new(PushDownProjection {})])
         .with_physical_optimizer_rules(physical_opt_rules);
 
     Ok(SessionContext::new_with_state(state))

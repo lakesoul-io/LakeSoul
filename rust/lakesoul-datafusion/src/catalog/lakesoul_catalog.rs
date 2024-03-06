@@ -5,8 +5,9 @@
 use crate::catalog::LakeSoulNamespace;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::catalog::CatalogProvider;
-use datafusion::error::DataFusionError;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::Namespace;
 use std::any::Any;
@@ -83,11 +84,7 @@ impl CatalogProvider for LakeSoulCatalog {
     ///
     /// If a schema of the same name existed before, it is replaced in
     /// the catalog and returned.
-    fn register_schema(
-        &self,
-        name: &str,
-        _schema: Arc<dyn SchemaProvider>,
-    ) -> lakesoul_io::lakesoul_io_config::Result<Option<Arc<dyn SchemaProvider>>> {
+    fn register_schema(&self, name: &str, _schema: Arc<dyn SchemaProvider>) -> Result<Option<Arc<dyn SchemaProvider>>> {
         let _guard = self.catalog_lock.write();
         let client = self.metadata_client.clone();
         let schema: Option<Arc<dyn SchemaProvider>> = {
@@ -111,7 +108,7 @@ impl CatalogProvider for LakeSoulCatalog {
             Handle::current()
                 .spawn(async move { client.create_namespace(np).await })
                 .await
-                .expect("tokio join error in register schema")
+                .map_err(|e| LakeSoulMetaDataError::Other(Box::new(e)))?
         });
         Ok(schema)
     }
@@ -124,11 +121,7 @@ impl CatalogProvider for LakeSoulCatalog {
     ///
     /// Implementations of this method should return None if schema with `name`
     /// does not exist.
-    fn deregister_schema(
-        &self,
-        _name: &str,
-        _cascade: bool,
-    ) -> lakesoul_io::lakesoul_io_config::Result<Option<Arc<dyn SchemaProvider>>> {
+    fn deregister_schema(&self, _name: &str, _cascade: bool) -> Result<Option<Arc<dyn SchemaProvider>>> {
         // Not supported
         // let _guard = self.catalog_lock.write();
         // let client = self.metadata_client.clone();

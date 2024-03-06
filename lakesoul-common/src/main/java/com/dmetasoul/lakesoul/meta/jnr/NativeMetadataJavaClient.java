@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.jnr;
 
+import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
@@ -187,6 +188,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
     }
 
     private void initialize() {
+        libLakeSoulMetaData.rust_logger_init();
         DataBaseProperty dataBaseProperty = NativeMetadataJavaClient.dataBaseProperty;
         if (dataBaseProperty == null) {
             dataBaseProperty = DBUtil.getDBInfo();
@@ -550,6 +552,74 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         if (instance != null) {
             instance.close();
             instance = null;
+        }
+    }
+
+
+    /**
+     *  if ffi function failed with -100
+     *  should recreate pg client and prepared map
+     * @param tableName name
+     * @param namespace the np of TableInfo
+     * @return split(partition) desc array in json format by table_name, namespace , filter(WIP)
+     */
+    public List<SplitDesc> createSplitDescArray(String tableName, String namespace) {
+        final CompletableFuture<Integer> future = new CompletableFuture<>();
+        Pointer ptr = getLibLakeSoulMetaData()
+                .create_split_desc_array(
+                        new ReferencedIntegerCallback((result, msg) -> {
+                            if (msg != null) {
+                                System.err.println(msg);
+                            }
+                            future.complete(result);
+                        }, getIntegerCallbackObjectReferenceManager()),
+                        tokioPostgresClient,
+                        preparedStatement,
+                        tokioRuntime,
+                        tableName,
+                        namespace);
+        try {
+            Integer ans = future.get(timeout, TimeUnit.MILLISECONDS);
+            if (ans == 0) {
+                //  This copies a zero (nul) terminated by array from native memory.
+                String json = ptr.getString(0);
+                List<SplitDesc> list = JSON.parseArray(json, SplitDesc.class);
+                getLibLakeSoulMetaData().free_split_desc_array(ptr);
+                return list;
+            }
+            // errors
+            if (ans == -100) {
+                // recreate pg client and prepared
+                String config = String.format(
+                        "host=%s port=%s dbname=%s user=%s password=%s",
+                        dataBaseProperty.getHost(),
+                        dataBaseProperty.getPort(),
+                        dataBaseProperty.getDbName(),
+                        dataBaseProperty.getUsername(),
+                        dataBaseProperty.getPassword());
+                final CompletableFuture<Boolean> future_ = new CompletableFuture<>();
+                tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
+                        new ReferencedBooleanCallback((bool, msg) -> {
+                            if (msg.isEmpty()) {
+                                future_.complete(bool);
+                            } else {
+                                System.err.println(msg);
+                                future_.completeExceptionally(new IOException(msg));
+                            }
+                        }, getbooleanCallbackObjectReferenceManager()),
+                        config,
+                        tokioRuntime
+                );
+                preparedStatement = libLakeSoulMetaData.create_prepared_statement();
+                future.get(timeout, TimeUnit.MILLISECONDS);
+            }
+            // other errors
+            throw new RuntimeException("create split desc array failed");
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
+        } catch (TimeoutException e) {
+            LOG.error("create split desc array timeout");
+            throw new RuntimeException(e);
         }
     }
 }

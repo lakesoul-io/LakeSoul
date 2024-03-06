@@ -37,7 +37,7 @@ mod update_tests {
     }
 
     async fn execute_append(batch: RecordBatch, table_name: &str, client: MetaDataClientRef) -> Result<()> {
-        let file = [env::temp_dir().to_str().unwrap(), table_name, format!("{}.parquet", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string()).as_str()].iter().collect::<PathBuf>().to_str().unwrap().to_string();
+        let file = [env::current_dir().unwrap_or(env::temp_dir()).to_str().unwrap(), table_name, format!("{}.parquet", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string()).as_str()].iter().collect::<PathBuf>().to_str().unwrap().to_string();
         let builder = create_io_config_builder(client.clone(), Some(table_name)).await?.with_file(file.clone()).with_schema(batch.schema());
         let config = builder.clone().build();
 

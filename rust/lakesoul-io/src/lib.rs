@@ -16,7 +16,7 @@ pub mod sorted_merge;
 #[cfg(feature = "hdfs")]
 mod hdfs;
 
-mod constant;
+pub(crate) mod constant;
 mod default_column_stream;
 mod transform;
 

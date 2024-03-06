@@ -8,7 +8,7 @@ use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-
+use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::common::{DFSchemaRef, ToDFSchema};
 use datafusion::datasource::{provider_as_source, TableProvider};
 use datafusion::error::Result;
@@ -21,8 +21,7 @@ use datafusion::physical_plan::{
     project_schema, DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
 };
 use datafusion::prelude::{DataFrame, SessionContext};
-
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion_common::DataFusionError;
 
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
@@ -58,12 +57,12 @@ impl LakeSoulParquetProvider {
 
     pub async fn build_with_context(&self, context: &SessionContext) -> Result<Self> {
         let mut plans = vec![];
-        let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema().unwrap();
+        let mut full_schema = uniform_schema(self.config.schema.0.clone()).to_dfschema()?;
         // one file is a table scan
         for i in 0..self.config.files.len() {
             let file = self.config.files[i].clone();
-            let df = context.read_parquet(file, Default::default()).await.unwrap();
-            full_schema.merge(&Schema::from(df.schema()).to_dfschema().unwrap());
+            let df = context.read_parquet(file, Default::default()).await?;
+            full_schema.merge(&Schema::from(df.schema()).to_dfschema()?);
             let plan = df.into_unoptimized_plan();
             plans.push(plan);
         }
@@ -91,7 +90,7 @@ impl LakeSoulParquetProvider {
             Arc::new(self.config.default_column_value.clone()),
             Arc::new(self.config.merge_operators.clone()),
             Arc::new(self.config.primary_keys.clone()),
-        )))
+        )?))
     }
 }
 
@@ -117,7 +116,7 @@ impl TableProvider for LakeSoulParquetProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let projected_schema = project_schema(&self.get_full_schema(), projections).unwrap();
+        let projected_schema = project_schema(&self.get_full_schema(), projections)?;
         let mut inputs = vec![];
         for i in 0..self.plans.len() {
             let df = DataFrame::new(_state.clone(), self.plans[i].clone());
@@ -138,7 +137,7 @@ impl TableProvider for LakeSoulParquetProvider {
                 df.select(projected_cols)?
             };
 
-            let physical_plan = df.create_physical_plan().await.unwrap();
+            let physical_plan = df.create_physical_plan().await?;
             inputs.push(physical_plan);
         }
 
@@ -208,30 +207,32 @@ impl LakeSoulParquetScanExec {
         default_column_value: Arc<HashMap<String, String>>,
         merge_operators: Arc<HashMap<String, String>>,
         primary_keys: Arc<Vec<String>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let target_schema_with_pks = if let Some(proj) = projections {
             let mut proj_with_pks = proj.clone();
             for idx in 0..primary_keys.len() {
-                let field_idx = full_schema.index_of(primary_keys[idx].as_str()).unwrap();
-                if !projections.unwrap().contains(&field_idx) {
+                let field_idx = full_schema.index_of(primary_keys[idx].as_str())?;
+                if !proj.contains(&field_idx) {
                     proj_with_pks.push(field_idx);
                 }
             }
-            project_schema(&full_schema, Some(&proj_with_pks)).unwrap()
+            project_schema(&full_schema, Some(&proj_with_pks))?
         } else {
             full_schema.clone()
         };
 
-        Self {
-            projections: projections.unwrap().clone(),
+        Ok(Self {
+            projections: projections
+                .ok_or(DataFusionError::Internal("no projection".into()))?
+                .clone(),
             origin_schema: full_schema.clone(),
             target_schema_with_pks,
-            target_schema: project_schema(&full_schema, projections).unwrap(),
+            target_schema: project_schema(&full_schema, projections)?,
             inputs,
             default_column_value,
             merge_operators,
             primary_keys,
-        }
+        })
     }
 
     fn origin_schema(&self) -> SchemaRef {
@@ -273,8 +274,11 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
     fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
-            let plan = self.inputs.get(i).unwrap();
-            let stream = plan.execute(_partition, _context.clone()).unwrap();
+            let plan = self
+                .inputs
+                .get(i)
+                .ok_or(DataFusionError::Internal("get plan failed".into()))?;
+            let stream = plan.execute(_partition, _context.clone())?;
             stream_init_futs.push(stream);
         }
         let merged_stream = merge_stream(
@@ -292,9 +296,8 @@ impl ExecutionPlan for LakeSoulParquetScanExec {
                 .iter()
                 .map(|&idx| {
                     datafusion::physical_expr::expressions::col(self.origin_schema().field(idx).name(), &self.schema())
-                        .unwrap()
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>>>()?,
             schema: self.target_schema.clone(),
             input: merged_stream,
         };
@@ -349,8 +352,7 @@ pub fn merge_stream(
             primary_keys.iter().cloned().collect(),
             batch_size,
             merge_ops,
-        )
-        .unwrap();
+        )?;
         Box::pin(DefaultColumnStream::new_from_streams_with_default(
             vec![Box::pin(merge_stream)],
             schema,
@@ -391,7 +393,7 @@ pub async fn prune_filter_and_execute(
         // row filtering should go first since filter column may not in the selected cols
         let arrow_schema = Arc::new(Schema::from(df_schema));
         let df = filter_str.iter().try_fold(df, |df, f| {
-            let filter = FilterParser::parse(f.clone(), arrow_schema.clone());
+            let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
             df.filter(filter)
         })?;
         // column pruning
@@ -403,23 +405,22 @@ pub async fn prune_filter_and_execute(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use std::sync::Arc;
+    use std::time::Duration;
 
     use arrow::datatypes::DataType;
     use arrow::util::pretty::print_batches;
-
     use datafusion::datasource::provider_as_source;
     use datafusion::logical_expr::Expr;
     use datafusion::logical_expr::LogicalPlanBuilder;
     use datafusion::prelude::*;
     use datafusion::scalar::ScalarValue;
+    use tokio::time::timeout;
 
     use crate::filter::parser::Parser;
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use std::time::Duration;
-    use tokio::time::timeout;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_lakesoul_parquet_source_with_pk() -> Result<()> {
@@ -441,7 +442,7 @@ mod tests {
 
         query(
             LakeSoulParquetProvider::from_config(builder.build()),
-            Some(Parser::parse("gt(value,0)".to_string(), schema.clone())),
+            Some(Parser::parse("gt(value,0)".to_string(), schema.clone())?),
         )
         .await?;
 
@@ -467,7 +468,7 @@ mod tests {
 
         query(
             LakeSoulParquetProvider::from_config(builder.build()),
-            Some(Parser::parse("gt(hash,0)".to_string(), schema.clone())),
+            Some(Parser::parse("gt(hash,0)".to_string(), schema.clone())?),
         )
         .await?;
 
@@ -479,7 +480,7 @@ mod tests {
         let config = SessionConfig::default();
         let ctx = SessionContext::new_with_config(config);
 
-        let db = db.build_with_context(&ctx).await.unwrap();
+        let db = db.build_with_context(&ctx).await?;
 
         // create logical plan composed of a single TableScan
         let logical_plan =
@@ -494,16 +495,15 @@ mod tests {
         dataframe = dataframe.explain(true, false)?;
 
         timeout(Duration::from_secs(10), async move {
-            let result = dataframe.collect().await.unwrap();
+            let result = dataframe.collect().await?;
             // let record_batch = result.get(0).unwrap();
 
             // assert_eq!(expected_result_length, record_batch.column(1).len());
             let _ = print_batches(&result);
+            Ok(())
         })
         .await
-        .unwrap();
-
-        Ok(())
+        .map_err(|e| DataFusionError::External(Box::new(e)))?
     }
 
     #[tokio::test]

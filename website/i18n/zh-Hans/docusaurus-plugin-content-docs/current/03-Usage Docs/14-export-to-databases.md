@@ -34,7 +34,7 @@ LakeSoul 至 2.5.0 开始，支持单表数据以批同步出湖，流同步出�
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.5.1-flink-1.17.jar \
+    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:mysql://172.17.0.4:3306/ \
     --target_db.db_type mysql \
     --target_db.db_name test \
@@ -49,7 +49,7 @@ LakeSoul 至 2.5.0 开始，支持单表数据以批同步出湖，流同步出�
 出湖postgres任务启动
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-2.5.1-flink-1.17.jar \
+    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:postgresql://172.17.0.2:5432/ \
     --target_db.db_name test \
     --target_db.db_type postgres \
@@ -64,7 +64,7 @@ LakeSoul 至 2.5.0 开始，支持单表数据以批同步出湖，流同步出�
 出湖到doris任务启动
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-lakesoul-flink-2.5.1-flink-1.17.jar \
+lakesoul-flink-flink-1.17-VAR::VERSION.jar \
 --target_db.url "jdbc:mysql://172.17.0.2:9030/" \
 --source_db.db_name test \
 --target_db.db_name test \

@@ -32,7 +32,7 @@ trait ImplicitMetadataOperation extends Logging {
     if (partitionColumns.equalsIgnoreCase("")) {
       Seq.empty[String]
     } else {
-      partitionColumns.split(LAKESOUL_RANGE_PARTITION_SPLITTER).toSeq
+      partitionColumns.split(LAKESOUL_RANGE_PARTITION_SPLITTER).map(s => s.trim).toSeq
     }
   }
 

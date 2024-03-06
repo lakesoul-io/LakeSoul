@@ -47,18 +47,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Install psql
-        run: sudo apt-get install -y postgresql-client-14
-      - name: Install cargo
-        run: sudo apt-get install -y cargo
+      - name: Install requirement
+        uses: ConorMacBride/install-package@v1
+        with:
+          apt: postgresql-client-14 cargo
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2
-          PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -c "ALTER DATABASE lakesoul_test SET DEFAULT_TRANSACTION_ISOLATION TO 'serializable';"
       - name: Install Protoc
         uses: arduino/setup-protoc@v2
         with:
           version: "23.x"
       - name: Run tests
-        run: cd rust && sudo cargo test --all-features --package lakesoul-datafusion
+        run: cd rust && sudo cargo test --package lakesoul-datafusion
 

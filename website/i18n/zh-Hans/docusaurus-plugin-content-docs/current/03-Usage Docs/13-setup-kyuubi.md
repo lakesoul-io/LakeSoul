@@ -20,7 +20,7 @@ LakeSoul实现了Flink/Spark Connector。我们可以通过Kyuubi使用Spark/Fli
 | Kyuubi | 1.8  |
 | Spark  | 3.3  |
 | Flink  | 1.17 |
-| LakeSoul | 2.5.1 |
+| LakeSoul | VAR::VERSION |
 | Java     | 1.8 |
 
 运行环境为Linux环境，并已安装Spark, Flink, Kyuubi，推荐Kyuubi Engine以Hadoop Yarn作为执行环境，当然也可以本地启动Spark/Flink Local集群。
@@ -32,7 +32,7 @@ LakeSoul实现了Flink/Spark Connector。我们可以通过Kyuubi使用Spark/Fli
 
 ### 1. 依赖
 
-下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-flink-2.5.1-flink-1.17.jar
+下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
 
 将该jar拷贝至 `$FLINK_HOME/lib`.
 
@@ -76,7 +76,7 @@ drop table `lakesoul`.`default`.test_lakesoul_table_v1;
 
 ### 1. 依赖
 
-下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.1/lakesoul-spark-2.5.1-spark-3.3.jar
+下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-spark-3.3-VAR::VERSION.jar
 
 将该jar拷贝至 `$SPARK_HOME/jars`. 
 

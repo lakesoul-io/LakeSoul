@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use anyhow::anyhow;
 use std::fmt::Debug;
 
 use arrow::array::{as_primitive_array, as_string_array, ArrayBuilder, UInt8Builder};
@@ -9,8 +10,10 @@ use arrow_array::{builder::*, types::*, Array, ArrowPrimitiveType};
 use arrow_schema::DataType;
 use smallvec::SmallVec;
 
+use crate::lakesoul_reader::ArrowResult;
 use crate::sorted_merge::sort_key_range::SortKeyArrayRange;
 use crate::{sum_all_with_primitive_type_and_append_value, sum_last_with_primitive_type_and_append_value};
+use arrow::error::ArrowError;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum MergeOperator {
@@ -51,56 +54,65 @@ impl MergeOperator {
         data_type: DataType,
         ranges: &SmallVec<[SortKeyArrayRange; 4]>,
         append_array_data_builder: &mut Box<dyn ArrayBuilder>,
-    ) -> MergeResult {
-        match &ranges.len() {
+    ) -> ArrowResult<MergeResult> {
+        let res = match &ranges.len() {
             0 => MergeResult::AppendNull,
             1 => match self {
                 MergeOperator::UseLast => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
                 MergeOperator::SumAll => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder),
+                    _ => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder)?,
                 },
                 MergeOperator::SumLast => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder),
+                    _ => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder)?,
                 },
                 MergeOperator::JoinedLastByComma => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ','),
+                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ',')?,
                 },
                 MergeOperator::JoinedLastBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ';'),
+                    _ => concat_last_with_string_type(ranges, append_array_data_builder, ';')?,
                 },
                 MergeOperator::JoinedAllByComma => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ','),
+                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ',')?,
                 },
                 MergeOperator::JoinedAllBySemicolon => match ranges[0].end_row - ranges[0].begin_row {
                     1 => MergeResult::Extend(ranges[0].batch_idx, ranges[0].end_row - 1),
-                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ';'),
+                    _ => concat_all_with_string_type(ranges, append_array_data_builder, ';')?,
                 },
             },
             _ => match self {
-                MergeOperator::UseLast => {
-                    MergeResult::Extend(ranges.last().unwrap().batch_idx, ranges.last().unwrap().end_row - 1)
-                }
+                MergeOperator::UseLast => MergeResult::Extend(
+                    ranges
+                        .last()
+                        .ok_or(ArrowError::ExternalError(anyhow!("wrong ranges").into()))?
+                        .batch_idx,
+                    ranges
+                        .last()
+                        .ok_or(ArrowError::ExternalError(anyhow!("wrong ranges").into()))?
+                        .end_row
+                        - 1,
+                ),
                 MergeOperator::UseLastNotNull => last_non_null(ranges),
-                MergeOperator::SumAll => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder),
-                MergeOperator::SumLast => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder),
+                MergeOperator::SumAll => sum_all_with_primitive_type(data_type, ranges, append_array_data_builder)?,
+                MergeOperator::SumLast => sum_last_with_primitive_type(data_type, ranges, append_array_data_builder)?,
                 MergeOperator::JoinedLastByComma => {
-                    concat_last_with_string_type(ranges, append_array_data_builder, ',')
+                    concat_last_with_string_type(ranges, append_array_data_builder, ',')?
                 }
                 MergeOperator::JoinedLastBySemicolon => {
-                    concat_last_with_string_type(ranges, append_array_data_builder, ';')
+                    concat_last_with_string_type(ranges, append_array_data_builder, ';')?
                 }
-                MergeOperator::JoinedAllByComma => concat_all_with_string_type(ranges, append_array_data_builder, ','),
+                MergeOperator::JoinedAllByComma => concat_all_with_string_type(ranges, append_array_data_builder, ',')?,
                 MergeOperator::JoinedAllBySemicolon => {
-                    concat_all_with_string_type(ranges, append_array_data_builder, ';')
+                    concat_all_with_string_type(ranges, append_array_data_builder, ';')?
                 }
             },
-        }
+        };
+        Ok(res)
     }
 }
 
@@ -135,7 +147,7 @@ fn sum_all_with_primitive_type(
     dt: DataType,
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
-) -> MergeResult {
+) -> ArrowResult<MergeResult> {
     match dt {
         DataType::UInt8 => {
             sum_all_with_primitive_type_and_append_value!(
@@ -225,7 +237,7 @@ fn sum_last_with_primitive_type(
     dt: DataType,
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
-) -> MergeResult {
+) -> ArrowResult<MergeResult> {
     match dt {
         DataType::UInt8 => {
             sum_last_with_primitive_type_and_append_value!(
@@ -315,7 +327,7 @@ fn concat_all_with_string_type(
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     delim: char,
-) -> MergeResult {
+) -> ArrowResult<MergeResult> {
     let mut is_none = false;
     let mut first = true;
     let mut res = String::new();
@@ -339,24 +351,25 @@ fn concat_all_with_string_type(
             break;
         }
     }
-    match is_none {
+    let res = match is_none {
         true => MergeResult::AppendNull,
         false => {
             append_array_data_builder
                 .as_any_mut()
                 .downcast_mut::<StringBuilder>()
-                .unwrap()
+                .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
                 .append_value(res);
             MergeResult::AppendValue(append_array_data_builder.len() - 1)
         }
-    }
+    };
+    Ok(res)
 }
 
 fn concat_last_with_string_type(
     ranges: &SmallVec<[SortKeyArrayRange; 4]>,
     append_array_data_builder: &mut Box<dyn ArrayBuilder>,
     delim: char,
-) -> MergeResult {
+) -> ArrowResult<MergeResult> {
     let mut is_none = false;
     let mut first = true;
     let mut res = String::new();
@@ -390,17 +403,18 @@ fn concat_last_with_string_type(
             break;
         }
     }
-    match is_none {
+    let res = match is_none {
         true => MergeResult::AppendNull,
         false => {
             append_array_data_builder
                 .as_any_mut()
                 .downcast_mut::<StringBuilder>()
-                .unwrap()
+                .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
                 .append_value(res);
             MergeResult::AppendValue(append_array_data_builder.len() - 1)
         }
-    }
+    };
+    Ok(res)
 }
 
 #[macro_export]
@@ -427,18 +441,19 @@ macro_rules! sum_all_with_primitive_type_and_append_value {
             }
             res += values[range.begin_row..range.end_row].iter().sum::<$native_ty>();
         }
-        match is_none {
+        let res = match is_none {
             // sum result is null if null value exists
             true => MergeResult::AppendNull,
             false => {
                 $builder
                     .as_any_mut()
                     .downcast_mut::<$primitive_builder_type>()
-                    .unwrap()
+                    .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
                     .append_value(res);
                 MergeResult::AppendValue($builder.len() - 1)
             }
-        }
+        };
+        Ok(res)
     }};
 }
 
@@ -471,18 +486,19 @@ macro_rules! sum_last_with_primitive_type_and_append_value {
                 }
             }
         }
-        match is_none {
+        let res = match is_none {
             // sum result is null if null value exists
             true => MergeResult::AppendNull,
             false => {
                 $builder
                     .as_any_mut()
                     .downcast_mut::<$primitive_builder_type>()
-                    .unwrap()
+                    .ok_or(ArrowError::ExternalError(anyhow!("inner type mismatch").into()))?
                     .append_value(res);
                 MergeResult::AppendValue($builder.len() - 1)
             }
-        }
+        };
+        Ok(res)
     }};
 }
 

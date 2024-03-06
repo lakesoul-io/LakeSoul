@@ -24,7 +24,7 @@ use tokio::task::JoinHandle;
 
 use crate::datasource::file_format::LakeSoulParquetFormat;
 use crate::datasource::listing::LakeSoulListingTable;
-use crate::datasource::parquet_source::prune_filter_and_execute;
+use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
 pub struct LakeSoulReader {
@@ -374,7 +374,7 @@ mod tests {
         let mut row_cnt: usize = 0;
 
         while let Some(rb) = reader.next_rb().await {
-            row_cnt += &rb.unwrap().num_rows();
+            row_cnt += &rb?.num_rows();
         }
 
         Ok(row_cnt)

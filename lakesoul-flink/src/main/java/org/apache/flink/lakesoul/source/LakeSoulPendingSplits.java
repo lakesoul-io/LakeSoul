@@ -14,7 +14,7 @@ public class LakeSoulPendingSplits {
     private final List<LakeSoulSplit> splits;
 
     /**
-     * Already discovered lastest version's timestamp
+     * Already discovered latest version's timestamp
      * For streaming only
      */
     private final long lastReadTimestamp;

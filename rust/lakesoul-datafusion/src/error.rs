@@ -2,8 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{error::Error, fmt::Display, result, sync::Arc};
-use tokio::task::JoinError;
+use std::{result, sync::Arc};
 
 use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
@@ -15,76 +14,29 @@ pub type Result<T, E = LakeSoulError> = result::Result<T, E>;
 pub type SharedResult<T> = result::Result<T, Arc<LakeSoulError>>;
 
 /// Error type for generic operations that could result in LakeSoulMetaDataError::External
-pub type GenericError = Box<dyn Error + Send + Sync>;
+pub type GenericError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LakeSoulError {
-    MetaDataError(LakeSoulMetaDataError),
-    DataFusionError(DataFusionError),
-    ArrowError(ArrowError),
-    SerdeJsonError(serde_json::Error),
-    TokioJoinError(tokio::task::JoinError),
+    #[error("metadata error: {0}")]
+    MetaDataError(#[from] LakeSoulMetaDataError),
+    #[error("Datafusion error: {0}")]
+    DataFusionError(#[from] DataFusionError),
+    #[error("arrow error: {0}")]
+    ArrowError(#[from] ArrowError),
+    #[error("serde_json error: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+    #[error("tokio error: {0}")]
+    TokioJoinError(#[from] tokio::task::JoinError),
+    #[error("sys time error: {0}")]
+    SysTimeError(#[from] std::time::SystemTimeError),
+    // #[error("object store path error: {0}")]
+    // ObjectStorePathError(#[from] object_store::path::Error),
+    // #[error("object store error: {0}")]
+    // ObjectStoreError(#[from] object_store::path::Error),
+    #[error(
+        "Internal error: {0}.\nThis was likely caused by a bug in LakeSoul's \
+    code and we would welcome that you file an bug report in our issue tracker"
+    )]
     Internal(String),
-}
-
-impl From<LakeSoulMetaDataError> for LakeSoulError {
-    fn from(err: LakeSoulMetaDataError) -> Self {
-        Self::MetaDataError(err)
-    }
-}
-
-impl From<DataFusionError> for LakeSoulError {
-    fn from(err: DataFusionError) -> Self {
-        Self::DataFusionError(err)
-    }
-}
-
-impl From<ArrowError> for LakeSoulError {
-    fn from(err: ArrowError) -> Self {
-        Self::ArrowError(err)
-    }
-}
-
-impl From<serde_json::Error> for LakeSoulError {
-    fn from(err: serde_json::Error) -> Self {
-        Self::SerdeJsonError(err)
-    }
-}
-
-impl From<tokio::task::JoinError> for LakeSoulError {
-    fn from(err: JoinError) -> Self {
-        Self::TokioJoinError(err)
-    }
-}
-
-impl Display for LakeSoulError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            LakeSoulError::MetaDataError(ref desc) => write!(f, "metadata error: {desc}"),
-            LakeSoulError::DataFusionError(ref desc) => write!(f, "DataFusion error: {desc}"),
-            LakeSoulError::SerdeJsonError(ref desc) => write!(f, "serde_json error: {desc}"),
-            LakeSoulError::ArrowError(ref desc) => write!(f, "arrow error: {desc}"),
-            LakeSoulError::TokioJoinError(ref desc) => write!(f, "tokio error: {desc}"),
-            LakeSoulError::Internal(ref desc) => {
-                write!(
-                    f,
-                    "Internal error: {desc}.\nThis was likely caused by a bug in LakeSoul's \
-                    code and we would welcome that you file an bug report in our issue tracker"
-                )
-            }
-        }
-    }
-}
-
-impl Error for LakeSoulError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            LakeSoulError::MetaDataError(e) => Some(e),
-            LakeSoulError::DataFusionError(e) => Some(e),
-            LakeSoulError::SerdeJsonError(e) => Some(e),
-            LakeSoulError::ArrowError(e) => Some(e),
-            LakeSoulError::TokioJoinError(e) => Some(e),
-            LakeSoulError::Internal(_) => None,
-        }
-    }
 }

@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::catalog::create_io_config_builder;
-use crate::error::Result;
 use async_trait::async_trait;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
+use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
 use lakesoul_io::datasource::listing::LakeSoulListingTable;
@@ -83,10 +83,13 @@ impl SchemaProvider for LakeSoulNamespace {
             Handle::current()
                 .spawn(async move {
                     let _guard = lock.read().await;
-                    client.get_all_table_name_id_by_namespace(&np).await.unwrap()
+                    client
+                        .get_all_table_name_id_by_namespace(&np)
+                        .await
+                        .expect("get all table name failed")
                 })
                 .await
-                .unwrap()
+                .expect("spawn failed")
         })
         .into_iter()
         .map(|v| v.table_name)
@@ -97,11 +100,13 @@ impl SchemaProvider for LakeSoulNamespace {
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
         let _guard = self.namespace_lock.read().await;
-        if let Ok(_) = self
+        if self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
             .await
+            .is_ok()
         {
+            debug!("call table() on table: {}.{}", &self.namespace, name);
             let config;
             if let Ok(config_builder) =
                 create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace()).await
@@ -138,18 +143,14 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If supported by the implementation, adds a new table to this schema.
     /// If a table of the same name existed before, it returns "Table already exists" error.
     #[allow(unused_variables)]
-    fn register_table(
-        &self,
-        name: String,
-        table: Arc<dyn TableProvider>,
-    ) -> lakesoul_io::lakesoul_io_config::Result<Option<Arc<dyn TableProvider>>> {
+    fn register_table(&self, name: String, table: Arc<dyn TableProvider>) -> Result<Option<Arc<dyn TableProvider>>> {
         // the type info of dyn TableProvider is not enough or use AST??????
         unimplemented!("schema provider does not support registering tables")
     }
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
     #[allow(unused_variables)]
-    fn deregister_table(&self, name: &str) -> lakesoul_io::lakesoul_io_config::Result<Option<Arc<dyn TableProvider>>> {
+    fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
         let client = self.metadata_client.clone();
         let table_name = name.to_string();
         let np = self.namespace.clone();
@@ -192,7 +193,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                 return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
                             }
                             debug("get table provider fail");
-                            return Err(DataFusionError::External("get table provider failed".into()));
+                            Err(DataFusionError::External("get table provider failed".into()))
                         }
                         Err(e) => match e {
                             LakeSoulMetaDataError::NotFound(_) => Ok(None),
@@ -201,12 +202,29 @@ impl SchemaProvider for LakeSoulNamespace {
                     }
                 })
                 .await
-                .unwrap()
+                .map_err(|e| DataFusionError::External(Box::new(e)))?
         })
     }
 
     fn table_exist(&self, name: &str) -> bool {
         // table name is primary key for `table_name_id`
-        self.table_names().into_iter().any(|s| s == name)
+        let client = self.metadata_client.clone();
+        let np = self.namespace.clone();
+        let lock = self.namespace_lock.clone();
+        futures::executor::block_on(async move {
+            Handle::current()
+                .spawn(async move {
+                    let _guard = lock.read().await;
+                    client
+                        .get_all_table_name_id_by_namespace(&np)
+                        .await
+                        .expect("get table name failed")
+                })
+                .await
+                .expect("spawn failed")
+        })
+        .into_iter()
+        .map(|v| v.table_name)
+        .any(|s| s == name)
     }
 }

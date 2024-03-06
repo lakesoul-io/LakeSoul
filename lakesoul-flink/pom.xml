@@ -12,12 +12,12 @@ SPDX-License-Identifier: Apache-2.0
     <parent>
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
-        <version>2.5.0-SNAPSHOT</version>
+        <version>${revision}</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>2.5.0-flink-1.17-SNAPSHOT</version>
+    <version>flink-1.17-${revision}</version>
     <properties>
         <flink.version>1.17.1</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
@@ -31,7 +31,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
-            <version>2.5.0-SNAPSHOT</version>
+            <version>${revision}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
@@ -42,7 +42,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-io-java</artifactId>
-            <version>2.5.0-SNAPSHOT</version>
+            <version>${revision}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.slf4j</groupId>
@@ -240,11 +240,6 @@ SPDX-License-Identifier: Apache-2.0
 
         <!--The following 3 are required to run tests with access to s3/hdfs-->
         <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>32.0.0-jre</version>
-        </dependency>
-        <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-s3-fs-hadoop</artifactId>
             <version>${flink.version}</version>
@@ -273,7 +268,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.furyio</groupId>
             <artifactId>fury-core</artifactId>
-            <version>0.4.0</version>
+            <version>0.4.1</version>
         </dependency>
 
         <dependency>
@@ -633,6 +628,10 @@ SPDX-License-Identifier: Apache-2.0
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.common</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.common</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.apache.spark</pattern>

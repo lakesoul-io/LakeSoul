@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+on:
+  push:
+    paths:
+      - "rust/**"
+    branches:
+      - 'main'
+  pull_request:
+    paths:
+      - "rust/**"
+    branches:
+      - 'main'
+      - 'release/**'
+  workflow_dispatch:
+
+name: Consistency CI
+
+env:
+  RUSTFLAGS: "-Awarnings"
+
+permissions:
+  actions: write
+
+jobs:
+  verify-hash-consistency:
+    runs-on: ubuntu-latest
+    services:
+      # Label used to access the service container
+      postgres:
+        # Docker Hub image
+        image: postgres:14.5
+        # Provide the password for postgres
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install requirement
+        uses: ConorMacBride/install-package@v1
+        with:
+          apt: postgresql-client-14 cargo
+      - name: Init PG
+        run: |
+          ./script/meta_init_for_local_test.sh -j 2
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pymysql cryptography jproperties --no-cache-dir
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: vemonet/setup-spark@v1
+        with:
+          spark-version: '3.3.1'
+          hadoop-version: '3'
+      - run: spark-submit --version
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly-2023-05-20
+          default: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./rust -> target"
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+      - name: Build with Maven
+        run: |
+          mkdir -p rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_io_c.so rust/target/release
+          cp rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_metadata_c.so rust/target/release
+          MAVEN_OPTS="-Xmx4000m" mvn -q -B package -f pom.xml -Pcross-build -DskipTests
+      - name: Get jar names
+        run: |
+          echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)" >> $GITHUB_ENV
+          echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+          echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
+          echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
+      - name: Copy built jar to work-dir
+        run: |
+          cp ./lakesoul-flink/target/$FLINK_JAR_NAME ./script/ci/work-dir
+          cp ./lakesoul-flink/target/$FLINK_TEST_JAR_NAME ./script/ci/work-dir
+          cp ./lakesoul-spark/target/$SPARK_JAR_NAME ./script/ci/work-dir
+          cp ./lakesoul-spark/target/$SPARK_TEST_JAR_NAME ./script/ci/work-dir
+      - name: Generate benchmark data and expected query results
+        run: |
+          mkdir -p lakesoul/test_files/tpch/data
+          git clone https://github.com/databricks/tpch-dbgen.git
+          cd tpch-dbgen
+          make
+          ./dbgen -f -s 0.1
+          mv *.tbl ../lakesoul/test_files/tpch/data
+      - name: Verify that benchmark queries return expected results
+        run: |
+          export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
+          cd ./rust
+          # use release build for plan verificaton because debug build causes stack overflow
+          cargo test load_tpch_data --package lakesoul-datafusion --features=ci -- --nocapture
+          PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from table_info;"
+          PGPASSWORD='lakesoul_test' psql -U lakesoul_test  -h 127.0.0.1 -p 5432 -d lakesoul_test -c "select * from data_commit_info;"
+      - name: Hash-Consistency Verification task
+        run: |
+          export TPCH_DATA=`realpath lakesoul/test_files/tpch/data`
+          export lakesoul_home=`realpath script/ci/work-dir/lakesoul.properties`
+          spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --jars script/ci/work-dir/$SPARK_JAR_NAME --class org.apache.spark.sql.lakesoul.benchmark.ConsistencyCI --master local[4] script/ci/work-dir/$SPARK_TEST_JAR_NAME
+  

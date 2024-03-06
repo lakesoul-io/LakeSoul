@@ -113,10 +113,10 @@ impl SortedStreamMerger {
                 let schema = stream.stream.schema();
                 primary_keys
                     .iter()
-                    .map(move |pk| col(pk.as_str(), &schema.clone()).unwrap())
-                    .collect::<Vec<_>>()
+                    .map(move |pk| col(pk.as_str(), &schema.clone()))
+                    .collect::<Result<Vec<_>>>()
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
 
         let row_converters = streams
             .iter()
@@ -125,13 +125,13 @@ impl SortedStreamMerger {
                 let sort_fields = primary_keys
                     .iter()
                     .map(move |pk| {
-                        let data_type = schema.field_with_name(pk.as_str()).unwrap().data_type().clone();
-                        SortField::new(data_type)
+                        let data_type = schema.field_with_name(pk.as_str())?.data_type().clone();
+                        Ok(SortField::new(data_type))
                     })
-                    .collect::<Vec<_>>();
-                RowConverter::new(sort_fields).unwrap()
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(RowConverter::new(sort_fields)?)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
 
         let fields_map = streams
             .iter()
@@ -140,10 +140,10 @@ impl SortedStreamMerger {
                     .schema()
                     .fields()
                     .iter()
-                    .map(|f| target_schema.index_of(f.name()).unwrap())
-                    .collect::<Vec<_>>()
+                    .map(|f| Ok(target_schema.index_of(f.name())?))
+                    .collect::<Result<Vec<usize>>>()
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let fields_map = Arc::new(fields_map);
 
         let wrappers: Vec<Fuse<SendableRecordBatchStream>> = streams.into_iter().map(|s| s.stream.fuse()).collect();

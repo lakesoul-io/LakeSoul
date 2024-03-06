@@ -35,7 +35,7 @@ Run spark-shell/spark-sql/pyspark with the `LakeSoulSparkSessionExtension` sql e
   <TabItem value="Spark SQL" label="Spark SQL" default>
 
   ```bash
-  spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-2.5.1-spark-3.3.jar
+  spark-sql --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-spark-3.3-VAR::VERSION.jar
   ```
 
   </TabItem>
@@ -43,14 +43,14 @@ Run spark-shell/spark-sql/pyspark with the `LakeSoulSparkSessionExtension` sql e
   <TabItem value="Scala" label="Scala">
 
   ```bash
-  spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-2.5.1-spark-3.3.jar
+  spark-shell --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-spark-3.3-VAR::VERSION.jar
   ```
   </TabItem>
   <TabItem value="PySpark" label="PySpark">
 
   ```bash
   wget https://github.com/lakesoul-io/LakeSoul/tree/main/python/lakesoul/spark/tables.py
-  pyspark --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-2.5.1-spark-3.3.jar --py-files tables.py
+  pyspark --conf spark.sql.extensions=com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension --conf spark.sql.catalog.lakesoul=org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog --conf spark.sql.defaultCatalog=lakesoul --jars lakesoul-spark-spark-3.3-VAR::VERSION.jar --py-files tables.py
   ```
   </TabItem>
 
@@ -63,7 +63,7 @@ Include maven dependencies in your project:
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul</artifactId>
-    <version>2.5.1-spark-3.3</version>
+    <version>spark-3.3-VAR::VERSION</version>
 </dependency>
 ```
 

@@ -5,11 +5,10 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
-import com.google.common.collect.Lists
 import org.apache.hadoop.fs.Path
 
 import java.util.{Objects, UUID}
-import scala.collection.JavaConverters.{asJavaIterableConverter, asScalaBufferConverter}
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{JavaConverters, mutable}
 import scala.util.control.Breaks
@@ -241,7 +240,7 @@ object DataOperation {
       val resultUUID = tmpUUIDs -- compactionUUIDs
       val file_arr_buf = new ArrayBuffer[DataFileInfo]()
       val dataCommitInfoList = dbManager
-        .getDataCommitInfosFromUUIDs(table_id, partition_desc, Lists.newArrayList(resultUUID.map(DBUtil.toProtoUuid).asJava)).asScala.toArray
+        .getDataCommitInfosFromUUIDs(table_id, partition_desc, resultUUID.map(DBUtil.toProtoUuid).toList.asJava).asScala.toArray
       fillFiles(file_arr_buf, dataCommitInfoList)
     }
   }
