@@ -34,8 +34,6 @@ pub enum LakeSoulMetaDataError {
     ProstDecodeError(#[from] prost::DecodeError),
     #[error("prost encode error: {0}")]
     ProstEncodeError(#[from] prost::EncodeError),
-    #[error("ffi error: {0}")]
-    FfiError(String),
     #[error(
         "Internal error: {0}\nThis was likely caused by a bug in LakeSoul's \
     code and we would welcome that you file an bug report in our issue tracker"

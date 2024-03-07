@@ -1,6 +1,7 @@
 package org.apache.spark.sql.lakesoul
 
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql._
 import org.apache.spark.sql.lakesoul.RandomStringGenerator.generateRandomString
 import org.apache.spark.sql.lakesoul.test.LakeSoulTestUtils
@@ -19,15 +20,8 @@ class SplitDescSuite extends QueryTest
   import testImplicits._
 
   val names: Seq[String] = Seq.empty
-  val base_path = "/tmp/spark_test"
-  val name_length = 10
-
-//  override protected def afterAll(): Unit = {
-//    for (tName <- names) {
-//      val tablePath = s"$base_path/$tName"
-//      //      LakeSoulTable.forPath(tablePath).dropTable()
-//    }
-//  }
+  val basePath = "/tmp/spark_test"
+  val nameLength = 10
 
   private def create_dataframe(): DataFrame = {
     val df = Seq(
@@ -43,10 +37,53 @@ class SplitDescSuite extends QueryTest
     df
   }
 
+  private def withUpsert(tableName: String): Unit = {
+
+    val df1 = Seq(
+      ("2021-01-01", 1, 1, "apple"),
+      ("2021-01-02", 2, 2, "banana"),
+    ).toDF("date", "id", "num", "name")
+
+    val tablePath = s"$basePath/$tableName"
+
+    df1.write
+      .mode("append")
+      .format("lakesoul")
+      .option("shortTableName", tableName)
+      .option("rangePartitions", "date")
+      .option("hashPartitions", "id,num")
+      .option("hashBucketNum", "4")
+      .save(tablePath)
+
+    val lake = LakeSoulTable.forPath(tablePath)
+
+    val df2 = Seq(
+      ("2021-01-01", 1, 1, "pear"),
+      ("2021-01-02", 2, 2, "lemon"),
+    ).toDF("date", "id", "num", "name")
+
+    lake.upsert(df2)
+
+    val df3 = Seq(
+      ("2021-01-01", 1, 2, "watermelon"),
+      ("2021-01-02", 1, 2, "grape"),
+    ).toDF("date", "id", "num", "name")
+
+    lake.upsert(df3)
+
+    val df4 = Seq(
+      ("2021-01-01", 1, 1, "cherry"),
+      ("2021-01-02", 2, 2, "pineapple"),
+    ).toDF("date", "id", "num", "name")
+
+    lake.upsert(df4)
+  }
+
+
   test("no range, no hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
@@ -68,9 +105,9 @@ class SplitDescSuite extends QueryTest
   }
 
   test("one range, no hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
@@ -89,9 +126,9 @@ class SplitDescSuite extends QueryTest
   }
 
   test("multiple range, no hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
@@ -110,9 +147,9 @@ class SplitDescSuite extends QueryTest
   }
 
   test("no range, one hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
@@ -132,15 +169,15 @@ class SplitDescSuite extends QueryTest
   }
 
   test("one range, one hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
         .format("lakesoul")
         .option("shortTableName", tName)
-        .option("rangePartitions","date")
+        .option("rangePartitions", "date")
         .option("hashPartitions", "id")
         .option("hashBucketNum", "4")
         .save(tablePath)
@@ -155,15 +192,15 @@ class SplitDescSuite extends QueryTest
   }
 
   test("multiple range, one hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
         .format("lakesoul")
         .option("shortTableName", tName)
-        .option("rangePartitions","date,name")
+        .option("rangePartitions", "date,name")
         .option("hashPartitions", "id")
         .option("hashBucketNum", "4")
         .save(tablePath)
@@ -178,15 +215,15 @@ class SplitDescSuite extends QueryTest
   }
 
   test("multiple range, multiple hash") {
-    val tName = generateRandomString(name_length);
+    val tName = generateRandomString(nameLength);
     withTable(tName) {
-      val tablePath = s"$base_path/$tName"
+      val tablePath = s"$basePath/$tName"
       val df = create_dataframe()
       df.write
         .mode("append")
         .format("lakesoul")
         .option("shortTableName", tName)
-        .option("rangePartitions","date,name")
+        .option("rangePartitions", "date,name")
         .option("hashPartitions", "id,num")
         .option("hashBucketNum", "4")
         .save(tablePath)
@@ -199,7 +236,22 @@ class SplitDescSuite extends QueryTest
       assert(descs.length == 8)
     }
   }
+
+
+  test("multiple range, multiple hash , with upsert") {
+    val tName = generateRandomString(nameLength);
+    withTable(tName) {
+      withUpsert(tName)
+      val descs = NativeMetadataJavaClient
+        .getInstance()
+        .createSplitDescArray(tName, "default")
+        .asScala
+        .toSeq
+      descs.foreach(println)
+    }
+  }
 }
+
 
 object RandomStringGenerator {
   val random = new Random()
