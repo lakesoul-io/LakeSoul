@@ -11,6 +11,8 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSource;
 import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
+import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
+import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
@@ -62,7 +64,7 @@ public class JdbcCDC {
         host = parameter.get(SOURCE_DB_HOST.key());
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         //Postgres Oracle
-        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres")) {
+        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") || dbType.equalsIgnoreCase("mongodb")) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
@@ -92,6 +94,7 @@ public class JdbcCDC {
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
+        conf.set(SOURCE_DB_TYPE,dbType);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
@@ -136,8 +139,11 @@ public class JdbcCDC {
         if (dbType.equalsIgnoreCase("oracle")) {
             oracleCdc(lakeSoulRecordConvert, conf, env);
         }
-        if (dbType.equalsIgnoreCase("sqlserver")){
+        if (dbType.equalsIgnoreCase("sqlserver")) {
             sqlserverCdc(lakeSoulRecordConvert, conf, env);
+        }
+        if (dbType.equalsIgnoreCase("mongodb")) {
+            mongoCdc(lakeSoulRecordConvert, conf, env);
         }
 
     }
@@ -275,5 +281,34 @@ public class JdbcCDC {
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From sqlserver Database " + dbName);
+    }
+
+    private static void mongoCdc(LakeSoulRecordConvert lakeSoulRecordConvert, Configuration conf, StreamExecutionEnvironment env) throws Exception {
+        MongoDBSource<BinarySourceRecord> mongoSource =
+                MongoDBSource.<BinarySourceRecord>builder()
+                        .hosts(host)
+                        .databaseList(schemaList) // 设置捕获的数据库，支持正则表达式
+                        .collectionList(tableList) //设置捕获的集合，支持正则表达式
+                        .startupOptions(StartupOptions.initial())
+                        .scanFullChangelog(true)
+                        .batchSize(splitSize)
+                        .username(userName)
+                        .password(passWord)
+                        .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
+                        .build();
+        NameSpaceManager manager = new NameSpaceManager();
+        manager.importOrSyncLakeSoulNamespace(dbName);
+        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        context.env = env;
+        context.conf = conf;
+        LakeSoulMultiTableSinkStreamBuilder
+                builder =
+                new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
+        DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
+
+        DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
+        DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
+        env.execute("LakeSoul CDC Sink From mongo Database " + dbName);
+
     }
 }

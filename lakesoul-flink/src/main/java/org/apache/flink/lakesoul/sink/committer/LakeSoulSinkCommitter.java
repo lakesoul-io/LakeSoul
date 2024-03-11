@@ -99,6 +99,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 TableNameId tableNameId =
                         lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
+                if (identity.tableId.schema() == null){
+                    tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.catalog());
+                }
 
                 DataCommitInfo.Builder dataCommitInfo = DataCommitInfo.newBuilder();
                 dataCommitInfo.setTableId(tableNameId.getTableId());

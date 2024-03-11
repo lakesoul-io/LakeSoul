@@ -23,11 +23,17 @@ SPDX-License-Identifier: Apache-2.0
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
-        <cdc.version>2.4.2</cdc.version>
+        <cdc.version>3.0.0</cdc.version>
         <local.scope>provided</local.scope>
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>org.hamcrest</groupId>
+            <artifactId>hamcrest</artifactId>
+            <version>2.1</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
@@ -140,6 +146,16 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-mongodb-cdc</artifactId>
+            <version>${cdc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.mongodb</groupId>
+            <artifactId>bson</artifactId>
+            <version>4.3.4</version> <!-- 使用最新版本 -->
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>

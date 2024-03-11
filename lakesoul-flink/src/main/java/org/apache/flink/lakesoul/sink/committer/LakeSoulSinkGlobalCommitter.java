@@ -33,6 +33,8 @@ import java.util.*;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
 import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE;
+
 
 /**
  * Global Committer implementation for {@link LakeSoulMultiTablesSink}.
@@ -111,6 +113,8 @@ public class LakeSoulSinkGlobalCommitter
         LOG.info("Committing: {}", globalCommittable);
 
         int index = 0;
+        String dbType = this.conf.getString(SOURCE_DB_TYPE,"");
+
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
                 globalCommittable.getGroupedCommitables()
                         .entrySet()) {
@@ -118,6 +122,9 @@ public class LakeSoulSinkGlobalCommitter
             List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
+            if (tableNamespace==null){
+                tableNamespace = identity.tableId.catalog();
+            }
             boolean isCdc = identity.useCDC;
             Schema msgSchema = FlinkUtil.toArrowSchema(identity.rowType, isCdc ? Optional.of(
                     identity.cdcColumn) :
@@ -154,7 +161,7 @@ public class LakeSoulSinkGlobalCommitter
                         !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
-                StructType origSchema = null;
+                StructType origSchema ;
                 if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
                     Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
@@ -193,7 +200,11 @@ public class LakeSoulSinkGlobalCommitter
                                 msgSchema,
                                 identity.useCDC,
                                 identity.cdcColumn);
-                        dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
+                        if (dbType.equals("mongodb")){
+                            dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                        }else {
+                            dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
+                        }
                         if (JSONObject.parseObject(tableInfo.getProperties()).containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
                             dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
                         }

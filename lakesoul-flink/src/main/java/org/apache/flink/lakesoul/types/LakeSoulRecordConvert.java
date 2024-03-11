@@ -4,10 +4,13 @@
 
 package org.apache.flink.lakesoul.types;
 
+import com.amazonaws.services.dynamodbv2.xspec.S;
+import com.ververica.cdc.connectors.mongodb.internal.MongoDBEnvelope;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
+import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.errors.DataException;
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Enum;
 import io.debezium.data.EnumSet;
@@ -33,6 +36,8 @@ import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
+import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
+import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.RowKind;
 
@@ -49,6 +54,7 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLU
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 
 public class LakeSoulRecordConvert implements Serializable {
 
@@ -59,6 +65,7 @@ public class LakeSoulRecordConvert implements Serializable {
     final boolean useCDC;
 
     List<String> partitionFields;
+
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, Collections.emptyList());
@@ -111,46 +118,98 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long tsMs, long sortField) throws Exception {
-        Envelope.Operation op = getOperation(sch, value);
-        Schema valueSchema = value.schema();
         LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId)
                 .setUseCDC(useCDC).setCDCColumn(cdcColumn);
-        if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
-            Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
-            Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
-            RowType rt = toFlinkRowType(afterSchema);
-            insert.setRowKind(RowKind.INSERT);
-            builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
-        } else if (op == Envelope.Operation.DELETE) {
-            Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
-            Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
-            RowType rt = toFlinkRowType(beforeSchema);
-            builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
-            delete.setRowKind(RowKind.DELETE);
-        } else {
-            Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
-            Struct before = value.getStruct(Envelope.FieldName.BEFORE);
-            RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
-            RowType beforeRT = toFlinkRowType(beforeSchema);
-            beforeData.setRowKind(RowKind.UPDATE_BEFORE);
-            Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
-            Struct after = value.getStruct(Envelope.FieldName.AFTER);
-            RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
-            RowType afterRT = toFlinkRowType(afterSchema);
-            afterData.setRowKind(RowKind.UPDATE_AFTER);
-            if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
-                // partition fields changed. we need to emit both before and after RowData
-                builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
-                        .setAfterRowData(afterData).setAfterType(afterRT);
+        boolean isMongoDDL = true;
+        try {
+            value.getWithoutDefault(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
+        } catch (DataException e) {
+            isMongoDDL = false;
+        }
+        if (isMongoDDL) {
+            String op = value.getString(MongoDBEnvelope.OPERATION_TYPE_FIELD);
+            if (op.equals("insert")) {
+                String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
+                Struct bsonStruct = convertBSONToStruct(fullDocument);
+                Schema documentSchema = bsonStruct.schema();
+                RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField);
+                RowType mongoRt = toFlinkRowType(documentSchema,true);
+                insert.setRowKind(RowKind.INSERT);
+                builder.setOperation("insert").setAfterRowData(insert).setAfterType(mongoRt);
+            } else if (op.equals("delete")) {
+                String fullDocumentValue = value.getString("fullDocumentBeforeChange");
+                Struct before = convertBSONToStruct(fullDocumentValue);
+                Schema beforSchema = before.schema();
+                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField);
+                RowType rt = toFlinkRowType(beforSchema, true);
+                builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
+                delete.setRowKind(RowKind.DELETE);
             } else {
-                // otherwise we only need to keep the after RowData
-                builder.setOperation("update")
-                        .setAfterRowData(afterData).setAfterType(afterRT);
+                String fullDocumentBeforChange = value.getString("fullDocumentBeforeChange");
+                Struct before = convertBSONToStruct(fullDocumentBeforChange);
+                Schema beforeSchema = before.schema();
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
+                beforeData.setRowKind(RowKind.UPDATE_BEFORE);
+                RowType beforeRT = toFlinkRowType(beforeSchema, true);
+                String fullDocument = value.getString(MongoDBEnvelope.FULL_DOCUMENT_FIELD);
+                Struct after = convertBSONToStruct(fullDocument);
+                Schema afterSchema = after.schema();
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
+                afterData.setRowKind(RowKind.UPDATE_AFTER);
+                RowType afterRT = toFlinkRowType(afterSchema, true);
+                if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
+                    // partition fields changed. we need to emit both before and after RowData
+                    builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
+                            .setAfterRowData(afterData).setAfterType(afterRT);
+                } else {
+                    // otherwise we only need to keep the after RowData
+                    builder.setOperation("update")
+                            .setAfterRowData(afterData).setAfterType(afterRT);
+                }
+            }
+        } else {
+            Envelope.Operation op = getOperation(sch, value);
+            Schema valueSchema = value.schema();
+            if (op == Envelope.Operation.CREATE || op == Envelope.Operation.READ) {
+                Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
+                Struct after = value.getStruct(Envelope.FieldName.AFTER);
+                RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
+                boolean afterNullable = afterSchema.isOptional();
+                RowType rt = toFlinkRowType(afterSchema,afterNullable);
+                insert.setRowKind(RowKind.INSERT);
+                builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
+            } else if (op == Envelope.Operation.DELETE) {
+                Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
+                Struct before = value.getStruct(Envelope.FieldName.BEFORE);
+                RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
+                boolean nullable = beforeSchema.isOptional();
+                RowType rt = toFlinkRowType(beforeSchema,nullable);
+                builder.setOperation("delete").setBeforeRowData(null).setBeforeRowType(rt);
+                delete.setRowKind(RowKind.DELETE);
+            } else {
+                Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
+                Struct before = value.getStruct(Envelope.FieldName.BEFORE);
+                RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
+                boolean beforNullable = beforeSchema.isOptional();
+                RowType beforeRT = toFlinkRowType(beforeSchema,beforNullable);
+                beforeData.setRowKind(RowKind.UPDATE_BEFORE);
+                Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
+                Struct after = value.getStruct(Envelope.FieldName.AFTER);
+                RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
+                boolean afterNullable = afterSchema.isOptional();
+                RowType afterRT = toFlinkRowType(afterSchema,afterNullable);
+                afterData.setRowKind(RowKind.UPDATE_AFTER);
+                if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
+                    // partition fields changed. we need to emit both before and after RowData
+                    builder.setOperation("update").setBeforeRowData(beforeData).setBeforeRowType(beforeRT)
+                            .setAfterRowData(afterData).setAfterType(afterRT);
+                } else {
+                    // otherwise we only need to keep the after RowData
+                    builder.setOperation("update")
+                            .setAfterRowData(afterData).setAfterType(afterRT);
+                }
             }
         }
-
         return builder.setTsMs(tsMs).build();
     }
 
@@ -169,7 +228,7 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-    public RowType toFlinkRowType(Schema schema) {
+    public RowType toFlinkRowType(Schema schema, boolean nullable) {
         int arity = schema.fields().size() + 1;
         if (useCDC) ++arity;
         String[] colNames = new String[arity];
@@ -178,7 +237,7 @@ public class LakeSoulRecordConvert implements Serializable {
         for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
-            colTypes[i] = convertToLogical(item.schema());
+            colTypes[i] = convertToLogical(item.schema(),nullable);
         }
 //        colNames[useCDC ? arity - 3 : arity - 2] = BINLOG_FILE_INDEX;
 //        colTypes[useCDC ? arity - 3 : arity - 2] = new BigIntType();
@@ -191,16 +250,30 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-    public LogicalType convertToLogical(Schema fieldSchema) {
+    public LogicalType convertToLogical(Schema fieldSchema, boolean nullable) {
         if (isPrimitiveType(fieldSchema)) {
-            return primitiveLogicalType(fieldSchema);
+            return primitiveLogicalType(fieldSchema, nullable);
         } else {
-            return otherLogicalType(fieldSchema);
+            return otherLogicalType(fieldSchema, nullable);
         }
     }
 
-    private LogicalType primitiveLogicalType(Schema fieldSchema) {
-        boolean nullable = fieldSchema.isOptional();
+    public List<RowType.RowField> getRowFields(Schema schema) {
+        List<RowType.RowField> rowFields = new ArrayList<>();
+
+        for (Field field : schema.fields()) {
+            String fieldName = field.name();
+            Schema fieldype = field.schema();
+            LogicalType logicalType = convertToLogical(fieldype ,true);
+            RowType.RowField rowField = new RowType.RowField(fieldName, logicalType);
+            rowFields.add(rowField);
+        }
+        return rowFields;
+    }
+
+    private LogicalType primitiveLogicalType(Schema fieldSchema,boolean nullable) {
+//        boolean nullable = fieldSchema.isOptional();
+//        if (isMongoDDl) nullable = true;
         switch (fieldSchema.type()) {
             case BOOLEAN:
                 return new BooleanType(nullable);
@@ -216,6 +289,9 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new DoubleType(nullable);
             case STRING:
                 return new VarCharType(nullable, Integer.MAX_VALUE);
+            case STRUCT:
+                List<RowType.RowField> rowFields = getRowFields(fieldSchema);
+                return new RowType(nullable, rowFields);
             case BYTES:
                 Map<String, String> paras = fieldSchema.parameters();
                 int byteLen = Integer.MAX_VALUE;
@@ -229,8 +305,8 @@ public class LakeSoulRecordConvert implements Serializable {
         }
     }
 
-    private LogicalType otherLogicalType(Schema fieldSchema) {
-        boolean nullable = fieldSchema.isOptional();
+    private LogicalType otherLogicalType(Schema fieldSchema, boolean nullable) {
+        //boolean nullable = fieldSchema.isOptional();
         switch (fieldSchema.name()) {
             case Enum.LOGICAL_NAME:
             case Json.LOGICAL_NAME:
@@ -361,11 +437,47 @@ public class LakeSoulRecordConvert implements Serializable {
         return row;
     }
 
+    public RowData convertDocumentStruct(Struct struct) {
+        Schema schema = struct.schema();
+        int arity = schema.fields().size();
+        List<Field> fieldNames = schema.fields();
+        BinaryRowData row = new BinaryRowData(arity);
+        BinaryRowWriter writer = new BinaryRowWriter(row);
+
+        for (int i = 0; i < schema.fields().size(); i++) {
+            Field field = fieldNames.get(i);
+            String fieldName = field.name();
+            Schema fieldSchema = schema.field(fieldName).schema();
+            Object fieldValue = struct.getWithoutDefault(fieldName);
+            sqlSchemaAndFieldWrite(writer, i,fieldValue, fieldSchema, serverTimeZone);
+        }
+        writer.complete();
+        return row;
+    }
+
+
+    private void convertNestedStruct(BinaryRowWriter writer, int index, Struct nestedStruct, Schema nestedSchema) {
+        int nestedArity = nestedSchema.fields().size();
+        List<Field> nestedFields = nestedSchema.fields();
+        BinaryRowData nestedRow = new BinaryRowData(nestedArity);
+        BinaryRowWriter nestedWriter = new BinaryRowWriter(nestedRow);
+        for (int i = 0; i < nestedArity; i++) {
+            Field field = nestedFields.get(i);
+            String nestedFieldName = field.name();
+            Schema nestedFieldType = nestedSchema.field(nestedFieldName).schema();
+            Object nestedFieldValue = nestedStruct.getWithoutDefault(nestedFieldName);
+            sqlSchemaAndFieldWrite(nestedWriter, i, nestedFieldValue,nestedFieldType, serverTimeZone);
+        }
+        nestedWriter.complete();
+        RowDataSerializer rowDataSerializer = new RowDataSerializer();
+        writer.writeRow(index, nestedRow, rowDataSerializer);
+    }
+
     private boolean isPrimitiveType(Schema fieldSchema) {
         return fieldSchema.name() == null;
     }
 
-    private void sqlSchemaAndFieldWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
+    public void sqlSchemaAndFieldWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema, ZoneId serverTimeZone) {
         if (isPrimitiveType(fieldSchema)) {
             primitiveTypeWrite(writer, index, fieldValue, fieldSchema);
         } else {
@@ -374,32 +486,41 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private void primitiveTypeWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema) {
-        switch (fieldSchema.type()) {
-            case BOOLEAN:
-                writeBoolean(writer, index, fieldValue);
-                break;
-            case INT8:
-            case INT16:
-            case INT32:
-                writeInt(writer, index, fieldValue);
-                break;
-            case INT64:
-                writeLong(writer, index, fieldValue);
-                break;
-            case FLOAT32:
-                writeFloat(writer, index, fieldValue);
-                break;
-            case FLOAT64:
-                writeDouble(writer, index, fieldValue);
-                break;
-            case STRING:
-                writeString(writer, index, fieldValue);
-                break;
-            case BYTES:
-                writeBinary(writer, index, fieldValue);
-                break;
-            default:
-                throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.type());
+        if (fieldValue == null){
+            writer.setNullAt(index);
+        }else if (fieldSchema.type().getName().equals("struct")){
+            convertNestedStruct(writer, index, (Struct) fieldValue,fieldSchema);
+        }else {
+            switch (fieldSchema.type()) {
+                case BOOLEAN:
+                    writeBoolean(writer, index, fieldValue);
+                    break;
+                case INT8:
+                case INT16:
+                case INT32:
+                    writeInt(writer, index, fieldValue);
+                    break;
+                case INT64:
+                    writeLong(writer, index, fieldValue);
+                    break;
+                case FLOAT32:
+                    writeFloat(writer, index, fieldValue);
+                    break;
+                case FLOAT64:
+                    writeDouble(writer, index, fieldValue);
+                    break;
+                case STRING:
+                    writeString(writer, index, fieldValue);
+                    break;
+                case BYTES:
+                    writeBinary(writer, index, fieldValue);
+                    break;
+//                case STRUCT:
+//                    writeRow(writer, index, fieldValue);
+//                    break;
+                default:
+                    throw new UnsupportedOperationException("LakeSoul doesn't support type: " + fieldSchema.type());
+            }
         }
     }
 
@@ -491,10 +612,9 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String, String> paras = schema.parameters();
-        if (paras==null){
+        if (paras == null) {
             return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
-        }
-        else {
+        } else {
             return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
         }
     }
@@ -651,6 +771,16 @@ public class LakeSoulRecordConvert implements Serializable {
 
     public void writeString(BinaryRowWriter writer, int index, Object dbzObj) {
         writer.writeString(index, StringData.fromString(dbzObj.toString()));
+    }
+
+    public void writeRow(BinaryRowWriter writer, int index, Object dbzObj) {
+        RowData rowData = null;
+        if (dbzObj instanceof Struct) {
+            Struct struct = (Struct) dbzObj;
+            rowData = convertDocumentStruct(struct);
+        }
+        RowDataSerializer rowDataSerializer = new RowDataSerializer();
+        writer.writeRow(index, rowData, rowDataSerializer);
     }
 
     public void writeBinary(BinaryRowWriter writer, int index, Object dbzObj) {

@@ -100,8 +100,12 @@ public class BinarySourceRecord {
             }
             long sortField = (binlogFileIndex << 32) + binlogPosition;
             LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, tsMs, sortField);
-            String tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
-
+            String tablePath;
+            if (tableId.schema()==null){
+                tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();
+            }else {
+                tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
+            }
             return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId, FlinkUtil.makeQualifiedPath(tablePath).toString(),
                     Collections.emptyList(), false, data, null);
         }
