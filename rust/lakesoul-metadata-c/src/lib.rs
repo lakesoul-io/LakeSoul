@@ -74,7 +74,7 @@ fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_ch
     }
 }
 
-fn call_integer_result_callback(callback: IntegerResultCallBack, status: i32, err: *const c_char) {
+fn _call_integer_result_callback(callback: IntegerResultCallBack, status: i32, err: *const c_char) {
     // release error string
     callback(status, err);
     if !err.is_null() {
@@ -367,12 +367,9 @@ fn c_char2str<'a>(ptr: *const c_char) -> &'a str {
 
 /// USE: JNR
 /// return split(partition) desc array in json format by table_name, namespace , filter(WIP)
-/// 0: success
-/// -100: ffi::restore error
-/// -1: error
 #[no_mangle]
 pub extern "C" fn create_split_desc_array(
-    callback: IntegerResultCallBack,
+    callback: ResultCallback,
     client: NonNull<CResult<TokioPostgresClient>>,
     prepared: NonNull<CResult<PreparedStatement>>,
     runtime: NonNull<CResult<TokioRuntime>>,
@@ -381,7 +378,7 @@ pub extern "C" fn create_split_desc_array(
 ) -> *mut c_char {
     let runtime = unsafe { NonNull::new_unchecked(runtime.as_ref().ptr as *mut Runtime).as_ref() };
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
-    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_ref() };
+    let prepared = unsafe { NonNull::new_unchecked(prepared.as_ref().ptr as *mut PreparedStatementMap).as_mut() };
     let table_name = c_char2str(table_name);
     let namespace = c_char2str(namespace);
     let result: Result<*mut c_char, LakeSoulMetaDataError> = runtime.block_on(async {
@@ -393,19 +390,11 @@ pub extern "C" fn create_split_desc_array(
     });
 
     let (ret, status, e) = match result {
-        Ok(ptr) => (ptr, 0, null()),
-        Err(e) => match e {
-            LakeSoulMetaDataError::FfiError(ffi) => {
-                (null_mut(), -100, CString::new(ffi).unwrap().into_raw() as *const c_char)
-            }
-            other => (
-                null_mut(),
-                -1,
-                CString::new(other.to_string()).unwrap().into_raw() as *const c_char,
-            ),
-        },
+        Ok(ptr) => (ptr, true, null()),
+        Err(e) =>
+            (null_mut(), false, CString::new(e.to_string()).unwrap().into_raw() as *const c_char),
     };
-    call_integer_result_callback(callback, status, e);
+    call_result_callback(callback, status, e);
     ret
 }
 
@@ -425,7 +414,7 @@ pub extern "C" fn debug(callback: extern "C" fn(bool, *const c_char)) -> *mut c_
             primary_keys: vec![],
             partition_desc: HashMap::new(),
             table_schema: "".to_string(),
-        };1];
+        }; 1];
     let array = lakesoul_metadata::transfusion::SplitDescArray(x);
     let json_vec = serde_json::to_vec(&array).unwrap();
     let c_string = CString::new(json_vec).unwrap();
