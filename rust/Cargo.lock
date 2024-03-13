@@ -1765,6 +1765,7 @@ name = "lakesoul-io-c"
 version = "2.5.0"
 dependencies = [
  "arrow",
+ "bytes",
  "cbindgen",
  "lakesoul-io",
  "serde",

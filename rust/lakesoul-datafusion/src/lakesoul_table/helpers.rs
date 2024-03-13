@@ -35,46 +35,6 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
 }
 
 
-pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String>>) -> datafusion::error::Result<Vec<(String, ScalarValue)>> {
-    range_partitions
-        .iter()
-        .map(|range_col| {
-            if let Some(array) = batch.column_by_name(&range_col) {
-                match ScalarValue::try_from_array(array, 0) {
-                    Ok(scalar) => Ok((range_col.clone(), scalar)),
-                    Err(e) => Err(e)
-                }
-            } else {
-                Err(datafusion::error::DataFusionError::External(format!("").into()))
-            }
-        })
-        .collect::<datafusion::error::Result<Vec<_>>>()
-}
-
-pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
-    if columnar_values.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}/", columnar_values
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("/"))
-    }
-}
-
-pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarValue)>) -> String {
-    if columnar_values.is_empty() {
-        "-5".to_string()
-    } else {
-        columnar_values
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
 pub async fn prune_partitions(
     all_partition_info: Vec<PartitionInfo>,
     filters: &[Expr],

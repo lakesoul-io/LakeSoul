@@ -36,7 +36,7 @@ serde_json = { workspace = true }
 tracing = "0.1.40"
 proto = { path = "../proto" }
 parking_lot = "0.12.1"
-
+rand = { workspace = true }
 half = { workspace = true }
 log = "0.4.20"
 anyhow = { workspace = true, features = [] }

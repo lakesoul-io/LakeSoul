@@ -35,7 +35,7 @@ use datafusion::{
 use futures::StreamExt;
 use lakesoul_io::datasource::file_format::{compute_project_column_indices, flatten_file_scan_config};
 use lakesoul_io::datasource::physical_plan::MergeParquetExec;
-use lakesoul_io::helpers::partition_desc_from_file_scan_config;
+use lakesoul_io::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values, partition_desc_from_file_scan_config};
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::MetaDataClientRef;
@@ -48,7 +48,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
-use crate::lakesoul_table::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, create_io_config_builder_from_table_info, get_columnar_values};
+use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
 
 pub struct LakeSoulMetaDataParquetFormat {
     parquet_format: Arc<ParquetFormat>,

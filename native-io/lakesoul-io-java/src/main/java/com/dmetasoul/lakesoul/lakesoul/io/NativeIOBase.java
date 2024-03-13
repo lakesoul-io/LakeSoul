@@ -38,6 +38,10 @@ public class NativeIOBase implements AutoCloseable {
 
     protected CDataDictionaryProvider provider;
 
+    protected Pointer fixedBuffer = null;
+
+    protected Pointer mutableBuffer = null;
+
     public static boolean isNativeIOLibExist() {
         return JnrLoader.get() != null;
     }
@@ -52,6 +56,10 @@ public class NativeIOBase implements AutoCloseable {
         intReferenceManager = Runtime.getRuntime(libLakeSoulIO).newObjectReferenceManager();
         ioConfigBuilder = libLakeSoulIO.new_lakesoul_io_config_builder();
         tokioRuntimeBuilder = libLakeSoulIO.new_tokio_runtime_builder();
+
+        fixedBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(5000L);
+        mutableBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(1 << 12);
+
         setBatchSize(10240);
         setThreadNum(2);
     }
@@ -64,6 +72,10 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_file(ioConfigBuilder, file);
     }
 
+    public void withPrefix(String prefix) {
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_with_prefix(ioConfigBuilder, prefix);
+    }
+
     public void addColumn(String column) {
         assert ioConfigBuilder != null;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_column(ioConfigBuilder, column);
@@ -72,6 +84,12 @@ public class NativeIOBase implements AutoCloseable {
     public void setPrimaryKeys(Iterable<String> primaryKeys) {
         for (String pk : primaryKeys) {
             ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_primary_key(ioConfigBuilder, pk);
+        }
+    }
+
+    public void setRangePartitions(Iterable<String> rangePartitions) {
+        for (String col : rangePartitions) {
+            ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_range_partition(ioConfigBuilder, col);
         }
     }
 
@@ -88,6 +106,11 @@ public class NativeIOBase implements AutoCloseable {
     public void setThreadNum(int threadNum) {
         assert ioConfigBuilder != null;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_thread_num(ioConfigBuilder, threadNum);
+    }
+
+    public void useDynamicPartition(boolean enable) {
+        assert ioConfigBuilder != null;
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(ioConfigBuilder, enable);
     }
 
     public void setBatchSize(int batchSize) {

@@ -85,6 +85,10 @@ pub struct LakeSoulIOConfig {
 
     // to be compatible with hadoop's fs.defaultFS
     pub(crate) default_fs: String,
+
+    // if dynamic partition
+    #[derivative(Default(value = "false"))]
+    pub(crate) use_dynamic_partition: bool,
 }
 
 impl LakeSoulIOConfig {
@@ -233,6 +237,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn set_dynamic_partition(mut self, enable: bool) -> Self {
+        self.config.use_dynamic_partition = enable;
+        self
+    }
+
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
     }
@@ -247,6 +256,10 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         self.config.aux_sort_cols_slice()
+    }
+
+    pub fn prefix(&self) -> &String {
+        &self.config.prefix
     }
 }
 
