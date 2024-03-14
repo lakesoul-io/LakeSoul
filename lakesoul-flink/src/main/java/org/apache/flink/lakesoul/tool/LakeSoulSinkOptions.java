@@ -171,6 +171,13 @@ public class LakeSoulSinkOptions {
             .defaultValue("decoderbufs")
             .withDescription("The name of the Postgres logical decoding plug-in installed on the server.");
 
+
+    public static final ConfigOption<Boolean> DYNAMIC_BUCKETING = ConfigOptions
+            .key("lakesoul.sink.dynamic_bucketing")
+            .booleanType()
+            .defaultValue(false)
+            .withDescription("If true, lakesoul sink use dynamic bucketing writer");
+
 }
 
 

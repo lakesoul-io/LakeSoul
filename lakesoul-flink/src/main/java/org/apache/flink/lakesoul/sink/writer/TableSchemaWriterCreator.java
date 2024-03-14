@@ -84,7 +84,7 @@ public class TableSchemaWriterCreator implements Serializable {
     public BucketWriter<RowData, String> createBucketWriter() throws IOException {
         if (NativeIOBase.isNativeIOLibExist()) {
             LOG.info("Create natvie bucket writer");
-            return new NativeBucketWriter(this.identity.rowType, this.primaryKeys, this.conf);
+            return new NativeBucketWriter(this.identity.rowType, this.primaryKeys, this.partitionKeyList, this.conf);
         } else {
             String msg = "Cannot load lakesoul native writer";
             LOG.error(msg);

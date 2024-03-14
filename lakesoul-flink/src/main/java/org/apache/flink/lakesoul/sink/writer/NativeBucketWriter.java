@@ -25,10 +25,12 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     private final List<String> primaryKeys;
 
     private final Configuration conf;
+    private final List<String> partitionKeys;
 
-    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, Configuration conf) {
+    public NativeBucketWriter(RowType rowType, List<String> primaryKeys, List<String> partitionKeys, Configuration conf) {
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
+        this.partitionKeys = partitionKeys;
         this.conf = conf;
     }
 
@@ -49,9 +51,9 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     public WriterProperties getProperties() {
         return new WriterProperties(
                 UnsupportedInProgressFileRecoverableSerializable.INSTANCE,
-                NativePendingFileRecoverableSerializer.INSTANCE,
+                NativeParquetWriter.NativePendingFileRecoverableSerializer.INSTANCE,
                 false
-                );
+        );
     }
 
     @Override
@@ -90,37 +92,5 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
         }
     }
 
-    public static class NativePendingFileRecoverableSerializer
-        implements SimpleVersionedSerializer<InProgressFileWriter.PendingFileRecoverable> {
 
-        public static final NativePendingFileRecoverableSerializer INSTANCE =
-                new NativePendingFileRecoverableSerializer();
-
-        @Override
-        public int getVersion() {
-            return 0;
-        }
-
-        @Override
-        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj) throws IOException {
-            if (!(obj instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable)) {
-                throw new UnsupportedOperationException(
-                        "Only NativeParquetWriter.NativeWriterPendingFileRecoverable is supported.");
-            }
-            DataOutputSerializer out = new DataOutputSerializer(256);
-            NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
-                    (NativeParquetWriter.NativeWriterPendingFileRecoverable) obj;
-            out.writeUTF(recoverable.path);
-            out.writeLong(recoverable.creationTime);
-            return out.getCopyOfBuffer();
-        }
-
-        @Override
-        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized) throws IOException {
-            DataInputDeserializer in = new DataInputDeserializer(serialized);
-            String path = in.readUTF();
-            long time = in.readLong();
-            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, time);
-        }
-    }
 }

@@ -212,7 +212,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             TableSchemaWriterCreator creator) throws IOException {
         LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(identity, bucketId));
         if (bucket == null) {
-            final Path bucketPath = assembleBucketPath(creator.tableLocation, bucketId);
+            final Path bucketPath = creator.tableLocation;
             BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter();
             bucket =
                     bucketFactory.getNewBucket(

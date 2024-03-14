@@ -13,8 +13,7 @@ import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 import java.io.Serializable;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Wrapper class for both type of committables in {@link LakeSoulMultiTablesSink}. One committable might be either
@@ -31,8 +30,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     private final TableSchemaIdentity identity;
     private String sourcePartitionInfo;
 
-    @Nullable
-    private List<InProgressFileWriter.PendingFileRecoverable> pendingFiles;
+    private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap;
 
     @Nullable
     private final String commitId;
@@ -82,7 +80,27 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     ) {
         this.bucketId = bucketId;
         this.identity = identity;
-        this.pendingFiles = pendingFiles;
+        this.pendingFilesMap = new HashMap<>();
+        this.pendingFilesMap.put(bucketId, pendingFiles);
+        this.creationTime = time;
+        this.commitId = commitId;
+        this.tsMs = tsMs;
+        this.dmlType = dmlType;
+    }
+
+    /**
+     * Constructor for {@link org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer} to
+     * restore commitable states
+     */
+    public LakeSoulMultiTableSinkCommittable(
+            TableSchemaIdentity identity,
+            Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
+            long time,
+            @Nullable String commitId,
+            long tsMs, String dmlType) {
+        this.bucketId = pendingFilesMap.keySet().stream().findFirst().get();
+        this.identity = identity;
+        this.pendingFilesMap = pendingFilesMap;
         this.creationTime = time;
         this.commitId = commitId;
         this.tsMs = tsMs;
@@ -90,17 +108,31 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.sourcePartitionInfo = sourcePartitionInfo;
     }
 
+
     public long getTsMs() {
         return tsMs;
     }
 
     public boolean hasPendingFile() {
-        return pendingFiles != null;
+        return hasPendingFile(bucketId);
+    }
+
+    public boolean hasPendingFile(String bucketId) {
+        return pendingFilesMap.containsKey(bucketId);
     }
 
     @Nullable
     public List<InProgressFileWriter.PendingFileRecoverable> getPendingFiles() {
-        return pendingFiles;
+        return getPendingFiles(bucketId);
+    }
+
+    @Nullable
+    public List<InProgressFileWriter.PendingFileRecoverable> getPendingFiles(String bucketId) {
+        return pendingFilesMap.get(bucketId);
+    }
+
+    public Map<String, List<InProgressFileWriter.PendingFileRecoverable>> getPendingFilesMap() {
+        return pendingFilesMap;
     }
 
     @Override
@@ -127,7 +159,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 ", bucketId='" + bucketId + '\'' +
                 ", identity=" + identity +
                 ", commitId='" + commitId + '\'' +
-                ", pendingFiles='" + pendingFiles + '\'' +
+                ", pendingFiles='" + pendingFilesMap + '\'' +
                 '}';
     }
 
@@ -138,12 +170,15 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     public void merge(LakeSoulMultiTableSinkCommittable committable) {
         Preconditions.checkState(identity.equals(committable.getIdentity()));
-        Preconditions.checkState(bucketId.equals(committable.getBucketId()));
         Preconditions.checkState(creationTime == committable.getCreationTime());
-        if (hasPendingFile()) {
-            if (committable.hasPendingFile()) pendingFiles.addAll(committable.getPendingFiles());
-        } else {
-            if (committable.hasPendingFile()) pendingFiles = committable.getPendingFiles();
+
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
+            String bucketId = entry.getKey();
+            if (hasPendingFile(bucketId)) {
+                if (!entry.getValue().isEmpty()) pendingFilesMap.get(bucketId).addAll(entry.getValue());
+            } else {
+                if (!entry.getValue().isEmpty()) pendingFilesMap.put(bucketId, entry.getValue());
+            }
         }
         mergeSourcePartitionInfo(committable);
     }
@@ -167,6 +202,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 throw new RuntimeException(e);
             }
         }
+        Preconditions.checkState(bucketId.equals(committable.getBucketId()));
+
     }
 
     public String getDmlType() {

@@ -9,9 +9,6 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.core.memory.DataInputDeserializer;
-import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -24,12 +21,13 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
-public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
+public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter<RowData, String> {
 
     private final ArrowWriter<RowData> arrowWriter;
 
@@ -41,39 +39,39 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     private final VectorSchemaRoot batch;
 
-    private final String bucketID;
-
     private int rowsInBatch;
 
     long lastUpdateTime;
 
-    String path;
+    String prefix;
 
     private long totalRows = 0;
 
-    public NativeParquetWriter(RowType rowType,
-                               List<String> primaryKeys,
-                               String bucketID,
-                               Path path,
-                               long creationTime,
-                               Configuration conf) throws IOException {
+    public DynamicPartitionNativeParquetWriter(RowType rowType,
+                                               List<String> primaryKeys,
+                                               List<String> rangeColumns,
+                                               Path path,
+                                               long creationTime,
+                                               Configuration conf) throws IOException {
         this.batchSize = 250000; // keep same with native writer's row group row number
         this.creationTime = creationTime;
-        this.bucketID = bucketID;
         this.rowsInBatch = 0;
 
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
+        nativeWriter.setRangePartitions(rangeColumns);
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
-        this.path = path.makeQualified(path.getFileSystem()).toString();
-        nativeWriter.addFile(this.path);
+        this.prefix = path.makeQualified(path.getFileSystem()).toString();
+
+        nativeWriter.withPrefix(this.prefix);
+        nativeWriter.useDynamicPartition(true);
 
         FlinkUtil.setFSConfigs(conf, this.nativeWriter);
         this.nativeWriter.initializeWriter();
@@ -102,46 +100,12 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         return null;
     }
 
-    public static class NativePendingFileRecoverableSerializer
-            implements SimpleVersionedSerializer<PendingFileRecoverable> {
-
-        public static final NativePendingFileRecoverableSerializer INSTANCE =
-                new NativePendingFileRecoverableSerializer();
-
-        @Override
-        public int getVersion() {
-            return 0;
-        }
-
-        @Override
-        public byte[] serialize(InProgressFileWriter.PendingFileRecoverable obj) throws IOException {
-            if (!(obj instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable)) {
-                throw new UnsupportedOperationException(
-                        "Only NativeParquetWriter.NativeWriterPendingFileRecoverable is supported.");
-            }
-            DataOutputSerializer out = new DataOutputSerializer(256);
-            NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
-                    (NativeParquetWriter.NativeWriterPendingFileRecoverable) obj;
-            out.writeUTF(recoverable.path);
-            out.writeLong(recoverable.creationTime);
-            return out.getCopyOfBuffer();
-        }
-
-        @Override
-        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized) throws IOException {
-            DataInputDeserializer in = new DataInputDeserializer(serialized);
-            String path = in.readUTF();
-            long time = in.readLong();
-            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, time);
-        }
-    }
-
-    static public class NativeWriterPendingFileRecoverable implements PendingFileRecoverable, Serializable {
+    static public class PartitionDescAndPendingFilesRecoverable implements PendingFileRecoverable, Serializable {
         public String path;
 
         public long creationTime;
 
-        NativeWriterPendingFileRecoverable(String path, long creationTime) {
+        PartitionDescAndPendingFilesRecoverable(String path, long creationTime) {
             this.path = path;
             this.creationTime = creationTime;
         }
@@ -173,7 +137,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     public PendingFileRecoverable closeForCommit() throws IOException {
         this.arrowWriter.finish();
         this.nativeWriter.write(this.batch);
-        this.nativeWriter.flush();
+        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
         this.arrowWriter.reset();
         this.rowsInBatch = 0;
         this.batch.clear();
@@ -184,7 +148,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeWriterPendingFileRecoverable(this.path, this.creationTime);
+        return new PartitionDescAndPendingFilesRecoverable(this.prefix, this.creationTime);
     }
 
     @Override
@@ -201,7 +165,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     @Override
     public String getBucketId() {
-        return this.bucketID;
+        return "DynamicBucket";
     }
 
     @Override

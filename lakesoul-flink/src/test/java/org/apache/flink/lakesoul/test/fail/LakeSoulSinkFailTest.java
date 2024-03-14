@@ -182,14 +182,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 30;
+        indexBound = (20 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -206,14 +206,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 30;
+        indexBound = (20 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -230,14 +230,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 30;
+        indexBound = (20 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -254,14 +254,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 30;
+        indexBound = (20 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
         MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(1000, 4000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -278,14 +278,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 40;
+        indexBound = (30 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
+        MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 15000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()
@@ -302,14 +302,14 @@ public class LakeSoulSinkFailTest extends AbstractTestBase {
         Tuple3<ResolvedSchema, String, MockTableSource.StopBehavior> tuple3 = parameters.get(testName);
         ResolvedSchema resolvedSchema = tuple3.f0;
 
-        indexBound = 40;
+        indexBound = (30 + new Random().nextInt(20));
         List<String> expectedData = IntStream.range(0, indexBound).boxed().map(i -> resolvedSchema.getColumns().stream()
                 .map(col -> generateExpectedDataWithIndexByDatatype(i, col))
                 .collect(Collectors.joining(", ", "+I[", "]"))).collect(Collectors.toList());
 
-        MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 4000));
+        MockTableSource.FAIL_OPTION = Optional.of(Tuple2.of(5000, 14000));
         testLakeSoulSink(resolvedSchema, tuple3.f2, tuple3.f1, tempFolder.newFolder(testName).getAbsolutePath(),
-                60 * 1000);
+                (30 + new Random().nextInt(30)) * 1000);
 
         List<String> actualData =
                 CollectionUtil.iteratorToList(batchEnv.executeSql("SELECT * FROM test_sink").collect()).stream()

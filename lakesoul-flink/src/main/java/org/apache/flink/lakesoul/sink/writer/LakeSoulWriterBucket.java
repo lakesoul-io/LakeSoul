@@ -16,10 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -52,8 +49,11 @@ public class LakeSoulWriterBucket {
 
     private long tsMs;
 
-    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
-            new ArrayList<>();
+//    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
+//            new ArrayList<>();
+
+    private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
+            new HashMap<>();
 
     private long partCounter;
 
@@ -107,11 +107,16 @@ public class LakeSoulWriterBucket {
     }
 
     private void restoreState(LakeSoulWriterBucketState state) throws IOException {
-        pendingFiles.addAll(state.getPendingFileRecoverableList());
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap().entrySet()) {
+            pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
+        }
+//        pendingFiles.addAll(state.getPendingFileRecoverableList());
     }
 
     public String getBucketId() {
         return bucketId;
+//        System.out.println(pendingFilesMap.keySet());
+//        return pendingFilesMap.keySet().toString();
     }
 
     public Path getBucketPath() {
@@ -123,24 +128,29 @@ public class LakeSoulWriterBucket {
     }
 
     public boolean isActive() {
-        return inProgressPartWriter != null || !pendingFiles.isEmpty();
+        return inProgressPartWriter != null || !pendingFilesMap.isEmpty();
     }
 
     void merge(final LakeSoulWriterBucket bucket) throws IOException {
         checkNotNull(bucket);
-        checkState(Objects.equals(bucket.bucketPath, bucketPath));
+
+//        checkState(Objects.equals(bucket.bucketPath, bucketPath));
+//        pendingFiles.addAll(bucket.pendingFiles);
+
 
         bucket.closePartFile();
-        pendingFiles.addAll(bucket.pendingFiles);
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : bucket.pendingFilesMap.entrySet()) {
+            pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
+        }
 
-        LOG.info("Merging buckets for bucket id={}", bucketId);
+        LOG.info("Merging buckets for bucket id={}", getBucketId());
     }
 
     void write(RowData element, long currentTime, long tsMs) throws IOException {
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             LOG.info(
                     "Opening new part file for bucket id={} at {}.",
-                    bucketId,
+                    getBucketId(),
                     tsMs);
             inProgressPartWriter = rollPartFile(currentTime);
             this.tsMs = tsMs;
@@ -154,25 +164,31 @@ public class LakeSoulWriterBucket {
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
             LOG.info(
-                    "Closing in-progress part file for bucket id={} on checkpoint.", bucketId);
+                    "Closing in-progress part file for bucket id={} on checkpoint.", getBucketId());
             closePartFile();
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        long time = pendingFiles.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFiles.get(0)).creationTime;
+        long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
+                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst().get().get(0)).creationTime;
 
         // this.pendingFiles would be cleared later, we need to make a copy
-        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
+//        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
+//        committables.add(new LakeSoulMultiTableSinkCommittable(
+//                getBucketId(),
+//                tmpPending,
+//                time, tableId, tsMs, dmlType));
         committables.add(new LakeSoulMultiTableSinkCommittable(
-                bucketId,
-                tmpPending,
-                time,
+//                getBucketId(),
                 tableId,
+                new HashMap<>(pendingFilesMap),
+                time,
+                UUID.randomUUID().toString(),
                 tsMs,
                 dmlType,
-                sourcePartitionInfo));
-        pendingFiles.clear();
+                sourcePartitionInfo
+        ));
+        pendingFilesMap.clear();
 
         return committables;
     }
@@ -183,12 +199,13 @@ public class LakeSoulWriterBucket {
         }
 
         // this.pendingFiles would be cleared later, we need to make a copy
-        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
-        return new LakeSoulWriterBucketState(
-                tableId,
-                bucketId,
-                bucketPath,
-                tmpPending);
+//        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
+//        return new LakeSoulWriterBucketState(
+//                tableId,
+//                getBucketId(),
+//                bucketPath,
+//                tmpPending);
+        return new LakeSoulWriterBucketState(tableId, bucketPath, new HashMap<>(pendingFilesMap));
     }
 
     void onProcessingTime(long timestamp) throws IOException {
@@ -198,7 +215,7 @@ public class LakeSoulWriterBucket {
                     "Bucket {} closing in-progress part file for part file id={} due to processing time rolling " +
                             "policy "
                             + "(in-progress file created @ {}, last updated @ {} and current time is {}).",
-                    bucketId,
+                    getBucketId(),
                     uniqueId,
                     inProgressPartWriter.getCreationTime(),
                     inProgressPartWriter.getLastUpdateTime(),
@@ -216,9 +233,16 @@ public class LakeSoulWriterBucket {
         LOG.info(
                 "Opening new part file \"{}\" for bucket id={}.",
                 partFilePath.getName(),
-                bucketId);
+                getBucketId());
 
-        return bucketWriter.openNewInProgressFile(bucketId, partFilePath, currentTime);
+        return bucketWriter.openNewInProgressFile(getBucketId(), partFilePath, currentTime);
+    }
+
+    private Path assembleBucketPath(Path basePath, String bucketId) {
+        if ("".equals(bucketId)) {
+            return basePath;
+        }
+        return new Path(basePath, bucketId);
     }
 
     /**
@@ -229,7 +253,7 @@ public class LakeSoulWriterBucket {
         String count = String.format("%03d", currentPartCounter);
         String subTask = String.format("%05d", this.subTaskId);
         return new Path(
-                bucketPath,
+                assembleBucketPath(bucketPath, bucketId),
                 outputFileConfig.getPartPrefix()
                         + '-'
                         + subTask
@@ -247,7 +271,8 @@ public class LakeSoulWriterBucket {
             long start = System.currentTimeMillis();
             InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                     inProgressPartWriter.closeForCommit();
-            pendingFiles.add(pendingFileRecoverable);
+//            pendingFiles.add(pendingFileRecoverable);
+            pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
             inProgressPartWriter = null;
             LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
                     (System.currentTimeMillis() - start));
