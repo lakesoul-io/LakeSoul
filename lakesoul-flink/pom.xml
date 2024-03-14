@@ -466,6 +466,8 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.google.code.gson:gson</include>
                             <include>dev.failsafe:failsafe</include>
                             <include>com.google.protobuf:protobuf-java</include>
+                            <!--substrait-->
+                            <inclue>io.substrait:core</inclue>
                         </includes>
                         <excludes>
                             <exclude>org.apache.logging.log4j:*</exclude>

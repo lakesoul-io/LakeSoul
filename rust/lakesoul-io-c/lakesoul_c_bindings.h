@@ -68,6 +68,10 @@ IOConfigBuilder *lakesoul_config_builder_add_single_aux_sort_column(IOConfigBuil
 
 IOConfigBuilder *lakesoul_config_builder_add_filter(IOConfigBuilder *builder, const char *filter);
 
+IOConfigBuilder *lakesoul_config_builder_add_filter_proto(IOConfigBuilder *builder,
+                                                          c_ptrdiff_t proto_addr,
+                                                          int32_t len);
+
 IOConfigBuilder *lakesoul_config_builder_set_schema(IOConfigBuilder *builder,
                                                     c_ptrdiff_t schema_addr);
 

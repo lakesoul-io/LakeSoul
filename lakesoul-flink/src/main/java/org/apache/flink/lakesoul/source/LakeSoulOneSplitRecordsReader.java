@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
+import io.substrait.proto.Plan;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -73,7 +74,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     // arrow batch -> row, with requested schema
     private ArrowReader curArrowReaderRequestedSchema;
 
-    private final FilterPredicate filter;
+    private final FilterPredicate _filterPredicate;
+    private final Plan filter;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf,
                                          LakeSoulSplit split,
@@ -82,7 +84,8 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                                          List<String> pkColumns,
                                          boolean isStreaming,
                                          String cdcColumn,
-                                         FilterPredicate filter)
+                                         FilterPredicate _filterPredicate,
+                                         Plan filter)
             throws Exception {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
@@ -94,6 +97,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
+        this._filterPredicate = _filterPredicate;
         this.filter = filter;
         initializeReader();
         recoverFromSkipRecord();
@@ -129,7 +133,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
 
         if (filter != null) {
-            reader.addFilter(filter.toString());
+            reader.addFilterProto(this.filter);
+        }
+
+        if (_filterPredicate !=null) {
+            reader.addFilter(_filterPredicate.toString());
         }
 
         LOG.info("Initializing reader for split {}, pk={}, partitions={}," +

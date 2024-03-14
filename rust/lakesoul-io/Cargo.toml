@@ -40,12 +40,22 @@ parking_lot = "0.12.1"
 half = { workspace = true }
 log = "0.4.20"
 anyhow = { workspace = true, features = [] }
+prost = "0.12.3"
 
 
 [features]
 hdfs = ["dep:hdrs"]
 simd = ["datafusion/simd", "arrow/simd", "arrow-array/simd"]
 default = []
+
+[target.'cfg(target_os = "windows")'.dependencies]
+datafusion-substrait = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+datafusion-substrait = { workspace = true, features = ["protoc"] }
+
+
+
 
 [dev-dependencies]
 tempfile = "3.3.0"

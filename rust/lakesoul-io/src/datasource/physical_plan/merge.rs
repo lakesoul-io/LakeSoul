@@ -15,10 +15,12 @@ use datafusion::{
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
 use datafusion_common::{DFSchemaRef, DataFusionError, Result};
+use datafusion_substrait::substrait::proto::Plan;
+use log::debug;
 
-use crate::filter::parser::Parser as FilterParser;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
+use crate::filter::parser::Parser as FilterParser;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
@@ -87,7 +89,6 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
 
@@ -99,7 +100,6 @@ impl MergeParquetExec {
             merge_operators,
         })
     }
-
 
     pub fn primary_keys(&self) -> Arc<Vec<String>> {
         self.primary_keys.clone()
@@ -251,27 +251,43 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
     exprs
 }
 
+pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
+    let arrow_schema = Arc::new(Schema::from(df.schema()));
+    let mut str_filters = vec![];
+    let mut proto_filters = vec![];
+    for f in &filter_str {
+        let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
+        str_filters.push(filter);
+    }
+    for p in &filter_protos {
+        let e = FilterParser::parse_proto(p)?;
+        proto_filters.push(e);
+    }
+    debug!("str filters: {:?}", str_filters);
+    debug!("proto filters: {:?}", proto_filters);
+    if !str_filters.is_empty() {
+        Ok(str_filters)
+    } else {
+        Ok(proto_filters)
+    }
+}
+
 pub async fn prune_filter_and_execute(
     df: DataFrame,
     request_schema: SchemaRef,
-    filter_str: Vec<String>,
+    filters: Vec<Expr>,
     batch_size: usize,
 ) -> Result<SendableRecordBatchStream> {
     let df_schema = df.schema().clone();
-    // find columns requested and prune others
+    // find columns requested and prune otherPlans
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
     if cols.is_empty() {
-        Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
-    } else {
-        // row filtering should go first since filter column may not in the selected cols
-        let arrow_schema = Arc::new(Schema::from(df_schema));
-        let df = filter_str.iter().try_fold(df, |df, f| {
-            let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
-            df.filter(filter)
-        })?;
-        // column pruning
-        let df = df.select(cols)?;
-        // return a stream
-        df.execute_stream().await
+        return Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)));
     }
+    // row filtering should go first since filter column may not in the selected cols
+    let df = filters.into_iter().try_fold(df, |df, f| df.filter(f))?;
+    // column pruning
+    let df = df.select(cols)?;
+    // return a stream
+    df.execute_stream().await
 }

@@ -32,6 +32,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_add_filter(Pointer builder, String filter);
 
+    Pointer lakesoul_config_builder_add_filter_proto(Pointer builder, @LongLong long proto_addr, int len);
+
     Pointer lakesoul_config_builder_add_merge_op(Pointer builder, String field, String mergeOp);
 
     Pointer lakesoul_config_builder_set_schema(Pointer builder, @LongLong long schemaAddr);
