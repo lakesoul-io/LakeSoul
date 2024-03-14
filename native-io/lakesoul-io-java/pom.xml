@@ -31,6 +31,12 @@ SPDX-License-Identifier: Apache-2.0
 
     <dependencies>
         <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>fastjson</artifactId>
+            <version>1.2.83</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
             <version>${arrow.version}</version>
@@ -200,6 +206,108 @@ SPDX-License-Identifier: Apache-2.0
                                 </configuration>
                             </execution>
                         </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>test-jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>net.alchim31.maven</groupId>
+                        <artifactId>scala-maven-plugin</artifactId>
+                        <version>4.6.3</version>
+                        <executions>
+                            <execution>
+                                <id>scala-compile-first</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                    <goal>compile</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>scala-test-compile</id>
+                                <phase>process-test-resources</phase>
+                                <goals>
+                                    <goal>testCompile</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <version>3.2.4</version>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>shade</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <artifactSet>
+                                <includes>
+                                    <include>com.dmetasoul:lakesoul-common</include>
+                                    <include>org.scala-lang:scala-library</include>
+                                    <include>org.scala-lang:scala-reflect</include>
+                                    <include>com.github.jnr:jnr-ffi</include>
+                                    <include>com.github.jnr:jffi</include>
+                                    <include>cglib:*</include>
+                                    <include>com.alibaba:fastjson</include>
+                                    <include>org.ow2.asm:*</include>
+                                    <include>com.zaxxer:HikariCP</include>
+                                    <include>org.postgresql:postgresql</include>
+                                </includes>
+                            </artifactSet>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.github.jnr:jnr-ffi</artifact>
+                                    <excludes>
+                                        <exclude>com.github.jnr:jffi</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <relocations>
+                                <relocation>
+                                    <pattern>org.apache.spark.sql</pattern>
+                                    <shadedPattern>com.lakesoul.shaded.org.apache.spark.sql</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.zaxxer.hikari</pattern>
+                                    <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.postgresql</pattern>
+                                    <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.ow2.asm</pattern>
+                                    <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.objectweb.asm</pattern>
+                                    <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
+                                </relocation>
+                            </relocations>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>
