@@ -35,7 +35,23 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("source database user_name");
 
+    public static final ConfigOption<String> MONGO_DB_URI = ConfigOptions
+            .key("mongodb.uri")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("mongodb uri");
 
+    public static final ConfigOption<Integer> BATCH_SIZE = ConfigOptions
+            .key("batchSize")
+            .intType()
+            .defaultValue(1000)
+            .withDescription("Sets the maximum number of actions to buffer for each batch request");
+
+    public static final ConfigOption<Integer> BATCH_INTERVAL_MS = ConfigOptions
+            .key("batchIntervalMs")
+            .intType()
+            .defaultValue(1000)
+            .withDescription("Sets the batch flush interval, in milliseconds");
     public static final ConfigOption<String> TARGET_DB_PASSWORD = ConfigOptions
             .key("target_db.password")
             .stringType()
@@ -49,20 +65,17 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .noDefaultValue()
             .withDescription("mysql,postgres,doris");
 
-
     public static final ConfigOption<String> TARGET_DB_DB_NAME = ConfigOptions
             .key("target_db.db_name")
             .stringType()
             .noDefaultValue()
             .withDescription("target ddatabase name");
 
-
     public static final ConfigOption<String> SOURCE_DB_LAKESOUL_TABLE = ConfigOptions
             .key("source_db.table_name")
             .stringType()
             .noDefaultValue()
             .withDescription("lakesoul table");
-
 
     public static final ConfigOption<String> TARGET_DB_TABLE_NAME = ConfigOptions
             .key("target_db.table_name")
@@ -83,7 +96,6 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .intType()
             .defaultValue(1)
             .withDescription("parallelism settings for out-of-the-lake");
-
 
     public static final ConfigOption<Boolean> BATHC_STREAM_SINK = ConfigOptions
             .key("use_batch")

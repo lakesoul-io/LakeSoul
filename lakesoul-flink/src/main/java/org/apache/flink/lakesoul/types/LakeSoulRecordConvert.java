@@ -36,6 +36,7 @@ import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
+import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
 import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.*;
@@ -237,7 +238,7 @@ public class LakeSoulRecordConvert implements Serializable {
         for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
-            colTypes[i] = convertToLogical(item.schema(),nullable);
+            colTypes[i] = convertToLogical(item.schema(), !item.name().equals("_id") && nullable);
         }
 //        colNames[useCDC ? arity - 3 : arity - 2] = BINLOG_FILE_INDEX;
 //        colTypes[useCDC ? arity - 3 : arity - 2] = new BigIntType();
@@ -292,6 +293,8 @@ public class LakeSoulRecordConvert implements Serializable {
             case STRUCT:
                 List<RowType.RowField> rowFields = getRowFields(fieldSchema);
                 return new RowType(nullable, rowFields);
+            case ARRAY:
+                return new ArrayType(nullable, Objects.requireNonNull(primitiveLogicalType(fieldSchema.valueSchema(), nullable)));
             case BYTES:
                 Map<String, String> paras = fieldSchema.parameters();
                 int byteLen = Integer.MAX_VALUE;
@@ -325,13 +328,18 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new LocalZonedTimestampType(nullable, 9);
             case Decimal.LOGICAL_NAME:
                 Map<String, String> paras = fieldSchema.parameters();
-                return new DecimalType(nullable, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
+                if (paras.get("connect.decimal.precision") == null){
+                    return new DecimalType(nullable, 38, 30);
+                }else {
+                    return new DecimalType(nullable, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
+                }
             case Date.SCHEMA_NAME:
                 return new DateType(nullable);
             case Year.SCHEMA_NAME:
                 return new IntType(nullable);
             case ZonedTime.SCHEMA_NAME:
             case ZonedTimestamp.SCHEMA_NAME:
+            case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
                 return new LocalZonedTimestampType(nullable, LocalZonedTimestampType.DEFAULT_PRECISION);
             case Geometry.LOGICAL_NAME:
             case VariableScaleDecimal.LOGICAL_NAME:
@@ -515,6 +523,9 @@ public class LakeSoulRecordConvert implements Serializable {
                 case BYTES:
                     writeBinary(writer, index, fieldValue);
                     break;
+                case ARRAY:
+                    writeArray(writer,index,fieldValue, fieldSchema);
+                    break;
 //                case STRUCT:
 //                    writeRow(writer, index, fieldValue);
 //                    break;
@@ -540,6 +551,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case Timestamp.SCHEMA_NAME:
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:
+            case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
                 writeTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:
@@ -561,6 +573,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroDuration.SCHEMA_NAME:
                 writeLong(writer, index, fieldValue);
                 break;
+
             // Geometry and Point can not support now
 //            case Geometry.LOGICAL_NAME:
 //                Object object = convertToGeometry(fieldValue, fieldSchema);
@@ -612,7 +625,7 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String, String> paras = schema.parameters();
-        if (paras == null) {
+        if (paras.get("connect.decimal.precision") == null) {
             return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
         } else {
             return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
@@ -709,6 +722,40 @@ public class LakeSoulRecordConvert implements Serializable {
         } else {
             throw new UnsupportedOperationException(
                     "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
+        }
+    }
+    public void writeArray(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
+        if (dbzObj instanceof ArrayList) {
+            ArrayList<Object> arrayList = (ArrayList<Object>) dbzObj;
+            ArrayData arrayData = null;
+            ArrayDataSerializer arrayDataSerializer = null;
+            switch (schema.valueSchema().type()){
+                case STRING:
+                    StringData[] stringDataArray = new StringData[arrayList.size()];
+                    for (int i = 0;i < arrayList.size(); i++){
+                        Object element = arrayList.get(i);
+                        stringDataArray[i] = StringData.fromString(element.toString());
+                    }
+                    arrayData = new GenericArrayData(stringDataArray);
+                    arrayDataSerializer = new ArrayDataSerializer(new VarCharType(Integer.MAX_VALUE));
+                    break;
+                case INT8:
+                case INT16:
+                case INT32:
+                    Object[] array = arrayList.toArray();
+                    arrayData = new GenericArrayData(array);
+                    arrayDataSerializer =
+                            new ArrayDataSerializer(new IntType());
+                    break;
+                case FLOAT32:
+                case FLOAT64:
+                    array = arrayList.toArray();
+                    arrayDataSerializer =
+                            new ArrayDataSerializer(new DoubleType());
+                    arrayData = new GenericArrayData(array);
+                    break;
+            }
+            writer.writeArray(index, arrayData, arrayDataSerializer);
         }
     }
 

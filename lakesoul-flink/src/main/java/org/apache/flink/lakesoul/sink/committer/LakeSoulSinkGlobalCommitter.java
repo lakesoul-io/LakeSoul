@@ -201,6 +201,9 @@ public class LakeSoulSinkGlobalCommitter
                                 identity.useCDC,
                                 identity.cdcColumn);
                         if (dbType.equals("mongodb")){
+                            System.out.println(msgSchema.toJson());
+                            System.out.println(origSchema.json());
+                            System.out.println(mergeStructType.json());
                             dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
                         }else {
                             dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());

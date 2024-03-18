@@ -5,18 +5,27 @@
 
 package org.apache.flink.lakesoul.entry;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
-import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.mongodb.MongoClientURI;
+import com.mongodb.MongoClient;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.InsertOneModel;
+import com.mongodb.client.model.WriteModel;
 import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.connector.base.DeliveryGuarantee;
+import org.apache.flink.connector.mongodb.sink.MongoSink;
+import org.apache.flink.connector.mongodb.sink.writer.context.MongoSinkContext;
+import org.apache.flink.connector.mongodb.sink.writer.serializer.MongoSerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.CheckpointingMode;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.table.api.Table;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.TableResult;
@@ -24,25 +33,38 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
+import org.apache.flink.types.Row;
+import org.bson.*;
+import org.bson.types.Decimal128;
 
+
+import java.io.Serializable;
 import java.sql.*;
-import java.util.List;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.Date;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
 public class SyncDatabase {
 
-    public static void main(String[] args) throws SQLException {
+    static Table coll;
+    public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
         String sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
         String sourceTableName = parameter.get(SOURCE_DB_LAKESOUL_TABLE.key()).toLowerCase();
-        String targetSyncName = parameter.get(TARGET_DATABASE_TYPE.key());
+        String dbType = parameter.get(TARGET_DATABASE_TYPE.key());
         String targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
         String targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
         String url = parameter.get(TARGET_DB_URL.key());
-        String username = parameter.get(TARGET_DB_USER.key());
-        String password = parameter.get(TARGET_DB_PASSWORD.key());
+        String username = null;
+        String password = null;
+        if (!dbType.equals("mongodb")){
+            username = parameter.get(TARGET_DB_USER.key());
+            password = parameter.get(TARGET_DB_PASSWORD.key());
+        }
         int sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
         boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
         //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
@@ -54,7 +76,7 @@ public class SyncDatabase {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
         env.setParallelism(sinkParallelism);
 
-        switch (targetSyncName) {
+        switch (dbType) {
             case "mysql":
                 xsyncToMysql(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
                 break;
@@ -64,8 +86,14 @@ public class SyncDatabase {
             case "doris":
                 xsyncToDoris(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, fenodes);
                 break;
+            case "mongodb":
+                String uri = parameter.get(MONGO_DB_URI.key());
+                int batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
+                int batchIntervalMs = parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
+                xsyncToMongodb(env,useBatch,uri,sourceDatabase,targetDatabase,sourceTableName,targetTableName,batchSize,sinkParallelism,batchIntervalMs);
+                break;
             default:
-                throw new RuntimeException("not supported the database: " + targetSyncName);
+                throw new RuntimeException("not supported the database: " + dbType);
         }
     }
 
@@ -295,5 +323,118 @@ public class SyncDatabase {
                 targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         tEnvs.executeSql(sql);
         tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+    }
+
+    public static void xsyncToMongodb(StreamExecutionEnvironment env,
+                                              boolean batchXync,
+                                              String uri ,
+                                              String sourceDatabase,
+                                              String targetDatabase,
+                                              String sourceTableName,
+                                              String targetCollection,
+                                              int batchSize,
+                                              int sinkParallelism,
+                                              int batchInservalMs) throws Exception {
+        createMongoColl(targetDatabase,targetCollection,uri);
+        if (batchXync) {
+            env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        } else {
+            env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+            env.enableCheckpointing(2000, CheckpointingMode.EXACTLY_ONCE);
+            env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+        }
+        StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
+        Catalog lakesoulCatalog = new LakeSoulCatalog();
+        tEnvs.registerCatalog("lakeSoul",lakesoulCatalog);
+        coll = tEnvs.sqlQuery("select * from lakeSoul.`"+sourceDatabase+"`.`"+sourceTableName+"`");
+        tEnvs.registerTable("mongodbTbl",coll);
+        Table table = tEnvs.sqlQuery("select * from mongodbTbl");
+        DataStream<Tuple2<Boolean, Row>> rowDataStream = tEnvs.toRetractStream(table, Row.class);
+
+        MongoClientURI mongUri = new MongoClientURI(uri);
+        MongoClient mongoClient = new MongoClient(mongUri);
+        MongoDatabase database = mongoClient.getDatabase(targetDatabase);
+        database.createCollection(targetCollection);
+        MongoSink<Tuple2<Boolean, Row>> sink = MongoSink.<Tuple2<Boolean, Row>>builder()
+                .setUri(uri)
+                .setDatabase(targetDatabase)
+                .setCollection(targetCollection)
+                .setBatchSize(batchSize)
+                .setBatchIntervalMs(batchInservalMs)
+                .setMaxRetries(3)
+                .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+                .setSerializationSchema(new MyMongoSerializationSchema())
+                .build();
+        rowDataStream.sinkTo(sink).setParallelism(sinkParallelism);
+        env.execute();
+        mongoClient.close();
+    }
+    public static void createMongoColl(String database,String collName,String uri){
+        MongoClientURI clientURI = new MongoClientURI(uri);
+        MongoClient mongoClient = new MongoClient(clientURI);
+        MongoDatabase mongoDatabase = mongoClient.getDatabase(database);
+        mongoDatabase.createCollection(collName);
+        mongoClient.close();
+    }
+    public static class MyMongoSerializationSchema implements MongoSerializationSchema<Tuple2<Boolean, Row>>, Serializable {
+        @Override
+        public WriteModel<BsonDocument> serialize(Tuple2<Boolean, Row> record, MongoSinkContext context) {
+            Row row = record.f1; // Extract the Row object from the Tuple2
+            BsonDocument document = new BsonDocument();
+            int fieldCount = row.getArity();
+            for (int i = 0; i < fieldCount; i++) {
+                String fieldName = coll.getSchema().getFieldNames()[i];
+                Object fieldValue = row.getField(i);
+                if (fieldValue != null) {
+                    try {
+                        document.append(fieldName, convertTonBsonValue(fieldValue));
+                    } catch (ParseException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+            return new InsertOneModel<>(document);
+        }
+
+        public static BsonValue convertTonBsonValue(Object value) throws ParseException {
+            if (value == null) {
+                return new BsonNull();
+            } else if (value instanceof Integer) {
+                return new BsonInt32((Integer) value);
+            } else if (value instanceof Long) {
+                return new BsonInt64((Long) value);
+            } else if (value instanceof String) {
+                return new BsonString((String) value);
+            } else if (value instanceof Boolean) {
+                return new BsonBoolean( (Boolean) value);
+            } else if (value instanceof Double) {
+                return new BsonDouble( (Double) value);
+            } else if (value instanceof DecimalType) {
+                return new BsonDecimal128((Decimal128) value);
+            } else if (value instanceof Date) {
+                return new BsonDateTime( (long) value);
+            } else if (value instanceof Object[]) {
+                Object[] array = (Object[]) value;
+                BsonArray bsonArray = new BsonArray();
+                for (Object element : array) {
+                    bsonArray.add(convertTonBsonValue(element));
+                }
+                return bsonArray;
+            } else if (isDateTimeString(value)) {
+                Date date = parseDateTime(value.toString());
+                return new BsonDateTime(date.getTime());
+            } else {
+                throw new IllegalArgumentException("Unsupported data type: " + value.getClass());
+            }
+        }
+        private static boolean isDateTimeString(Object value) {
+            return value.toString().matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$");
+        }
+        private static Date parseDateTime(String value) throws ParseException {
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+            dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return dateFormat.parse(value);
+        }
+
     }
 }

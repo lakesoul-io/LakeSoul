@@ -54,6 +54,8 @@ public class JdbcCDC {
     private static String[] tableList;
     private static String serverTimezone;
     private static String pluginName;
+    private static int batchSize;
+    private static String mongoDatabase;
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -64,7 +66,7 @@ public class JdbcCDC {
         host = parameter.get(SOURCE_DB_HOST.key());
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         //Postgres Oracle
-        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") || dbType.equalsIgnoreCase("mongodb")) {
+        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
@@ -73,7 +75,12 @@ public class JdbcCDC {
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
-        if (dbType.equalsIgnoreCase("sqlserver")){
+        if (dbType.equalsIgnoreCase("sqlserver") ){
+            tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
+        }
+        if ( dbType.equalsIgnoreCase("mongodb")){
+            mongoDatabase = parameter.get(MONGO_DB_DATABASE.key());
+            batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
         pluginName = parameter.get(PLUGIN_NAME.key(), PLUGIN_NAME.defaultValue());
@@ -287,11 +294,11 @@ public class JdbcCDC {
         MongoDBSource<BinarySourceRecord> mongoSource =
                 MongoDBSource.<BinarySourceRecord>builder()
                         .hosts(host)
-                        .databaseList(schemaList) // 设置捕获的数据库，支持正则表达式
+                        .databaseList(mongoDatabase) // 设置捕获的数据库，支持正则表达式
                         .collectionList(tableList) //设置捕获的集合，支持正则表达式
                         .startupOptions(StartupOptions.initial())
                         .scanFullChangelog(true)
-                        .batchSize(splitSize)
+                        .batchSize(batchSize)
                         .username(userName)
                         .password(passWord)
                         .deserializer(new BinaryDebeziumDeserializationSchema(lakeSoulRecordConvert, conf.getString(WAREHOUSE_PATH)))
@@ -305,7 +312,7 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
-
+        source.print();
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);

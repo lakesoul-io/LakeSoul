@@ -4,13 +4,14 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Schema;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.SchemaBuilder;
-import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Struct;
+import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
 import org.bson.Document;
+import org.bson.types.Decimal128;
 
+import java.math.BigDecimal;
+import java.util.Date;
 import java.util.Map;
+import java.util.List;
 
 public class ParseDocument {
     public static Struct convertBSONToStruct(String value) {
@@ -32,12 +33,27 @@ public class ParseDocument {
                 // 处理嵌套的 Document
                 SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
                 structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
+            }  else if (value instanceof List) {
+                // 处理ArrayList类型
+                List<?> arrayList = (List<?>) value;
+                Schema arraySchema = getSchemaForArrayList(arrayList);
+                structSchemaBuilder.field(fieldName, arraySchema);
             } else {
                 // 处理普通字段
                 structSchemaBuilder.field(fieldName, getSchemaForValue(value));
             }
         }
         return structSchemaBuilder.build();
+    }
+
+    private static Schema getSchemaForArrayList(List<?> arrayList) {
+        // 假设 ArrayList 中的元素都是整数，您可以根据实际情况调整
+        Schema elementSchema = null;
+        if (!arrayList.isEmpty()) {
+            Object firstElement = arrayList.get(0);
+            elementSchema = getSchemaForValue(firstElement);
+        }
+        return SchemaBuilder.array(elementSchema).build();
     }
 
     private static void fillStructValues(Document bsonDocument, Struct struct) {
@@ -49,9 +65,15 @@ public class ParseDocument {
                 Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
                 fillStructValues((Document) value, nestedStruct);
                 struct.put(fieldName, nestedStruct);
+            } else if (value instanceof List) {
+                // 处理ArrayList类型
+                List<?> arrayList = (List<?>) value;
+                struct.put(fieldName, arrayList);
+            } else if (value instanceof Decimal128) {
+                BigDecimal decimalValue = new BigDecimal(value.toString());
+                struct.put(fieldName, decimalValue);
             } else {
-                // 处理普通字段
-                struct.put(fieldName, value);
+                struct.put(fieldName,value);
             }
         }
     }
@@ -68,9 +90,14 @@ public class ParseDocument {
             return Schema.FLOAT64_SCHEMA;
         } else if (value instanceof Boolean) {
             return Schema.BOOLEAN_SCHEMA;
+        } else if (value instanceof Decimal128) {
+            BigDecimal decimalValue = new BigDecimal(value.toString());
+            return Decimal.schema(decimalValue.scale());
         } else if (value instanceof Byte) {
             return Schema.BYTES_SCHEMA;
-        }  else {
+        } else if (value instanceof Date) {
+            return Timestamp.SCHEMA;
+        } else {
             // 处理其他类型，可以根据实际情况添加更多类型
             return Schema.STRING_SCHEMA;
         }
