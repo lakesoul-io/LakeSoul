@@ -20,15 +20,6 @@ SPDX-License-Identifier: Apache-2.0
     <version>${revision}</version>
     <build>
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.10.1</version>
-                <configuration>
-                    <source>1.8</source>
-                    <target>1.8</target>
-                </configuration>
-            </plugin>
             <!-- ajc -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
@@ -93,7 +84,7 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
-                <version>4.6.3</version>
+                <version>4.8.1</version>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
@@ -112,11 +103,107 @@ SPDX-License-Identifier: Apache-2.0
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <executions>
+                    <execution>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.2</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <shadedArtifactAttached>true</shadedArtifactAttached>
+                    <shadedClassifierName>shaded</shadedClassifierName>
+                    <createDependencyReducedPom>true</createDependencyReducedPom>
+                    <useDependencyReducedPomInJar>true</useDependencyReducedPomInJar>
+                    <artifactSet>
+                        <includes>
+                            <include>**</include>
+                        </includes>
+                    </artifactSet>
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/versions/**</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                    <relocations>
+                        <relocation>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.postgresql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.alibaba.fastjson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.ow2.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.objectweb.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <!--<version>1.6.0</version>-->
+                <configuration>
+                    <flattenMode>oss</flattenMode>
+                </configuration>
+                <executions>
+                    <!-- enable flattening -->
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <!-- ensure proper cleanup -->
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
     <properties>
-        <postgresql.version>42.5.5</postgresql.version>
+        <postgresql.version>42.7.3</postgresql.version>
         <local.scope>provided</local.scope>
         <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
         <protoc.version>3.5.1</protoc.version>
@@ -132,12 +219,23 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>
             <version>4.0.3</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.7.36</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
             <version>3.12.0</version>
-            <scope>compile</scope>
         </dependency>
         <dependency>
             <groupId>com.alibaba</groupId>
@@ -149,7 +247,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-library</artifactId>
             <version>${scala.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.scala-lang</groupId>
@@ -161,7 +258,6 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.scala-lang</groupId>
             <artifactId>scala-reflect</artifactId>
             <version>${scala.version}</version>
-            <scope>${local.scope}</scope>
         </dependency>
         <!-- casbin -->
         <dependency>
@@ -180,6 +276,10 @@ SPDX-License-Identifier: Apache-2.0
                 <exclusion>
                     <groupId>com.microsoft.sqlserver</groupId>
                     <artifactId>mssql-jdbc</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-api</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -209,32 +309,12 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>com.github.jnr</groupId>
             <artifactId>jnr-ffi</artifactId>
-            <version>2.2.13</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.github.jnr</groupId>
-                    <artifactId>jffi</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <!-- https://github.com/jnr/jffi/issues/138 -->
-        <!-- upgrade jffi version to make it work on CentOS 7 -->
-        <dependency>
-            <groupId>com.github.jnr</groupId>
-            <artifactId>jffi</artifactId>
-            <version>1.3.11</version>
-        </dependency>
-        <dependency>
-            <groupId>com.github.jnr</groupId>
-            <artifactId>jffi</artifactId>
-            <version>1.3.11</version>
-            <scope>runtime</scope>
-            <classifier>native</classifier>
+            <version>2.2.16</version>
         </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client-api</artifactId>
-            <version>3.3.2</version>
+            <version>3.3.6</version>
             <scope>${local.scope}</scope>
         </dependency>
 
@@ -251,9 +331,9 @@ SPDX-License-Identifier: Apache-2.0
                     <resource>
                         <directory>${basedir}/../rust/target/release/</directory>
                         <includes>
-                            <include>*.dylib</include>
-                            <include>*.so</include>
-                            <include>*.dll</include>
+                            <include>liblakesoul_metadata_c.dylib</include>
+                            <include>liblakesoul_metadata_c.so</include>
+                            <include>lakesoul_metadata_c.dll</include>
                         </includes>
                         <excludes>
                             <exclude>deps</exclude>
@@ -313,7 +393,7 @@ SPDX-License-Identifier: Apache-2.0
                     <resource>
                         <directory>${basedir}/../rust/target/x86_64-unknown-linux-gnu/release/</directory>
                         <includes>
-                            <include>*.so</include>
+                            <include>liblakesoul_metadata_c.so</include>
                         </includes>
                         <excludes>
                             <exclude>deps</exclude>
@@ -374,9 +454,9 @@ SPDX-License-Identifier: Apache-2.0
                     <resource>
                         <directory>${basedir}/../rust/target/release/</directory>
                         <includes>
-                            <include>*.dylib</include>
-                            <include>*.so</include>
-                            <include>*.dll</include>
+                            <include>liblakesoul_metadata_c.dylib</include>
+                            <include>liblakesoul_metadata_c.so</include>
+                            <include>lakesoul_metadata_c.dll</include>
                         </includes>
                         <excludes>
                             <exclude>deps</exclude>
@@ -390,6 +470,4 @@ SPDX-License-Identifier: Apache-2.0
             </build>
         </profile>
     </profiles>
-
-
 </project>

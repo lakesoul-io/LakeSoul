@@ -33,6 +33,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
@@ -66,6 +76,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./rust -> target"
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - name: Pull images
         run: |
           docker pull -q bitnami/spark:3.3.1
