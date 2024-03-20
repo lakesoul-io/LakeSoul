@@ -36,6 +36,11 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
+    public void setHashBucketNum(Integer hashBucketNum) {
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(ioConfigBuilder, hashBucketNum);
+    }
+
+
     public void setRowGroupRowNumber(int rowNum) {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(ioConfigBuilder, rowNum);
     }
@@ -103,7 +108,7 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
                 exported.set(status);
             }, boolReferenceManager);
             nativeBooleanCallback.registerReferenceKey();
-            libLakeSoulIO.export_bytes_result(nativeBooleanCallback, ptrResult, lenWithTail, buffer.address());
+            libLakeSoulIO.export_bytes_result(nativeBooleanCallback, ptrResult, len, buffer.address());
 
             if (exported.get() != null && exported.get()) {
                 byte[] bytes = new byte[len];

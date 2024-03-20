@@ -18,6 +18,8 @@ import org.apache.flink.table.types.logical.RowType;
 import java.io.IOException;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+
 public class NativeBucketWriter implements BucketWriter<RowData, String> {
 
     private final RowType rowType;
@@ -35,8 +37,11 @@ public class NativeBucketWriter implements BucketWriter<RowData, String> {
     }
 
     @Override
-    public InProgressFileWriter<RowData, String> openNewInProgressFile(String s, Path path, long creationTime) throws IOException {
-        return new NativeParquetWriter(rowType, primaryKeys, s, path, creationTime, conf);
+    public InProgressFileWriter<RowData, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
+        if (DYNAMIC_BUCKET.equals(bucketId)) {
+            return new DynamicPartitionNativeParquetWriter(rowType, primaryKeys, partitionKeys, path, creationTime, conf);
+        }
+        return new NativeParquetWriter(rowType, primaryKeys, bucketId, path, creationTime, conf);
     }
 
     @Override

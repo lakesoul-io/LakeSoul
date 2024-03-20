@@ -21,7 +21,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream};
-use datafusion_common::DataFusionError;
+use datafusion_common::{project_schema, DataFusionError};
 use datafusion_common::DataFusionError::Internal;
 use object_store::path::Path;
 use object_store::{MultipartId, ObjectStore};
@@ -212,11 +212,24 @@ impl MultiPartAsyncWriter {
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
             16 * 1024 * 1024, // 16kb
         ))));
-        let schema: SchemaRef = config.schema.0.clone();
+        let schema = uniform_schema(config.schema.0.clone());
+
+        let schema_projection_excluding_range = 
+            schema
+                .fields()
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, field)| 
+                    match config.range_partitions.contains(field.name()) {
+                        true => None,
+                        false => Some(idx)
+                    })
+                .collect::<Vec<_>>();
+        let writer_schema = project_schema(&schema, Some(&schema_projection_excluding_range))?;
 
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
-            uniform_schema(schema.clone()),
+            writer_schema,
             Some(
                 WriterProperties::builder()
                     .set_max_row_group_size(config.max_row_group_size)
@@ -229,7 +242,7 @@ impl MultiPartAsyncWriter {
         Ok(MultiPartAsyncWriter {
             in_mem_buf,
             task_context,
-            schema: uniform_schema(schema),
+            schema,
             writer: async_writer,
             multi_part_id: multipart_id,
             arrow_writer,
@@ -719,6 +732,7 @@ impl PartitioningAsyncWriter {
         for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter() {
             summary += "\x01";
             summary += partition_desc.as_str();
+            summary += "\x02";
             summary += files.join("\x02").as_str();
         }
         Ok(summary.into_bytes())
@@ -728,6 +742,7 @@ impl PartitioningAsyncWriter {
 #[async_trait]
 impl AsyncBatchWriter for PartitioningAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        // arrow_cast::pretty::print_batches(&[batch.clone()]);
         if let Some(err) = &self.err {
             return Err(Internal(format!("PartitioningAsyncWriter already failed with error {:?}", err)));
         }

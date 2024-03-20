@@ -15,6 +15,8 @@ import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.util.*;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+
 /**
  * Wrapper class for both type of committables in {@link LakeSoulMultiTablesSink}. One committable might be either
  * one or more pending files to commit, or one in-progress file to clean up.
@@ -26,6 +28,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     private final long creationTime;
 
     private final String bucketId;
+
+    private final boolean dynamicBucketing;
 
     private final TableSchemaIdentity identity;
     private String sourcePartitionInfo;
@@ -78,6 +82,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             String dmlType,
             String sourcePartitionInfo
     ) {
+        this.dynamicBucketing = false;
         this.bucketId = bucketId;
         this.identity = identity;
         this.pendingFilesMap = new HashMap<>();
@@ -86,6 +91,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.commitId = commitId;
         this.tsMs = tsMs;
         this.dmlType = dmlType;
+        this.sourcePartitionInfo = sourcePartitionInfo;
     }
 
     /**
@@ -98,7 +104,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             long time,
             @Nullable String commitId,
             long tsMs, String dmlType) {
-        this.bucketId = pendingFilesMap.keySet().stream().findFirst().get();
+        Preconditions.checkNotNull(pendingFilesMap);
+        this.dynamicBucketing = pendingFilesMap.keySet().size() != 1;
+        this.bucketId = this.dynamicBucketing ? DYNAMIC_BUCKET : pendingFilesMap.keySet().stream().findFirst().get();
         this.identity = identity;
         this.pendingFilesMap = pendingFilesMap;
         this.creationTime = time;
@@ -114,7 +122,11 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     }
 
     public boolean hasPendingFile() {
-        return hasPendingFile(bucketId);
+        if (dynamicBucketing) {
+            return !pendingFilesMap.isEmpty();
+        } else {
+            return hasPendingFile(bucketId);
+        }
     }
 
     public boolean hasPendingFile(String bucketId) {
@@ -123,7 +135,15 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     @Nullable
     public List<InProgressFileWriter.PendingFileRecoverable> getPendingFiles() {
-        return getPendingFiles(bucketId);
+        if (dynamicBucketing) {
+            List<InProgressFileWriter.PendingFileRecoverable> summary = new ArrayList<>();
+            for (List<InProgressFileWriter.PendingFileRecoverable> list : pendingFilesMap.values()) {
+                summary.addAll(list);
+            }
+            return summary;
+        } else {
+            return getPendingFiles(bucketId);
+        }
     }
 
     @Nullable
@@ -157,9 +177,12 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         return "LakeSoulMultiTableSinkCommittable{" +
                 "creationTime=" + creationTime +
                 ", bucketId='" + bucketId + '\'' +
+                ", dynamicBucketing=" + dynamicBucketing +
                 ", identity=" + identity +
+                ", pendingFilesMap=" + pendingFilesMap +
                 ", commitId='" + commitId + '\'' +
-                ", pendingFiles='" + pendingFilesMap + '\'' +
+                ", tsMs=" + tsMs +
+                ", dmlType='" + dmlType + '\'' +
                 '}';
     }
 

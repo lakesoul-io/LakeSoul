@@ -445,20 +445,22 @@ public class DBManager {
                 newPartitionList.add(curPartitionInfo.build());
             }
         } else if (commitOp.equals(CommitOp.CompactionCommit) || commitOp.equals(CommitOp.UpdateCommit)) {
-            if (readPartitionInfo != null) {
-                for (PartitionInfo p : readPartitionInfo) {
-                    readPartitionMap.put(p.getPartitionDesc(), p);
-                }
+            for (PartitionInfo p : readPartitionInfo) {
+                readPartitionMap.put(p.getPartitionDesc(), p);
             }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
+                System.out.println("curPartitionInfo");
+                System.out.println(curPartitionInfo);
                 int curVersion = curPartitionInfo.getVersion();
 
                 PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
                 int readPartitionVersion = 0;
                 if (readPartition != null) {
                     readPartitionVersion = readPartition.getVersion();
+                    System.out.println("readPartitionInfo");
+                    System.out.println(readPartitionInfo);
                 }
 
                 int newVersion = curVersion + 1;

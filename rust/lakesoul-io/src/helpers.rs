@@ -7,13 +7,21 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, SchemaBuilder, SchemaRef};
 use datafusion::{
-    datasource::{file_format::FileFormat, listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl}, physical_plan::FileScanConfig}, execution::context::SessionState, logical_expr::col, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::PhysicalExpr, physical_planner::create_physical_sort_expr
+    datasource::{
+        file_format::FileFormat, 
+        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl}, 
+        physical_plan::FileScanConfig}, 
+        execution::context::SessionState, 
+        logical_expr::col, 
+        physical_expr::{create_physical_expr, PhysicalSortExpr}, 
+        physical_plan::PhysicalExpr, 
+        physical_planner::create_physical_sort_expr
 };
 use datafusion_common::{DFSchema, DataFusionError, Result, ScalarValue};
 use object_store::path::Path;
 use url::Url;
 
-use crate::{lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
+use crate::{constant::{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING}, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
 
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
@@ -80,13 +88,28 @@ pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String
         .collect::<datafusion::error::Result<Vec<_>>>()
 }
 
+pub fn format_scalar_value(v: &ScalarValue) -> String {
+    match v {
+        ScalarValue::Date32(Some(days)) => 
+        format!("{}", chrono::NaiveDate::from_num_days_from_ce_opt(*days + 719163).unwrap().format("%Y-%m-%d")),
+        ScalarValue::Null => LAKESOUL_NULL_STRING.to_string(),
+        ScalarValue::Utf8(Some(s)) => 
+            if s.is_empty() {
+                LAKESOUL_EMPTY_STRING.to_string()
+            } else {
+                s.clone()
+            },
+        other => other.to_string()
+    }
+}
+
 pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
     if columnar_values.is_empty() {
         "/".to_string()
     } else {
         format!("/{}/", columnar_values
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{}={}", k, format_scalar_value(v)))
             .collect::<Vec<_>>()
             .join("/"))
     }
@@ -98,7 +121,7 @@ pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarVa
     } else {
         columnar_values
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{}={}", k, format_scalar_value(v)))
             .collect::<Vec<_>>()
             .join(",")
     }

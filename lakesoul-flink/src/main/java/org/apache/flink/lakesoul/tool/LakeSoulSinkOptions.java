@@ -22,6 +22,8 @@ public class LakeSoulSinkOptions {
 
     public static final String FILE_OPTION_ADD = "add";
 
+    public static final String DYNAMIC_BUCKET = "DynamicBucket";
+
     public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
 
     public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";

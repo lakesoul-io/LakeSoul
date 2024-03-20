@@ -226,6 +226,15 @@ pub extern "C" fn lakesoul_config_builder_set_buffer_size(
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
+    builder: NonNull<IOConfigBuilder>,
+    hash_bucket_num: c_size_t,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_hash_bucket_num(hash_bucket_num))
+}
+
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_object_store_option(
     builder: NonNull<IOConfigBuilder>,
     key: *const c_char,

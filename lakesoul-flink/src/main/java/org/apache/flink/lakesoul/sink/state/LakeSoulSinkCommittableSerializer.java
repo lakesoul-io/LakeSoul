@@ -101,7 +101,7 @@ public class LakeSoulSinkCommittableSerializer
     }
 
     private LakeSoulMultiTableSinkCommittable deserializeV1(DataInputView dataInputView) throws IOException {
-        Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap = null;
+        Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap = new HashMap<>();
         String commitId = null;
         long time = Long.MIN_VALUE;
         long dataTsMs = Long.MAX_VALUE;
@@ -110,7 +110,6 @@ public class LakeSoulSinkCommittableSerializer
         if (dataInputView.readBoolean()) {
             int size = dataInputView.readInt();
             if (size > 0) {
-                pendingFileMap = new HashMap<>();
                 for (int i = 0; i < size; ++i) {
                     String bucketId = dataInputView.readUTF();
                     int fileNum = dataInputView.readInt();

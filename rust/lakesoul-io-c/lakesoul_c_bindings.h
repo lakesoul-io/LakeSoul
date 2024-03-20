@@ -92,6 +92,9 @@ IOConfigBuilder *lakesoul_config_builder_set_max_row_group_size(IOConfigBuilder 
 IOConfigBuilder *lakesoul_config_builder_set_buffer_size(IOConfigBuilder *builder,
                                                          c_size_t buffer_size);
 
+IOConfigBuilder *lakesoul_config_builder_set_hash_bucket_num(IOConfigBuilder *builder,
+                                                             c_size_t hash_bucket_num);
+
 IOConfigBuilder *lakesoul_config_builder_set_object_store_option(IOConfigBuilder *builder,
                                                                  const char *key,
                                                                  const char *value);

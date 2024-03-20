@@ -6,6 +6,18 @@ mod hash_tests {
     use lakesoul_io::hash_utils::{HashValue, HASH_SEED};
 
     #[test]
+    fn chrono_test() {
+        let date = chrono::NaiveDate::parse_from_str("0001-01-01", "%Y-%m-%d").unwrap();
+        let datetime = date
+            .and_hms_opt(12, 12, 12)
+            .unwrap();
+        let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).unwrap();
+        
+        println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
+        println!("{}", chrono::NaiveDate::from_num_days_from_ce_opt(719162).unwrap().format("%Y-%m-%d"));
+    }
+
+    #[test]
     fn hash_value_test() {
         // let hash = "321".hash_one(HASH_SEED) as i32;
         // dbg!(hash);

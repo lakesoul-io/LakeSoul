@@ -1728,6 +1728,7 @@ dependencies = [
  "arrow",
  "arrow-array",
  "arrow-buffer",
+ "arrow-cast",
  "arrow-schema",
  "async-trait",
  "atomic_refcell",

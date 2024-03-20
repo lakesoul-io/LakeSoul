@@ -47,6 +47,7 @@ pub struct LakeSoulIOConfig {
     // range partitions column names
     pub(crate) range_partitions: Vec<String>,
     // number of hash bucket
+    #[derivative(Default(value = "1"))]
     pub(crate) hash_bucket_num: usize,
     // selecting columns
     pub(crate) columns: Vec<String>,

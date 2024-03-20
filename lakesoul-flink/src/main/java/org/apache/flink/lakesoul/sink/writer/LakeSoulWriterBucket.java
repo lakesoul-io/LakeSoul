@@ -18,6 +18,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -147,6 +148,7 @@ public class LakeSoulWriterBucket {
     }
 
     void write(RowData element, long currentTime, long tsMs) throws IOException {
+        System.out.println(element);
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             LOG.info(
                     "Opening new part file for bucket id={} at {}.",
@@ -249,6 +251,9 @@ public class LakeSoulWriterBucket {
      * Constructor a new PartPath and increment the partCounter.
      */
     private Path assembleNewPartPath() {
+        if (DYNAMIC_BUCKET.equals(bucketId)) {
+            return bucketPath;
+        }
         long currentPartCounter = partCounter++;
         String count = String.format("%03d", currentPartCounter);
         String subTask = String.format("%05d", this.subTaskId);
@@ -269,13 +274,21 @@ public class LakeSoulWriterBucket {
     private void closePartFile() throws IOException {
         if (inProgressPartWriter != null) {
             long start = System.currentTimeMillis();
-            InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
-                    inProgressPartWriter.closeForCommit();
+            if (inProgressPartWriter instanceof DynamicPartitionNativeParquetWriter) {
+                Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
+                        ((DynamicPartitionNativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
+                for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
+                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList()).addAll(entry.getValue());
+                }
+            } else {
+                InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
+                        inProgressPartWriter.closeForCommit();
 //            pendingFiles.add(pendingFileRecoverable);
-            pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
-            inProgressPartWriter = null;
-            LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
-                    (System.currentTimeMillis() - start));
+                pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
+                inProgressPartWriter = null;
+                LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
+                        (System.currentTimeMillis() - start));
+            }
         }
     }
 

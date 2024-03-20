@@ -18,6 +18,7 @@ public interface LibLakeSoulIO {
 
     Pointer tokio_runtime_builder_set_thread_num(Pointer builder, int thread_num);
 
+
     Pointer create_tokio_runtime_from_builder(Pointer builder);
 
     Pointer new_lakesoul_io_config_builder();
@@ -25,6 +26,8 @@ public interface LibLakeSoulIO {
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, String file);
 
     Pointer lakesoul_config_builder_with_prefix(Pointer builder, String file);
+
+    Pointer lakesoul_config_builder_set_hash_bucket_num(Pointer builder, int hash_bucket_num);
 
     Pointer lakesoul_config_builder_add_single_primary_key(Pointer builder, String pk);
 

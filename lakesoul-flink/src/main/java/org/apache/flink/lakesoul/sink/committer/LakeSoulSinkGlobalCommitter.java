@@ -112,7 +112,7 @@ public class LakeSoulSinkGlobalCommitter
 
         int index = 0;
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
-                globalCommittable.getGroupedCommitables()
+                globalCommittable.getGroupedCommittable()
                         .entrySet()) {
             TableSchemaIdentity identity = entry.getKey().f0;
             List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
