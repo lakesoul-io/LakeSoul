@@ -92,6 +92,10 @@ jobs:
           - 5432:5432
 
     steps:
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
@@ -160,6 +164,10 @@ jobs:
           - 5432:5432
 
     steps:
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
@@ -228,6 +236,10 @@ jobs:
           - 5432:5432
 
     steps:
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
@@ -308,6 +320,10 @@ jobs:
           - 5432:5432
 
     steps:
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
@@ -376,6 +392,10 @@ jobs:
           - 5432:5432
 
     steps:
+      - name: Cache Docker images
+        uses: ScribeMD/docker-cache@0.4.0
+        with:
+          key: docker-${{ runner.os }}-${{ hashFiles('rust/Cross.toml', 'docker/lakesoul-docker-compose-env/docker-compose.yml') }}
       - uses: actions/checkout@v4
       - name: Set up JDK 8
         uses: actions/setup-java@v4
