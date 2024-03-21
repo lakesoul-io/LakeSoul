@@ -245,12 +245,6 @@ SPDX-License-Identifier: Apache-2.0
             <version>${flink.version}</version>
             <scope>${local.scope}</scope>
         </dependency>
-        <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-client-api</artifactId>
-            <version>3.3.2</version>
-            <scope>${local.scope}</scope>
-        </dependency>
 
         <!--flink-sql-submitter-->
         <dependency>
