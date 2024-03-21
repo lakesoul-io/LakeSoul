@@ -15,7 +15,7 @@ import org.apache.spark.sql.types._
 
 import java.util
 
-private[sql] object ArrowUtils {
+object ArrowUtils {
 
   val rootAllocator = new RootAllocator(Long.MaxValue)
 
