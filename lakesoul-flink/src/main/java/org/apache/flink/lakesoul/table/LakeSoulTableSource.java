@@ -242,6 +242,7 @@ public class LakeSoulTableSource
             @Nullable
             RowLevelModificationScanContext previousContext) {
         if (previousContext == null || previousContext instanceof LakeSoulRowLevelModificationScanContext) {
+            // TODO: 2024/3/22 partiontion pruning should be handled 
             return new LakeSoulRowLevelModificationScanContext(listPartitionInfo());
         }
         throw new RuntimeException("LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
