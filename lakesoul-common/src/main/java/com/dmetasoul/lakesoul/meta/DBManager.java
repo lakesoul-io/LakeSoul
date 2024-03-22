@@ -469,7 +469,7 @@ public class DBManager {
                     Set<CommitOp> middleCommitOps = partitionInfoDao.getCommitOpsBetweenVersions(tableId, partitionDesc,
                             readPartitionVersion + 1, curVersion);
                     if (commitOp.equals(CommitOp.UpdateCommit)) {
-                        if (middleCommitOps.contains(CommitOp.UpdateCommit) ||
+                        if (
                                 (middleCommitOps.size() > 1 && middleCommitOps.contains(CommitOp.CompactionCommit))) {
                             throw new IllegalStateException(
                                     "current operation conflicts with other data writing tasks, table path: " +
@@ -831,7 +831,7 @@ public class DBManager {
         return namespaceInfo.getDomain();
     }
 
-    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo) {
+    public void commitDataCommitInfo(DataCommitInfo dataCommitInfo, List<PartitionInfo> readPartitionInfoList) {
         String tableId = dataCommitInfo.getTableId();
         String partitionDesc = dataCommitInfo.getPartitionDesc().replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER);
         Uuid commitId = dataCommitInfo.getCommitId();
@@ -863,6 +863,9 @@ public class DBManager {
 
         metaInfo.setTableInfo(tableInfo);
         metaInfo.addAllListPartition(partitionInfoList);
+        if (readPartitionInfoList != null) {
+            metaInfo.addAllReadPartitionInfo(readPartitionInfoList);
+        }
 
         commitData(metaInfo.build(), false, commitOp);
     }

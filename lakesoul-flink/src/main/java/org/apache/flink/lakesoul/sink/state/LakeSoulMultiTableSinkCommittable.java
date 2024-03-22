@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.sink.state;
 
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -27,6 +29,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     private final String bucketId;
 
     private final TableSchemaIdentity identity;
+    private String sourcePartitionInfo;
 
     @Nullable
     private List<InProgressFileWriter.PendingFileRecoverable> pendingFiles;
@@ -47,9 +50,19 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             String bucketId,
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
-            TableSchemaIdentity identity, long tsMs, String dmlType) {
-        this(bucketId, identity, pendingFiles, creationTime,
-                UUID.randomUUID().toString(), tsMs,dmlType
+            TableSchemaIdentity identity,
+            long tsMs,
+            String dmlType,
+            String sourcePartitionInfo
+    ) {
+        this(bucketId,
+                identity,
+                pendingFiles,
+                creationTime,
+                UUID.randomUUID().toString(),
+                tsMs,
+                dmlType,
+                sourcePartitionInfo
         );
     }
 
@@ -63,7 +76,10 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long time,
             @Nullable String commitId,
-            long tsMs, String dmlType) {
+            long tsMs,
+            String dmlType,
+            String sourcePartitionInfo
+    ) {
         this.bucketId = bucketId;
         this.identity = identity;
         this.pendingFiles = pendingFiles;
@@ -71,6 +87,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.commitId = commitId;
         this.tsMs = tsMs;
         this.dmlType = dmlType;
+        this.sourcePartitionInfo = sourcePartitionInfo;
     }
 
     public long getTsMs() {
@@ -128,9 +145,35 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         } else {
             if (committable.hasPendingFile()) pendingFiles = committable.getPendingFiles();
         }
+        mergeSourcePartitionInfo(committable);
+    }
+
+    private void mergeSourcePartitionInfo(LakeSoulMultiTableSinkCommittable committable) {
+        if (sourcePartitionInfo == null) {
+            sourcePartitionInfo = committable.getSourcePartitionInfo();
+        } else {
+            try {
+                JniWrapper jniWrapper = JniWrapper
+                        .parseFrom(sourcePartitionInfo.getBytes())
+                        .toBuilder()
+                        .addAllPartitionInfo(
+                                JniWrapper
+                                        .parseFrom(committable.getSourcePartitionInfo().getBytes())
+                                        .getPartitionInfoList()
+                        )
+                        .build();
+                sourcePartitionInfo = new String(jniWrapper.toByteArray());
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     public String getDmlType() {
         return dmlType;
+    }
+
+    public String getSourcePartitionInfo() {
+        return sourcePartitionInfo;
     }
 }

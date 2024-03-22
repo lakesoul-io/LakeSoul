@@ -219,6 +219,81 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "}");
     }
 
+    @Test
+    public void testLakeSoulTableSinkDeleteWithParallelismInBatch() {
+        final TableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        testLakeSoulTableSinkDeleteWithParallelismBase(
+                tEnv, "== Abstract Syntax Tree ==\n" +
+                        "LogicalSink(table=[lakesoul.db1.test_table], fields=[EXPR$0, EXPR$1])\n" +
+                        "+- LogicalProject(EXPR$0=[1], EXPR$1=[1])\n" +
+                        "   +- LogicalValues(tuples=[[{ 0 }]])\n" +
+                        "\n" +
+                        "== Optimized Physical Plan ==\n" +
+                        "Sink(table=[lakesoul.db1.test_table], fields=[EXPR$0, EXPR$1])\n" +
+                        "+- Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\n" +
+                        "   +- Values(tuples=[[{ 0 }]], values=[ZERO])\n" +
+                        "\n" +
+                        "== Optimized Execution Plan ==\n" +
+                        "Sink(table=[lakesoul.db1.test_table], fields=[EXPR$0, EXPR$1])\n" +
+                        "+- Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\n" +
+                        "   +- Values(tuples=[[{ 0 }]], values=[ZERO])\n" +
+                        "\n" +
+                        "== Physical Execution Plan ==\n" +
+                        "{\n" +
+                        "  \"nodes\" : [ {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Source: Values[]\",\n" +
+                        "    \"pact\" : \"Data Source\",\n" +
+                        "    \"contents\" : \"[]:Values(tuples=[[{ 0 }]], values=[ZERO])\",\n" +
+                        "    \"parallelism\" : 1\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Calc[]\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"[]:Calc(select=[1 AS EXPR$0, 1 AS EXPR$1])\",\n" +
+                        "    \"parallelism\" : 1,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Writer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Writer\",\n" +
+                        "    \"parallelism\" : 2,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Committer\",\n" +
+                        "    \"parallelism\" : 2,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  }, {\n" +
+                        "    \"id\" : ,\n" +
+                        "    \"type\" : \"Sink: Global Committer\",\n" +
+                        "    \"pact\" : \"Operator\",\n" +
+                        "    \"contents\" : \"Sink: Global Committer\",\n" +
+                        "    \"parallelism\" : 1,\n" +
+                        "    \"predecessors\" : [ {\n" +
+                        "      \"id\" : ,\n" +
+                        "      \"ship_strategy\" : \"GLOBAL\",\n" +
+                        "      \"side\" : \"second\"\n" +
+                        "    } ]\n" +
+                        "  } ]\n" +
+                        "}");
+    }
+
     private void testLakeSoulTableSinkWithParallelismBase(
             final TableEnvironment tEnv, String expected) {
         tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
@@ -249,6 +324,45 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final String actual =
                 tEnv.explainSql(
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
+        String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
+        System.out.println(plan);
+        assertEquals(expected, plan);
+
+        tEnv.executeSql("drop database db1 cascade");
+    }
+
+    private void testLakeSoulTableSinkDeleteWithParallelismBase(
+            final TableEnvironment tEnv, String expected) {
+        tEnv.registerCatalog(lakeSoulCatalog.getName(), lakeSoulCatalog);
+        tEnv.useCatalog(lakeSoulCatalog.getName());
+        tEnv.executeSql("create database db1");
+        tEnv.useDatabase("db1");
+        tEnv.executeSql("DROP TABLE IF EXISTS test_table");
+
+        tEnv.executeSql(
+                String.format(
+                        "CREATE TABLE test_table ("
+                                + " id int,"
+                                + " real_col int"
+                                + ") WITH ("
+                                + "'"
+                                + HASH_BUCKET_NUM.key()
+                                + "'= '3',"
+                                + "'"
+                                + LAKESOUL_TABLE_PATH.key()
+                                + "'='" +
+                                getTempDirUri("/test_table")
+                                + "',"
+                                + "'"
+                                + "connector"
+                                + "'='lakesoul'"
+                                + ")"));
+        tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
+        tEnv.executeSql(
+                "insert into test_table select 1, 1");
+        final String actual =
+                tEnv.explainSql(
+                        "delete from test_table", ExplainDetail.JSON_EXECUTION_PLAN);
         String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
         System.out.println(plan);
         assertEquals(expected, plan);

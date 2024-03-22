@@ -22,10 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
@@ -96,6 +93,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                     dataFileOpList.add(dataFileOp.build());
                 }
                 String partition = committable.getBucketId();
+                List<PartitionInfo> readPartitionInfoList = null;
 
                 TableNameId tableNameId =
                         lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
@@ -105,9 +103,15 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 dataCommitInfo.setPartitionDesc(partition.isEmpty() ? LAKESOUL_NON_PARTITION_TABLE_PART_DESC :
                         partition.replaceAll("/", LAKESOUL_RANGE_PARTITION_SPLITTER));
                 dataCommitInfo.addAllFileOps(dataFileOpList);
-                if(LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())){
+                if (LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
                     dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
-                }else{
+                    if (!committable.getSourcePartitionInfo().isEmpty()) {
+                        readPartitionInfoList =
+                                JniWrapper
+                                        .parseFrom(Base64.getDecoder().decode(committable.getSourcePartitionInfo()))
+                                        .getPartitionInfoList();
+                    }
+                } else {
                     dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
                 }
                 dataCommitInfo.setTimestamp(System.currentTimeMillis());
@@ -124,7 +128,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                             dataCommitInfo.getTimestamp(), dataCommitInfo.getCommitId().toString());
                 }
 
-                lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build());
+                lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build(), readPartitionInfoList);
             }
         }
 
