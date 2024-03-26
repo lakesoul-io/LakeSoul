@@ -113,11 +113,17 @@ public class LakeSoulSinkOptions {
             .stringType()
             .defaultValue("Asia/Shanghai")
             .withDescription("server time zone");
-    public static final ConfigOption<String> DMLTYPE = ConfigOptions
+    public static final ConfigOption<String> DML_TYPE = ConfigOptions
             .key("dml_type")
             .stringType()
             .defaultValue(INSERT)
-            .withDescription("dmltype");
+            .withDescription("DML type");
+
+    public static final ConfigOption<String> SOURCE_PARTITION_INFO = ConfigOptions
+            .key("source_partition_info")
+            .stringType()
+            .defaultValue("")
+            .withDescription("Protobuf-encoded source partition info from Update/Delete DML");
     public static final ConfigOption<Boolean> LAKESOUL_VIEW = ConfigOptions
             .key("lakesoul_view")
             .booleanType()

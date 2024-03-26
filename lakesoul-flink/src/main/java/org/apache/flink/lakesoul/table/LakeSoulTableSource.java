@@ -122,10 +122,7 @@ public class LakeSoulTableSource
 
     @Override
     public Optional<List<Map<String, String>>> listPartitions() {
-        DBManager dbManager = new DBManager();
-        TableInfo tableInfo =
-                dbManager.getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
-        List<PartitionInfo> allPartitionInfo = dbManager.getAllPartitionInfo(tableInfo.getTableId());
+        List<PartitionInfo> allPartitionInfo = listPartitionInfo();
         List<Map<String, String>> partitions = new ArrayList<>();
         for (PartitionInfo info : allPartitionInfo) {
             if (!info.getPartitionDesc().equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
@@ -149,6 +146,13 @@ public class LakeSoulTableSource
     @Override
     public void applyProjection(int[][] projectedFields) {
         this.projectedFields = projectedFields;
+    }
+
+    private List<PartitionInfo> listPartitionInfo() {
+        DBManager dbManager = new DBManager();
+        TableInfo tableInfo =
+                dbManager.getTableInfoByNameAndNamespace(tableId.table(), tableId.schema());
+        return dbManager.getAllPartitionInfo(tableInfo.getTableId());
     }
 
     private int[] getFieldIndexs() {
@@ -237,6 +241,10 @@ public class LakeSoulTableSource
             RowLevelModificationType rowLevelModificationType,
             @Nullable
             RowLevelModificationScanContext previousContext) {
-        return null;
+        if (previousContext == null || previousContext instanceof LakeSoulRowLevelModificationScanContext) {
+            // TODO: 2024/3/22 partiontion pruning should be handled 
+            return new LakeSoulRowLevelModificationScanContext(listPartitionInfo());
+        }
+        throw new RuntimeException("LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
     }
 }

@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.table;
 
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
@@ -35,6 +36,7 @@ import org.apache.flink.types.RowKind;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -160,20 +162,28 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public RowLevelDeleteInfo applyRowLevelDelete(@Nullable RowLevelModificationScanContext context) {
-        if (flinkConf.getBoolean(USE_CDC, false)) {
-            flinkConf.set(DMLTYPE, DELETE_CDC);
-        } else {
-            flinkConf.set(DMLTYPE, DELETE);
-        }
+        if (context instanceof LakeSoulRowLevelModificationScanContext) {
+            flinkConf.set(SOURCE_PARTITION_INFO, ((LakeSoulRowLevelModificationScanContext) context).getBas64EncodedSourcePartitionInfo());
+            if (flinkConf.getBoolean(USE_CDC, false)) {
+                flinkConf.set(DML_TYPE, DELETE_CDC);
+            } else {
+                flinkConf.set(DML_TYPE, DELETE);
+            }
 
-        return new LakeSoulRowLevelDelete();
+            return new LakeSoulRowLevelDelete();
+        }
+        throw new RuntimeException("LakeSoulTableSink.applyRowLevelDelete only supports LakeSoulRowLevelModificationScanContext");
     }
 
     @Override
     public RowLevelUpdateInfo applyRowLevelUpdate(List<Column> updatedColumns,
                                                   @Nullable RowLevelModificationScanContext context) {
-        flinkConf.set(DMLTYPE, UPDATE);
-        return new LakeSoulRowLevelUpdate();
+        if (context instanceof LakeSoulRowLevelModificationScanContext) {
+            flinkConf.set(SOURCE_PARTITION_INFO, ((LakeSoulRowLevelModificationScanContext) context).getBas64EncodedSourcePartitionInfo());
+            flinkConf.set(DML_TYPE, UPDATE);
+            return new LakeSoulRowLevelUpdate();
+        }
+        throw new RuntimeException("LakeSoulTableSink.applyRowLevelUpdate only supports LakeSoulRowLevelModificationScanContext");
     }
 
     private class LakeSoulRowLevelDelete implements RowLevelDeleteInfo {
