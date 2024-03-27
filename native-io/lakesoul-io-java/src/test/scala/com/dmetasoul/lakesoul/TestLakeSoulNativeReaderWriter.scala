@@ -7,6 +7,7 @@ package com.dmetasoul.lakesoul
 import com.dmetasoul.lakesoul.lakesoul.io.{NativeIOReader, NativeIOWriter}
 import org.apache.arrow.vector.types.FloatingPointPrecision
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
+import org.apache.spark.sql.arrow.ArrowUtils
 
 import scala.collection.JavaConverters.asJavaIterableConverter
 
@@ -38,6 +39,8 @@ case class TestLakeSoulNativeReaderWriter() extends org.scalatest.funsuite.AnyFu
       ).asJava)
       reader.setSchema(schema)
       reader.initializeReader()
+      val sparkSchema = ArrowUtils.fromArrowSchema(schema)
+      println(sparkSchema)
 
 //      val schema = reader.getSchema
 

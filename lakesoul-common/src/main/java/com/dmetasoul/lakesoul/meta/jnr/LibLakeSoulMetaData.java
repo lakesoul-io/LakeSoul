@@ -35,7 +35,7 @@ public interface LibLakeSoulMetaData {
 
     void clean_meta_for_test(IntegerCallback integerCallback, Pointer runtime, Pointer client);
 
-    Pointer create_split_desc_array(IntegerCallback integerCallback, Pointer client, Pointer prepared, Pointer runtime, String tableName, String namespace);
+    Pointer create_split_desc_array(BooleanCallback booleanCallback, Pointer client, Pointer prepared, Pointer runtime, String tableName, String namespace);
 
     void free_split_desc_array(Pointer json);
 
@@ -49,6 +49,8 @@ public interface LibLakeSoulMetaData {
     String debug(BooleanCallback booleanCallback);
 
     void rust_logger_init();
+
+    void call_rust(@LongLong long addr, Integer len);
 
     void hello_world(Callback<byte[]> bytesCallback);
 

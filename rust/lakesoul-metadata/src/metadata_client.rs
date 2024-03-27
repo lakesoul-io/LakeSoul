@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -19,7 +18,6 @@ use proto::proto::entity::{
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
-use crate::transfusion::DataFileInfo;
 use crate::{
     clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
     PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
@@ -94,28 +92,6 @@ impl MetaDataClient {
             prepared,
             max_retry,
         })
-    }
-
-    /// Construct Self from raw client and prepared
-    pub fn compose(client: Client, prepared: PreparedStatementMap, max_retry: usize) -> Self {
-        Self {
-            client: Arc::new(Mutex::new(client)),
-            prepared: Arc::new(Mutex::new(prepared)),
-            max_retry,
-        }
-    }
-
-    /// consume Arc<Self> to raw client and prepared
-    pub fn decompose(db: Self) -> Result<(Client, PreparedStatementMap)> {
-        debug_assert_eq!(Arc::strong_count(&db.client), 1);
-        let client = Arc::into_inner(db.client)
-            .ok_or(LakeSoulMetaDataError::FfiError("restore client failed".to_string()))?
-            .into_inner();
-        debug_assert_eq!(Arc::strong_count(&db.prepared), 1);
-        let prepared = Arc::into_inner(db.prepared)
-            .ok_or(LakeSoulMetaDataError::FfiError("restore prepared failed".to_string()))?
-            .into_inner();
-        Ok((client, prepared))
     }
 
     pub async fn create_namespace(&self, namespace: Namespace) -> Result<()> {
@@ -528,55 +504,6 @@ impl MetaDataClient {
         }
     }
 
-    async fn get_table_data_info_by_partition_info(
-        &self,
-        partition_info_arr: Vec<PartitionInfo>,
-    ) -> Result<Vec<DataFileInfo>> {
-        let mut file_info_buf = Vec::new();
-        for pi in &partition_info_arr {
-            file_info_buf.extend(self.get_single_partition_data_info(pi).await?)
-        }
-        Ok(file_info_buf)
-    }
-
-    /// return file info in this partition that match the current read version
-    async fn get_single_partition_data_info(&self, partition_info: &PartitionInfo) -> Result<Vec<DataFileInfo>> {
-        let mut file_arr_buf = Vec::new();
-        let data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
-        for data_commit_info in &data_commit_info_list {
-            for file in &data_commit_info.file_ops {
-                file_arr_buf.push(DataFileInfo::compose(data_commit_info, file, partition_info)?)
-            }
-        }
-        Ok(self.filter_files(file_arr_buf))
-    }
-
-    /// 1:1 fork from scala by chat_gpt
-    fn filter_files(&self, file_arr_buf: Vec<DataFileInfo>) -> Vec<DataFileInfo> {
-        let mut dup_check = HashSet::new();
-        let mut file_res_arr_buf = Vec::new();
-
-        if file_arr_buf.len() > 1 {
-            for i in (0..file_arr_buf.len()).rev() {
-                if file_arr_buf[i].file_op == "del" {
-                    dup_check.insert(file_arr_buf[i].path.clone());
-                } else if dup_check.is_empty() || !dup_check.contains(&file_arr_buf[i].path) {
-                    file_res_arr_buf.push(file_arr_buf[i].clone());
-                }
-            }
-            file_res_arr_buf.reverse();
-        } else {
-            file_res_arr_buf = file_arr_buf.into_iter().filter(|item| item.file_op == "add").collect();
-        }
-
-        file_res_arr_buf
-    }
-
-    pub async fn get_table_data_info(&self, table_id: &str) -> Result<Vec<DataFileInfo>> {
-        // logic from scala: DataOperation
-        self.get_table_data_info_by_partition_info(self.get_all_partition_info(table_id).await?)
-            .await
-    }
 
     pub async fn get_data_files_by_table_name(
         &self,

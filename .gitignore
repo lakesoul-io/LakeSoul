@@ -34,3 +34,4 @@ __pycache__/
 *.whl
 /wheelhouse/
 /rust/.idea
+.flattened-pom.xml

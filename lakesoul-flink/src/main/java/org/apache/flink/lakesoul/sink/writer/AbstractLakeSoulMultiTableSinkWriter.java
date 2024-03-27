@@ -173,7 +173,8 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
     @Override
     public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        String dmlType = this.conf.getString(LakeSoulSinkOptions.DMLTYPE);
+        String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
+        String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
         // Every time before we prepare commit, we first check and remove the inactive
         // buckets. Checking the activeness right before pre-committing avoid re-creating
         // the bucket every time if the bucket use OnCheckpointingRollingPolicy.
@@ -184,7 +185,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             if (!entry.getValue().isActive()) {
                 activeBucketIt.remove();
             } else {
-                committables.addAll(entry.getValue().prepareCommit(flush,dmlType));
+                committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
             }
         }
 
