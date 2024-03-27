@@ -5,7 +5,9 @@
 package org.apache.flink.lakesoul.types;
 
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.*;
+import org.bson.BsonTimestamp;
 import org.bson.Document;
+import org.bson.types.Binary;
 import org.bson.types.Decimal128;
 
 import java.math.BigDecimal;
@@ -72,6 +74,12 @@ public class ParseDocument {
             } else if (value instanceof Decimal128) {
                 BigDecimal decimalValue = new BigDecimal(value.toString());
                 struct.put(fieldName, decimalValue);
+            } else if (value instanceof Binary) {
+                Binary binaryData = (Binary) value;
+                struct.put(fieldName,binaryData.getData());
+            } else if (value instanceof BsonTimestamp) {
+                BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
+                struct.put(fieldName,bsonTimestamp.getValue());
             } else {
                 struct.put(fieldName,value);
             }
@@ -95,8 +103,12 @@ public class ParseDocument {
             return Decimal.schema(decimalValue.scale());
         } else if (value instanceof Byte) {
             return Schema.BYTES_SCHEMA;
+        } else if (value instanceof Binary) {
+            return Schema.BYTES_SCHEMA;
         } else if (value instanceof Date) {
             return Timestamp.SCHEMA;
+        } else if (value instanceof BsonTimestamp) {
+            return Schema.INT64_SCHEMA;
         } else {
             // 处理其他类型，可以根据实际情况添加更多类型
             return Schema.STRING_SCHEMA;

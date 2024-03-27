@@ -127,11 +127,7 @@ SPDX-License-Identifier: Apache-2.0
             <scope>test</scope>
             <type>test-jar</type>
         </dependency>
-        <dependency>
-            <groupId>com.ververica</groupId>
-            <artifactId>flink-sql-connector-postgres-cdc</artifactId>
-            <version>${cdc.version}</version>
-        </dependency>
+
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-sqlserver-cdc</artifactId>
@@ -148,9 +144,9 @@ SPDX-License-Identifier: Apache-2.0
             <version>${cdc.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.mongodb</groupId>
-            <artifactId>mongo-java-driver</artifactId>
-            <version>3.12.14</version>
+            <groupId>com.ververica</groupId>
+            <artifactId>flink-sql-connector-postgres-cdc</artifactId>
+            <version>${cdc.version}</version>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
@@ -164,13 +160,8 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
         <dependency>
             <groupId>org.mongodb</groupId>
-            <artifactId>mongodb-driver-sync</artifactId>
-            <version>3.10.1</version> <!-- Use the appropriate version -->
-        </dependency>
-        <dependency>
-            <groupId>org.mongodb</groupId>
             <artifactId>bson</artifactId>
-            <version>4.3.4</version> <!-- 使用最新版本 -->
+            <version>4.3.4</version>
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>

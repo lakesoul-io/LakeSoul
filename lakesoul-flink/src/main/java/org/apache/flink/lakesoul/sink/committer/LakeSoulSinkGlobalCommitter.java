@@ -164,7 +164,9 @@ public class LakeSoulSinkGlobalCommitter
                 StructType origSchema ;
                 if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
                     Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
+                    System.out.println(arrowSchema.toJson());
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
+                    System.out.println(origSchema.json());
                 } else {
                     origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
                 }
@@ -177,7 +179,20 @@ public class LakeSoulSinkGlobalCommitter
                 String equalOrCanCast = equalOrCanCastTuple3._1();
                 boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                 StructType mergeStructType = equalOrCanCastTuple3._3();
-                if (equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST())) {
+
+                System.out.println(origSchema.json());
+                System.out.println(msgSchema.toJson());
+                System.out.println(mergeStructType.json());
+                System.out.println(ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
+                boolean schemaChangeFound = false;
+                if (dbType.equals("mongodb")){
+                    if (mergeStructType.length() > origSchema.size()){
+                        schemaChangeFound = schemaChanged;
+                    }
+                }else {
+                    schemaChangeFound = equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST());
+                }
+                if (schemaChangeFound) {
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
                             origSchema.json(),
                             msgSchema.toJson());
@@ -201,10 +216,7 @@ public class LakeSoulSinkGlobalCommitter
                                 identity.useCDC,
                                 identity.cdcColumn);
                         if (dbType.equals("mongodb")){
-                            System.out.println(msgSchema.toJson());
-                            System.out.println(origSchema.json());
-                            System.out.println(mergeStructType.json());
-                            dbManager.updateTableSchema(tableInfo.getTableId(), mergeStructType.json());
+                            dbManager.updateTableSchema(tableInfo.getTableId(), ArrowUtils.toArrowSchema(mergeStructType,"UTC").toJson());
                         }else {
                             dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
                         }

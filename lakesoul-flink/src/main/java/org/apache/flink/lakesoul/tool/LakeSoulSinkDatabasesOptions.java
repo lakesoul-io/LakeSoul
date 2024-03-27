@@ -108,4 +108,6 @@ public class LakeSoulSinkDatabasesOptions extends LakeSoulSinkOptions {
             .key("doris.fenodes")
             .stringType()
             .defaultValue("127.0.0.1:8030");
+
+
 }

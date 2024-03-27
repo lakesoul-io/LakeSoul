@@ -12,7 +12,7 @@ import com.ververica.cdc.connectors.mysql.source.MySqlSourceBuilder;
 import com.ververica.cdc.connectors.oracle.source.OracleSourceBuilder;
 import com.ververica.cdc.connectors.postgres.source.PostgresSourceBuilder;
 import com.ververica.cdc.connectors.mongodb.source.MongoDBSource;
-import com.ververica.cdc.debezium.JsonDebeziumDeserializationSchema;
+
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
 import com.ververica.cdc.connectors.sqlserver.source.SqlServerSourceBuilder;
@@ -218,6 +218,7 @@ public class JdbcCDC {
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
+        stream.print();
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);
     }

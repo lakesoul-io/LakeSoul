@@ -2,24 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 package org.apache.flink.lakesoul.entry;
 
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.mongodb.MongoClientURI;
-import com.mongodb.MongoClient;
-import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.model.InsertOneModel;
-import com.mongodb.client.model.WriteModel;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.mongodb.sink.MongoSink;
-import org.apache.flink.connector.mongodb.sink.writer.context.MongoSinkContext;
-import org.apache.flink.connector.mongodb.sink.writer.serializer.MongoSerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -34,39 +26,41 @@ import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.Row;
-import org.bson.*;
-import org.bson.types.Decimal128;
 
-
-import java.io.Serializable;
 import java.sql.*;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.Date;
 
+import static org.apache.flink.lakesoul.entry.MongoSinkUtils.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkDatabasesOptions.*;
 
 public class SyncDatabase {
 
-    static Table coll;
+    static String targetTableName;
+    static String dbType;
+    static String sourceDatabase;
+    static String sourceTableName;
+    static String targetDatabase;
+    static String url;
+    static String username;
+    static String password;
+    static boolean useBatch;
+    static int sinkParallelism;
+
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
-        String sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
-        String sourceTableName = parameter.get(SOURCE_DB_LAKESOUL_TABLE.key()).toLowerCase();
-        String dbType = parameter.get(TARGET_DATABASE_TYPE.key());
-        String targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
-        String targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
-        String url = parameter.get(TARGET_DB_URL.key());
-        String username = null;
-        String password = null;
-        if (!dbType.equals("mongodb")){
+        sourceDatabase = parameter.get(SOURCE_DB_DB_NAME.key());
+        sourceTableName = parameter.get(SOURCE_DB_LAKESOUL_TABLE.key()).toLowerCase();
+        dbType = parameter.get(TARGET_DATABASE_TYPE.key());
+        targetDatabase = parameter.get(TARGET_DB_DB_NAME.key());
+        targetTableName = parameter.get(TARGET_DB_TABLE_NAME.key()).toLowerCase();
+        url = parameter.get(TARGET_DB_URL.key());
+        if (!dbType.equals("mongodb")) {
             username = parameter.get(TARGET_DB_USER.key());
             password = parameter.get(TARGET_DB_PASSWORD.key());
         }
-        int sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
-        boolean useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
+        sinkParallelism = parameter.getInt(SINK_PARALLELISM.key(), SINK_PARALLELISM.defaultValue());
+        useBatch = parameter.getBoolean(BATHC_STREAM_SINK.key(), BATHC_STREAM_SINK.defaultValue());
         //int replicationNum = parameter.getInt(DORIS_REPLICATION_NUM.key(), DORIS_REPLICATION_NUM.defaultValue());
 
         String fenodes = parameter.get(DORIS_FENODES.key(), DORIS_FENODES.defaultValue());
@@ -78,19 +72,19 @@ public class SyncDatabase {
 
         switch (dbType) {
             case "mysql":
-                xsyncToMysql(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
+                xsyncToMysql(env);
                 break;
             case "postgres":
-                xsyncToPg(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName);
+                xsyncToPg(env);
                 break;
             case "doris":
-                xsyncToDoris(env, useBatch, url, sourceDatabase, username, password, targetDatabase, sourceTableName, targetTableName, fenodes);
+                xsyncToDoris(env, fenodes);
                 break;
             case "mongodb":
                 String uri = parameter.get(MONGO_DB_URI.key());
                 int batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
                 int batchIntervalMs = parameter.getInt(BATCH_INTERVAL_MS.key(), BATCH_INTERVAL_MS.defaultValue());
-                xsyncToMongodb(env,useBatch,uri,sourceDatabase,targetDatabase,sourceTableName,targetTableName,batchSize,sinkParallelism,batchIntervalMs);
+                xsyncToMongodb(env, uri, batchSize, batchIntervalMs);
                 break;
             default:
                 throw new RuntimeException("not supported the database: " + dbType);
@@ -109,7 +103,7 @@ public class SyncDatabase {
                 createTableQuery.append(", ");
             }
         }
-        if (pk!=null){
+        if (pk != null) {
             createTableQuery.append(" ,PRIMARY KEY(").append(pk);
             createTableQuery.append(")");
         }
@@ -119,11 +113,10 @@ public class SyncDatabase {
 
     public static String[] getMysqlFieldsTypes(DataType[] fieldTypes, String[] fieldNames, String pk) {
         String[] stringFieldTypes = new String[fieldTypes.length];
-
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
-                if (pk!=null){
+                if (pk != null) {
                     if (pk.contains(fieldNames[i])) {
                         mysqlType = "VARCHAR(100)";
                     }
@@ -137,6 +130,8 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
+            } else if (fieldTypes[i].getLogicalType() instanceof VarBinaryType) {
+                stringFieldTypes[i] = "BLOB";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
@@ -150,7 +145,7 @@ public class SyncDatabase {
         for (int i = 0; i < fieldTypes.length; i++) {
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
-                if (pk!=null){
+                if (pk != null) {
                     if (pk.contains(fieldNames[i])) {
                         mysqlType = "VARCHAR(100)";
                     }
@@ -164,6 +159,8 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "BYTEA";
             } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
+            } else if (fieldTypes[i].getLogicalType() instanceof VarBinaryType) {
+                stringFieldTypes[i] = "BYTEA";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
@@ -174,13 +171,13 @@ public class SyncDatabase {
     public static String[] getDorisFieldTypes(DataType[] fieldTypes) {
         String[] stringFieldTypes = new String[fieldTypes.length];
         for (int i = 0; i < fieldTypes.length; i++) {
-            if (fieldTypes[i].getLogicalType() instanceof TimestampType){
+            if (fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "DATETIME";
-            }
-            else if (fieldTypes[i].getLogicalType() instanceof VarCharType){
+            } else if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 stringFieldTypes[i] = "VARCHAR";
-
-            }   else {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+                stringFieldTypes[i] = "TIMESTAMP";
+            } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
             }
         }
@@ -192,19 +189,20 @@ public class SyncDatabase {
         TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(sourceTableName, sourceDataBae);
         String partitions = tableInfo.getPartitions();
         DBUtil.TablePartitionKeys keys = DBUtil.parseTableInfoPartitions(partitions);
+
         List<String> primaryKeys = keys.primaryKeys;
         StringBuilder stringBuilder = new StringBuilder();
         for (int i = 0; i < primaryKeys.size(); i++) {
             stringBuilder.append(primaryKeys.get(i));
-            if (i<primaryKeys.size()-1){
+            if (i < primaryKeys.size() - 1) {
                 stringBuilder.append(",");
             }
         }
         return primaryKeys.size() == 0 ? null : stringBuilder.toString();
     }
 
-    public static void xsyncToPg(StreamExecutionEnvironment env, boolean bathXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
-        if (bathXync) {
+    public static void xsyncToPg(StreamExecutionEnvironment env) throws SQLException {
+        if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -234,9 +232,10 @@ public class SyncDatabase {
         String createCatalog = "create catalog postgres_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
                 "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
         // Move data from LakeSoul to MySQL
+
         tEnvs.executeSql(createCatalog);
-        String insertQuery = "INSERT INTO postgres_catalog.`" + targetDatabase+ "`.`" + targetTableName +
-                "` SELECT * FROM lakeSoul.`"  +sourceDatabase + "`.`" + sourceTableName + "`";
+        String insertQuery = "INSERT INTO postgres_catalog.`" + targetDatabase + "`.`" + targetTableName +
+                "` SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`";
 
         tEnvs.executeSql(insertQuery);
         statement.close();
@@ -244,8 +243,8 @@ public class SyncDatabase {
     }
 
 
-    public static void xsyncToMysql(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName) throws SQLException {
-        if (batchXync) {
+    public static void xsyncToMysql(StreamExecutionEnvironment env) throws SQLException {
+        if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -259,7 +258,6 @@ public class SyncDatabase {
         TableResult schemaResult = tEnvs.executeSql(
                 "SELECT * FROM lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "` LIMIT 1");
         DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
-        String[] mysqlFieldTypes = getDorisFieldTypes(fieldDataTypes);
         String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
         String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
@@ -269,32 +267,35 @@ public class SyncDatabase {
         Statement statement = conn.createStatement();
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
-
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
-            coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
-            if (i< fieldDataTypes.length-1){
+            if (stringFieldsTypes[i].equals("BLOB")) {
+                coulmns.append("`").append(fieldNames[i]).append("` ").append("BYTES");
+            } else {
+                coulmns.append("`").append(fieldNames[i]).append("` ").append(stringFieldsTypes[i]);
+            }
+            if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
             }
         }
         String sql;
-        if (tablePk!=null){
+        if (tablePk != null) {
             sql = String.format(
-                    "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
-                    targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password);
-        }else {
-            sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s')",
-                    targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password);
+                    "create table %s(%s ,PRIMARY KEY (%s) NOT ENFORCED) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s', 'sink.parallelism' = '%s')",
+                    targetTableName, coulmns, tablePk, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
+        } else {
+            sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s' , 'sink.parallelism' = '%s')",
+                    targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
         }
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
 
         statement.close();
         conn.close();
     }
 
-    public static void xsyncToDoris(StreamExecutionEnvironment env, boolean batchXync, String url, String sourceDatabase, String username, String password, String targetDatabase, String sourceTableName, String targetTableName, String fenodes) throws SQLException {
-        if (batchXync) {
+    public static void xsyncToDoris(StreamExecutionEnvironment env, String fenodes) throws SQLException {
+        if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -314,7 +315,7 @@ public class SyncDatabase {
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldDataTypes.length; i++) {
             coulmns.append("`").append(fieldNames[i]).append("` ").append(dorisFieldTypes[i]);
-            if (i< fieldDataTypes.length-1){
+            if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
             }
         }
@@ -322,21 +323,15 @@ public class SyncDatabase {
                 "create table %s(%s) with ('connector' = '%s', 'jdbc-url' = '%s', 'fenodes' = '%s', 'table.identifier' = '%s', 'username' = '%s', 'password' = '%s')",
                 targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         tEnvs.executeSql(sql);
-        tEnvs.executeSql("insert into "+targetTableName+" select * from lakeSoul.`"+sourceDatabase+"`."+sourceTableName);
+        tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
     }
 
     public static void xsyncToMongodb(StreamExecutionEnvironment env,
-                                              boolean batchXync,
-                                              String uri ,
-                                              String sourceDatabase,
-                                              String targetDatabase,
-                                              String sourceTableName,
-                                              String targetCollection,
-                                              int batchSize,
-                                              int sinkParallelism,
-                                              int batchInservalMs) throws Exception {
-        createMongoColl(targetDatabase,targetCollection,uri);
-        if (batchXync) {
+                                      String uri,
+                                      int batchSize,
+                                      int batchInservalMs) throws Exception {
+        createMongoColl(targetDatabase, targetTableName, uri);
+        if (useBatch) {
             env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         } else {
             env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
@@ -345,20 +340,15 @@ public class SyncDatabase {
         }
         StreamTableEnvironment tEnvs = StreamTableEnvironment.create(env);
         Catalog lakesoulCatalog = new LakeSoulCatalog();
-        tEnvs.registerCatalog("lakeSoul",lakesoulCatalog);
-        coll = tEnvs.sqlQuery("select * from lakeSoul.`"+sourceDatabase+"`.`"+sourceTableName+"`");
-        tEnvs.registerTable("mongodbTbl",coll);
+        tEnvs.registerCatalog("lakeSoul", lakesoulCatalog);
+        coll = tEnvs.sqlQuery("select * from lakeSoul.`" + sourceDatabase + "`.`" + sourceTableName + "`");
+        tEnvs.registerTable("mongodbTbl", coll);
         Table table = tEnvs.sqlQuery("select * from mongodbTbl");
         DataStream<Tuple2<Boolean, Row>> rowDataStream = tEnvs.toRetractStream(table, Row.class);
-
-        MongoClientURI mongUri = new MongoClientURI(uri);
-        MongoClient mongoClient = new MongoClient(mongUri);
-        MongoDatabase database = mongoClient.getDatabase(targetDatabase);
-        database.createCollection(targetCollection);
         MongoSink<Tuple2<Boolean, Row>> sink = MongoSink.<Tuple2<Boolean, Row>>builder()
                 .setUri(uri)
                 .setDatabase(targetDatabase)
-                .setCollection(targetCollection)
+                .setCollection(targetTableName)
                 .setBatchSize(batchSize)
                 .setBatchIntervalMs(batchInservalMs)
                 .setMaxRetries(3)
@@ -367,74 +357,5 @@ public class SyncDatabase {
                 .build();
         rowDataStream.sinkTo(sink).setParallelism(sinkParallelism);
         env.execute();
-        mongoClient.close();
-    }
-    public static void createMongoColl(String database,String collName,String uri){
-        MongoClientURI clientURI = new MongoClientURI(uri);
-        MongoClient mongoClient = new MongoClient(clientURI);
-        MongoDatabase mongoDatabase = mongoClient.getDatabase(database);
-        mongoDatabase.createCollection(collName);
-        mongoClient.close();
-    }
-    public static class MyMongoSerializationSchema implements MongoSerializationSchema<Tuple2<Boolean, Row>>, Serializable {
-        @Override
-        public WriteModel<BsonDocument> serialize(Tuple2<Boolean, Row> record, MongoSinkContext context) {
-            Row row = record.f1; // Extract the Row object from the Tuple2
-            BsonDocument document = new BsonDocument();
-            int fieldCount = row.getArity();
-            for (int i = 0; i < fieldCount; i++) {
-                String fieldName = coll.getSchema().getFieldNames()[i];
-                Object fieldValue = row.getField(i);
-                if (fieldValue != null) {
-                    try {
-                        document.append(fieldName, convertTonBsonValue(fieldValue));
-                    } catch (ParseException e) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-            return new InsertOneModel<>(document);
-        }
-
-        public static BsonValue convertTonBsonValue(Object value) throws ParseException {
-            if (value == null) {
-                return new BsonNull();
-            } else if (value instanceof Integer) {
-                return new BsonInt32((Integer) value);
-            } else if (value instanceof Long) {
-                return new BsonInt64((Long) value);
-            } else if (value instanceof String) {
-                return new BsonString((String) value);
-            } else if (value instanceof Boolean) {
-                return new BsonBoolean( (Boolean) value);
-            } else if (value instanceof Double) {
-                return new BsonDouble( (Double) value);
-            } else if (value instanceof DecimalType) {
-                return new BsonDecimal128((Decimal128) value);
-            } else if (value instanceof Date) {
-                return new BsonDateTime( (long) value);
-            } else if (value instanceof Object[]) {
-                Object[] array = (Object[]) value;
-                BsonArray bsonArray = new BsonArray();
-                for (Object element : array) {
-                    bsonArray.add(convertTonBsonValue(element));
-                }
-                return bsonArray;
-            } else if (isDateTimeString(value)) {
-                Date date = parseDateTime(value.toString());
-                return new BsonDateTime(date.getTime());
-            } else {
-                throw new IllegalArgumentException("Unsupported data type: " + value.getClass());
-            }
-        }
-        private static boolean isDateTimeString(Object value) {
-            return value.toString().matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$");
-        }
-        private static Date parseDateTime(String value) throws ParseException {
-            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
-            dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
-            return dateFormat.parse(value);
-        }
-
     }
 }

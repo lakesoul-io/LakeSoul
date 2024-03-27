@@ -552,7 +552,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:
             case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
-                writeTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
+                writeTimeStamp(writer, index, fieldValue, fieldSchema,serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:
                 writeDecimal(writer, index, fieldValue, fieldSchema);
@@ -625,7 +625,7 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String, String> paras = schema.parameters();
-        if (paras.get("connect.decimal.precision") == null) {
+        if ( paras==null || paras.get("connect.decimal.precision") == null) {
             return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
         } else {
             return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
@@ -700,8 +700,14 @@ public class LakeSoulRecordConvert implements Serializable {
                 return TimestampData.fromInstant(zonedDateTime.toInstant());
             }
             return null;
+        } else if (dbzObj instanceof java.util.Date) {
+            java.util.Date date = (java.util.Date)dbzObj;
+            long timestamp = date.toInstant().toEpochMilli();
+            Instant instant = TimestampData.fromEpochMillis( timestamp).toInstant();
+            return TimestampData.fromInstant(instant);
         }
         // fallback to zoned timestamp
+
         LocalDateTime localDateTime =
                 TemporalConversions.toLocalDateTime(dbzObj, ZoneId.of("UTC"));
         return TimestampData.fromLocalDateTime(localDateTime);
