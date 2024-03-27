@@ -114,7 +114,6 @@ public class SyncDatabase {
     public static String[] getMysqlFieldsTypes(DataType[] fieldTypes, String[] fieldNames, String pk) {
         String[] stringFieldTypes = new String[fieldTypes.length];
         for (int i = 0; i < fieldTypes.length; i++) {
-            String typeName = fieldTypes[i].getLogicalType().toString();
             if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 String mysqlType = "TEXT";
                 if (pk != null) {
@@ -127,9 +126,7 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "FLOAT";
             } else if (fieldTypes[i].getLogicalType() instanceof BinaryType) {
                 stringFieldTypes[i] = "BINARY";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType || fieldTypes[i].getLogicalType() instanceof TimestampType) {
-                stringFieldTypes[i] = "TIMESTAMP";
-            } else if (fieldTypes[i].getLogicalType().toString().equals("TIMESTAMP_LTZ(6)")) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof BooleanType) {
                 stringFieldTypes[i] = "BOOLEAN";
@@ -263,21 +260,19 @@ public class SyncDatabase {
         DataType[] fieldDataTypes = schemaResult.getTableSchema().getFieldDataTypes();
         String[] fieldNames = schemaResult.getTableSchema().getFieldNames();
         String tablePk = getTablePk(sourceDatabase, sourceTableName);
-        String[] mysqlFieldTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
-        //String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
-        String createTableSql = pgAndMsqlCreateTableSql(mysqlFieldTypes, fieldNames, targetTableName, tablePk);
+        String[] stringFieldsTypes = getMysqlFieldsTypes(fieldDataTypes, fieldNames, tablePk);
+        String createTableSql = pgAndMsqlCreateTableSql(stringFieldsTypes, fieldNames, targetTableName, tablePk);
 
         Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
         Statement statement = conn.createStatement();
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
         StringBuilder coulmns = new StringBuilder();
-
-        for (int i = 0; i < mysqlFieldTypes.length; i++) {
-            if (mysqlFieldTypes[i].equals("VARBINARY(40)")) {
+        for (int i = 0; i < fieldDataTypes.length; i++) {
+            if (stringFieldsTypes[i].equals("BLOB")) {
                 coulmns.append("`").append(fieldNames[i]).append("` ").append("BYTES");
             } else {
-                coulmns.append("`").append(fieldNames[i]).append("` ").append(mysqlFieldTypes[i]);
+                coulmns.append("`").append(fieldNames[i]).append("` ").append(stringFieldsTypes[i]);
             }
             if (i < fieldDataTypes.length - 1) {
                 coulmns.append(",");
@@ -291,7 +286,6 @@ public class SyncDatabase {
         } else {
             sql = String.format("create table %s(%s) with ('connector' = '%s', 'url' = '%s', 'table-name' = '%s', 'username' = '%s', 'password' = '%s' , 'sink.parallelism' = '%s')",
                     targetTableName, coulmns, "jdbc", jdbcUrl, targetTableName, username, password, sinkParallelism);
-
         }
         tEnvs.executeSql(sql);
         tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
@@ -330,7 +324,6 @@ public class SyncDatabase {
                 targetTableName, coulmns, "doris", jdbcUrl, fenodes, targetDatabase + "." + targetTableName, username, password);
         tEnvs.executeSql(sql);
         tEnvs.executeSql("insert into " + targetTableName + " select * from lakeSoul.`" + sourceDatabase + "`." + sourceTableName);
-
     }
 
     public static void xsyncToMongodb(StreamExecutionEnvironment env,
