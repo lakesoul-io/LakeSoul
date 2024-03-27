@@ -263,8 +263,8 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         let e = FilterParser::parse_proto(p)?;
         proto_filters.push(e);
     }
-    debug!("str filters: {:?}", str_filters);
-    debug!("proto filters: {:?}", proto_filters);
+    println!("str filters: {:#?}", str_filters);
+    println!("proto filters: {:#?}", proto_filters);
     if !str_filters.is_empty() {
         Ok(str_filters)
     } else {

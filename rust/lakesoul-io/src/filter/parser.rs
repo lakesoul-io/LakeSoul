@@ -524,6 +524,9 @@ fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
                 )));
             }
         },
+        Some(LiteralType::TimestampTz(t)) => {
+            ScalarValue::TimestampMicrosecond(Some(*t), Some(crate::constant::LAKESOUL_TIMEZONE.into()))
+        }
         Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
         Some(LiteralType::String(s)) => match lit.type_variation_reference {
             DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Utf8(Some(s.clone())),
@@ -686,6 +689,10 @@ fn from_substrait_type(dt: &substrait::proto::Type) -> Result<(DataType, Nullabi
                 TIMESTAMP_NANO_TYPE_REF => Ok((DataType::Timestamp(TimeUnit::Nanosecond, None), ts.nullability())),
                 v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
             },
+            r#type::Kind::TimestampTz(tz) => Ok((
+                DataType::Timestamp(TimeUnit::Microsecond, Some(crate::constant::LAKESOUL_TIMEZONE.into())),
+                tz.nullability(),
+            )),
             r#type::Kind::Date(date) => match date.type_variation_reference {
                 DATE_32_TYPE_REF => Ok((DataType::Date32, date.nullability())),
                 DATE_64_TYPE_REF => Ok((DataType::Date64, date.nullability())),
@@ -757,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn t() {
+    fn simple_test() {
         let v = [
             10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
             115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110,
@@ -767,13 +774,30 @@ mod tests {
             116, 97, 98, 108, 101,
         ];
         let plan = Plan::decode(&v[..]).unwrap();
-        println!("{:?}", plan);
-        // let f1 = Field::new("col1", DataType::Int32, true);
-        // let f2 = Field::new("col2", DataType::Int32, true);
-        // let sma = arrow_schema::Schema::new(vec![f1, f2]);
-        // let sma = DFSchema::try_from(sma).unwrap();
-        // println!("{:?}", plan);
-        // let expr = Parser::parse_proto(&plan, &sma).unwrap();
-        // println!("{:#?}", expr);
+        let e = Parser::parse_proto(&plan);
+        assert!(e.is_ok());
+    }
+
+    #[test]
+    fn date_test() {
+        let p = [
+            10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
+            115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110,
+            121, 95, 97, 110, 121, 26, -115, 2, 18, -118, 2, 10, -121, 2, 10, -124, 2, 10, 2, 10, 0, 18, -51, 1, 10, 2,
+            105, 100, 10, 4, 110, 97, 109, 101, 10, 8, 98, 105, 114, 116, 104, 68, 97, 121, 10, 4, 109, 97, 108, 101,
+            10, 5, 108, 101, 118, 101, 108, 10, 4, 122, 111, 110, 101, 10, 6, 104, 101, 105, 103, 104, 116, 10, 5, 99,
+            108, 97, 115, 115, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101, 121, 10, 7, 103, 97, 112, 84,
+            105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101, 97, 116, 101, 84, 105, 109,
+            101, 10, 10, 109, 111, 100, 105, 102, 121, 84, 105, 109, 101, 18, 93, 10, 4, 42, 2, 16, 1, 10, 4, 98, 2,
+            16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 90,
+            2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9, -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2,
+            16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5, -22, 1, 2, 16, 1, 24, 2, 26, 32, 26, 30, 26, 4,
+            10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 2, 34, 0, 34, 8, 26, 6, 10, 4, -128, 1, -68, 73, 58,
+            12, 10, 10, 98, 105, 114, 116, 104, 95, 105, 110, 102, 111,
+        ];
+        let p = unsafe { std::mem::transmute::<&[i8], &[u8]>(&p[..]) };
+        let plan = Plan::decode(&p[..]).unwrap();
+        let e = Parser::parse_proto(&plan);
+        assert!(e.is_ok())
     }
 }
