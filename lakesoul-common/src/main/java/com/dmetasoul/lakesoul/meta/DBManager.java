@@ -445,10 +445,8 @@ public class DBManager {
                 newPartitionList.add(curPartitionInfo.build());
             }
         } else if (commitOp.equals(CommitOp.CompactionCommit) || commitOp.equals(CommitOp.UpdateCommit)) {
-            if (readPartitionInfo != null) {
-                for (PartitionInfo p : readPartitionInfo) {
-                    readPartitionMap.put(p.getPartitionDesc(), p);
-                }
+            for (PartitionInfo p : readPartitionInfo) {
+                readPartitionMap.put(p.getPartitionDesc(), p);
             }
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
@@ -507,6 +505,32 @@ public class DBManager {
                 newMap.put(partitionDesc, curPartitionInfo.build());
                 newPartitionList.add(curPartitionInfo.build());
             }
+        } else if (commitOp.equals(CommitOp.DeleteCommit)) {
+            for (PartitionInfo p : readPartitionInfo) {
+                readPartitionMap.put(p.getPartitionDesc(), p);
+            }
+
+            for (PartitionInfo partitionInfo : listPartitionInfo) {
+                String partitionDesc = partitionInfo.getPartitionDesc();
+                PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
+                int curVersion = curPartitionInfo.getVersion();
+
+                PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
+                if (readPartition == null) {
+                    continue;
+                }
+
+                int newVersion = curVersion + 1;
+                curPartitionInfo
+                        .setVersion(newVersion)
+                        .setCommitOp(commitOp)
+                        .setExpression(partitionInfo.getExpression())
+                        .clearSnapshot();
+
+                newMap.put(partitionDesc, curPartitionInfo.build());
+                newPartitionList.add(curPartitionInfo.build());
+            }
+
         } else {
             throw new IllegalStateException("this operation is Illegal of the table:" + tableInfo.getTablePath());
         }

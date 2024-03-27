@@ -36,6 +36,23 @@ public class DMLSuite extends AbstractTestBase {
                 new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
     }
 
+    @Test
+    public void testInsertPartitionTableSQL() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableUserWithRange(tEnv);
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75)").await();
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_1";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]"});
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (4, 'Mike', 70)").await();
+        TableImpl flinkTable1 = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results1 = CollectionUtil.iteratorToList(flinkTable1.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results1,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[4, Mike, 70]"});
+    }
+
 
     @Test
     public void testUpdateNonPkAndPartitionSQL() throws ExecutionException, InterruptedException {
@@ -164,11 +181,30 @@ public class DMLSuite extends AbstractTestBase {
     }
 
     @Test
-    public void testDeletePartitionSQLNotSupported() throws ExecutionException, InterruptedException {
+    public void testDeletePartitionAndPkSQL() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUserWithRange(tEnv);
-        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95)").await();
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Bob', 110)").await();
         try {
+            // LakeSoulTableSource::applyPartition will not be called and LakeSoulTableSource::applyFilters will be called
+            tEnv.executeSql("DELETE FROM user_info_1 where order_id = 3 and name = 'Jack'").await();
+        } catch (Throwable e) {
+            System.out.println("Unsupported DELETE SQL");
+        }
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_1";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 95]", "+I[4, Bob, 110]"});
+    }
+
+    @Test
+    public void testDeletePartitionOnlySQL() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableUserWithRange(tEnv);
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Bob', 110)").await();
+        try {
+            // LakeSoulTableSource::applyPartition will be called and LakeSoulTableSource::applyFilters will not be called
             tEnv.executeSql("DELETE FROM user_info_1 where order_id = 3").await();
         } catch (Throwable e) {
             System.out.println("Unsupported DELETE SQL");
@@ -177,9 +213,8 @@ public class DMLSuite extends AbstractTestBase {
         String testSelect = "select * from user_info_1";
         TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[3, Jack, 75]", "+I[3, Amy, 95]"});
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
     }
-
 
     private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info (" +

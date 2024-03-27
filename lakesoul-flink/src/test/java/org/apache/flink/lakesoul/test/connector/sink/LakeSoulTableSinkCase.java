@@ -312,6 +312,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final String actual =
                 tEnv.explainSql(
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
+        System.out.println(actual);
         String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
         System.out.println(plan);
         assertEquals(expected, plan);
@@ -331,8 +332,11 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                 String.format(
                         "CREATE TABLE test_table ("
                                 + " id int,"
-                                + " real_col int"
-                                + ") WITH ("
+                                + " real_col int, "
+                                + " part string "
+                                + ") "
+                                + " PARTITIONED BY ( part )"
+                                + " WITH ("
                                 + "'"
                                 + HASH_BUCKET_NUM.key()
                                 + "'= '3',"
@@ -347,10 +351,10 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                                 + ")"));
         tEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         tEnv.executeSql(
-                "insert into test_table select 1, 1");
+                "insert into test_table select 1, 1, '1'");
         final String actual =
                 tEnv.explainSql(
-                        "delete from test_table", ExplainDetail.JSON_EXECUTION_PLAN);
+                        "delete from test_table where part='1' ", ExplainDetail.JSON_EXECUTION_PLAN);
         String plan = replaceFlinkVersion(replaceNodeIdInOperator(replaceExecNodeId(replaceStreamNodeId(replaceStageId(actual)))));
         System.out.println(plan);
         assertEquals(expected, plan);
