@@ -11,7 +11,6 @@ import com.dmetasoul.lakesoul.meta.*;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
@@ -22,7 +21,6 @@ import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.Schema.Builder;
 import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.CatalogBaseTable;
-import org.apache.flink.table.catalog.CatalogPartitionSpec;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.CatalogView;
 import org.apache.flink.table.catalog.exceptions.CatalogException;
@@ -38,12 +36,9 @@ import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 import org.apache.flink.types.RowKind;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.spark.sql.types.Metadata;
-import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.Option;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -56,24 +51,14 @@ import static java.time.ZoneId.SHORT_IDS;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
-import static org.apache.spark.sql.types.DataTypes.StringType;
 
 
 public class FlinkUtil {
 
     private static final Logger LOG = LoggerFactory.getLogger(FlinkUtil.class);
 
-    private FlinkUtil() {
-    }
-
-    private static final String NOT_NULL = " NOT NULL";
-
     public static String convert(TableSchema schema) {
         return schema.toRowDataType().toString();
-    }
-
-    public static String getRangeValue(CatalogPartitionSpec cps) {
-        return "Null";
     }
 
     public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
@@ -143,95 +128,6 @@ public class FlinkUtil {
             }
         }
         return new org.apache.arrow.vector.types.pojo.Schema(fields);
-    }
-
-    public static StructType toSparkSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
-        StructType stNew = new StructType();
-
-        for (RowType.RowField field : rowType.getFields()) {
-            String name = field.getName();
-            if (name.equals(SORT_FIELD)) continue;
-            LogicalType logicalType = field.getType();
-            org.apache.spark.sql.types.DataType
-                    dataType =
-                    org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name, logicalType));
-            stNew = stNew.add(name, dataType, logicalType.isNullable());
-        }
-
-        if (cdcColumn.isPresent()) {
-            String cdcColName = cdcColumn.get();
-            StructField cdcField = new StructField(cdcColName, StringType, false, null);
-            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
-
-            if (cdcFieldIndex.isEmpty()) {
-                stNew = stNew.add(cdcField);
-            } else {
-                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
-                if (!field.toString().equals(cdcField.toString()))
-                    throw new CatalogException(CDC_CHANGE_COLUMN +
-                            "=" +
-                            cdcColName +
-                            "has an invalid field of" +
-                            field +
-                            "," +
-                            CDC_CHANGE_COLUMN +
-                            " require field of " +
-                            cdcField);
-            }
-        }
-        return stNew;
-    }
-
-    public static StructType toSparkSchema(TableSchema tsc, Optional<String> cdcColumn) throws CatalogException {
-        StructType stNew = new StructType();
-
-        for (int i = 0; i < tsc.getFieldCount(); i++) {
-            String name = tsc.getFieldName(i).get();
-            DataType dt = tsc.getFieldDataType(i).get();
-            org.apache.spark.sql.types.DataType
-                    dataType =
-                    org.apache.spark.sql.arrow.ArrowUtils.fromArrowField(ArrowUtils.toArrowField(name,
-                            dt.getLogicalType()));
-            stNew = stNew.add(name, dataType, dt.getLogicalType().isNullable());
-        }
-        if (cdcColumn.isPresent()) {
-            String cdcColName = cdcColumn.get();
-            StructField cdcField = new StructField(cdcColName, StringType, false, Metadata.empty());
-            Option<Object> cdcFieldIndex = stNew.getFieldIndex(cdcColName);
-
-            if (cdcFieldIndex.isEmpty()) {
-                stNew = stNew.add(cdcField);
-            } else {
-                StructField field = stNew.fields()[(Integer) cdcFieldIndex.get()];
-                if (!field.toString().equals(cdcField.toString()))
-                    throw new CatalogException(CDC_CHANGE_COLUMN +
-                            "=" +
-                            cdcColName +
-                            " has an invalid field of " +
-                            field +
-                            "," +
-                            CDC_CHANGE_COLUMN +
-                            " require field of " +
-                            cdcField);
-            }
-        }
-        return stNew;
-    }
-
-    public static StringData rowKindToOperation(String rowKind) {
-        if ("+I".equals(rowKind)) {
-            return StringData.fromString("insert");
-        }
-        if ("-U".equals(rowKind)) {
-            return StringData.fromString("delete");
-        }
-        if ("+U".equals(rowKind)) {
-            return StringData.fromString("update");
-        }
-        if ("-D".equals(rowKind)) {
-            return StringData.fromString("delete");
-        }
-        return null;
     }
 
     public static StringData rowKindToOperation(RowKind rowKind) {
@@ -622,7 +518,7 @@ public class FlinkUtil {
             }
             org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
             if (hdfs.exists(tbDir)) {
-                throw new IOException("Table directory already exists: " + tbDir.toString());
+                throw new IOException("Table directory already exists: " + tbDir);
             }
             hdfs.mkdirs(tbDir);
             hdfs.setOwner(tbDir, userName, domain);

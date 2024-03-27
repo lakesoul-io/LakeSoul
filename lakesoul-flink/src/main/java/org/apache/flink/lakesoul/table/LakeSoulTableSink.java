@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.table;
 
-import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.core.fs.Path;
@@ -36,7 +35,6 @@ import org.apache.flink.types.RowKind;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -54,6 +52,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     private final List<String> primaryKeyList;
     private final List<String> partitionKeyList;
     private boolean overwrite;
+    private LakeSoulRowLevelModificationScanContext modificationContext;
 
     public LakeSoulTableSink(String summaryName, String tableName, DataType dataType, List<String> primaryKeyList,
                              List<String> partitionKeyList, ReadableConfig flinkConf, ResolvedSchema schema) {
@@ -113,6 +112,12 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
      */
     private DataStreamSink<?> createStreamingSink(DataStream<RowData> dataStream, Context sinkContext)
             throws IOException {
+
+        if (modificationContext != null) {
+            if (modificationContext.getRemainingPartitions() != null) {
+                flinkConf.set(DML_TYPE, PARTITION_DELETE);
+            }
+        }
         Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
         int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
         //rowData key tools
@@ -162,8 +167,10 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public RowLevelDeleteInfo applyRowLevelDelete(@Nullable RowLevelModificationScanContext context) {
+
         if (context instanceof LakeSoulRowLevelModificationScanContext) {
-            flinkConf.set(SOURCE_PARTITION_INFO, ((LakeSoulRowLevelModificationScanContext) context).getBas64EncodedSourcePartitionInfo());
+            this.modificationContext = (LakeSoulRowLevelModificationScanContext) context;
+            flinkConf.set(SOURCE_PARTITION_INFO, modificationContext.getBas64EncodedSourcePartitionInfo());
             if (flinkConf.getBoolean(USE_CDC, false)) {
                 flinkConf.set(DML_TYPE, DELETE_CDC);
             } else {

@@ -36,6 +36,7 @@ public class LakeSoulSinkOptions {
 
     public static final String DELETE_CDC = "delete_cdc";
 
+    public static final String PARTITION_DELETE = "part_delete";
     public static final String UPDATE = "update";
 
     public static final String INSERT = "insert";
