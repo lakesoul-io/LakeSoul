@@ -48,8 +48,8 @@ public class SubstraitFlinkUtil {
         return Tuple2.of(SupportsFilterPushDown.Result.of(accepted, remaining), planToProto(filter));
     }
 
-    public static Expression doTransform(ResolvedExpression flinkExpression, Schema arrow_schema) {
-        SubstraitVisitor substraitVisitor = new SubstraitVisitor(arrow_schema);
+    public static Expression doTransform(ResolvedExpression flinkExpression, Schema arrowSchema) {
+        SubstraitVisitor substraitVisitor = new SubstraitVisitor(arrowSchema);
         return flinkExpression.accept(substraitVisitor);
     }
 

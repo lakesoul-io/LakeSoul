@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.BiFunction;
 
@@ -32,8 +33,8 @@ import java.util.function.BiFunction;
  */
 public class SubstraitVisitor implements ExpressionVisitor<Expression> {
 
-    public SubstraitVisitor(Schema arrow_schema) {
-        this.arrowSchema = arrow_schema;
+    public SubstraitVisitor(Schema arrowSchema) {
+        this.arrowSchema = arrowSchema;
     }
 
 
@@ -119,8 +120,20 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
                 }
                 return ExpressionCreator.binary(nullable, b);
             }
-            case TINYINT:
-            case SMALLINT:
+            case TINYINT: {
+                byte b = 0;
+                if (value != null) {
+                    b = (byte) value;
+                }
+                return ExpressionCreator.i8(nullable, b);
+            }
+            case SMALLINT: {
+                short s = 0;
+                if (value != null) {
+                    s = (short) value;
+                }
+                return ExpressionCreator.i16(nullable, s);
+            }
             case INTEGER: {
                 int i = 0;
                 if (value != null) {
@@ -146,7 +159,7 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
             case DOUBLE: {
                 double d = 0.0;
                 if (value != null) {
-                    d = (float) value;
+                    d = (double) value;
                 }
                 return ExpressionCreator.fp64(nullable, d);
             }
@@ -168,17 +181,20 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE: {
                 long micros = 0;
                 if (value != null) {
+                    if (value instanceof LocalDateTime) {
+                        value = Timestamp.valueOf((LocalDateTime) value);
+                    }
                     if (value instanceof Timestamp || value instanceof Instant) {
                         micros = DateTimeUtils$.MODULE$.anyToMicros(value);
                     } else {
-                        LOG.info("Timestamp filter push down not supported");
+                        LOG.warn("Timestamp filter push down not supported");
                         return null;
                     }
                 }
                 return ExpressionCreator.timestamp(nullable, micros);
             }
             default:
-                LOG.info("Filter push down not supported");
+                LOG.warn("Filter push down not supported");
                 break;
         }
         return null;
@@ -239,7 +255,7 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         return null;
     }
 
-    private Type mapType(LogicalTypeRoot typeRoot, Boolean nullable) {
+    public static Type mapType(LogicalTypeRoot typeRoot, Boolean nullable) {
         TypeCreator R = TypeCreator.of(nullable);
         switch (typeRoot) {
             case CHAR:
@@ -255,7 +271,9 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
                 return R.BINARY;
             }
             case TINYINT:
+                return R.I8;
             case SMALLINT:
+                return R.I16;
             case INTEGER: {
                 return R.I32;
             }
@@ -298,16 +316,16 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
             new ImmutableMap.Builder<
                     FunctionDefinition, BiFunction<CallExpression, Schema, Expression>>()
                     .put(BuiltInFunctionDefinitions.IS_NULL, (call, schema) -> makeUnaryFunction(call, schema, "is_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.IS_NOT_NULL, (call,schema) -> makeUnaryFunction(call,schema, "is_not_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT, (call,schema) -> makeUnaryFunction(call,schema, "not:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.OR, (call,schema) -> makeBinaryFunction(call,schema, "or:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.AND, (call,schema) -> makeBinaryFunction(call,schema, "and:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.EQUALS, (call,schema) -> makeBinaryFunction(call,schema, "equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT_EQUALS, (call,schema) -> makeBinaryFunction(call,schema, "not_equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN, (call,schema) -> makeBinaryFunction(call,schema, "gt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, (call,schema) -> makeBinaryFunction(call,schema, "gte:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN, (call,schema) -> makeBinaryFunction(call,schema, "lt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, (call,schema)-> makeBinaryFunction(call,schema, "lte:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.IS_NOT_NULL, (call, schema) -> makeUnaryFunction(call, schema, "is_not_null:any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.NOT, (call, schema) -> makeUnaryFunction(call, schema, "not:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.OR, (call, schema) -> makeBinaryFunction(call, schema, "or:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.AND, (call, schema) -> makeBinaryFunction(call, schema, "and:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.EQUALS, (call, schema) -> makeBinaryFunction(call, schema, "equal:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.NOT_EQUALS, (call, schema) -> makeBinaryFunction(call, schema, "not_equal:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.GREATER_THAN, (call, schema) -> makeBinaryFunction(call, schema, "gt:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, (call, schema) -> makeBinaryFunction(call, schema, "gte:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.LESS_THAN, (call, schema) -> makeBinaryFunction(call, schema, "lt:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, (call, schema) -> makeBinaryFunction(call, schema, "lte:any_any", SubstraitUtil.CompNamespace))
                     .build();
 
     @Override

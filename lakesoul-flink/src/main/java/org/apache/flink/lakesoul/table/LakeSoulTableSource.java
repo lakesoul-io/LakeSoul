@@ -12,6 +12,7 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import io.substrait.proto.Plan;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.source.LakeSoulSource;
+import org.apache.flink.lakesoul.source.ParquetFilters;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -116,8 +117,8 @@ public class LakeSoulTableSource
             }
         }
         // find acceptable non partition filters
-//        Tuple2<Result, FilterPredicate> filterPushDownRes = ParquetFilters.toParquetFilter(nonPartitionFilters,
-//                remainingFilters);
+        Tuple2<Result, FilterPredicate> filterPushDownRes = ParquetFilters.toParquetFilter(nonPartitionFilters,
+                remainingFilters);
         Tuple2<Result, Plan> filterPushDownResult = null;
         try {
             filterPushDownResult = SubstraitFlinkUtil.flinkExprToSubStraitPlan(nonPartitionFilters,
@@ -126,11 +127,11 @@ public class LakeSoulTableSource
             throw new RuntimeException(e);
         }
         this.filter = filterPushDownResult.f1;
-//        this.filterStr = filterPushDownRes.f1;
+        this._filterPredicate = filterPushDownRes.f1;
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),
                 filterPushDownResult.f0.getRemainingFilters());
-//        LOG.info("FilterPlan: {}", this.filterPlan);
+        LOG.info("FilterPlan: {}", this.filter);
         return filterPushDownResult.f0;
     }
 
