@@ -138,10 +138,10 @@ public class LakeSoulTableSource
     public void applyPartitions(List<Map<String, String>> remainingPartitions) {
         if (isDelete()) {
             this.remainingPartitions = complementPartition(remainingPartitions);
+            getModificationContext().setRemainingPartitions(this.remainingPartitions);
         } else {
             this.remainingPartitions = remainingPartitions;
         }
-        getModificationContext().setRemainingPartitions(this.remainingPartitions);
         LOG.info("Applied partitions to native io: {}", this.remainingPartitions);
     }
 

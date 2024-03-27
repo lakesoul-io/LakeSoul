@@ -224,27 +224,27 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
         final TableEnvironment tEnv = LakeSoulTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
         testLakeSoulTableSinkDeleteWithParallelismBase(
                 tEnv, "== Abstract Syntax Tree ==\n" +
-                        "LogicalSink(table=[lakesoul.db1.test_table], fields=[id, real_col])\n" +
-                        "+- LogicalProject(id=[$0], real_col=[$1])\n" +
-                        "   +- LogicalFilter(condition=[false])\n" +
+                        "LogicalSink(table=[lakesoul.db1.test_table], fields=[id, real_col, part])\n" +
+                        "+- LogicalProject(id=[$0], real_col=[$1], part=[$2])\n" +
+                        "   +- LogicalFilter(condition=[NOT(=($2, _UTF-16LE'1'))])\n" +
                         "      +- LogicalTableScan(table=[[lakesoul, db1, test_table]])\n" +
                         "\n" +
                         "== Optimized Physical Plan ==\n" +
-                        "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col])\n" +
-                        "+- Values(tuples=[[]], values=[id, real_col])\n" +
+                        "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col, part])\n" +
+                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\n" +
                         "\n" +
                         "== Optimized Execution Plan ==\n" +
-                        "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col])\n" +
-                        "+- Values(tuples=[[]], values=[id, real_col])\n" +
+                        "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col, part])\n" +
+                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\n" +
                         "\n" +
                         "== Physical Execution Plan ==\n" +
                         "{\n" +
                         "  \"nodes\" : [ {\n" +
                         "    \"id\" : ,\n" +
-                        "    \"type\" : \"Source: Values[]\",\n" +
+                        "    \"type\" : \"Source: test_table[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"[]:Values(tuples=[[]], values=[id, real_col])\",\n" +
-                        "    \"parallelism\" : 1\n" +
+                        "    \"contents\" : \"[]:TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\",\n" +
+                        "    \"parallelism\" : 2\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +
                         "    \"type\" : \"Sink: Writer\",\n" +
@@ -253,7 +253,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"parallelism\" : 2,\n" +
                         "    \"predecessors\" : [ {\n" +
                         "      \"id\" : ,\n" +
-                        "      \"ship_strategy\" : \"REBALANCE\",\n" +
+                        "      \"ship_strategy\" : \"FORWARD\",\n" +
                         "      \"side\" : \"second\"\n" +
                         "    } ]\n" +
                         "  }, {\n" +
