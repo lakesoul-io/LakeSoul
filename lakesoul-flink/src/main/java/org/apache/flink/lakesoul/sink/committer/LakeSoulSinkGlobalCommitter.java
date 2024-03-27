@@ -180,10 +180,6 @@ public class LakeSoulSinkGlobalCommitter
                 boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                 StructType mergeStructType = equalOrCanCastTuple3._3();
 
-                System.out.println(origSchema.json());
-                System.out.println(msgSchema.toJson());
-                System.out.println(mergeStructType.json());
-                System.out.println(ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
                 boolean schemaChangeFound = false;
                 if (dbType.equals("mongodb")){
                     if (mergeStructType.length() > origSchema.size()){
