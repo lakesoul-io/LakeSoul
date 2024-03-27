@@ -122,7 +122,6 @@ public class MongoSinkUtils {
             return nameList;
         }
 
-
         private static void traverseField(RowType rowType, List<String> nameList) {
             for (int i = 0; i < rowType.getFieldCount(); i++) {
                 String fieldName = rowType.getFieldNames().get(i);

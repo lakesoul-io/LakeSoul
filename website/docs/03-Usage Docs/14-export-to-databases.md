@@ -29,6 +29,12 @@ Synchronize table to doris,additional configuration parameters are required
 |-----------------|----------|----------------------------------------------------------------------------------------------------|
 | --doris.fenodes | optional | Doris FE http address, multiple addresses are separated by commas,   <br/>the default is 127.0.0.1:8030 |
 
+Synchronize table to mongodb,additioanl configuration parameters are
+
+| Parameter     | Required | Meaning Description                                         |
+|---------------|----------|-------------------------------------------------------------|
+| --mongodb.uri | require  | mongodb uri sush as :mongodb://user:password@127.0.0.1:2701 |
+
 ## Examples
 Synchronize table to MySQL task
 
@@ -41,7 +47,7 @@ Synchronize table to MySQL task
     --target_db.user root \
     --target_db.password 123456 \
     --target_db.table_name t1 \
-    --source_db.db_name
+    --source_db.db_name \
     --source_db.table_name t1 \
     --sink_parallelism 1 \
     --use_batch true
@@ -78,7 +84,21 @@ Synchronize table to doris task
     --doris.fenodes 127.0.0.1:8030 \
     --use_batch false 
 ```
-
+Synchronize table to mongodb task
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --mongodb.uri "mongodb://user:password@127.0.0.1:27017" \
+    --source_db.db_name cdc \
+    --target_db.db_name cdc \
+    --target_db.db_type mongodb \
+    --target_db.table_name bincoll \
+    --source_db.table_name bincoll \
+    --sink_parallelism 2 \
+    --use_batch true \
+    --batchSize 1
+```
+For streaming out of the lake, batchsize is set to 1 or 0
 ## Instructions for use
 1. For data exported to both PostgreSQL and MySQL, users have the option to manually create tables according to users' requirements or table will be automatically created by the program. If users have to specific data type, it is recommended to create the tables in target databases in advacne.  
 2. If the exported table is partitioned, users must manually create the target table; otherwise, the synchronized table will lack partition fields.  
