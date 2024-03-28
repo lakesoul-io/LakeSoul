@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.source;
 
+import io.substrait.proto.Plan;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
@@ -39,7 +40,8 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
 
     String cdcColumn;
 
-    FilterPredicate filter;
+    FilterPredicate _filterPredicate;
+    Plan filter;
 
     private LakeSoulOneSplitRecordsReader lastSplitReader;
 
@@ -49,7 +51,8 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
                                List<String> pkColumns,
                                boolean isStreaming,
                                String cdcColumn,
-                               FilterPredicate filter) {
+                               FilterPredicate _filterPredicate,
+                               Plan filter) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
@@ -57,6 +60,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
         this.pkColumns = pkColumns;
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
+        this._filterPredicate = _filterPredicate;
         this.filter = filter;
     }
 
@@ -72,7 +76,9 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
                             this.pkColumns,
                             this.isStreaming,
                             this.cdcColumn,
-                            this.filter);
+                            this._filterPredicate,
+                            this.filter
+                    );
             return lastSplitReader;
         } catch (Exception e) {
             throw new IOException(e);

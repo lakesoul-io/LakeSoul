@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 
 use crate::datasource::file_format::LakeSoulParquetFormat;
 use crate::datasource::listing::LakeSoulListingTable;
+use crate::datasource::physical_plan::merge::convert_filter;
 use crate::datasource::physical_plan::merge::prune_filter_and_execute;
 use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfig};
 
@@ -65,10 +66,11 @@ impl LakeSoulReader {
             .await?;
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
+            let filters = convert_filter(&dataframe, self.config.filter_strs.clone(), self.config.filter_protos.clone())?;
             let stream = prune_filter_and_execute(
                 dataframe,
                 schema.clone(),
-                self.config.filter_strs.clone(),
+                filters,
                 self.config.batch_size,
             )
             .await?;
