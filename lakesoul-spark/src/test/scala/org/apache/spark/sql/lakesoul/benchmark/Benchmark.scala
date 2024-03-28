@@ -155,6 +155,12 @@ object Benchmark {
 
     val diff1 = jdbcDF.rdd.subtract(lakesoulDF.rdd)
     val diff2 = lakesoulDF.rdd.subtract(jdbcDF.rdd)
+    println("*******************jdbcDF count"+jdbcDF.count()+"***************")
+    println("*******************jdbcDF count"+lakesoulDF.count()+"***************")
+    println("*********diff1.count:"+diff1.count()+"*******")
+    println("*********diff1.count:"+diff2.count()+"*******")
+    println("jdbcDF schema"+jdbcDF.printSchema())
+    println("lakesoulDF schema"+lakesoulDF.printSchema())
 
     val result = diff1.count() == 0 && diff2.count() == 0
     if (!result) {
