@@ -58,7 +58,7 @@ public class MongoSinkUtils {
                 }
                 if (fieldValue != null) {
                     try {
-                        document.append(fieldName, convertTonBsonValue(fieldValue, fieldName));
+                        document.append(fieldName, convertTonBsonValue(fieldValue));
                     } catch (ParseException e) {
                         throw new RuntimeException(e);
                     }
@@ -68,7 +68,7 @@ public class MongoSinkUtils {
         }
 
 
-        public static BsonValue convertTonBsonValue(Object value, String fieldName) throws ParseException {
+        public static BsonValue convertTonBsonValue(Object value) throws ParseException {
             if (value == null) {
                 return new BsonNull();
             } else if (value instanceof Integer) {
@@ -93,7 +93,7 @@ public class MongoSinkUtils {
                 Object[] array = (Object[]) value;
                 BsonArray bsonArray = new BsonArray();
                 for (Object element : array) {
-                    bsonArray.add(convertTonBsonValue(element, fieldName));
+                    bsonArray.add(convertTonBsonValue(element));
                 }
                 return bsonArray;
             } else if (isDateTimeString(value)) {
@@ -108,7 +108,7 @@ public class MongoSinkUtils {
                     String name = structNameFiledList.get(0);
                     stringList.remove(0);
                     structNameFiledList = stringList;
-                    bsonDocument.append(name, convertTonBsonValue(fieldValue, name));
+                    bsonDocument.append(name, convertTonBsonValue(fieldValue));
                 }
                 return bsonDocument;
             } else {

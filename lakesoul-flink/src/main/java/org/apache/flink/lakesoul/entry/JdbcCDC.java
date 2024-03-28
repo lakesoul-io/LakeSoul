@@ -295,8 +295,8 @@ public class JdbcCDC {
         MongoDBSource<BinarySourceRecord> mongoSource =
                 MongoDBSource.<BinarySourceRecord>builder()
                         .hosts(host)
-                        .databaseList(mongoDatabase) // 设置捕获的数据库，支持正则表达式
-                        .collectionList(tableList) //设置捕获的集合，支持正则表达式
+                        .databaseList(mongoDatabase)
+                        .collectionList(tableList)
                         .startupOptions(StartupOptions.initial())
                         .scanFullChangelog(true)
                         .batchSize(batchSize)

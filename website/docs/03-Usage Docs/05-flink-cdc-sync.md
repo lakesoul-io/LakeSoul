@@ -286,6 +286,19 @@ Type mapping relationship between Oracle and LakeSoul
 | CHAR(n)  <br/>NCHAR(n)  <br/>NVARCHAR2(n)  <br/>VARCHAR(n)  <br/>VARCHAR2(n)  <br/>CLOB  <br/>NCLOB  <br/>XMLType  <br/>SYS.XMLTYPE | org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | BLOB                                                                                                                                |  org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
+Type mapping relationship between Oracle and Lakesoul
+
+| STRING      | org.apache.spark.sql.types.DataTypes.StringTypes | 
+|-------------|----------------------------------------|
+| DOUBLE      | org.apache.spark.sql.types.DataTypes.DoubleType |
+| INTEGER     | org.apache.spark.sql.types.DataTypes.Integer |
+| BOOLEAN     | org.apache.spark.sql.types.DataTypes.DoubleType |
+| DATE        | org.apache.spark.sql.types.DataTypes.DateType |
+| ARRAYS      | org.apache.spark.sql.types.ArrayType   |
+| BINARY DATA | org.apache.spark.sql.types.DataTypes.BinaryTYpe |
+| LONG        | org.apache.spark.sql.types.DataTypes.LongType |
+| STRUCT      | org.apache.spark.sql.types.StructField |
+| DECIMAL     |  org.apache.spark.sql.types.DecimalType(M,D)                                      |
 
 
 ## Precautions

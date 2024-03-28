@@ -18,10 +18,8 @@ import java.util.List;
 public class ParseDocument {
     public static Struct convertBSONToStruct(String value) {
         Document bsonDocument = Document.parse(value);
-        // 创建根 Struct 的 Schema
         SchemaBuilder structSchemaBuilder = SchemaBuilder.struct();
         Struct struct = new Struct(buildSchema(bsonDocument, structSchemaBuilder));
-        // 填充 Struct 的值
         fillStructValues(bsonDocument, struct);
 
         return struct;
@@ -32,16 +30,13 @@ public class ParseDocument {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
             if (value instanceof Document) {
-                // 处理嵌套的 Document
                 SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
                 structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
             }  else if (value instanceof List) {
-                // 处理ArrayList类型
                 List<?> arrayList = (List<?>) value;
                 Schema arraySchema = getSchemaForArrayList(arrayList);
                 structSchemaBuilder.field(fieldName, arraySchema);
             } else {
-                // 处理普通字段
                 structSchemaBuilder.field(fieldName, getSchemaForValue(value));
             }
         }
@@ -49,7 +44,6 @@ public class ParseDocument {
     }
 
     private static Schema getSchemaForArrayList(List<?> arrayList) {
-        // 假设 ArrayList 中的元素都是整数，您可以根据实际情况调整
         Schema elementSchema = null;
         if (!arrayList.isEmpty()) {
             Object firstElement = arrayList.get(0);
@@ -63,12 +57,10 @@ public class ParseDocument {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
             if (value instanceof Document) {
-                // 处理嵌套的 Document
                 Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
                 fillStructValues((Document) value, nestedStruct);
                 struct.put(fieldName, nestedStruct);
             } else if (value instanceof List) {
-                // 处理ArrayList类型
                 List<?> arrayList = (List<?>) value;
                 struct.put(fieldName, arrayList);
             } else if (value instanceof Decimal128) {
@@ -87,7 +79,6 @@ public class ParseDocument {
     }
 
     private static Schema getSchemaForValue(Object value) {
-        // 根据值的类型返回对应的 Schema
         if (value instanceof String) {
             return Schema.STRING_SCHEMA;
         } else if (value instanceof Integer) {
@@ -110,7 +101,6 @@ public class ParseDocument {
         } else if (value instanceof BsonTimestamp) {
             return Schema.INT64_SCHEMA;
         } else {
-            // 处理其他类型，可以根据实际情况添加更多类型
             return Schema.STRING_SCHEMA;
         }
     }
