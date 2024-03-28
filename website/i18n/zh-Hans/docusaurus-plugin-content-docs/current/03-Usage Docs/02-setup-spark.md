@@ -15,22 +15,22 @@ LakeSoul 目前支持 Spark 3.3 + Scala 2.12.
 
 #### 使用 `--packages` 传 Maven 仓库和包名
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:spark-3.3-VAR::VERSION
+spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
 ```
 
 #### 使用打包好的 LakeSoul 包
 可以从 [Releases](https://github.com/lakesoul-io/LakeSoul/releases) 页面下载已经打包好的 LakeSoul Jar 包。
 下载 jar 并传给 `spark-submit` 命令：
 ```bash
-spark-submit --jars "lakesoul-spark-spark-3.3-VAR::VERSION.jar"
+spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
 ```
 
 #### 直接将 Jar 包放在 Spark 环境中
 可以将 Jar 包下载后，放在 $SPARK_HOME/jars 中。
 
-Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-spark-3.3-VAR::VERSION.jar
+Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
-或者从国内地址下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-spark-3.3-VAR::VERSION.jar
+或者从国内地址下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-3.3-VAR::VERSION.jar
 
 ### 设置 Java/Scala 项目
 增加以下 Maven 依赖项:
@@ -38,7 +38,7 @@ Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/La
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul-spark</artifactId>
-    <version>spark-3.3-VAR::VERSION</version>
+    <version>3.3-VAR::VERSION</version>
 </dependency>
 ```
 
@@ -139,7 +139,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 
 
 ### 添加 LakeSoul Jar 到 Flink 部署的目录
-从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
+从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 并将 jar 文件放在 `$FLINK_HOME/lib` 下。在此之后，您可以像往常一样启动 flink 会话集群或应用程序。
 
@@ -160,6 +160,6 @@ export HADOOP_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
 <dependency>
      <groupId>com.dmetasoul</groupId>
      <artifactId>lakesoul</artifactId>
-     <version>flink-1.17-VAR::VERSION</version>
+     <version>1.17-VAR::VERSION</version>
 </dependency>
 ```

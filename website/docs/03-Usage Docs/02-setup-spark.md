@@ -16,14 +16,14 @@ To use `spark-shell`, `pyspark` or `spark-sql` shells, you should include LakeSo
 
 #### Use Maven Coordinates via --packages
 ```bash
-spark-shell --packages com.dmetasoul:lakesoul-spark:spark-3.3-VAR::VERSION
+spark-shell --packages com.dmetasoul:lakesoul-spark:3.3-VAR::VERSION
 ```
 
 #### Use Local Packages
 You can find the LakeSoul packages from our release page: [Releases](https://github.com/lakesoul-io/LakeSoul/releases).
 Download the jar file and pass it to `spark-submit`.
 ```bash
-spark-submit --jars "lakesoul-spark-spark-3.3-VAR::VERSION.jar"
+spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
 ```
 
 Or you could directly put the jar into `$SPARK_HOME/jars`
@@ -33,8 +33,8 @@ Include maven dependencies in your project:
 ```xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
-    <artifactId>lakesoul</artifactId>
-    <version>spark-3.3-VAR::VERSION</version>
+    <artifactId>lakesoul-spark</artifactId>
+    <version>3.3-VAR::VERSION</version>
 </dependency>
 ```
 
@@ -144,7 +144,7 @@ taskmanager.memory.task.off-heap.size: 3000m
 :::
 
 ### Add LakeSoul Jar to Flink's directory
-Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
+Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 And put the jar file under `$FLINK_HOME/lib`. After this, you could start flink session cluster or application as usual.
 
@@ -155,6 +155,6 @@ Add the following to your project's pom.xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
     <artifactId>lakesoul</artifactId>
-    <version>flink-1.17-VAR::VERSION</version>
+    <version>1.17-VAR::VERSION</version>
 </dependency>
 ```

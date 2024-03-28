@@ -19,9 +19,9 @@ LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API
 
 ## 命令行使用方法
 ### 1. 下载 LakeSoul Flink Jar
-可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar。
+可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar。
 
-如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-flink-1.17-VAR::VERSION.jar。
+如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-1.17-VAR::VERSION.jar。
 
 目前支持的 Flink 版本为 1.17。
 
@@ -63,7 +63,7 @@ export LAKESOUL_PG_PASSWORD=root
 | 参数                   | 含义                                                                                   | 取值说明                                                                |
 |----------------------|--------------------------------------------------------------------------------------|---------------------------------------------------------------------|
 | -c                   | 任务运行main函数入口类                                                                        | org.apache.flink.lakesoul.entry.JdbcCDC                             |
-| 主程序包                 | 任务运行jar包                                                                             | lakesoul-flink-flink-1.17-VAR::VERSION.jar                                 |
+| 主程序包                 | 任务运行jar包                                                                             | lakesoul-flink-1.17-VAR::VERSION.jar                                 |
 | --source_db.type     | 源数据库类型                                                                               | mysql postgres oracle                                               |
 | --source_db.host     | 源数据库的地址                                                                              |                                                                     |
 | --source_db.port     | 源数据库的端口                                                                              |                                                                     |
@@ -96,7 +96,7 @@ export LAKESOUL_PG_PASSWORD=root
 对于Mysql数据库配置，可参考https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/mysql-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_name "testDB" \
     --source_db.user "root" \
     --source.parallelism 1 \
@@ -124,7 +124,7 @@ export LAKESOUL_PG_PASSWORD=root
 https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/oracle-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_type oracle \
     --source_db.db_name "testDB" \
     --source_db.user "FLINKUSER" \
@@ -156,7 +156,7 @@ https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/
 对于Postgres数据库配置，可参考 https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/postgres-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_name "postgres" \
     --source_db.user "postgres" \
     --source.parallelism 1 \
