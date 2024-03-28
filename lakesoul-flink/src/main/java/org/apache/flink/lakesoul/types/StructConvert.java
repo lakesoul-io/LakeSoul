@@ -31,18 +31,13 @@ public class StructConvert {
         return row;
     }
 
-    // 递归处理嵌套的Struct类型
     private void writeField(BinaryRowWriter writer, int index, Schema schema, Object fieldValue) {
 
         if (fieldValue == null) {
-            // 如果字段值为null，则写入null
             writer.setNullAt(index);
         } else if (schema.type().getName().equals("struct")) {
-            // 如果字段类型是StructType，递归处理
             convertNestedStruct(writer, index, (Struct) fieldValue, schema);
         } else {
-            // 根据字段类型写入值
-            // 这里根据实际情况，可能需要根据字段类型进行不同的处理
             switch (schema.type()) {
                 case INT8:
                 case INT16:
@@ -58,7 +53,7 @@ public class StructConvert {
 
         }
     }
-    // 递归处理嵌套的Struct类型
+
     private void convertNestedStruct(BinaryRowWriter writer, int index, Struct nestedStruct, Schema nestedSchema) {
         int nestedArity = nestedSchema.fields().size();
         List<Field> nestedFields = nestedSchema.fields();

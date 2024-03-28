@@ -79,7 +79,7 @@ public class JdbcCDC {
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
         if ( dbType.equalsIgnoreCase("mongodb")){
-            mongoDatabase = parameter.get(MONGO_DB_DATABASE.key());
+            //mongoDatabase = parameter.get(MONGO_DB_DATABASE.key());
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
@@ -218,7 +218,6 @@ public class JdbcCDC {
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Postgres Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
-        stream.print();
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From Postgres Database " + dbName);
     }
@@ -283,7 +282,6 @@ public class JdbcCDC {
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(sqlServerSource, context, lakeSoulRecordConvert);
-
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Sqlserver Source");
 
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
@@ -295,7 +293,7 @@ public class JdbcCDC {
         MongoDBSource<BinarySourceRecord> mongoSource =
                 MongoDBSource.<BinarySourceRecord>builder()
                         .hosts(host)
-                        .databaseList(mongoDatabase)
+                        .databaseList(dbName)
                         .collectionList(tableList)
                         .startupOptions(StartupOptions.initial())
                         .scanFullChangelog(true)
@@ -313,7 +311,7 @@ public class JdbcCDC {
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mongoSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("mongodb Source");
-        source.print();
+
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
         DataStreamSink<BinarySourceRecord> dmlSink = builder.buildLakeSoulDMLSink(stream);
         env.execute("LakeSoul CDC Sink From mongo Database " + dbName);

@@ -164,9 +164,7 @@ public class LakeSoulSinkGlobalCommitter
                 StructType origSchema ;
                 if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
                     Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
-                    System.out.println(arrowSchema.toJson());
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
-                    System.out.println(origSchema.json());
                 } else {
                     origSchema = (StructType) StructType.fromJson(tableInfo.getTableSchema());
                 }
