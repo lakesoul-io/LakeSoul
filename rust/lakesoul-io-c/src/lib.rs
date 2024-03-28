@@ -1122,3 +1122,9 @@ mod tests {
         free_lakesoul_reader(reader);
     }
 }
+
+
+#[no_mangle]
+pub extern "C" fn rust_logger_init() {
+    let _ = env_logger::try_init();
+}

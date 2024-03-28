@@ -19,6 +19,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
+use datafusion_substrait::substrait::proto::Plan;
 use std::time::Duration;
 use url::{ParseError, Url};
 
@@ -56,6 +57,7 @@ pub struct LakeSoulIOConfig {
     // filtering predicates
     pub(crate) filter_strs: Vec<String>,
     pub(crate) filters: Vec<Expr>,
+    pub(crate) filter_protos:Vec<Plan>,
     // read or write batch size
     #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
@@ -205,6 +207,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_filter_str(mut self, filter_str: String) -> Self {
         self.config.filter_strs.push(filter_str);
+        self
+    }
+
+    pub fn with_filter_proto(mut self, filter_proto:Plan) -> Self {
+        self.config.filter_protos.push(filter_proto);
         self
     }
 

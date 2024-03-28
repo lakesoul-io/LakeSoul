@@ -89,4 +89,6 @@ public interface LibLakeSoulIO {
     void abort_and_close_writer(Pointer writer, BooleanCallback callback);
 
     void free_tokio_runtime(Pointer runtime);
+
+    void rust_logger_init();
 }

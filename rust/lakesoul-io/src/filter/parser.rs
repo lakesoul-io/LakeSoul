@@ -9,26 +9,29 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef, TimeUnit};
-use datafusion::logical_expr::{expr, BinaryExpr, BuiltinScalarFunction, Expr, Operator};
-use datafusion::prelude::col;
+use chrono::{DateTime, Utc};
+use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, expr, Expr, Operator};
+use datafusion::prelude::{col, SessionContext};
 use datafusion::scalar::ScalarValue;
-use datafusion_common::{not_impl_err, plan_err, Column, DFSchema, DataFusionError, Result};
+use datafusion_common::{Column, DataFusionError, DFSchema, not_impl_err, plan_err, Result};
 use datafusion_substrait::substrait;
+use datafusion_substrait::substrait::proto::{Expression, Plan, plan_rel, r#type, Rel, Type};
+use datafusion_substrait::substrait::proto::expression::{Literal, RexType};
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType::DirectReference;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
 use datafusion_substrait::substrait::proto::expression::reference_segment::ReferenceType::StructField;
-use datafusion_substrait::substrait::proto::expression::{Literal, RexType};
 use datafusion_substrait::substrait::proto::extensions::simple_extension_declaration::MappingType;
 use datafusion_substrait::substrait::proto::function_argument::ArgType;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::read_rel::ReadType;
 use datafusion_substrait::substrait::proto::rel::RelType;
-use datafusion_substrait::substrait::proto::{plan_rel, r#type, Expression, Plan, Rel, Type};
 use datafusion_substrait::variation_const::{
     DATE_32_TYPE_REF, DATE_64_TYPE_REF, DECIMAL_128_TYPE_REF, DECIMAL_256_TYPE_REF, DEFAULT_CONTAINER_TYPE_REF,
     DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF,
     TIMESTAMP_NANO_TYPE_REF, TIMESTAMP_SECOND_TYPE_REF, UNSIGNED_INTEGER_TYPE_REF,
 };
+use serde::de::IntoDeserializer;
+use tokio::io::AsyncSeek;
 
 pub struct Parser {}
 
@@ -513,20 +516,9 @@ fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
         },
         Some(LiteralType::Fp32(f)) => ScalarValue::Float32(Some(*f)),
         Some(LiteralType::Fp64(f)) => ScalarValue::Float64(Some(*f)),
-        Some(LiteralType::Timestamp(t)) => match lit.type_variation_reference {
-            TIMESTAMP_SECOND_TYPE_REF => ScalarValue::TimestampSecond(Some(*t), None),
-            TIMESTAMP_MILLI_TYPE_REF => ScalarValue::TimestampMillisecond(Some(*t), None),
-            TIMESTAMP_MICRO_TYPE_REF => ScalarValue::TimestampMicrosecond(Some(*t), None),
-            TIMESTAMP_NANO_TYPE_REF => ScalarValue::TimestampNanosecond(Some(*t), None),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::TimestampTz(t)) => {
-            ScalarValue::TimestampMicrosecond(Some(*t), Some(crate::constant::LAKESOUL_TIMEZONE.into()))
-        }
+        Some(LiteralType::Timestamp(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
+        Some(LiteralType::TimestampTz(t)) => ScalarValue::TimestampMicrosecond(Some(*t), Some(crate::constant::LAKESOUL_TIMEZONE.into())),
+
         Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
         Some(LiteralType::String(s)) => match lit.type_variation_reference {
             DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Utf8(Some(s.clone())),
@@ -682,13 +674,7 @@ fn from_substrait_type(dt: &substrait::proto::Type) -> Result<(DataType, Nullabi
             },
             r#type::Kind::Fp32(fp) => Ok((DataType::Float32, fp.nullability())),
             r#type::Kind::Fp64(fp) => Ok((DataType::Float64, fp.nullability())),
-            r#type::Kind::Timestamp(ts) => match ts.type_variation_reference {
-                TIMESTAMP_SECOND_TYPE_REF => Ok((DataType::Timestamp(TimeUnit::Second, None), ts.nullability())),
-                TIMESTAMP_MILLI_TYPE_REF => Ok((DataType::Timestamp(TimeUnit::Millisecond, None), ts.nullability())),
-                TIMESTAMP_MICRO_TYPE_REF => Ok((DataType::Timestamp(TimeUnit::Microsecond, None), ts.nullability())),
-                TIMESTAMP_NANO_TYPE_REF => Ok((DataType::Timestamp(TimeUnit::Nanosecond, None), ts.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
+            r#type::Kind::Timestamp(ts) => Ok((DataType::Timestamp(TimeUnit::Microsecond, None), ts.nullability())),
             r#type::Kind::TimestampTz(tz) => Ok((
                 DataType::Timestamp(TimeUnit::Microsecond, Some(crate::constant::LAKESOUL_TIMEZONE.into())),
                 tz.nullability(),
@@ -749,6 +735,7 @@ fn from_nullability(nullability: Nullability) -> bool {
 mod tests {
     use std::result::Result;
 
+    use datafusion::execution::{context::SessionContext, options::ParquetReadOptions};
     use prost::Message;
 
     use super::*;
@@ -780,24 +767,117 @@ mod tests {
 
     #[test]
     fn date_test() {
+        // birthDay=TO_DATE('2023-05-10')
         let p = [
             10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
             115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110,
-            121, 95, 97, 110, 121, 26, -115, 2, 18, -118, 2, 10, -121, 2, 10, -124, 2, 10, 2, 10, 0, 18, -51, 1, 10, 2,
+            121, 95, 97, 110, 121, 26, -103, 2, 18, -106, 2, 10, -109, 2, 10, -112, 2, 10, 2, 10, 0, 18, -39, 1, 10, 2,
             105, 100, 10, 4, 110, 97, 109, 101, 10, 8, 98, 105, 114, 116, 104, 68, 97, 121, 10, 4, 109, 97, 108, 101,
             10, 5, 108, 101, 118, 101, 108, 10, 4, 122, 111, 110, 101, 10, 6, 104, 101, 105, 103, 104, 116, 10, 5, 99,
-            108, 97, 115, 115, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101, 121, 10, 7, 103, 97, 112, 84,
-            105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101, 97, 116, 101, 84, 105, 109,
-            101, 10, 10, 109, 111, 100, 105, 102, 121, 84, 105, 109, 101, 18, 93, 10, 4, 42, 2, 16, 1, 10, 4, 98, 2,
-            16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 90,
-            2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9, -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2,
-            16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5, -22, 1, 2, 16, 1, 24, 2, 26, 32, 26, 30, 26, 4,
-            10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 2, 34, 0, 34, 8, 26, 6, 10, 4, -128, 1, -68, 73, 58,
-            12, 10, 10, 98, 105, 114, 116, 104, 95, 105, 110, 102, 111,
+            108, 97, 115, 115, 10, 4, 112, 111, 115, 110, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101,
+            121, 10, 7, 103, 97, 112, 84, 105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101,
+            97, 116, 101, 84, 105, 109, 101, 10, 10, 109, 111, 100, 105, 102, 121, 84, 105, 109, 101, 18, 99, 10, 4,
+            42, 2, 16, 1, 10, 4, 98, 2, 16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10,
+            4, 98, 2, 16, 1, 10, 4, 90, 2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 26, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9,
+            -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2, 16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5,
+            -22, 1, 2, 16, 1, 24, 2, 26, 33, 26, 31, 26, 4, 10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 2,
+            34, 0, 34, 9, 26, 7, 10, 5, -128, 1, -97, -104, 1, 58, 11, 10, 9, 116, 121, 112, 101, 95, 105, 110, 102,
+            111,
         ];
         let p = unsafe { std::mem::transmute::<&[i8], &[u8]>(&p[..]) };
         let plan = Plan::decode(&p[..]).unwrap();
         let e = Parser::parse_proto(&plan);
+        println!("{:#?}", e);
         assert!(e.is_ok())
     }
+
+    #[test]
+    fn timestamp_test() {
+        // createTime=To_TIMESTAMP('1995-10-10 13:10:20')
+        let p = [
+            10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
+            115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110,
+            121, 95, 97, 110, 121, 26, -99, 2, 18, -102, 2, 10, -105, 2, 10, -108, 2, 10, 2, 10, 0, 18, -39, 1, 10, 2,
+            105, 100, 10, 4, 110, 97, 109, 101, 10, 8, 98, 105, 114, 116, 104, 68, 97, 121, 10, 4, 109, 97, 108, 101,
+            10, 5, 108, 101, 118, 101, 108, 10, 4, 122, 111, 110, 101, 10, 6, 104, 101, 105, 103, 104, 116, 10, 5, 99,
+            108, 97, 115, 115, 10, 4, 112, 111, 115, 110, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101,
+            121, 10, 7, 103, 97, 112, 84, 105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101,
+            97, 116, 101, 84, 105, 109, 101, 10, 10, 109, 111, 100, 105, 102, 121, 84, 105, 109, 101, 18, 99, 10, 4,
+            42, 2, 16, 1, 10, 4, 98, 2, 16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10,
+            4, 98, 2, 16, 1, 10, 4, 90, 2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 26, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9,
+            -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2, 16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5,
+            -22, 1, 2, 16, 1, 24, 2, 26, 37, 26, 35, 26, 4, 10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 13,
+            34, 0, 34, 13, 26, 11, 10, 9, 112, -128, -50, -62, -43, -124, -9, -72, 1, 58, 11, 10, 9, 116, 121, 112,
+            101, 95, 105, 110, 102, 111,
+        ];
+        let p = unsafe { std::mem::transmute::<&[i8], &[u8]>(&p[..]) };
+        let plan = Plan::decode(&p[..]).unwrap();
+        let e = Parser::parse_proto(&plan);
+        println!("{:#?}", e);
+        assert!(e.is_ok())
+    }
+
+    #[test]
+    fn timestamp_tz_test() {
+        // modifyTime=TO_TIMESTAMP_LTZ(1612176000,0)
+        let p = [
+            10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
+            115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110,
+            121, 95, 97, 110, 121, 26, -98, 2, 18, -101, 2, 10, -104, 2, 10, -107, 2, 10, 2, 10, 0, 18, -39, 1, 10, 2,
+            105, 100, 10, 4, 110, 97, 109, 101, 10, 8, 98, 105, 114, 116, 104, 68, 97, 121, 10, 4, 109, 97, 108, 101,
+            10, 5, 108, 101, 118, 101, 108, 10, 4, 122, 111, 110, 101, 10, 6, 104, 101, 105, 103, 104, 116, 10, 5, 99,
+            108, 97, 115, 115, 10, 4, 112, 111, 115, 110, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101,
+            121, 10, 7, 103, 97, 112, 84, 105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101,
+            97, 116, 101, 84, 105, 109, 101, 10, 10, 109, 111, 100, 105, 102, 121, 84, 105, 109, 101, 18, 99, 10, 4,
+            42, 2, 16, 1, 10, 4, 98, 2, 16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10,
+            4, 98, 2, 16, 1, 10, 4, 90, 2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 26, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9,
+            -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2, 16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5,
+            -22, 1, 2, 16, 1, 24, 2, 26, 38, 26, 36, 26, 4, 10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 14,
+            34, 0, 34, 14, 26, 12, 10, 10, -40, 1, -128, -128, -70, -87, -44, -57, -18, 2, 58, 11, 10, 9, 116, 121,
+            112, 101, 95, 105, 110, 102, 111,
+        ];
+        let p = unsafe { std::mem::transmute::<&[i8], &[u8]>(&p[..]) };
+        let plan = Plan::decode(&p[..]).unwrap();
+        println!("{:#?}", plan);
+        let e = Parser::parse_proto(&plan);
+        println!("{:#?}", e);
+        assert!(e.is_ok())
+    }
+
+    #[test]
+    fn t() {
+        let _ = env_logger::try_init();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let p = [10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105, 115, 111, 110, 46, 121, 97, 109, 108, 18, 19, 26, 17, 8, 1, 26, 13, 101, 113, 117, 97, 108, 58, 97, 110, 121, 95, 97, 110, 121, 26, -98, 2, 18, -101, 2, 10, -104, 2, 10, -107, 2, 10, 2, 10, 0, 18, -39, 1, 10, 2, 105, 100, 10, 4, 110, 97, 109, 101, 10, 8, 98, 105, 114, 116, 104, 100, 97, 121, 10, 4, 109, 97, 108, 101, 10, 5, 108, 101, 118, 101, 108, 10, 4, 122, 111, 110, 101, 10, 6, 104, 101, 105, 103, 104, 116, 10, 5, 99, 108, 97, 115, 115, 10, 4, 112, 111, 115, 110, 10, 5, 115, 99, 111, 114, 101, 10, 5, 109, 111, 110, 101, 121, 10, 7, 103, 97, 112, 116, 105, 109, 101, 10, 7, 99, 111, 117, 110, 116, 114, 121, 10, 10, 99, 114, 101, 97, 116, 101, 116, 105, 109, 101, 10, 10, 109, 111, 100, 105, 102, 121, 116, 105, 109, 101, 18, 99, 10, 4, 42, 2, 16, 1, 10, 4, 98, 2, 16, 2, 10, 5, -126, 1, 2, 16, 1, 10, 4, 10, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 98, 2, 16, 1, 10, 4, 90, 2, 16, 1, 10, 4, 18, 2, 16, 1, 10, 4, 26, 2, 16, 1, 10, 4, 58, 2, 16, 1, 10, 9, -62, 1, 6, 8, 2, 16, 10, 32, 1, 10, 4, 106, 2, 16, 1, 10, 4, 106, 2, 16, 1, 10, 4, 114, 2, 16, 1, 10, 5, -22, 1, 2, 16, 1, 24, 2, 26, 38, 26, 36, 26, 4, 10, 2, 16, 1, 34, 12, 26, 10, 18, 8, 10, 4, 18, 2, 8, 14, 34, 0, 34, 14, 26, 12, 10, 10, -40, 1, -128, -64, -82, -50, -65, -56, -18, 2, 58, 11, 10, 9, 116, 121, 112, 101, 95, 105, 110, 102, 111];
+            let p = unsafe { std::mem::transmute::<&[i8], &[u8]>(&p[..]) };
+            let plan = Plan::decode(&p[..]).unwrap();
+            // println!("{:#?}", plan);
+            let e = Parser::parse_proto(&plan).unwrap();
+            println!("{:#?}", e);
+            let path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/tpye/part-00000-0e59e8f8-2ec4-4d49-8fb7-a2ce3b362ea1_00000.c000.parquet";
+            let ctx = SessionContext::new();
+            let pros = ParquetReadOptions::default();
+            let df = ctx.read_parquet(path, pros).await.unwrap();
+            // ctx.register_parquet("type_info", path, pros).await.unwrap();
+            // let testSql = "explain select * from type_info where type_info.modifytime='2021-02-01T10:40:00Z'";
+            // let testSql = "select * from type_info";
+            // let df = ctx.sql(testSql).await.unwrap();
+            let df = df.filter(e).unwrap();
+            df.show().await.unwrap();
+        })
+    }
+}
+
+#[test]
+fn tt() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let ctx = SessionContext::new();
+        let df = ctx.sql("select to_timestamp_micros('2021-02-01T10:40:00Z')").await.unwrap();
+        df.show().await.unwrap();
+        let time: DateTime<Utc> = chrono::DateTime::from_str("2021-02-01T10:40:00Z").unwrap();
+        let i = time.timestamp_micros();
+        println!("{i}");
+    });
 }

@@ -128,6 +128,12 @@ public class LakeSoulTableSource
         }
         this.filter = filterPushDownResult.f1;
         this._filterPredicate = filterPushDownRes.f1;
+
+        if (this.filter != null) {
+            byte[] byteArray = this.filter.toByteArray();
+            System.out.println(Arrays.toString(byteArray));
+        }
+
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),
                 filterPushDownResult.f0.getRemainingFilters());

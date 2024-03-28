@@ -163,6 +163,8 @@ TokioRuntime *create_tokio_runtime_from_builder(TokioRuntimeBuilder *builder);
 
 void free_tokio_runtime(CResult<TokioRuntime> *runtime);
 
+void rust_logger_init();
+
 } // extern "C"
 
 } // namespace lakesoul

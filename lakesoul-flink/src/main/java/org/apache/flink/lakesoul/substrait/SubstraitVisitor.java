@@ -1,5 +1,6 @@
 package org.apache.flink.lakesoul.substrait;
 
+import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.google.common.collect.ImmutableMap;
 import io.substrait.expression.*;
@@ -176,22 +177,30 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
                 }
                 return ExpressionCreator.date(nullable, days);
             }
-            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE: {
+                long micros = 0;
+                if (value != null) {
+                    Long res = DateTimeUtils.toMicros(value);
+                    if (res == null) {
+                        LOG.warn("Timestamp filter push down not supported");
+                        return null;
+                    }
+                    micros = res;
+                }
+                return ExpressionCreator.timestamp(nullable, micros);
+            }
             case TIMESTAMP_WITH_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE: {
                 long micros = 0;
                 if (value != null) {
-                    if (value instanceof LocalDateTime) {
-                        value = Timestamp.valueOf((LocalDateTime) value);
-                    }
-                    if (value instanceof Timestamp || value instanceof Instant) {
-                        micros = DateTimeUtils$.MODULE$.anyToMicros(value);
-                    } else {
+                    Long res = DateTimeUtils.toMicros(value);
+                    if (res == null) {
                         LOG.warn("Timestamp filter push down not supported");
                         return null;
                     }
+                    micros = res;
                 }
-                return ExpressionCreator.timestamp(nullable, micros);
+                return ExpressionCreator.timestampTZ(nullable, micros);
             }
             default:
                 LOG.warn("Filter push down not supported");
@@ -289,10 +298,12 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
             case DATE: {
                 return R.DATE;
             }
-            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE: {
+                return R.TIMESTAMP;
+            }
             case TIMESTAMP_WITH_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE: {
-                return R.TIMESTAMP;
+                return R.TIMESTAMP_TZ;
             }
             default:
                 LOG.info("unsupported type");
