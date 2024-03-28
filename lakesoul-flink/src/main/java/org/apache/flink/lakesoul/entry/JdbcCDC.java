@@ -55,7 +55,6 @@ public class JdbcCDC {
     private static String serverTimezone;
     private static String pluginName;
     private static int batchSize;
-    private static String mongoDatabase;
 
     public static void main(String[] args) throws Exception {
         ParameterTool parameter = ParameterTool.fromArgs(args);
@@ -79,7 +78,6 @@ public class JdbcCDC {
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
         if ( dbType.equalsIgnoreCase("mongodb")){
-            //mongoDatabase = parameter.get(MONGO_DB_DATABASE.key());
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }

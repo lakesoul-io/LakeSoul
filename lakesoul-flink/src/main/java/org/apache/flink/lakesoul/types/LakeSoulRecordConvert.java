@@ -175,30 +175,30 @@ public class LakeSoulRecordConvert implements Serializable {
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
-                boolean afterNullable = afterSchema.isOptional();
-                RowType rt = toFlinkRowType(afterSchema,afterNullable);
+                //boolean afterNullable = afterSchema.isOptional();
+                RowType rt = toFlinkRowType(afterSchema,false);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
             } else if (op == Envelope.Operation.DELETE) {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
-                boolean nullable = beforeSchema.isOptional();
-                RowType rt = toFlinkRowType(beforeSchema,nullable);
+//                boolean nullable = beforeSchema.isOptional();
+                RowType rt = toFlinkRowType(beforeSchema,false);
                 builder.setOperation("delete").setBeforeRowData(null).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
             } else {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
-                boolean beforNullable = beforeSchema.isOptional();
-                RowType beforeRT = toFlinkRowType(beforeSchema,beforNullable);
+                //boolean beforNullable = beforeSchema.isOptional();
+                RowType beforeRT = toFlinkRowType(beforeSchema,false);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
-                boolean afterNullable = afterSchema.isOptional();
-                RowType afterRT = toFlinkRowType(afterSchema,afterNullable);
+                //boolean afterNullable = afterSchema.isOptional();
+                RowType afterRT = toFlinkRowType(afterSchema,false);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
@@ -229,7 +229,7 @@ public class LakeSoulRecordConvert implements Serializable {
         return RowType.of(colTypes, colNames);
     }
 
-    public RowType toFlinkRowType(Schema schema, boolean nullable) {
+    public RowType toFlinkRowType(Schema schema, boolean isMongoDDL) {
         int arity = schema.fields().size() + 1;
         if (useCDC) ++arity;
         String[] colNames = new String[arity];
@@ -238,7 +238,11 @@ public class LakeSoulRecordConvert implements Serializable {
         for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
-            colTypes[i] = convertToLogical(item.schema(), !item.name().equals("_id") && nullable);
+            if (isMongoDDL){
+                colTypes[i] = convertToLogical(item.schema(), !item.name().equals("_id"));
+            }else {
+                colTypes[i] = convertToLogical(item.schema(), item.schema().isOptional());
+            }
         }
 //        colNames[useCDC ? arity - 3 : arity - 2] = BINLOG_FILE_INDEX;
 //        colTypes[useCDC ? arity - 3 : arity - 2] = new BigIntType();
@@ -273,8 +277,6 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private LogicalType primitiveLogicalType(Schema fieldSchema,boolean nullable) {
-//        boolean nullable = fieldSchema.isOptional();
-//        if (isMongoDDl) nullable = true;
         switch (fieldSchema.type()) {
             case BOOLEAN:
                 return new BooleanType(nullable);
