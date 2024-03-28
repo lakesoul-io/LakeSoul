@@ -19,7 +19,7 @@ SPDX-License-Identifier: Apache-2.0
         <module>lakesoul-presto</module>
     </modules>
     <packaging>pom</packaging>
-    <name>LakeSoul POM</name>
+    <name>LakeSoul</name>
     <description>A Table Structure Storage to Unify Batch and Streaming Data Processing</description>
     <url>https://github.com/lakesoul-io/LakeSoul</url>
     <licenses>
@@ -72,26 +72,6 @@ SPDX-License-Identifier: Apache-2.0
             <url>https://s01.oss.sonatype.org/content/repositories/snapshots</url>
         </snapshotRepository>
     </distributionManagement>
-
-    <repositories>
-        <repository>
-            <id>central</id>
-            <name>Maven Central</name>
-            <layout>default</layout>
-            <url>https://repo1.maven.org/maven2</url>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-        <repository>
-            <id>confluent</id>
-            <name>Confluent</name>
-            <url>https://packages.confluent.io/maven/</url>
-        </repository>
-    </repositories>
 
     <dependencies>
         <dependency>
@@ -223,9 +203,16 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>
-                <!--<version>1.6.0</version>-->
+                <version>1.6.0</version>
                 <configuration>
                     <flattenMode>oss</flattenMode>
+                    <pomElements>
+                        <dependencyManagement>keep</dependencyManagement>
+                        <dependencies>keep</dependencies>
+                        <name>keep</name>
+                        <description>resolve</description>
+                        <profiles>remove</profiles>
+                    </pomElements>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->

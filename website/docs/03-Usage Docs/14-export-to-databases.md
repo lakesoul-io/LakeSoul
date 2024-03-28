@@ -34,7 +34,7 @@ Synchronize table to MySQL task
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:mysql://172.17.0.4:3306/ \
     --target_db.db_type mysql \
     --target_db.db_name test \
@@ -50,7 +50,7 @@ Synchronize table to postgresql task
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --target_db.url jdbc:postgresql://172.17.0.2:5432/ \
     --target_db.db_name test \
     --target_db.db_type postgres \
@@ -65,7 +65,7 @@ Synchronize table to postgresql task
 Synchronize table to doris task
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.SyncDatabase \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --target_db.url "jdbc:mysql://172.17.0.2:9030/" \
     --source_db.db_name test \
     --target_db.db_name test \

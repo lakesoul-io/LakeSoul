@@ -80,7 +80,7 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-spark-3.3-VAR::VERSION.jar \
+./jars/lakesoul-spark-3.3-VAR::VERSION.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false
 ```
 
@@ -157,6 +157,6 @@ export lakesoul_home=./pg.properties && ./bin/spark-submit \
 --driver-memory 4g \
 --executor-memory 4g \
 --master local[4] \
-./jars/lakesoul-spark-spark-3.3-VAR::VERSION.jar \
+./jars/lakesoul-spark-3.3-VAR::VERSION.jar \
 localhost:9092 test.* /tmp/kafka/data /tmp/kafka/checkpoint/ kafka earliest false http://localhost:8081
 ```

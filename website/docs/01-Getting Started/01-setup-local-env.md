@@ -91,7 +91,7 @@ spark.sql.catalog.lakesoul | org.apache.spark.sql.lakesoul.catalog.LakeSoulCatal
 spark.sql.defaultCatalog | lakesoul | set default catalog for spark
 
 ### 1.5 Setup Flink environment
-Download LakeSoul Flink jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
+Download LakeSoul Flink jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 Download Flink: https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
 
@@ -101,7 +101,7 @@ Enter the Flink installation directory and execute the following command:
 ```shell
 export lakesoul_home=/opt/soft/pg.property && ./bin/start-cluster.sh
 
-export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-flink-1.17-VAR::VERSION.jar
+export lakesoul_home=/opt/soft/pg.property && ./bin/sql-client.sh embedded -j lakesoul-flink-1.17-VAR::VERSION.jar
 ```
 
 #### 1.5.2 Write data to object storage service

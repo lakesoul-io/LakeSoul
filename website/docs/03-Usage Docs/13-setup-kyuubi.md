@@ -31,7 +31,7 @@ The operating environment is Linux, and Spark, Flink, and Kyuubi have been insta
 
 ### 1. Dependencies
 
-Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
+Download LakeSoul Flink Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 And put the jar file under `$FLINK_HOME/lib`.
 
@@ -74,7 +74,7 @@ More details about Flink SQL with LakeSoul refer to : [Flink Lakesoul Connector]
 
 ### 1. Dependencies
 
-Download LakeSoul Spark Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-spark-3.3-VAR::VERSION.jar
+Download LakeSoul Spark Jar from: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
 And put the jar file under `$SPARK_HOME/jars`. 
 

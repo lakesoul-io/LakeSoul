@@ -32,7 +32,7 @@ LakeSoul实现了Flink/Spark Connector。我们可以通过Kyuubi使用Spark/Fli
 
 ### 1. 依赖
 
-下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar
+下载LakeSoul Flink Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 将该jar拷贝至 `$FLINK_HOME/lib`.
 
@@ -76,7 +76,7 @@ drop table `lakesoul`.`default`.test_lakesoul_table_v1;
 
 ### 1. 依赖
 
-下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-spark-3.3-VAR::VERSION.jar
+下载LakeSoul Spark Jar: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
 将该jar拷贝至 `$SPARK_HOME/jars`. 
 
