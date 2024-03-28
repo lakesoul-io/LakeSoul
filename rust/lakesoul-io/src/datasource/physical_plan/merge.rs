@@ -2,24 +2,24 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
+use std::sync::Arc;
 
 use arrow_schema::{Field, Schema, SchemaRef};
-use datafusion::dataframe::DataFrame;
-use datafusion::logical_expr::Expr;
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
     physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
-use datafusion_common::{DFSchemaRef, DataFusionError, Result};
+use datafusion::dataframe::DataFrame;
+use datafusion::logical_expr::Expr;
+use datafusion_common::{DataFusionError, DFSchemaRef, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::debug;
+use log::{debug, error};
 
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::filter::parser::Parser as FilterParser;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
@@ -59,12 +59,12 @@ impl MergeParquetExec {
                         field.data_type().clone(),
                         field.is_nullable()
                             | inputs.iter().any(|plan| {
-                                if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
-                                    plan_field.is_nullable()
-                                } else {
-                                    true
-                                }
-                            }),
+                            if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
+                                plan_field.is_nullable()
+                            } else {
+                                true
+                            }
+                        }),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -265,9 +265,9 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
     }
     println!("str filters: {:#?}", str_filters);
     println!("proto filters: {:#?}", proto_filters);
-    if !str_filters.is_empty() {
+    if proto_filters.is_empty() {
         Ok(str_filters)
-    } else {
+    }else {
         Ok(proto_filters)
     }
 }
@@ -278,9 +278,12 @@ pub async fn prune_filter_and_execute(
     filters: Vec<Expr>,
     batch_size: usize,
 ) -> Result<SendableRecordBatchStream> {
+    error!("XXXXXXXXXXXXXXXXXXXXXXX");
+    debug!("filters: {:?}",filters);
     let df_schema = df.schema().clone();
     // find columns requested and prune otherPlans
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
+    debug!("cols: {:?}",cols);
     if cols.is_empty() {
         return Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)));
     }
