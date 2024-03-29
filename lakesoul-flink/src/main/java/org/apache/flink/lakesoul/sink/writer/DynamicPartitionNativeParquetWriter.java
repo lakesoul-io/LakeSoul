@@ -58,7 +58,6 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                                                long creationTime,
                                                Configuration conf) throws IOException {
         this.batchSize = 250000; // keep same with native writer's row group row number
-        System.out.println(creationTime);
         this.creationTime = creationTime;
         this.rowsInBatch = 0;
         this.rowType = rowType;

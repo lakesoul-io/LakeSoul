@@ -57,13 +57,6 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
             for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
                 List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
 
-//            if (committable.hasPendingFile()) {
-//                assert committable.getPendingFiles() != null;
-//                LOG.info("PendingFiles to commit {}", committable.getPendingFiles().size());
-//                if (committable.getPendingFiles().isEmpty()) {
-//                    continue;
-//                }
-
                 // pending files to commit
                 List<String> files = new ArrayList<>();
                 for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :

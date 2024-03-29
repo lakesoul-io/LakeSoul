@@ -177,7 +177,7 @@ public class LakeSoulSinkOptions {
     public static final ConfigOption<Boolean> DYNAMIC_BUCKETING = ConfigOptions
             .key("lakesoul.sink.dynamic_bucketing")
             .booleanType()
-            .defaultValue(false)
+            .defaultValue(true)
             .withDescription("If true, lakesoul sink use dynamic bucketing writer");
 
 }

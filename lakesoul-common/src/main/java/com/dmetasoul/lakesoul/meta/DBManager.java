@@ -451,16 +451,13 @@ public class DBManager {
             for (PartitionInfo partitionInfo : listPartitionInfo) {
                 String partitionDesc = partitionInfo.getPartitionDesc();
                 PartitionInfo.Builder curPartitionInfo = getOrCreateCurPartitionInfo(curMap, partitionDesc, tableId).toBuilder();
-                System.out.println("curPartitionInfo");
-                System.out.println(curPartitionInfo);
                 int curVersion = curPartitionInfo.getVersion();
 
                 PartitionInfo readPartition = readPartitionMap.get(partitionDesc);
                 int readPartitionVersion = 0;
                 if (readPartition != null) {
                     readPartitionVersion = readPartition.getVersion();
-                    System.out.println("readPartitionInfo");
-                    System.out.println(readPartitionInfo);
+
                 }
 
                 int newVersion = curVersion + 1;

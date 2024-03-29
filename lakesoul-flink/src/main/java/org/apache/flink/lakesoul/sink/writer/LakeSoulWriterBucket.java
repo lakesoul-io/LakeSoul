@@ -116,8 +116,6 @@ public class LakeSoulWriterBucket {
 
     public String getBucketId() {
         return bucketId;
-//        System.out.println(pendingFilesMap.keySet());
-//        return pendingFilesMap.keySet().toString();
     }
 
     public Path getBucketPath() {
@@ -148,7 +146,6 @@ public class LakeSoulWriterBucket {
     }
 
     void write(RowData element, long currentTime, long tsMs) throws IOException {
-        System.out.println(element);
         if (inProgressPartWriter == null || rollingPolicy.shouldRollOnEvent(inProgressPartWriter, element)) {
             LOG.info(
                     "Opening new part file for bucket id={} at {}.",

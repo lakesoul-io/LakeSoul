@@ -103,7 +103,10 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
             long time,
             @Nullable String commitId,
-            long tsMs, String dmlType) {
+            long tsMs,
+            String dmlType,
+            String sourcePartitionInfo
+    ) {
         Preconditions.checkNotNull(pendingFilesMap);
         this.dynamicBucketing = pendingFilesMap.keySet().size() != 1;
         this.bucketId = this.dynamicBucketing ? DYNAMIC_BUCKET : pendingFilesMap.keySet().stream().findFirst().get();
