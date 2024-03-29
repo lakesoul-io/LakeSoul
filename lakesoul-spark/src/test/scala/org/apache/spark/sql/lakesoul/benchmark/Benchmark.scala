@@ -159,9 +159,9 @@ object Benchmark {
     val result = diff1.count() == 0 && diff2.count() == 0
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
-      println("*************diff1**************"+"dfff1.count:"+diff1.count()+"schema"+jdbcDF.printSchema()+"jdbcDF count:"+jdbcDF.count())
+      println("*************diff1**************")
       spark.createDataFrame(diff1, lakesoulDF.schema).show()
-      println("*************diff2**************"+"diff2.count:"+diff2.count()+"schema"+lakesoulDF.printSchema()+"lakesoulDF count:"+lakesoulDF.count())
+      println("*************diff2**************")
       spark.createDataFrame(diff2, lakesoulDF.schema).show()
       println(table + " data verification ERROR!!!")
       System.exit(1)

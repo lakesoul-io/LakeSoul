@@ -185,8 +185,9 @@ public class LakeSoulRecordConvert implements Serializable {
                 RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
 //                boolean nullable = beforeSchema.isOptional();
                 RowType rt = toFlinkRowType(beforeSchema,false);
-                builder.setOperation("delete").setBeforeRowData(null).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
+                builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
+
             } else {
                 Schema beforeSchema = valueSchema.field(Envelope.FieldName.BEFORE).schema();
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
@@ -370,6 +371,14 @@ public class LakeSoulRecordConvert implements Serializable {
         RowData rowData = Objects.equals(data.getOp(), "delete") ? data.getBefore() : data.getAfter();
         List<String> pks = sourceRecord.getPrimaryKeys();
         long hash = 42;
+        if (Objects.equals(data.getOp(),"delete")){
+            for (String pk : pks) {
+                int typeIndex = rowType.getFieldIndex(pk);
+                LogicalType type = rowType.getTypeAt(typeIndex);
+                Object fieldOrNull = RowData.createFieldGetter(type, typeIndex).getFieldOrNull(rowData);
+                //hash = LakeSoulKeyGen.getHash(type, fieldOrNull, hash);
+            }
+        }
         for (String pk : pks) {
             int typeIndex = rowType.getFieldIndex(pk);
             LogicalType type = rowType.getTypeAt(typeIndex);
