@@ -154,7 +154,7 @@ Add the following to your project's pom.xml
 ```xml
 <dependency>
     <groupId>com.dmetasoul</groupId>
-    <artifactId>lakesoul</artifactId>
+    <artifactId>lakesoul-flink</artifactId>
     <version>1.17-VAR::VERSION</version>
 </dependency>
 ```
