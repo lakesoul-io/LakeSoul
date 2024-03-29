@@ -15,9 +15,10 @@ SPDX-License-Identifier: Apache-2.0
         <version>${revision}</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
+    <name>LakeSoul Spark</name>
 
     <artifactId>lakesoul-spark</artifactId>
-    <version>spark-3.3-${revision}</version>
+    <version>3.3-${revision}</version>
 
     <properties>
         <scalatest.version>3.2.14</scalatest.version>
@@ -30,6 +31,26 @@ SPDX-License-Identifier: Apache-2.0
         <local.scope>provided</local.scope>
         <test.fork.count>2</test.fork.count>
     </properties>
+
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <layout>default</layout>
+            <url>https://repo1.maven.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>confluent</id>
+            <name>Confluent</name>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
 
     <dependencies>
         <!-- lakesoul deps -->
@@ -539,7 +560,7 @@ SPDX-License-Identifier: Apache-2.0
                 <artifactId>flatten-maven-plugin</artifactId>
                 <!--<version>1.6.0</version>-->
                 <configuration>
-                    <flattenMode>oss</flattenMode>
+                    <flattenMode>ossrh</flattenMode>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->

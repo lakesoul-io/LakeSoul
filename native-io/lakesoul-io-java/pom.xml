@@ -20,6 +20,7 @@ SPDX-License-Identifier: Apache-2.0
     <artifactId>lakesoul-io-java</artifactId>
     <version>${revision}</version>
     <packaging>jar</packaging>
+    <name>LakeSoul IO Java</name>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -611,9 +612,9 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>
-                <!--<version>1.6.0</version>-->
+                <version>1.6.0</version>
                 <configuration>
-                    <flattenMode>oss</flattenMode>
+                    <flattenMode>ossrh</flattenMode>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->

@@ -15,9 +15,10 @@ SPDX-License-Identifier: Apache-2.0
         <version>${revision}</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
+    <name>LakeSoul Flink</name>
 
     <artifactId>lakesoul-flink</artifactId>
-    <version>flink-1.17-${revision}</version>
+    <version>1.17-${revision}</version>
     <properties>
         <flink.version>1.17.1</flink.version>
         <scala.binary.version>2.12</scala.binary.version>
@@ -564,9 +565,9 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>
-                <!--<version>1.6.0</version>-->
+                <version>1.6.0</version>
                 <configuration>
-                    <flattenMode>oss</flattenMode>
+                    <flattenMode>ossrh</flattenMode>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->

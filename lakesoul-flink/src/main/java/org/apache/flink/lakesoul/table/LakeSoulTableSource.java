@@ -61,6 +61,7 @@ public class LakeSoulTableSource
     protected List<Map<String, String>> remainingPartitions;
 
     protected FilterPredicate filter;
+    protected LakeSoulRowLevelModificationScanContext modificationContext;
 
     public LakeSoulTableSource(TableId tableId,
                                RowType rowType,
@@ -72,6 +73,7 @@ public class LakeSoulTableSource
         this.isStreaming = isStreaming;
         this.pkColumns = pkColumns;
         this.optionParams = optionParams;
+        this.modificationContext = null;
     }
 
     @Override
@@ -134,8 +136,31 @@ public class LakeSoulTableSource
 
     @Override
     public void applyPartitions(List<Map<String, String>> remainingPartitions) {
-        this.remainingPartitions = remainingPartitions;
+        if (isDelete()) {
+            this.remainingPartitions = complementPartition(remainingPartitions);
+            getModificationContext().setRemainingPartitions(this.remainingPartitions);
+        } else {
+            this.remainingPartitions = remainingPartitions;
+        }
         LOG.info("Applied partitions to native io: {}", this.remainingPartitions);
+    }
+
+    private boolean isDelete() {
+        LakeSoulRowLevelModificationScanContext context = getModificationContext();
+        return context != null && context.getType() == RowLevelModificationType.DELETE;
+    }
+
+    private List<Map<String, String>> complementPartition(List<Map<String, String>> remainingPartitions) {
+        List<PartitionInfo> allPartitionInfo = listPartitionInfo();
+        Set<String> remainingPartitionDesc = remainingPartitions.stream().map(DBUtil::formatPartitionDesc).collect(Collectors.toSet());
+        List<Map<String, String>> partitions = new ArrayList<>();
+        for (PartitionInfo info : allPartitionInfo) {
+            String partitionDesc = info.getPartitionDesc();
+            if (!partitionDesc.equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC) && !remainingPartitionDesc.contains(partitionDesc)) {
+                partitions.add(DBUtil.parsePartitionDesc(partitionDesc));
+            }
+        }
+        return partitions;
     }
 
     @Override
@@ -242,9 +267,14 @@ public class LakeSoulTableSource
             @Nullable
             RowLevelModificationScanContext previousContext) {
         if (previousContext == null || previousContext instanceof LakeSoulRowLevelModificationScanContext) {
-            // TODO: 2024/3/22 partiontion pruning should be handled 
-            return new LakeSoulRowLevelModificationScanContext(listPartitionInfo());
+            // TODO: 2024/3/22 partiontion pruning should be handled
+            this.modificationContext = new LakeSoulRowLevelModificationScanContext(rowLevelModificationType, listPartitionInfo());
+            return modificationContext;
         }
         throw new RuntimeException("LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
+    }
+
+    public LakeSoulRowLevelModificationScanContext getModificationContext() {
+        return modificationContext;
     }
 }
