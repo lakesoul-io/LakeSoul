@@ -132,8 +132,7 @@ SPDX-License-Identifier: Apache-2.0
                 <configuration>
                     <shadedArtifactAttached>true</shadedArtifactAttached>
                     <shadedClassifierName>shaded</shadedClassifierName>
-                    <createDependencyReducedPom>true</createDependencyReducedPom>
-                    <useDependencyReducedPomInJar>true</useDependencyReducedPomInJar>
+                    <createDependencyReducedPom>false</createDependencyReducedPom>
                     <artifactSet>
                         <includes>
                             <include>**</include>
@@ -179,16 +178,7 @@ SPDX-License-Identifier: Apache-2.0
                 <artifactId>flatten-maven-plugin</artifactId>
                 <version>1.6.0</version>
                 <configuration>
-                    <flattenMode>oss</flattenMode>
-                    <pomElements>
-                        <dependencyManagement>keep</dependencyManagement>
-                        <dependencies>keep</dependencies>
-                        <description>resolve</description>
-                        <profiles>remove</profiles>
-                        <distributionManagement>remove</distributionManagement>
-                        <pluginManagement>remove</pluginManagement>
-                        <build>remove</build>
-                    </pomElements>
+                    <flattenMode>ossrh</flattenMode>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->

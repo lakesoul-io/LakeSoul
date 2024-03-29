@@ -51,7 +51,7 @@ SPDX-License-Identifier: Apache-2.0
     </developers>
 
     <properties>
-        <revision>2.5.2</revision>
+        <revision>2.5.3</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
@@ -205,14 +205,7 @@ SPDX-License-Identifier: Apache-2.0
                 <artifactId>flatten-maven-plugin</artifactId>
                 <version>1.6.0</version>
                 <configuration>
-                    <flattenMode>oss</flattenMode>
-                    <pomElements>
-                        <dependencyManagement>keep</dependencyManagement>
-                        <dependencies>keep</dependencies>
-                        <name>keep</name>
-                        <description>resolve</description>
-                        <profiles>remove</profiles>
-                    </pomElements>
+                    <flattenMode>ossrh</flattenMode>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->
