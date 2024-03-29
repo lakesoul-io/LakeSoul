@@ -371,14 +371,6 @@ public class LakeSoulRecordConvert implements Serializable {
         RowData rowData = Objects.equals(data.getOp(), "delete") ? data.getBefore() : data.getAfter();
         List<String> pks = sourceRecord.getPrimaryKeys();
         long hash = 42;
-        if (Objects.equals(data.getOp(),"delete")){
-            for (String pk : pks) {
-                int typeIndex = rowType.getFieldIndex(pk);
-                LogicalType type = rowType.getTypeAt(typeIndex);
-                Object fieldOrNull = RowData.createFieldGetter(type, typeIndex).getFieldOrNull(rowData);
-                //hash = LakeSoulKeyGen.getHash(type, fieldOrNull, hash);
-            }
-        }
         for (String pk : pks) {
             int typeIndex = rowType.getFieldIndex(pk);
             LogicalType type = rowType.getTypeAt(typeIndex);
