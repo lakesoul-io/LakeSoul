@@ -20,7 +20,7 @@ In the Stream API, the main functions of LakeSoul Sink are:
 
 ## How to use the command line
 ### 1. Download LakeSoul Flink Jar
-It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-flink-1.17-VAR::VERSION.jar.
+It can be downloaded from the LakeSoul Release page: https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar.
 
 The currently supported Flink version is 1.17.
 
@@ -61,7 +61,7 @@ Description of required parameters:
 | Parameter | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Value Description                                                                                          |
 |----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
 | -c | The task runs the main function entry class                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | org.apache.flink.lakesoul.entry.MysqlCdc                                                                   |
-| Main package | Task running jar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | lakesoul-flink-flink-1.17-VAR::VERSION.jar                                                                             |
+| Main package | Task running jar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | lakesoul-flink-1.17-VAR::VERSION.jar                                                                             |
 | --source_db.type | source database type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | mysql postgres oracle                                                                                      |
 | --source_db.host | The address of the source database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |                                                                                                            |
 | --source_db.port | source database port                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |                                                                                                            |
@@ -94,7 +94,7 @@ For Mysql configuration, please refer to https://ververica.github.io/flink-cdc-c
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_name "testDB" \
     --source_db.user "root" \
     --source.parallelism 1 \
@@ -121,7 +121,7 @@ Synchronous oracle job example
 For oracle configuration,please refer to https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/oracle-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_type oracle \
     --source_db.db_name "testDB" \
     --source_db.user "FLINKUSER" \
@@ -153,7 +153,7 @@ For Postgresql, the following additional parameters need to be configured
 For Postgresql configuration,please refer to  https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/postgres-cdc.html
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
-    lakesoul-flink-flink-1.17-VAR::VERSION.jar \
+    lakesoul-flink-1.17-VAR::VERSION.jar \
     --source_db.db_name "postgres" \
     --source_db.user "postgres" \
     --source.parallelism 1 \

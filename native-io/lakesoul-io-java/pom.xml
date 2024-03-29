@@ -20,6 +20,7 @@ SPDX-License-Identifier: Apache-2.0
     <artifactId>lakesoul-io-java</artifactId>
     <version>${revision}</version>
     <packaging>jar</packaging>
+    <name>LakeSoul IO Java</name>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -463,6 +464,15 @@ SPDX-License-Identifier: Apache-2.0
                 <!--<version>1.6.0</version>-->
                 <configuration>
                     <flattenMode>oss</flattenMode>
+                    <pomElements>
+                        <dependencyManagement>keep</dependencyManagement>
+                        <dependencies>keep</dependencies>
+                        <description>resolve</description>
+                        <profiles>remove</profiles>
+                        <distributionManagement>remove</distributionManagement>
+                        <pluginManagement>remove</pluginManagement>
+                        <build>remove</build>
+                    </pomElements>
                 </configuration>
                 <executions>
                     <!-- enable flattening -->
