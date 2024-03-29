@@ -16,7 +16,7 @@ use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
 use datafusion_common::{DataFusionError, DFSchemaRef, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::{debug, error};
+use log::debug;
 
 use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
@@ -263,8 +263,8 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         let e = FilterParser::parse_proto(p)?;
         proto_filters.push(e);
     }
-    println!("str filters: {:#?}", str_filters);
-    println!("proto filters: {:#?}", proto_filters);
+    debug!("str filters: {:#?}", str_filters);
+    debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {
         Ok(str_filters)
     }else {
@@ -278,7 +278,6 @@ pub async fn prune_filter_and_execute(
     filters: Vec<Expr>,
     batch_size: usize,
 ) -> Result<SendableRecordBatchStream> {
-    error!("XXXXXXXXXXXXXXXXXXXXXXX");
     debug!("filters: {:?}",filters);
     let df_schema = df.schema().clone();
     // find columns requested and prune otherPlans

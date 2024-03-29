@@ -9,9 +9,8 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef, TimeUnit};
-use chrono::{DateTime, Utc};
 use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, expr, Expr, Operator};
-use datafusion::prelude::{col, SessionContext};
+use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
 use datafusion_common::{Column, DataFusionError, DFSchema, not_impl_err, plan_err, Result};
 use datafusion_substrait::substrait;
@@ -30,8 +29,6 @@ use datafusion_substrait::variation_const::{
     DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF,
     TIMESTAMP_NANO_TYPE_REF, TIMESTAMP_SECOND_TYPE_REF, UNSIGNED_INTEGER_TYPE_REF,
 };
-use serde::de::IntoDeserializer;
-use tokio::io::AsyncSeek;
 
 pub struct Parser {}
 
