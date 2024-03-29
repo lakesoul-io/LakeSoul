@@ -253,6 +253,7 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
 
 pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
     let arrow_schema = Arc::new(Schema::from(df.schema()));
+    debug!("schema:{:?}",arrow_schema);
     let mut str_filters = vec![];
     let mut proto_filters = vec![];
     for f in &filter_str {
@@ -260,14 +261,14 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         str_filters.push(filter);
     }
     for p in &filter_protos {
-        let e = FilterParser::parse_proto(p)?;
+        let e = FilterParser::parse_proto(p, df.schema())?;
         proto_filters.push(e);
     }
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);
     if proto_filters.is_empty() {
         Ok(str_filters)
-    }else {
+    } else {
         Ok(proto_filters)
     }
 }

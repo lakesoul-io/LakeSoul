@@ -12,7 +12,7 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import io.substrait.proto.Plan;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.source.LakeSoulSource;
-import org.apache.flink.lakesoul.source.ParquetFilters;
+import org.apache.flink.lakesoul.substrait.SubstraitFlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -29,13 +29,10 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
-import org.apache.flink.lakesoul.substrait.SubstraitFlinkUtil;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -63,7 +60,7 @@ public class LakeSoulTableSource
 
     protected List<Map<String, String>> remainingPartitions;
 
-    protected FilterPredicate filter;
+    protected Plan filter;
     protected LakeSoulRowLevelModificationScanContext modificationContext;
 
     public LakeSoulTableSource(TableId tableId,
@@ -88,7 +85,6 @@ public class LakeSoulTableSource
                 this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
-        lsts._filterPredicate = this._filterPredicate;
         lsts.filter = this.filter;
         return lsts;
     }
@@ -117,22 +113,9 @@ public class LakeSoulTableSource
             }
         }
         // find acceptable non partition filters
-        Tuple2<Result, FilterPredicate> filterPushDownRes = ParquetFilters.toParquetFilter(nonPartitionFilters,
-                remainingFilters);
-        Tuple2<Result, Plan> filterPushDownResult = null;
-        try {
-            filterPushDownResult = SubstraitFlinkUtil.flinkExprToSubStraitPlan(nonPartitionFilters,
-                    remainingFilters, tableInfo.getTableName(), tableInfo.getTableSchema());
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        Tuple2<Result, Plan> filterPushDownResult = SubstraitFlinkUtil.flinkExprToSubStraitPlan(nonPartitionFilters,
+                remainingFilters, tableInfo.getTableName());
         this.filter = filterPushDownResult.f1;
-        this._filterPredicate = filterPushDownRes.f1;
-
-        if (this.filter != null) {
-            byte[] byteArray = this.filter.toByteArray();
-            System.out.println(Arrays.toString(byteArray));
-        }
 
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),
@@ -263,7 +246,6 @@ public class LakeSoulTableSource
                         this.pkColumns,
                         this.optionParams,
                         this.remainingPartitions,
-                        this._filterPredicate,
                         this.filter));
     }
 

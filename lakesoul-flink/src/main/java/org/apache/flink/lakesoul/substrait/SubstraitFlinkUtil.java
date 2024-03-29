@@ -24,14 +24,12 @@ public class SubstraitFlinkUtil {
     public static Tuple2<SupportsFilterPushDown.Result, io.substrait.proto.Plan> flinkExprToSubStraitPlan(
             List<ResolvedExpression> exprs,
             List<ResolvedExpression> remaining,
-            String tableName,
-            String tableSchema
-    ) throws IOException {
+            String tableName
+    ) {
         List<ResolvedExpression> accepted = new ArrayList<>();
-        Schema arrowSchema = Schema.fromJSON(tableSchema);
         Expression last = null;
         for (ResolvedExpression expr : exprs) {
-            Expression e = doTransform(expr,arrowSchema);
+            Expression e = doTransform(expr);
             if (e == null) {
                 remaining.add(expr);
             } else {
@@ -44,12 +42,12 @@ public class SubstraitFlinkUtil {
                 }
             }
         }
-        Plan filter = exprToFilter(last, tableName, arrowSchema);
+        Plan filter = exprToFilter(last, tableName);
         return Tuple2.of(SupportsFilterPushDown.Result.of(accepted, remaining), planToProto(filter));
     }
 
-    public static Expression doTransform(ResolvedExpression flinkExpression, Schema arrowSchema) {
-        SubstraitVisitor substraitVisitor = new SubstraitVisitor(arrowSchema);
+    public static Expression doTransform(ResolvedExpression flinkExpression) {
+        SubstraitVisitor substraitVisitor = new SubstraitVisitor();
         return flinkExpression.accept(substraitVisitor);
     }
 

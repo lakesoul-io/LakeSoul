@@ -22,7 +22,6 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.PartitionPathUtils;
 import org.apache.flink.types.RowKind;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,7 +73,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     // arrow batch -> row, with requested schema
     private ArrowReader curArrowReaderRequestedSchema;
 
-    private final FilterPredicate _filterPredicate;
     private final Plan filter;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf,
@@ -84,7 +82,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                                          List<String> pkColumns,
                                          boolean isStreaming,
                                          String cdcColumn,
-                                         FilterPredicate _filterPredicate,
                                          Plan filter)
             throws Exception {
         this.split = split;
@@ -97,7 +94,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.isStreaming = isStreaming;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
-        this._filterPredicate = _filterPredicate;
         this.filter = filter;
         initializeReader();
         recoverFromSkipRecord();
@@ -134,10 +130,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
         if (filter != null) {
             reader.addFilterProto(this.filter);
-        }
-
-        if (_filterPredicate !=null) {
-            reader.addFilter(_filterPredicate.toString());
         }
 
         LOG.info("Initializing reader for split {}, pk={}, partitions={}," +

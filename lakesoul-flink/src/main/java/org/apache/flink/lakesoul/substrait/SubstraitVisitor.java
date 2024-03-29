@@ -8,44 +8,33 @@ import io.substrait.expression.Expression;
 import io.substrait.extension.SimpleExtension;
 import io.substrait.type.Type;
 import io.substrait.type.TypeCreator;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.table.expressions.*;
 import org.apache.flink.table.expressions.ExpressionVisitor;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.spark.sql.catalyst.util.DateTimeUtils$;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.Timestamp;
-import java.time.Instant;
+import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.*;
-import java.util.function.BiFunction;
+import java.util.function.Function;
 
 
 /**
  * return null means cannot convert
  */
 public class SubstraitVisitor implements ExpressionVisitor<Expression> {
-
-    public SubstraitVisitor(Schema arrowSchema) {
-        this.arrowSchema = arrowSchema;
-    }
-
-
     private static final Logger LOG = LoggerFactory.getLogger(SubstraitVisitor.class);
-
-    private Schema arrowSchema;
 
     @Override
     public Expression visit(CallExpression call) {
-        CallExprVisitor callVisitor = new CallExprVisitor(this.arrowSchema);
+        CallExprVisitor callVisitor = new CallExprVisitor();
         return callVisitor.visit(call);
     }
 
@@ -56,7 +45,7 @@ public class SubstraitVisitor implements ExpressionVisitor<Expression> {
 
     @Override
     public Expression visit(FieldReferenceExpression fieldReference) {
-        return new FieldRefVisitor(this.arrowSchema).visit(fieldReference);
+        return new FieldRefVisitor().visit(fieldReference);
     }
 
     @Override
@@ -164,6 +153,14 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
                 }
                 return ExpressionCreator.fp64(nullable, d);
             }
+            case DECIMAL: {
+                BigDecimal bigDecimal = new BigDecimal(0);
+                DecimalType dt = (DecimalType) logicalType;
+                if (value != null) {
+                    bigDecimal = (BigDecimal) value;
+                }
+                return ExpressionCreator.decimal(nullable, bigDecimal, dt.getPrecision(), dt.getScale());
+            }
             case DATE: {
                 int days = 0;
                 if (value != null) {
@@ -217,12 +214,6 @@ class LiteralVisitor extends ExpressionDefaultVisitor<Expression.Literal> {
 }
 
 class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
-    public FieldRefVisitor(Schema arrow_schema) {
-        this.arrow_schema = arrow_schema;
-    }
-
-    private Schema arrow_schema;
-
     private static final Logger LOG = LoggerFactory.getLogger(FieldRefVisitor.class);
 
     public FieldReference visit(FieldReferenceExpression fieldReference) {
@@ -232,29 +223,16 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
             fieldReference = (FieldReferenceExpression) fieldReference.getChildren().get(0);
         }
         LogicalType logicalType = fieldReference.getOutputDataType().getLogicalType();
-        LogicalTypeRoot typeRoot = logicalType.getTypeRoot();
-        Type type = mapType(typeRoot, logicalType.isNullable());
+        Type type = mapType(logicalType);
         if (type == null) {
             // not supported
             return null;
         }
         String name = fieldReference.getName();
-        int idx = 0;
-        List<Field> fields = arrow_schema.getFields();
-        // find idx
-        for (int i = 0; i < fields.size(); i++) {
-            if (fields.get(i).getName().equals(name)) {
-                idx = i;
-                break;
-            }
-        }
-
         return FieldReference.builder()
                 .type(Objects.requireNonNull(type))
                 .addSegments(
-                        ImmutableStructField.builder()
-                                .offset(idx)
-                                .build()
+                        ImmutableMapKey.of(ExpressionCreator.string(true, name))
                 )
                 .build();
     }
@@ -264,7 +242,9 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         return null;
     }
 
-    public static Type mapType(LogicalTypeRoot typeRoot, Boolean nullable) {
+    public static Type mapType(LogicalType logicalType) {
+        LogicalTypeRoot typeRoot = logicalType.getTypeRoot();
+        boolean nullable = logicalType.isNullable();
         TypeCreator R = TypeCreator.of(nullable);
         switch (typeRoot) {
             case CHAR:
@@ -295,6 +275,10 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
             case DOUBLE: {
                 return R.FP64;
             }
+            case DECIMAL: {
+                DecimalType dt = (DecimalType) logicalType;
+                return R.decimal(dt.getPrecision(), dt.getScale());
+            }
             case DATE: {
                 return R.DATE;
             }
@@ -315,28 +299,22 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
 }
 
 class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
-
-    public CallExprVisitor(Schema arrowSchema) {
-        this.arrowSchema = arrowSchema;
-    }
-
-    private Schema arrowSchema;
     private static final Logger LOG = LoggerFactory.getLogger(CallExprVisitor.class);
-    private static final ImmutableMap<FunctionDefinition, BiFunction<CallExpression, Schema, Expression>>
+    private static final ImmutableMap<FunctionDefinition, Function<CallExpression, Expression>>
             FILTERS =
             new ImmutableMap.Builder<
-                    FunctionDefinition, BiFunction<CallExpression, Schema, Expression>>()
-                    .put(BuiltInFunctionDefinitions.IS_NULL, (call, schema) -> makeUnaryFunction(call, schema, "is_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.IS_NOT_NULL, (call, schema) -> makeUnaryFunction(call, schema, "is_not_null:any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT, (call, schema) -> makeUnaryFunction(call, schema, "not:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.OR, (call, schema) -> makeBinaryFunction(call, schema, "or:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.AND, (call, schema) -> makeBinaryFunction(call, schema, "and:bool", SubstraitUtil.BooleanNamespace))
-                    .put(BuiltInFunctionDefinitions.EQUALS, (call, schema) -> makeBinaryFunction(call, schema, "equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.NOT_EQUALS, (call, schema) -> makeBinaryFunction(call, schema, "not_equal:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN, (call, schema) -> makeBinaryFunction(call, schema, "gt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, (call, schema) -> makeBinaryFunction(call, schema, "gte:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN, (call, schema) -> makeBinaryFunction(call, schema, "lt:any_any", SubstraitUtil.CompNamespace))
-                    .put(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, (call, schema) -> makeBinaryFunction(call, schema, "lte:any_any", SubstraitUtil.CompNamespace))
+                    FunctionDefinition, Function<CallExpression, Expression>>()
+                    .put(BuiltInFunctionDefinitions.IS_NULL, call -> makeUnaryFunction(call, "is_null:any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.IS_NOT_NULL, call -> makeUnaryFunction(call, "is_not_null:any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.NOT, call -> makeUnaryFunction(call, "not:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.OR, call -> makeBinaryFunction(call, "or:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.AND, call -> makeBinaryFunction(call, "and:bool", SubstraitUtil.BooleanNamespace))
+                    .put(BuiltInFunctionDefinitions.EQUALS, call -> makeBinaryFunction(call, "equal:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.NOT_EQUALS, call -> makeBinaryFunction(call, "not_equal:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.GREATER_THAN, call -> makeBinaryFunction(call, "gt:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, call -> makeBinaryFunction(call, "gte:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.LESS_THAN, call -> makeBinaryFunction(call, "lt:any_any", SubstraitUtil.CompNamespace))
+                    .put(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, call -> makeBinaryFunction(call, "lte:any_any", SubstraitUtil.CompNamespace))
                     .build();
 
     @Override
@@ -348,13 +326,13 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
                     call);
             return null;
         }
-        return FILTERS.get(call.getFunctionDefinition()).apply(call, this.arrowSchema);
+        return FILTERS.get(call.getFunctionDefinition()).apply(call);
     }
 
-    static Expression makeBinaryFunction(CallExpression call, Schema arrow_schema, String funcKey, String namespace) {
+    static Expression makeBinaryFunction(CallExpression call, String funcKey, String namespace) {
         List<org.apache.flink.table.expressions.Expression> children = call.getChildren();
         assert children.size() == 2;
-        SubstraitVisitor visitor = new SubstraitVisitor(arrow_schema);
+        SubstraitVisitor visitor = new SubstraitVisitor();
         Expression left = children.get(0).accept(visitor);
         Expression right = children.get(1).accept(visitor);
         if (left == null || right == null) {
@@ -367,10 +345,10 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
         return ExpressionCreator.scalarFunction(func, TypeCreator.NULLABLE.BOOLEAN, args);
     }
 
-    static Expression makeUnaryFunction(CallExpression call, Schema arrow_schema, String funcKey, String namespace) {
+    static Expression makeUnaryFunction(CallExpression call, String funcKey, String namespace) {
         List<org.apache.flink.table.expressions.Expression> children = call.getChildren();
         assert children.size() == 1;
-        SubstraitVisitor visitor = new SubstraitVisitor(arrow_schema);
+        SubstraitVisitor visitor = new SubstraitVisitor();
         Expression child = children.get(0).accept(visitor);
         if (child == null) {
             return null;

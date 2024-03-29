@@ -7,9 +7,6 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
-import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.Comparator;
 import java.util.List;
 import java.util.TimeZone;
@@ -24,20 +21,20 @@ public class SubstraitTest extends AbstractTestBase {
     @Test
     public void dateTypeTest() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
-//        createLakeSoulSourceTableWithDateType(createTableEnv);
-        String testSql = "select * from type_info where modifytime=TO_TIMESTAMP_LTZ(1612176000,0)";
-//        String testSql = "select * from type_info " +
-//                "where id=2 " +
-//                "and name='Alice' " +
-//                "and birthDay=TO_DATE('2023-05-10') " +
-//                "and male=true " +
-//                "and level='10.05' " +
-//                "and zone='B' " +
-//                "and height=1.90 " +
-//                "and score=88 " +
-//                "and createTime=TO_TIMESTAMP('1995-10-10 13:10:20') " +
-//                "and modifyTime=TO_TIMESTAMP_LTZ(1612176000,0)";
-        // Decimal? bytes? varbinary? timestampltz?
+        createLakeSoulSourceTableWithDateType(createTableEnv);
+        // not supported
+//        String testSql = "select * from type_info where modifyTime=TO_TIMESTAMP_LTZ(1612176000,0)";
+        String testSql = "select * from type_info " +
+                "where id=2 " +
+                "and name='Alice' " +
+                "and birthday=TO_DATE('2023-05-10') " +
+                "and male=true " +
+                "and level='10.05' " +
+                "and zone='B' " +
+                "and height=1.90 " +
+                "and score=88 " +
+                "and money=500.31 " +
+                "and createTime=TO_TIMESTAMP('1995-10-10 13:10:20') ";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         tEnvs.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
         List<Row> rows = CollectionUtil.iteratorToList(tEnvs.executeSql(testSql).collect());
@@ -75,14 +72,13 @@ public class SubstraitTest extends AbstractTestBase {
     public void cmpTest() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableWithDateType(createTableEnv);
-        String testSql = "select * from type_info where id=1 and name<>'Alice' and height<1.90 and score >= CAST(89 as BIGINT)";
+        String testSql = "select * from type_info where id=1 and name<>'Alice' and height<CAST(1.90 as DOUBLE) and score >= CAST(89 as BIGINT)";
         StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
         List<Row> rows = CollectionUtil.iteratorToList(tEnvs.executeSql(testSql).collect());
         rows.sort(Comparator.comparing(Row::toString));
         assertThat(rows.toString()).isEqualTo(
-        "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 1, 89, 100.11, [1, -81], [18, 67, 112, -105], 1990-01-07T10:10, 1995-10-01T07:10:00Z]]");
+                "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 1, 89, 100.11, [1, -81], [18, 67, 112, -105], 1990-01-07T10:10, 1995-10-01T07:10:00Z]]");
     }
-
 
 
     private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs)
@@ -99,14 +95,14 @@ public class SubstraitTest extends AbstractTestBase {
                 "    posn SMALLINT, " +
                 "    score BIGINT, " +
                 "    money DECIMAL(10,2), " +
-                "    gaptime BYTES, " +
+                "    gapTime BYTES, " +
                 "    country VARBINARY, " +
-                "    createtime TIMESTAMP, " +
-                "    modifytime TIMESTAMP_LTZ " +
+                "    createTime TIMESTAMP, " +
+                "    modifyTime TIMESTAMP_LTZ " +
                 ") WITH (" +
                 "    'connector'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
-                "    'path'='" + getTempDirUri("/lakeSource/tpye") +
+                "    'path'='" + getTempDirUri("/lakeSource/type") +
                 "' )";
         tEnvs.executeSql("DROP TABLE if exists type_info");
         tEnvs.executeSql(createUserSql);
@@ -115,14 +111,5 @@ public class SubstraitTest extends AbstractTestBase {
                 "(1, 'Bob', TO_DATE('1995-10-01'), true, '10.01', 'A', 1.85, CAST(3 AS TINYINT), CAST(1 as SMALLINT), 89, 100.105, X'01AF', X'12437097', TO_TIMESTAMP('1990-01-07 10:10:00'), TO_TIMESTAMP('1995-10-01 15:10:00')), " +
                 "(2, 'Alice', TO_DATE('2023-05-10'), true, '10.05', 'B', 1.90, CAST(5 AS TINYINT), CAST(2 as SMALLINT), 88, 500.314, X'02FF', X'10912330', TO_TIMESTAMP('1995-10-10 13:10:20'), TO_TIMESTAMP_LTZ(1612176000, 0)), " +
                 "(CAST(null as INT), 'Jack', TO_DATE('2010-12-10'), false, '10.12', 'D', 1.88,CAST(9 AS TINYINT), CAST(3 as SMALLINT), 67, 88.262, X'01FF', X'AB12CE09', TO_TIMESTAMP('1999-01-01 12:10:15'), TO_TIMESTAMP('2000-10-01 15:15:00'))").await();
-    }
-
-
-    @Test
-    public void tt() {
-        Instant i = Instant.ofEpochSecond(1612147200); // utc
-        OffsetDateTime offsetDateTime = i.atOffset(ZoneOffset.of("+8"));
-        Instant instant = offsetDateTime.plusHours(8).toInstant();
-        System.out.println(instant.getEpochSecond());
     }
 }
