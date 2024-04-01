@@ -116,7 +116,6 @@ public class LakeSoulTableSource
         Tuple2<Result, Plan> filterPushDownResult = SubstraitFlinkUtil.flinkExprToSubStraitPlan(nonPartitionFilters,
                 remainingFilters, tableInfo.getTableName());
         this.filter = filterPushDownResult.f1;
-
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),
                 filterPushDownResult.f0.getRemainingFilters());

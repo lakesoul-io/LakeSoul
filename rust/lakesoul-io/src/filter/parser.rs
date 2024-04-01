@@ -9,21 +9,21 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef, TimeUnit};
-use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, expr, Expr, Operator};
+use datafusion::logical_expr::{expr, BinaryExpr, BuiltinScalarFunction, Expr, Operator};
 use datafusion::prelude::col;
 use datafusion::scalar::ScalarValue;
-use datafusion_common::{Column, DataFusionError, DFSchema, not_impl_err, plan_err, Result};
+use datafusion_common::{not_impl_err, plan_err, Column, DFSchema, DataFusionError, Result};
 use datafusion_substrait::substrait;
-use datafusion_substrait::substrait::proto::{Expression, Plan, plan_rel, r#type, Rel, Type};
-use datafusion_substrait::substrait::proto::expression::{Literal, RexType};
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType::DirectReference;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
 use datafusion_substrait::substrait::proto::expression::reference_segment::ReferenceType;
+use datafusion_substrait::substrait::proto::expression::{Literal, RexType};
 use datafusion_substrait::substrait::proto::extensions::simple_extension_declaration::MappingType;
 use datafusion_substrait::substrait::proto::function_argument::ArgType;
 use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::read_rel::ReadType;
 use datafusion_substrait::substrait::proto::rel::RelType;
+use datafusion_substrait::substrait::proto::{plan_rel, r#type, Expression, Plan, Rel, Type};
 use datafusion_substrait::variation_const::{
     DATE_32_TYPE_REF, DATE_64_TYPE_REF, DECIMAL_128_TYPE_REF, DECIMAL_256_TYPE_REF, DEFAULT_CONTAINER_TYPE_REF,
     DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF,
@@ -288,26 +288,30 @@ impl Parser {
         match &e.rex_type {
             Some(RexType::Selection(field_ref)) => match &field_ref.reference_type {
                 Some(DirectReference(direct)) => match &direct.reference_type.as_ref() {
-                    Some(ReferenceType::MapKey(x)) => match &x.child.as_ref()
-                    {
+                    Some(ReferenceType::MapKey(x)) => match &x.child.as_ref() {
                         Some(_) => not_impl_err!("MapKey is not supported"),
                         None => {
-                            let literal = x.map_key.as_ref().ok_or(DataFusionError::Substrait("can not get map key".into()))?;
+                            let literal = x
+                                .map_key
+                                .as_ref()
+                                .ok_or(DataFusionError::Substrait("can not get map key".into()))?;
                             let sv = from_substrait_literal(literal)?;
                             let field_name = match sv {
-                                ScalarValue::Utf8(s) =>
-                                    s.ok_or(DataFusionError::Substrait("can not get map key".into())),
-                                _ =>
-                                    not_impl_err!("map key wrong type")
+                                ScalarValue::Utf8(s) => {
+                                    s.ok_or(DataFusionError::Substrait("can not get map key".into()))
+                                }
+                                _ => not_impl_err!("map key wrong type"),
                             }?;
-                            debug!("field name: {}",field_name);
-                            let column = input_schema.field_with_unqualified_name(&field_name)?.qualified_column();
+                            debug!("field name: {}", field_name);
+                            let column = input_schema
+                                .field_with_unqualified_name(&field_name)?
+                                .qualified_column();
                             Ok(Expr::Column(Column {
                                 relation: column.relation,
                                 name: column.name,
                             }))
                         }
-                    }
+                    },
                     _ => not_impl_err!("Direct reference with types other than MapKey is not supported"),
                 },
                 _ => not_impl_err!("unsupported field ref type"),
@@ -510,7 +514,7 @@ fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
         Some(LiteralType::Fp32(f)) => ScalarValue::Float32(Some(*f)),
         Some(LiteralType::Fp64(f)) => ScalarValue::Float64(Some(*f)),
         Some(LiteralType::Timestamp(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
-        Some(LiteralType::TimestampTz(t)) => ScalarValue::TimestampMicrosecond(Some(*t), Some(crate::constant::LAKESOUL_TIMEZONE.into())),
+        Some(LiteralType::TimestampTz(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
 
         Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
         Some(LiteralType::String(s)) => match lit.type_variation_reference {
@@ -728,6 +732,9 @@ fn _from_nullability(nullability: Nullability) -> bool {
 mod tests {
     use std::result::Result;
 
+    use datafusion::prelude::{ParquetReadOptions, SessionContext};
+    use prost::Message;
+
     use super::*;
 
     #[test]
@@ -738,5 +745,29 @@ mod tests {
         assert_eq!(left, "lt(a.b.c, 2.0)");
         assert_eq!(right, "gt(a.b.c, 3.0)");
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn tt() {
+        let ctx = SessionContext::new();
+        let options = ParquetReadOptions::default();
+        let table_path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/type/part-00000-97db3149-f99e-404a-aa9a-2af4ab3f7a44_00000.c000.parquet";
+        // let df = ctx.read_parquet(table_path, options).await.unwrap();
+        let _ = ctx.register_parquet("type_info", table_path, options).await;
+        let test_sql = "select * from type_info";
+        let df = ctx.sql(test_sql).await.unwrap();
+        let byte_array = [
+            10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
+            115, 111, 110, 46, 121, 97, 109, 108, 18, 16, 26, 14, 8, 1, 26, 10, 103, 116, 58, 97, 110, 121, 95, 97,
+            110, 121, 26, 72, 18, 70, 10, 68, 10, 66, 10, 2, 10, 0, 18, 4, 18, 2, 24, 2, 26, 41, 26, 39, 26, 4, 10, 2,
+            16, 1, 34, 22, 26, 20, 18, 18, 10, 14, 10, 12, 10, 10, 98, 5, 109, 111, 110, 101, 121, -112, 3, 1, 34, 0,
+            34, 7, 26, 5, 10, 3, 40, -12, 3, 58, 11, 10, 9, 116, 121, 112, 101, 95, 105, 110, 102, 111,
+        ];
+        let byte_array = unsafe { std::mem::transmute::<&[i8], &[u8]>(&byte_array[..]) };
+        let plan = Plan::decode(&byte_array[..]).unwrap();
+        let e = Parser::parse_proto(&plan, df.schema()).unwrap();
+        let df = df.filter(e).unwrap();
+        let df = df.explain(true, true).unwrap();
+        df.show().await.unwrap()
     }
 }

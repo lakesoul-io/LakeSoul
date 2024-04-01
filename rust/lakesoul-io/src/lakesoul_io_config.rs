@@ -2,6 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
@@ -10,17 +14,18 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
+use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
 use datafusion::optimizer::push_down_projection::PushDownProjection;
+use datafusion::optimizer::rewrite_disjunctive_predicate::RewriteDisjunctivePredicate;
+use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
+use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::{External, ObjectStore};
-use derivative::Derivative;
-use object_store::aws::AmazonS3Builder;
-use object_store::{ClientOptions, RetryConfig};
-use std::collections::HashMap;
-use std::sync::Arc;
 use datafusion_substrait::substrait::proto::Plan;
-use std::time::Duration;
+use derivative::Derivative;
+use object_store::{ClientOptions, RetryConfig};
+use object_store::aws::AmazonS3Builder;
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -57,7 +62,7 @@ pub struct LakeSoulIOConfig {
     // filtering predicates
     pub(crate) filter_strs: Vec<String>,
     pub(crate) filters: Vec<Expr>,
-    pub(crate) filter_protos:Vec<Plan>,
+    pub(crate) filter_protos: Vec<Plan>,
     // read or write batch size
     #[derivative(Default(value = "8192"))]
     pub(crate) batch_size: usize,
@@ -210,7 +215,7 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    pub fn with_filter_proto(mut self, filter_proto:Plan) -> Self {
+    pub fn with_filter_proto(mut self, filter_proto: Plan) -> Self {
         self.config.filter_protos.push(filter_proto);
         self
     }
@@ -488,8 +493,8 @@ pub fn create_session_context_with_planner(
         })
         .collect();
     state = state
-        .with_analyzer_rules(vec![])
-        .with_optimizer_rules(vec![Arc::new(PushDownFilter {}), Arc::new(PushDownProjection {})])
+        .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
+        .with_optimizer_rules(vec![Arc::new(PushDownFilter {}), Arc::new(PushDownProjection {}), Arc::new(SimplifyExpressions {}), Arc::new(UnwrapCastInComparison {}), Arc::new(RewriteDisjunctivePredicate {})])
         .with_physical_optimizer_rules(physical_opt_rules);
 
     Ok(SessionContext::new_with_state(state))
