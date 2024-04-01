@@ -21,7 +21,7 @@ LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API
 ### 1. 下载 LakeSoul Flink Jar
 可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar。
 
-如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-1.17-VAR::VERSION.jar。
+如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-flink-1.17-VAR::VERSION.jar。
 
 目前支持的 Flink 版本为 1.17。
 
@@ -65,8 +65,8 @@ export LAKESOUL_PG_PASSWORD=root
 | -c                   | 任务运行main函数入口类                                                                        | org.apache.flink.lakesoul.entry.JdbcCDC                             |
 | 主程序包                 | 任务运行jar包                                                                             | lakesoul-flink-1.17-VAR::VERSION.jar                                 |
 | --source_db.type     | 源数据库类型                                                                               | mysql postgres oracle                                               |
-| --source_db.host     | 源数据库的地址                                                                              |                                                                     |
-| --source_db.port     | 源数据库的端口                                                                              |                                                                     |
+| --source_db.host     | 源数据库的地址，mongodb入湖则需要带上port                                                           |                                                                     |
+| --source_db.port     | 源数据库的端口，mongodb入湖不需要这个参数                                                                             |                                                                     |
 | --source_db.user     | 源数据库的用户名                                                                             |                                                                     |
 | --source_db.password | 源数据库的密码                                                                              |                                                                     |
 | --source.parallelism | 单表读取任务并行度，影响数据读取速度，值越大对 MySQL 压力越大                                                   | 可以根据 MySQL 的写入 QPS 来调整并行度                                           |
@@ -91,6 +91,13 @@ export LAKESOUL_PG_PASSWORD=root
 |----------------------|------|------------------------------|------------------------------------------|
 | --source_db.exclude_tables| 否    | 不需要同步的数据表名列表，表名之间用逗号分隔，默认为空            | --source_db.exclude_tables test_1,test_2 |
 | --server_time_zone=Asia/Shanghai | 否    | MySQL 服务端时区，Flink 端默认为 "Asia/Shanghai" | 参考 [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
+对于mongodb需要额外配置以下参数
+
+| 参数          | 是否必须 | 含义说明               | 参数填写格式      |
+|-------------|------|--------------------|-------------|
+| --batchSize | 否    | 每批次获取数据的大小,默认值1024 | --batchSize |
+
+
 
 同步mysql作业示例
 对于Mysql数据库配置，可参考https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/mysql-cdc.html
@@ -264,6 +271,20 @@ Oracle与LakeSoul的映射关系
 | TIMESTAMP [(p)] WITH TIME ZONE                                                                                                      |  org.apache.spark.sql.types.DataTypes.TimestampType                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | CHAR(n)  <br/>NCHAR(n)  <br/>NVARCHAR2(n)  <br/>VARCHAR(n)  <br/>VARCHAR2(n)  <br/>CLOB  <br/>NCLOB  <br/>XMLType  <br/>SYS.XMLTYPE | org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | BLOB                                                                                                                                |  org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+MongoDB与LakeSoul的类型映射关系
+
+| STRING      | org.apache.spark.sql.types.DataTypes.StringTypes | 
+|-------------|----------------------------------------|
+| DOUBLE      | org.apache.spark.sql.types.DataTypes.DoubleType |
+| INTEGER     | org.apache.spark.sql.types.DataTypes.Integer |
+| BOOLEAN     | org.apache.spark.sql.types.DataTypes.DoubleType |
+| DATE        | org.apache.spark.sql.types.DataTypes.DateType |
+| ARRAYS      | org.apache.spark.sql.types.ArrayType   |
+| BINARY DATA | org.apache.spark.sql.types.DataTypes.BinaryTYpe |
+| LONG        | org.apache.spark.sql.types.DataTypes.LongType |
+| STRUCT      | org.apache.spark.sql.types.StructField |
+| DECIMAL     |  org.apache.spark.sql.types.DecimalType(M,D)                                      |
 
 
 ## 注意事项

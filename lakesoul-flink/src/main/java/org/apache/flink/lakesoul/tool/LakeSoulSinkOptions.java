@@ -148,6 +148,17 @@ public class LakeSoulSinkOptions {
             .stringType()
             .noDefaultValue()
             .withDescription("source database schemaList");
+    public static final ConfigOption<String> MONGO_DB_DATABASE = ConfigOptions
+            .key("mongodb_database")
+            .stringType()
+            .noDefaultValue()
+            .withDescription("mongodb database");
+
+    public static final ConfigOption<Integer> BATCH_SIZE = ConfigOptions
+            .key("batchSize")
+            .intType()
+            .defaultValue(1024)
+            .withDescription("The cursor batch size");
 
     public static final ConfigOption<String> SOURCE_DB_SCHEMA_TABLES = ConfigOptions
             .key("source_db.schema_tables")

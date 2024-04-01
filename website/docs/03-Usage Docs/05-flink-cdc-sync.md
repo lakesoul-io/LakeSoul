@@ -63,8 +63,8 @@ Description of required parameters:
 | -c | The task runs the main function entry class                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | org.apache.flink.lakesoul.entry.MysqlCdc                                                                   |
 | Main package | Task running jar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | lakesoul-flink-1.17-VAR::VERSION.jar                                                                             |
 | --source_db.type | source database type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | mysql postgres oracle                                                                                      |
-| --source_db.host | The address of the source database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |                                                                                                            |
-| --source_db.port | source database port                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |                                                                                                            |
+| --source_db.host | The address of the source database,When mongodb enters the lake, you need to bring the port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |                                                                                                            |
+| --source_db.port | source database port，This parameter is not required when mongodb enters the lake.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |                                                                                                            |
 | --source_db.user | source database username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |                                                                                                            |
 | --source_db.password | Password for source database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |                                                                                                            |
 | --source.parallelism | The parallelism of a single table read task affects the data reading speed. The larger the value, the greater the pressure on source database.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | The parallelism can be adjusted according to the write QPS of source database                              |
@@ -88,6 +88,8 @@ For MySQL, the following additional parameters need to be configured
 |----------------------|----------|------------------------|-------------------------------------------------------------------------------------------|
 | --source_db.exclude_tables| optional | A list of data table names that do not need to be synchronized, separated by commas, the default is empty | --source_db.exclude_tables test_1,test_2                                                  |
 | --server_time_zone=Asia/Shanghai | optional | MySQL server time zone, Flink side defaults to "Asia/Shanghai" | Refer to [JDK ZoneID 文档](https://docs.oracle.com/javase/8/docs/api/java/time/ZoneId.html) |
+
+
 
 Synchronous mysql job example
 For Mysql configuration, please refer to https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/mysql-cdc.html
@@ -171,6 +173,30 @@ For Postgresql configuration,please refer to  https://ververica.github.io/flink-
     --warehouse_path s3://bucket/lakesoul/flink/data \
     --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
     --flink.savepoint s3://bucket/lakesoul/flink/savepoints
+```
+
+For mongoDB, the following additinal parameters need to be configured
+
+| Parameter   | Required | Meaning Description   | Parameter Filling Format |
+|-------------|----------|-----------------------|----------------------|
+| --batchSize | optional | Get data size for each batch| --batchSize 1024     |
+
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --source_db.db_name "cdc" \
+    --source_db.user "flinkuser" \
+    --source.parallelism 1 \
+    --mongodb_database cdc \
+    --server_time_zone Asia/Shanghai \
+    --source_db.db_type "mongodb" \
+    --source_db.password "flinkpw" \
+    --source_db.host "172.18.0.2:27017" \
+    --source_db.schema_tables "cdc.bincoll" \
+    --sink.parallelism 1 \
+    --job.checkpoint_interval 1000 \
+    --flink.checkpoint "file:/tmp/data/lakesoul/227/" \
+    --warehouse_path "file:/home/cyh/data/lakesoul/mongo"
 ```
 ## LakeSoul Flink CDC Sink job execution process
 
@@ -260,6 +286,19 @@ Type mapping relationship between Oracle and LakeSoul
 | CHAR(n)  <br/>NCHAR(n)  <br/>NVARCHAR2(n)  <br/>VARCHAR(n)  <br/>VARCHAR2(n)  <br/>CLOB  <br/>NCLOB  <br/>XMLType  <br/>SYS.XMLTYPE | org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | BLOB                                                                                                                                |  org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
+Type mapping relationship between Oracle and Lakesoul
+
+| STRING      | org.apache.spark.sql.types.DataTypes.StringTypes | 
+|-------------|----------------------------------------|
+| DOUBLE      | org.apache.spark.sql.types.DataTypes.DoubleType |
+| INTEGER     | org.apache.spark.sql.types.DataTypes.Integer |
+| BOOLEAN     | org.apache.spark.sql.types.DataTypes.DoubleType |
+| DATE        | org.apache.spark.sql.types.DataTypes.DateType |
+| ARRAYS      | org.apache.spark.sql.types.ArrayType   |
+| BINARY DATA | org.apache.spark.sql.types.DataTypes.BinaryTYpe |
+| LONG        | org.apache.spark.sql.types.DataTypes.LongType |
+| STRUCT      | org.apache.spark.sql.types.StructField |
+| DECIMAL     |  org.apache.spark.sql.types.DecimalType(M,D)                                      |
 
 
 ## Precautions
