@@ -466,6 +466,13 @@ pub fn create_session_context_with_planner(
         register_object_store(&fs, config, &runtime)?;
     };
 
+    if !config.prefix.is_empty() {
+        let prefix = config.prefix.clone();
+        let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
+        config.prefix = normalized_prefix;
+    }
+    
+
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist
     let files = config.files.clone();

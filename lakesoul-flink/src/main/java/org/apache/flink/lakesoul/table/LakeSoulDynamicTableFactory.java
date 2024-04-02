@@ -37,6 +37,9 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
+        FlinkUtil.setS3Options(options,
+                ((TableConfig) context.getConfiguration()).getConfiguration());
+
 
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
@@ -77,6 +80,8 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         options.addAll((Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(options,
                 FlinkUtil.getLocalTimeZone(((TableConfig) context.getConfiguration()).getConfiguration()));
+        FlinkUtil.setS3Options(options,
+                ((TableConfig) context.getConfiguration()).getConfiguration());
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
