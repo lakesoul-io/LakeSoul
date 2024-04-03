@@ -100,6 +100,8 @@ public class ParseDocument {
             return Timestamp.SCHEMA;
         } else if (value instanceof BsonTimestamp) {
             return Schema.INT64_SCHEMA;
+        } else if (value == null) {
+            return Schema.OPTIONAL_STRING_SCHEMA;
         } else {
             return Schema.STRING_SCHEMA;
         }

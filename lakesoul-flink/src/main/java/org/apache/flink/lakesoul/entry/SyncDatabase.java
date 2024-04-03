@@ -175,7 +175,7 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "DATETIME";
             } else if (fieldTypes[i].getLogicalType() instanceof VarCharType) {
                 stringFieldTypes[i] = "VARCHAR";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType ) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else {
                 stringFieldTypes[i] = fieldTypes[i].toString();
