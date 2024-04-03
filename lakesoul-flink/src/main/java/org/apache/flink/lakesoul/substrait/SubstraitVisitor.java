@@ -338,7 +338,7 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
         if (left == null || right == null) {
             return null;
         }
-        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.Se.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
+        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.EXTENSIONS.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
         List<Expression> args = new ArrayList<>();
         args.add(left);
         args.add(right);
@@ -353,7 +353,7 @@ class CallExprVisitor extends ExpressionDefaultVisitor<Expression> {
         if (child == null) {
             return null;
         }
-        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.Se.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
+        SimpleExtension.ScalarFunctionVariant func = SubstraitUtil.EXTENSIONS.getScalarFunction(SimpleExtension.FunctionAnchor.of(namespace, funcKey));
         List<Expression> args = new ArrayList<>();
         args.add(child);
         return ExpressionCreator.scalarFunction(func, TypeCreator.NULLABLE.BOOLEAN, args);

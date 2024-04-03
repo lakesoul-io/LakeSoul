@@ -278,11 +278,6 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <dependency>
-            <groupId>org.apache.parquet</groupId>
-            <artifactId>parquet-column</artifactId>
-            <version>1.12.2</version>
-        </dependency>
-        <dependency>
             <groupId>org.furyio</groupId>
             <artifactId>fury-core</artifactId>
             <version>0.4.1</version>

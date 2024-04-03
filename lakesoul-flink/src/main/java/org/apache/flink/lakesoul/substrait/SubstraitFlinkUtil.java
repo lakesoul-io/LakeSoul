@@ -5,14 +5,12 @@ import io.substrait.expression.ExpressionCreator;
 import io.substrait.extension.SimpleExtension;
 import io.substrait.plan.Plan;
 import io.substrait.type.TypeCreator;
-import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -36,7 +34,7 @@ public class SubstraitFlinkUtil {
                 accepted.add(expr);
                 if (last != null) {
                     SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(BooleanNamespace, "and:bool");
-                    last = ExpressionCreator.scalarFunction(Se.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, last, e);
+                    last = ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, last, e);
                 } else {
                     last = e;
                 }

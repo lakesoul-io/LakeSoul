@@ -22,8 +22,7 @@ public class SubstraitTest extends AbstractTestBase {
     public void dateTypeTest() throws ExecutionException, InterruptedException {
         TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableWithDateType(createTableEnv);
-        // not supported
-//        String testSql = "select * from type_info where modifyTime=TO_TIMESTAMP_LTZ(1612176000,0)";
+        // TIMESTAMP_LTZ, BYTES and VARBINARY is not supported at present
         String testSql = "select * from type_info " +
                 "where id=2 " +
                 "and name='Alice' " +

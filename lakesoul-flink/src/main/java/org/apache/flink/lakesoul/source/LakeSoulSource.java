@@ -19,7 +19,6 @@ import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 
 import javax.annotation.Nullable;
 import java.time.LocalDateTime;
@@ -44,8 +43,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     List<Map<String, String>> remainingPartitions;
 
     @Nullable
-    FilterPredicate _filterPredicate;
-    @Nullable
     Plan filter;
 
     public LakeSoulSource(TableId tableId,
@@ -64,7 +61,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
         this.optionParams = optionParams;
         this.remainingPartitions = remainingPartitions;
         this.filter = filter;
-
     }
 
     @Override
