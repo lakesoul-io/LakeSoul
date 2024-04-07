@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import io.substrait.proto.Plan;
 import org.apache.flink.api.connector.source.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
@@ -18,7 +19,6 @@ import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 
 import javax.annotation.Nullable;
 import java.time.LocalDateTime;
@@ -43,7 +43,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
     List<Map<String, String>> remainingPartitions;
 
     @Nullable
-    FilterPredicate filter;
+    Plan filter;
 
     public LakeSoulSource(TableId tableId,
                           RowType rowType,
@@ -52,7 +52,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulSplit, LakeSoulPe
                           List<String> pkColumns,
                           Map<String, String> optionParams,
                           @Nullable List<Map<String, String>> remainingPartitions,
-                          @Nullable FilterPredicate filter) {
+                          @Nullable Plan filter) {
         this.tableId = tableId;
         this.rowType = rowType;
         this.rowTypeWithPk = rowTypeWithPk;

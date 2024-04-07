@@ -4,8 +4,9 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io;
 
-import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
+import io.substrait.proto.Plan;
 import jnr.ffi.Pointer;
+import jnr.ffi.Runtime;
 import jnr.ffi.byref.IntByReference;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
@@ -32,6 +33,18 @@ public class NativeIOReader extends NativeIOBase implements AutoCloseable {
     public void addFilter(String filter) {
         assert ioConfigBuilder != null;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter(ioConfigBuilder, filter);
+    }
+
+    /**
+     * usually use only once
+     *
+     * @param plan Filter{}
+     */
+    public void addFilterProto(Plan plan) {
+        byte[] bytes = plan.toByteArray();
+        Pointer buf = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(bytes.length);
+        buf.put(0, bytes, 0, bytes.length);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_filter_proto(ioConfigBuilder, buf.address(), bytes.length);
     }
 
     public void addMergeOps(Map<String, String> mergeOps) {

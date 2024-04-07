@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
+import io.substrait.proto.Plan;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -21,7 +22,6 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.utils.PartitionPathUtils;
 import org.apache.flink.types.RowKind;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,7 +73,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     // arrow batch -> row, with requested schema
     private ArrowReader curArrowReaderRequestedSchema;
 
-    private final FilterPredicate filter;
+    private final Plan filter;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf,
                                          LakeSoulSplit split,
@@ -82,7 +82,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                                          List<String> pkColumns,
                                          boolean isStreaming,
                                          String cdcColumn,
-                                         FilterPredicate filter)
+                                         Plan filter)
             throws Exception {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
@@ -129,7 +129,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
 
         if (filter != null) {
-            reader.addFilter(filter.toString());
+            reader.addFilterProto(this.filter);
         }
 
         LOG.info("Initializing reader for split {}, pk={}, partitions={}," +

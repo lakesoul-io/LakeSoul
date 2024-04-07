@@ -68,6 +68,10 @@ IOConfigBuilder *lakesoul_config_builder_add_single_aux_sort_column(IOConfigBuil
 
 IOConfigBuilder *lakesoul_config_builder_add_filter(IOConfigBuilder *builder, const char *filter);
 
+IOConfigBuilder *lakesoul_config_builder_add_filter_proto(IOConfigBuilder *builder,
+                                                          c_ptrdiff_t proto_addr,
+                                                          int32_t len);
+
 IOConfigBuilder *lakesoul_config_builder_set_schema(IOConfigBuilder *builder,
                                                     c_ptrdiff_t schema_addr);
 
@@ -158,6 +162,8 @@ TokioRuntimeBuilder *tokio_runtime_builder_set_thread_num(TokioRuntimeBuilder *b
 TokioRuntime *create_tokio_runtime_from_builder(TokioRuntimeBuilder *builder);
 
 void free_tokio_runtime(CResult<TokioRuntime> *runtime);
+
+void rust_logger_init();
 
 } // extern "C"
 

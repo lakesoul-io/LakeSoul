@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.source;
 
+import io.substrait.proto.Plan;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
@@ -11,7 +12,6 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +39,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
 
     String cdcColumn;
 
-    FilterPredicate filter;
+    Plan filter;
 
     private LakeSoulOneSplitRecordsReader lastSplitReader;
 
@@ -49,7 +49,7 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
                                List<String> pkColumns,
                                boolean isStreaming,
                                String cdcColumn,
-                               FilterPredicate filter) {
+                               Plan filter) {
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.rowType = rowType;
@@ -72,7 +72,8 @@ public class LakeSoulSplitReader implements SplitReader<RowData, LakeSoulSplit> 
                             this.pkColumns,
                             this.isStreaming,
                             this.cdcColumn,
-                            this.filter);
+                            this.filter
+                    );
             return lastSplitReader;
         } catch (Exception e) {
             throw new IOException(e);

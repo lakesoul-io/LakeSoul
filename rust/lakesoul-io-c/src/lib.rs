@@ -17,11 +17,14 @@ pub use arrow::array::StructArray;
 use arrow::datatypes::Schema;
 use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_substrait::substrait::proto::Plan;
+use prost::Message;
 use tokio::runtime::{Builder, Runtime};
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+use log::debug;
 
 #[repr(C)]
 pub struct CResult<OpaqueT> {
@@ -145,6 +148,21 @@ pub extern "C" fn lakesoul_config_builder_add_filter(
     unsafe {
         let filter = CStr::from_ptr(filter).to_str().unwrap().to_string();
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_filter_str(filter))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_filter_proto(
+    builder: NonNull<IOConfigBuilder>,
+    proto_addr: c_ptrdiff_t,
+    len: i32,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        debug!("proto_addr: {:#x}, len:{}", proto_addr, len);
+        let dst: &mut [u8] = slice::from_raw_parts_mut(proto_addr as *mut u8, len as usize);
+        let plan = Plan::decode(&*dst).unwrap();
+        debug!("{:#?}", plan);
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_filter_proto(plan))
     }
 }
 
@@ -1103,4 +1121,10 @@ mod tests {
         flush_and_close_writer(writer, writer_callback);
         free_lakesoul_reader(reader);
     }
+}
+
+
+#[no_mangle]
+pub extern "C" fn rust_logger_init() {
+    let _ = env_logger::try_init();
 }

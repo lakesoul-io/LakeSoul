@@ -27,6 +27,8 @@ SPDX-License-Identifier: Apache-2.0
         <maven.compiler.target>8</maven.compiler.target>
         <arrow.version>12.0.0</arrow.version>
         <scalatest.version>3.1.0</scalatest.version>
+        <substrait.version>0.28.0</substrait.version>
+        <protobuf.version>3.22.0</protobuf.version>
     </properties>
 
 
@@ -83,6 +85,26 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.github.jnr</groupId>
             <artifactId>jnr-ffi</artifactId>
             <version>2.2.16</version>
+        </dependency>
+
+        <dependency>
+            <groupId>io.substrait</groupId>
+            <artifactId>core</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-jdk14</artifactId>
+                </exclusion>
+            </exclusions>
+            <version>${substrait.version}</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- protobuf -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
         </dependency>
 
         <dependency>
