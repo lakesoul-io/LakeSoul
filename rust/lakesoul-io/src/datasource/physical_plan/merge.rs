@@ -2,23 +2,25 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
+use std::sync::Arc;
 
 use arrow_schema::{Field, Schema, SchemaRef};
-use datafusion::dataframe::DataFrame;
-use datafusion::logical_expr::Expr;
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
     physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
-use datafusion_common::{DFSchemaRef, DataFusionError, Result};
+use datafusion::dataframe::DataFrame;
+use datafusion::logical_expr::Expr;
+use datafusion_common::{DataFusionError, DFSchemaRef, Result};
+use datafusion_substrait::substrait::proto::Plan;
+use log::debug;
 
-use crate::filter::parser::Parser as FilterParser;
-use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 use crate::default_column_stream::DefaultColumnStream;
+use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
+use crate::filter::parser::Parser as FilterParser;
 use crate::lakesoul_io_config::LakeSoulIOConfig;
 use crate::sorted_merge::merge_operator::MergeOperator;
 use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger};
@@ -57,12 +59,12 @@ impl MergeParquetExec {
                         field.data_type().clone(),
                         field.is_nullable()
                             | inputs.iter().any(|plan| {
-                                if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
-                                    plan_field.is_nullable()
-                                } else {
-                                    true
-                                }
-                            }),
+                            if let Some((_, plan_field)) = plan.schema().column_with_name(field.name()) {
+                                plan_field.is_nullable()
+                            } else {
+                                true
+                            }
+                        }),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -87,7 +89,6 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
 
@@ -99,7 +100,6 @@ impl MergeParquetExec {
             merge_operators,
         })
     }
-
 
     pub fn primary_keys(&self) -> Arc<Vec<String>> {
         self.primary_keys.clone()
@@ -251,27 +251,46 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
     exprs
 }
 
+pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
+    let arrow_schema = Arc::new(Schema::from(df.schema()));
+    debug!("schema:{:?}",arrow_schema);
+    let mut str_filters = vec![];
+    let mut proto_filters = vec![];
+    for f in &filter_str {
+        let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
+        str_filters.push(filter);
+    }
+    for p in &filter_protos {
+        let e = FilterParser::parse_proto(p, df.schema())?;
+        proto_filters.push(e);
+    }
+    debug!("str filters: {:#?}", str_filters);
+    debug!("proto filters: {:#?}", proto_filters);
+    if proto_filters.is_empty() {
+        Ok(str_filters)
+    } else {
+        Ok(proto_filters)
+    }
+}
+
 pub async fn prune_filter_and_execute(
     df: DataFrame,
     request_schema: SchemaRef,
-    filter_str: Vec<String>,
+    filters: Vec<Expr>,
     batch_size: usize,
 ) -> Result<SendableRecordBatchStream> {
+    debug!("filters: {:?}",filters);
     let df_schema = df.schema().clone();
-    // find columns requested and prune others
+    // find columns requested and prune otherPlans
     let cols = schema_intersection(Arc::new(df_schema.clone()), request_schema.clone());
+    debug!("cols: {:?}",cols);
     if cols.is_empty() {
-        Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)))
-    } else {
-        // row filtering should go first since filter column may not in the selected cols
-        let arrow_schema = Arc::new(Schema::from(df_schema));
-        let df = filter_str.iter().try_fold(df, |df, f| {
-            let filter = FilterParser::parse(f.clone(), arrow_schema.clone())?;
-            df.filter(filter)
-        })?;
-        // column pruning
-        let df = df.select(cols)?;
-        // return a stream
-        df.execute_stream().await
+        return Ok(Box::pin(EmptySchemaStream::new(batch_size, df.count().await?)));
     }
+    // row filtering should go first since filter column may not in the selected cols
+    let df = filters.into_iter().try_fold(df, |df, f| df.filter(f))?;
+    // column pruning
+    let df = df.select(cols)?;
+    // return a stream
+    df.execute_stream().await
 }

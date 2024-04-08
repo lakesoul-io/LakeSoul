@@ -1,0 +1,4 @@
+copy-to-java:
+  cargo build
+  cp target/debug/liblakesoul_io_c.dylib ../lakesoul-common/target/classes/
+  cp target/debug/liblakesoul_metadata_c.dylib ../lakesoul-common/target/classes/

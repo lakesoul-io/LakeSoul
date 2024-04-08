@@ -9,9 +9,10 @@ import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import io.substrait.proto.Plan;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.lakesoul.source.LakeSoulSource;
-import org.apache.flink.lakesoul.source.ParquetFilters;
+import org.apache.flink.lakesoul.substrait.SubstraitFlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -28,7 +29,6 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
-import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +60,8 @@ public class LakeSoulTableSource
 
     protected List<Map<String, String>> remainingPartitions;
 
-    protected FilterPredicate filter;
+    protected Plan filter;
+    protected LakeSoulRowLevelModificationScanContext modificationContext;
 
     public LakeSoulTableSource(TableId tableId,
                                RowType rowType,
@@ -72,6 +73,7 @@ public class LakeSoulTableSource
         this.isStreaming = isStreaming;
         this.pkColumns = pkColumns;
         this.optionParams = optionParams;
+        this.modificationContext = null;
     }
 
     @Override
@@ -104,19 +106,20 @@ public class LakeSoulTableSource
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         Set<String> partitionCols = new HashSet<>(partitionKeys.rangeKeys);
         for (ResolvedExpression filter : filters) {
-            if (ParquetFilters.filterContainsPartitionColumn(filter, partitionCols)) {
+            if (SubstraitFlinkUtil.filterContainsPartitionColumn(filter, partitionCols)) {
                 remainingFilters.add(filter);
             } else {
                 nonPartitionFilters.add(filter);
             }
         }
         // find acceptable non partition filters
-        Tuple2<Result, FilterPredicate> filterPushDownResult = ParquetFilters.toParquetFilter(nonPartitionFilters,
-                remainingFilters);
+        Tuple2<Result, Plan> filterPushDownResult = SubstraitFlinkUtil.flinkExprToSubStraitPlan(nonPartitionFilters,
+                remainingFilters, tableInfo.getTableName());
         this.filter = filterPushDownResult.f1;
         LOG.info("Applied filters to native io: {}, accepted {}, remaining {}", this.filter,
                 filterPushDownResult.f0.getAcceptedFilters(),
                 filterPushDownResult.f0.getRemainingFilters());
+        LOG.info("FilterPlan: {}", this.filter);
         return filterPushDownResult.f0;
     }
 
@@ -134,8 +137,31 @@ public class LakeSoulTableSource
 
     @Override
     public void applyPartitions(List<Map<String, String>> remainingPartitions) {
-        this.remainingPartitions = remainingPartitions;
+        if (isDelete()) {
+            this.remainingPartitions = complementPartition(remainingPartitions);
+            getModificationContext().setRemainingPartitions(this.remainingPartitions);
+        } else {
+            this.remainingPartitions = remainingPartitions;
+        }
         LOG.info("Applied partitions to native io: {}", this.remainingPartitions);
+    }
+
+    private boolean isDelete() {
+        LakeSoulRowLevelModificationScanContext context = getModificationContext();
+        return context != null && context.getType() == RowLevelModificationType.DELETE;
+    }
+
+    private List<Map<String, String>> complementPartition(List<Map<String, String>> remainingPartitions) {
+        List<PartitionInfo> allPartitionInfo = listPartitionInfo();
+        Set<String> remainingPartitionDesc = remainingPartitions.stream().map(DBUtil::formatPartitionDesc).collect(Collectors.toSet());
+        List<Map<String, String>> partitions = new ArrayList<>();
+        for (PartitionInfo info : allPartitionInfo) {
+            String partitionDesc = info.getPartitionDesc();
+            if (!partitionDesc.equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC) && !remainingPartitionDesc.contains(partitionDesc)) {
+                partitions.add(DBUtil.parsePartitionDesc(partitionDesc));
+            }
+        }
+        return partitions;
     }
 
     @Override
@@ -242,9 +268,14 @@ public class LakeSoulTableSource
             @Nullable
             RowLevelModificationScanContext previousContext) {
         if (previousContext == null || previousContext instanceof LakeSoulRowLevelModificationScanContext) {
-            // TODO: 2024/3/22 partiontion pruning should be handled 
-            return new LakeSoulRowLevelModificationScanContext(listPartitionInfo());
+            // TODO: 2024/3/22 partiontion pruning should be handled
+            this.modificationContext = new LakeSoulRowLevelModificationScanContext(rowLevelModificationType, listPartitionInfo());
+            return modificationContext;
         }
         throw new RuntimeException("LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
+    }
+
+    public LakeSoulRowLevelModificationScanContext getModificationContext() {
+        return modificationContext;
     }
 }
