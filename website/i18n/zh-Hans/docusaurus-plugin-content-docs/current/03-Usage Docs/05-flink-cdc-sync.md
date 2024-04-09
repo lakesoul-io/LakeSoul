@@ -182,9 +182,58 @@ https://ververica.github.io/flink-cdc-connectors/release-2.4/content/connectors/
     --flink.checkpoint s3://bucket/lakesoul/flink/checkpoints \
     --flink.savepoint s3://bucket/lakesoul/flink/savepoints
 ```
+对于MongoDB需要额外配置以下参数：   
 
+| Parameter   | Required | Meaning Description   | Parameter Filling Format |
+|-------------|----------|-----------------------|----------------------|
+| --batchSize | optional | Get data size for each batch| --batchSize 1024     |
+同步mongodb作业实例   
+为了支持mongodb 的Full ChangeLog,你需要做如下配置 ：   
+1 MongoDB的版本必须在6.0及以上   
+2 在数据库级别启用 preAndPostImages 功能   
+```bash
+db.runCommand({
+  setClusterParameter: {
+    changeStreamOptions: {
+      preAndPostImages: {
+        expireAfterSeconds: 'off' // replace with custom image expiration time
+      }
+    }
+  }
+})
+```
+3
+为要监控的集合启用changeStreamPreAndPostImages功能：
+
+```bash
+db.runCommand({
+  collMod: "<< collection name >>", 
+  changeStreamPreAndPostImages: {
+    enabled: true 
+  } 
+})
+```
+
+更多的MongoDB配置，请参考：https://nightlies.apache.org/flink/flink-cdc-docs-master/docs/connectors/cdc-connectors/mongodb-cdc/
 ## LakeSoul Flink CDC Sink 作业执行流程
 
+```bash
+./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
+    lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
+    --source_db.db_name "cdc" \
+    --source_db.user "flinkuser" \
+    --source_db.password "flinkpw" \
+    --source.parallelism 1 \
+    --mongodb_database cdc \
+    --server_time_zone Asia/Shanghai \
+    --source_db.db_type "mongodb" \
+    --source_db.host "localhost:27017" \
+    --source_db.schema_tables "cdc.test" \
+    --sink.parallelism 1 \
+    --job.checkpoint_interval 1000 \
+    --flink.checkpoint "file:/tmp/data/lakesoul/mongodb" \
+    --warehouse_path "file:/home/cyh/data/lakesoul/mongodb"
+```
 LakeSoul Flink 作业启动后初始化阶段，首先会读取配置的 MySQL DB 中的所有表（排除掉不需要同步的表）。对每一个表，首先判断在 LakeSoul 中是否存在，如果不存在则自动创建一个 LakeSoul 表，其 Schema 与 MySQL 对应表一致。
 
 完成初始化后，会读取所有表的 CDC Stream，以 Upsert 的方式写入到对应的各个 LakeSoul 表中。

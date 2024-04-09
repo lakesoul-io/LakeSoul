@@ -175,29 +175,77 @@ For Postgresql configuration,please refer to  https://ververica.github.io/flink-
     --flink.savepoint s3://bucket/lakesoul/flink/savepoints
 ```
 
-For mongoDB, the following additinal parameters need to be configured
+For MongoDB, the following additional parameters need to be configured
 
 | Parameter   | Required | Meaning Description   | Parameter Filling Format |
 |-------------|----------|-----------------------|----------------------|
 | --batchSize | optional | Get data size for each batch| --batchSize 1024     |
+
+
+To support mongodb Full ChangeLog,You need to do the following configuration ：        
+1 MongoDB version must be 6.0 or abouve;   
+2 Enable preAndPostImages feature at the databases level:
+
+```bash
+db.runCommand({
+  setClusterParameter: {
+    changeStreamOptions: {
+      preAndPostImages: {
+        expireAfterSeconds: 'off' // replace with custom image expiration time
+      }
+    }
+  }
+})
+```
+3 Enable changeStreamPreAndPostImages feature for collections to be monitored:
+
+```bash
+db.runCommand({
+  collMod: "<< collection name >>", 
+  changeStreamPreAndPostImages: {
+    enabled: true 
+  } 
+})
+```
+For more Mongodb configuration,please refer to https://nightlies.apache.org/flink/flink-cdc-docs-master/docs/connectors/cdc-connectors/mongodb-cdc/
 
 ```bash
 ./bin/flink run -c org.apache.flink.lakesoul.entry.JdbcCDC \
     lakesoul-flink-2.4.0-flink-1.17-SNAPSHOT.jar \
     --source_db.db_name "cdc" \
     --source_db.user "flinkuser" \
+    --source_db.password "flinkpw" \
     --source.parallelism 1 \
     --mongodb_database cdc \
     --server_time_zone Asia/Shanghai \
     --source_db.db_type "mongodb" \
-    --source_db.password "flinkpw" \
-    --source_db.host "172.18.0.2:27017" \
-    --source_db.schema_tables "cdc.bincoll" \
+    --source_db.host "localhost:27017" \
+    --source_db.schema_tables "cdc.test" \
     --sink.parallelism 1 \
     --job.checkpoint_interval 1000 \
-    --flink.checkpoint "file:/tmp/data/lakesoul/227/" \
-    --warehouse_path "file:/home/cyh/data/lakesoul/mongo"
+    --flink.checkpoint "file:/tmp/data/lakesoul/mongodb" \
+    --warehouse_path "file:/home/cyh/data/lakesoul/mongodb"
 ```
+MongoDB CDC usage instructions：
+1 The MongoDB table should contain the primary key field represented by "_id"   
+2
+The data type of the same field should be consistent, and the field value is allowed to be null. The following situations are allowed:
+````bash
+[
+  { _id: 1, name: 'Bob', age: null },
+  { _id: 2, name: 'Tom', age: 18 },
+  { _id: 3, name: 'Sam'}
+]
+
+````
+The following situations are not allowed:   
+When a field has inconsistent data types for the same field before and after.
+````bash
+[ 
+  { _id: 1, col: 'word' }, 
+  { _id: 2, col: 12 } 
+]
+````
 ## LakeSoul Flink CDC Sink job execution process
 
 In the initialization phase after the LakeSoul Flink job starts, it will first read all the tables in the configured MySQL DB (excluding tables that do not need to be synchronized). For each table, first determine whether it exists in LakeSoul. If it does not exist, a LakeSoul table is automatically created, and its schema is consistent with the corresponding table in MySQL.
@@ -286,7 +334,7 @@ Type mapping relationship between Oracle and LakeSoul
 | CHAR(n)  <br/>NCHAR(n)  <br/>NVARCHAR2(n)  <br/>VARCHAR(n)  <br/>VARCHAR2(n)  <br/>CLOB  <br/>NCLOB  <br/>XMLType  <br/>SYS.XMLTYPE | org.apache.spark.sql.types.DataTypes.StringType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | BLOB                                                                                                                                |  org.apache.spark.sql.types.DataTypes.BinaryType                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
-Type mapping relationship between Oracle and Lakesoul
+Type mapping relationship between MongoDB and Lakesoul
 
 | STRING      | org.apache.spark.sql.types.DataTypes.StringTypes | 
 |-------------|----------------------------------------|
