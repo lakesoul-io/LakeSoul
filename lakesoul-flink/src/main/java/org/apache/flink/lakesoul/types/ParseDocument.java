@@ -29,16 +29,19 @@ public class ParseDocument {
         for (Map.Entry<String, Object> entry : bsonDocument.entrySet()) {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
-            if (value instanceof Document) {
-                SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
-                structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
-            }  else if (value instanceof List) {
-                List<?> arrayList = (List<?>) value;
-                Schema arraySchema = getSchemaForArrayList(arrayList);
-                structSchemaBuilder.field(fieldName, arraySchema);
-            } else {
-                structSchemaBuilder.field(fieldName, getSchemaForValue(value));
+            if (value != null){
+                if (value instanceof Document) {
+                    SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
+                    structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
+                }  else if (value instanceof List) {
+                    List<?> arrayList = (List<?>) value;
+                    Schema arraySchema = getSchemaForArrayList(arrayList);
+                    structSchemaBuilder.field(fieldName, arraySchema);
+                } else {
+                    structSchemaBuilder.field(fieldName, getSchemaForValue(value));
+                }
             }
+
         }
         return structSchemaBuilder.build();
     }
@@ -56,24 +59,26 @@ public class ParseDocument {
         for (Map.Entry<String, Object> entry : bsonDocument.entrySet()) {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
-            if (value instanceof Document) {
-                Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
-                fillStructValues((Document) value, nestedStruct);
-                struct.put(fieldName, nestedStruct);
-            } else if (value instanceof List) {
-                List<?> arrayList = (List<?>) value;
-                struct.put(fieldName, arrayList);
-            } else if (value instanceof Decimal128) {
-                BigDecimal decimalValue = new BigDecimal(value.toString());
-                struct.put(fieldName, decimalValue);
-            } else if (value instanceof Binary) {
-                Binary binaryData = (Binary) value;
-                struct.put(fieldName,binaryData.getData());
-            } else if (value instanceof BsonTimestamp) {
-                BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
-                struct.put(fieldName,bsonTimestamp.getValue());
-            } else {
-                struct.put(fieldName,value);
+            if (value != null){
+                if (value instanceof Document) {
+                    Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
+                    fillStructValues((Document) value, nestedStruct);
+                    struct.put(fieldName, nestedStruct);
+                } else if (value instanceof List) {
+                    List<?> arrayList = (List<?>) value;
+                    struct.put(fieldName, arrayList);
+                } else if (value instanceof Decimal128) {
+                    BigDecimal decimalValue = new BigDecimal(value.toString());
+                    struct.put(fieldName, decimalValue);
+                } else if (value instanceof Binary) {
+                    Binary binaryData = (Binary) value;
+                    struct.put(fieldName,binaryData.getData());
+                } else if (value instanceof BsonTimestamp) {
+                    BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
+                    struct.put(fieldName,bsonTimestamp.getValue());
+                } else {
+                    struct.put(fieldName,value);
+                }
             }
         }
     }
@@ -100,8 +105,6 @@ public class ParseDocument {
             return Timestamp.SCHEMA;
         } else if (value instanceof BsonTimestamp) {
             return Schema.INT64_SCHEMA;
-        } else if (value == null) {
-            return Schema.OPTIONAL_STRING_SCHEMA;
         } else {
             return Schema.STRING_SCHEMA;
         }
