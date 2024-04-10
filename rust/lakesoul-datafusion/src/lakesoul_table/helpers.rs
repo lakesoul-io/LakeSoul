@@ -5,33 +5,40 @@
 use std::sync::Arc;
 
 use arrow::{array::{Array, ArrayRef, AsArray, StringBuilder}, compute::prep_null_mask_filter, datatypes::{DataType, Field, Fields, Schema}, record_batch::RecordBatch};
-use arrow_cast::cast;
 use arrow_arith::boolean::and;
-
-use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr};
-use lakesoul_metadata::MetaDataClientRef;
-use object_store::{path::Path, ObjectMeta, ObjectStore};
+use arrow_cast::cast;
+use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
+use object_store::{ObjectMeta, ObjectStore, path::Path};
+use serde_json::Value;
 use tracing::{debug, trace};
 use url::Url;
 
-use crate::error::Result;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfigBuilder;
+use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::{
-    catalog::{parse_table_info_partitions, LakeSoulTableProperty},
+    catalog::{LakeSoulTableProperty, parse_table_info_partitions},
     serialize::arrow_java::schema_from_metadata_str,
 };
+use crate::error::{LakeSoulError, Result};
 
 pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo>) -> Result<LakeSoulIOConfigBuilder> {
     let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
-    let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+    // let properties = serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties).unwrap_or(LakeSoulTableProperty::new());
+    let prop: Value = serde_json::from_str(&table_info.properties)?;
+    let hash_bucked_num = match &prop["hashBucketNum"] {
+        Value::Null => 1usize,
+        Value::Number(n) => { n.as_u64().ok_or(LakeSoulError::Internal(String::from("number wrong type")))? as usize }
+        Value::String(s) => { s.parse::<usize>()? }
+        _ => return Err(LakeSoulError::Internal(String::from("json wrong type"))),
+    };
     Ok(LakeSoulIOConfigBuilder::new()
         .with_schema(schema_from_metadata_str(&table_info.table_schema))
         .with_prefix(table_info.table_path.clone())
         .with_primary_keys(hash_partitions)
         .with_range_partitions(range_partitions)
-        .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1)))
+        .with_hash_bucket_num(hash_bucked_num))
 }
 
 
@@ -115,7 +122,7 @@ pub async fn prune_partitions(
         0 => mask,
         _ => prep_null_mask_filter(&mask),
     };
-    
+
     // Sanity check
     assert_eq!(prepared.len(), all_partition_info.len());
 
@@ -124,16 +131,16 @@ pub async fn prune_partitions(
         .zip(prepared.values())
         .filter_map(|(p, f)| f.then_some(p))
         .collect();
-    
+
     Ok(filtered)
 }
 
 pub fn parse_partitions_for_partition_desc<'a, I>(
     partition_desc: &'a str,
     table_partition_cols: I,
-) -> Option<Vec<&'a str>> 
-where
-    I: IntoIterator<Item = &'a str>,
+) -> Option<Vec<&'a str>>
+    where
+        I: IntoIterator<Item=&'a str>,
 {
     let mut part_values = vec![];
     for (part, pn) in partition_desc.split(",").zip(table_partition_cols) {
@@ -151,7 +158,6 @@ where
         }
     }
     Some(part_values)
-
 }
 
 
@@ -165,4 +171,3 @@ pub async fn listing_partition_info(partition_info: PartitionInfo, store: &dyn O
         files.push(result);
     }
     Ok((partition_info, files))
-}

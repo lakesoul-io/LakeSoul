@@ -12,12 +12,13 @@ use prost::Message;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use proto::proto::entity::{DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo};
 
-use crate::{DaoType, error::Result, execute_query, PARAM_DELIM, PreparedStatementMap};
+use crate::{DaoType, error::Result, execute_query, MetaDataClient, PARAM_DELIM, PreparedStatementMap};
 use crate::error::LakeSoulMetaDataError;
 use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
@@ -84,7 +85,7 @@ pub async fn split_desc_array(
 
     // create splits
     let mut splits = Vec::new();
-    // // split by range and hash partition
+    // split by range and hash partition
     let mut map = HashMap::new();
 
     for df in &data_files {
@@ -162,13 +163,14 @@ impl<'a> RawClient<'_> {
             )
             .await
         {
-            Ok(wrapper) if wrapper.table_info.is_empty() => Err(crate::error::LakeSoulMetaDataError::NotFound(
+            Ok(wrapper) if wrapper.table_info.is_empty() => Err(LakeSoulMetaDataError::NotFound(
                 format!("Table '{}' not found", table_name),
             )),
             Ok(wrapper) => Ok(wrapper.table_info[0].clone()),
             Err(err) => Err(err),
         }
     }
+
 
     pub async fn get_table_data_info(&self, table_id: &str) -> Result<Vec<DataFileInfo>> {
         // logic from scala: DataOperation
@@ -266,6 +268,26 @@ impl<'a> RawClient<'_> {
         {
             Ok(wrapper) => Ok(wrapper.data_commit_info),
             Err(e) => Err(e),
+        }
+    }
+}
+
+/// TODO MUST add safety and docs
+impl<'a> From<&'a MetaDataClient> for RawClient<'a> {
+    fn from(value: &'a MetaDataClient) -> Self {
+        unsafe {
+            Handle::current().block_on(async {
+                let c = value.client();
+                let c_ptr = c.lock().await.deref_mut() as *mut Client;
+                let c = c_ptr.as_ref().unwrap();
+                let p = value.prepared();
+                let p_ptr = p.lock().await.deref_mut() as *mut PreparedStatementMap;
+                let p = p_ptr.as_mut().unwrap();
+                Self {
+                    client: Mutex::new(c),
+                    prepared: Mutex::new(p),
+                }
+            })
         }
     }
 }

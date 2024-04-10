@@ -3,7 +3,6 @@ package com.dmetasoul.lakesoul.meta.jnr;
 import com.alibaba.fastjson.annotation.JSONField;
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
-import org.apache.hadoop.util.hash.Hash;
 
 import java.util.HashMap;
 import java.util.List;

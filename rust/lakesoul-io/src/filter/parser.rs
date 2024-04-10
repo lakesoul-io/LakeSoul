@@ -29,7 +29,7 @@ use datafusion_substrait::variation_const::{
     DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF,
     TIMESTAMP_NANO_TYPE_REF, TIMESTAMP_SECOND_TYPE_REF, UNSIGNED_INTEGER_TYPE_REF,
 };
-use log::debug;
+use tracing::debug;
 
 pub struct Parser {}
 

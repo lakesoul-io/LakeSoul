@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{result, sync::Arc};
+use std::num::ParseIntError;
+use std::string::ParseError;
 
 use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
@@ -28,6 +30,8 @@ pub enum LakeSoulError {
     SerdeJsonError(#[from] serde_json::Error),
     #[error("tokio error: {0}")]
     TokioJoinError(#[from] tokio::task::JoinError),
+    #[error("parse error: {0}")]
+    ParseIntError(#[from] ParseIntError),
     #[error("sys time error: {0}")]
     SysTimeError(#[from] std::time::SystemTimeError),
     // #[error("object store path error: {0}")]
@@ -35,7 +39,7 @@ pub enum LakeSoulError {
     // #[error("object store error: {0}")]
     // ObjectStoreError(#[from] object_store::path::Error),
     #[error(
-        "Internal error: {0}.\nThis was likely caused by a bug in LakeSoul's \
+    "Internal error: {0}.\nThis was likely caused by a bug in LakeSoul's \
     code and we would welcome that you file an bug report in our issue tracker"
     )]
     Internal(String),

@@ -16,7 +16,7 @@ use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
 use datafusion_common::{DataFusionError, DFSchemaRef, Result};
 use datafusion_substrait::substrait::proto::Plan;
-use log::debug;
+use tracing::debug;
 
 use crate::default_column_stream::DefaultColumnStream;
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;

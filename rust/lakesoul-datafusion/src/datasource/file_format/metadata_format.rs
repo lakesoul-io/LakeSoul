@@ -8,23 +8,12 @@ use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
+use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-
-use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
-use datafusion::common::{project_schema, FileType, Statistics};
-use datafusion::datasource::physical_plan::ParquetExec;
-use datafusion::error::DataFusionError;
-use datafusion::execution::TaskContext;
-use datafusion::physical_expr::PhysicalSortExpr;
-use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
-use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{
-        file_format::{parquet::ParquetFormat, FileFormat},
+        file_format::{FileFormat, parquet::ParquetFormat},
         physical_plan::{FileScanConfig, FileSinkConfig},
     },
     error::Result,
@@ -32,20 +21,30 @@ use datafusion::{
     physical_expr::PhysicalSortRequirement,
     physical_plan::{ExecutionPlan, PhysicalExpr},
 };
+use datafusion::common::{FileType, project_schema, Statistics};
+use datafusion::datasource::physical_plan::ParquetExec;
+use datafusion::error::DataFusionError;
+use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, Distribution, Partitioning, SendableRecordBatchStream};
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::union::UnionExec;
+use datafusion::sql::TableReference;
 use futures::StreamExt;
+use object_store::{ObjectMeta, ObjectStore};
+use rand::distributions::DistString;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tracing::debug;
+
 use lakesoul_io::datasource::file_format::{compute_project_column_indices, flatten_file_scan_config};
 use lakesoul_io::datasource::physical_plan::MergeParquetExec;
 use lakesoul_io::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values, partition_desc_from_file_scan_config};
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::MetaDataClientRef;
-use object_store::{ObjectMeta, ObjectStore};
 use proto::proto::entity::TableInfo;
-use rand::distributions::DistString;
-
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-use tracing::debug;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
@@ -129,9 +128,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         for field in &conf.table_partition_cols {
             builder.push(Field::new(field.name(), field.data_type().clone(), false));
         }
-        
+
         let table_schema = Arc::new(builder.finish());
-        
+
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
@@ -141,9 +140,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // files to read
         let flatten_conf =
             flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
-        
 
-        let mut inputs_map: HashMap<String, (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>) > = HashMap::new();
+
+        let mut inputs_map: HashMap<String, (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>)> = HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
 
         for config in &flatten_conf {
@@ -177,7 +176,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                         Field::new(
                             field.name(),
                             field.data_type().clone(),
-                            field.is_nullable() | column_nullable.contains(field.name())
+                            field.is_nullable() | column_nullable.contains(field.name()),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -212,7 +211,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         } else {
             Ok(exec)
         }
-
     }
 
     async fn create_writer_physical_plan(
@@ -313,12 +311,12 @@ impl LakeSoulHashSinkExec {
         partitioned_file_path_and_row_count: Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
-        let schema_projection_excluding_range = 
+        let schema_projection_excluding_range =
             data.schema()
                 .fields()
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, field)| 
+                .filter_map(|(idx, field)|
                     match range_partitions.contains(field.name()) {
                         true => None,
                         false => Some(idx)
@@ -334,7 +332,7 @@ impl LakeSoulHashSinkExec {
             let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
             let partition_desc = columnar_values_to_partition_desc(&columnar_values);
             let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
-            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);            
+            let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", table_info.table_path, columnar_values_to_sub_path(&columnar_values), write_id, partition);
 
             if !partitioned_writer.contains_key(&partition_desc) {
                 let mut config = create_io_config_builder_from_table_info(table_info.clone())
@@ -497,10 +495,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
 
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-        let partitioned_file_path_and_row_count = 
+        let partitioned_file_path_and_row_count =
             Arc::new(
                 Mutex::new(
-                    HashMap::<String,(Vec<String>, u64)>::new()
+                    HashMap::<String, (Vec<String>, u64)>::new()
                 ));
         for i in 0..num_input_partitions {
             let sink_task = tokio::spawn(Self::pull_and_sink(
@@ -554,7 +552,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                 }
             }
         })
-        .boxed();
+            .boxed();
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(sink_schema, stream)))
     }
@@ -572,4 +570,37 @@ fn make_sink_schema() -> SchemaRef {
         Field::new("count", DataType::UInt64, false),
         Field::new("msg", DataType::Utf8, false),
     ]))
+}
+
+
+mod tests {
+    use std::sync::Arc;
+    use datafusion::catalog::CatalogProvider;
+
+    use datafusion::prelude::SessionContext;
+    use tokio::runtime::Runtime;
+
+    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+    use lakesoul_metadata::MetaDataClient;
+
+
+    #[test_log::test]
+    fn simple_test() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            println!("hello");
+            let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+            let mut cfg = LakeSoulIOConfigBuilder::new().build();
+            let sc = Arc::new(create_session_context(&mut cfg).unwrap());
+            let catalog = Arc::new(crate::catalog::LakeSoulCatalog::new(client.clone(), sc.clone()));
+            sc.register_catalog("lk", catalog.clone());
+            // let sma = catalog.schema("default").unwrap();
+            // let vec = sma.table_names();
+            // let arc = sma.table("KAtG7Fh6hB").await.unwrap();
+            // println!("{:?}",.);
+            let test_sql = "select * from lk.default.a6ommcpjox;";
+            let df = sc.sql(test_sql).await.unwrap();
+            df.show().await.unwrap()
+        });
+    }
 }

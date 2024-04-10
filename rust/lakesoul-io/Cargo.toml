@@ -39,10 +39,8 @@ proto = { path = "../proto" }
 parking_lot = "0.12.1"
 rand = { workspace = true }
 half = { workspace = true }
-log = "0.4.20"
 anyhow = { workspace = true, features = [] }
 prost = "0.12.3"
-env_logger = "0.11"
 
 
 [features]
@@ -64,3 +62,4 @@ tempfile = "3.3.0"
 comfy-table = "6.0"
 whoami = "1.3"
 rand = "0.8"
+tracing-subscriber = { workspace = true }

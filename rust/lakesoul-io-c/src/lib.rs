@@ -22,12 +22,15 @@ use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_substrait::substrait::proto::Plan;
 use prost::Message;
+use time_macros::format_description;
 use tokio::runtime::{Builder, Runtime};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::LocalTime;
 
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-use log::debug;
+use tracing::debug;
 
 #[repr(C)]
 pub struct CResult<OpaqueT> {
@@ -1229,5 +1232,15 @@ mod tests {
 
 #[no_mangle]
 pub extern "C" fn rust_logger_init() {
-    let _ = env_logger::try_init();
+    let sub = tracing_subscriber::fmt();
+    let timer = LocalTime::new(format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second]"
+    ));
+    sub.with_env_filter(EnvFilter::from_default_env())
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_line_number(true)
+        .with_timer(timer)
+        .init();
+    let _ = tracing_subscriber::fmt::try_init();
 }
