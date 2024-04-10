@@ -389,7 +389,7 @@ pub extern "C" fn create_split_desc_array(
     let table_name = c_char2str(table_name);
     let namespace = c_char2str(namespace);
     let result: Result<*mut c_char, LakeSoulMetaDataError> = runtime.block_on(async {
-        let ret = lakesoul_metadata::transfusion::split_desc_array(client, prepared, table_name, namespace).await?;
+        let ret = lakesoul_metadata::transfusion::split_desc_array((client, prepared), table_name, namespace).await?;
         let v = serde_json::to_vec(&ret)?;
         Ok(CString::new(v)
             .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?

@@ -1776,6 +1776,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "futures",
  "num_enum",
  "postgres",
  "postgres-types",

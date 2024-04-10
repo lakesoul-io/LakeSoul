@@ -12,13 +12,12 @@ use prost::Message;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use proto::proto::entity::{DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo};
 
-use crate::{DaoType, error::Result, execute_query, MetaDataClient, PARAM_DELIM, PreparedStatementMap};
+use crate::{DaoType, error::Result, execute_query, MetaDataClient, MetaDataClientRef, PARAM_DELIM, PreparedStatementMap};
 use crate::error::LakeSoulMetaDataError;
 use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
@@ -70,16 +69,18 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
     hash_bucket_num == "-1"
 }
 
-/// use raw ptr to create `MetadataClientRef`
-/// stay origin memory the same
-/// see https://users.rust-lang.org/t/dereferencing-a-boxed-value/86768
+// TODO  Refactor
+pub async fn split_desc_array_with_client(client: MetaDataClientRef, table_name: &str, namespace: &str) -> Result<SplitDescArray> {
+    split_desc_array(client.as_ref(), table_name, namespace).await
+}
+
+
 pub async fn split_desc_array(
-    client: &Client,
-    prepared: &mut PreparedStatementMap,
+    origin: impl Into<RawClient<'_>>,
     table_name: &str,
     namespace: &str,
 ) -> Result<SplitDescArray> {
-    let db = RawClient::new(client, prepared);
+    let db = origin.into();
     let table_info = db.get_table_info_by_table_name(table_name, namespace).await?;
     let data_files = db.get_table_data_info(&table_info.table_id).await?;
 
@@ -148,7 +149,7 @@ struct RawClient<'a> {
 //     prepared: &'a mut PreparedStatementMap,
 // }
 
-impl<'a> RawClient<'_> {
+impl<'a> RawClient<'a> {
     fn new(client: &'a Client, prepared: &'a mut PreparedStatementMap) -> RawClient<'a> {
         RawClient {
             client: Mutex::new(client),
@@ -276,21 +277,30 @@ impl<'a> RawClient<'_> {
 impl<'a> From<&'a MetaDataClient> for RawClient<'a> {
     fn from(value: &'a MetaDataClient) -> Self {
         unsafe {
-            Handle::current().block_on(async {
-                let c = value.client();
-                let c_ptr = c.lock().await.deref_mut() as *mut Client;
-                let c = c_ptr.as_ref().unwrap();
-                let p = value.prepared();
-                let p_ptr = p.lock().await.deref_mut() as *mut PreparedStatementMap;
-                let p = p_ptr.as_mut().unwrap();
-                Self {
-                    client: Mutex::new(c),
-                    prepared: Mutex::new(p),
-                }
-            })
+            futures::executor::block_on(
+                // block on current thread
+                async move {
+                    let c = value.client();
+                    let c_ptr = c.lock().await.deref_mut() as *mut Client;
+                    let c = c_ptr.as_ref().unwrap();
+                    let p = value.prepared();
+                    let p_ptr = p.lock().await.deref_mut() as *mut PreparedStatementMap;
+                    let p = p_ptr.as_mut().unwrap();
+                    Self {
+                        client: Mutex::new(c),
+                        prepared: Mutex::new(p),
+                    }
+                })
         }
     }
 }
+
+impl<'a> From<(&'a Client, &'a mut PreparedStatementMap)> for RawClient<'a> {
+    fn from(value: (&'a Client, &'a mut PreparedStatementMap)) -> RawClient<'a> {
+        Self::new(value.0, value.1)
+    }
+}
+
 
 fn has_hash_partitions(table_info: &TableInfo) -> bool {
     let properties: Value = serde_json::from_str(&table_info.properties).expect("wrong properties");
@@ -389,8 +399,13 @@ pub struct SplitDesc {
     pub table_schema: String,
 }
 
+/// Represents all partitions of a lakesoul table
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SplitDescArray(pub Vec<SplitDesc>);
+
+impl SplitDescArray {
+    pub fn to_vec(self) -> Vec<SplitDesc> { self.0 }
+}
 
 #[cfg(test)]
 mod test {

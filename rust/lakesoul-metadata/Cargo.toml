@@ -17,6 +17,7 @@ postgres-types = { version = "0.2.5", features = ["derive"] }
 bytes = { version = "1.5.0" }
 
 tokio = { workspace = true }
+futures = { workspace = true }
 proto = { path = "../proto" }
 prost = { workspace = true }
 

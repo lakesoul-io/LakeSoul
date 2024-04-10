@@ -158,6 +158,7 @@ pub async fn flatten_file_scan_config(
 ) -> Result<Vec<FileScanConfig>> {
     let object_store_url = conf.object_store_url.clone();
     let store = state.runtime_env().object_store(object_store_url.clone())?;
+    println!("{:#?}",conf.file_groups);
 
     let mut flatten_configs = vec![];
     for i in 0..conf.file_groups.len() {

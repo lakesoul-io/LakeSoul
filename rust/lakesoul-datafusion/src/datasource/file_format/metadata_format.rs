@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -44,6 +45,7 @@ use lakesoul_io::helpers::{columnar_values_to_partition_desc, columnar_values_to
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::transfusion::{split_desc_array, split_desc_array_with_client};
 use proto::proto::entity::TableInfo;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
@@ -108,6 +110,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             .await
     }
 
+    #[tracing::instrument(skip_all)]
     async fn create_physical_plan(
         &self,
         state: &SessionState,
@@ -140,13 +143,39 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         // files to read
         let flatten_conf =
             flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
+        // (partition desc, (partition_k_v,parquet_execs))
+        let split_array = split_desc_array_with_client(
+            Arc::clone(&self.client),
+            &self.table_info.table_name,
+            &self.table_info.table_namespace)
+            .await
+            .map_err(|_| DataFusionError::External(anyhow!("wrong").into()))?
+            .to_vec();
 
+        // println!("{:#?}", split_array);
 
         let mut inputs_map: HashMap<String, (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>)> = HashMap::new();
         let mut column_nullable = HashSet::<String>::new();
 
+        // let mut inputs_map_fork = HashMap::new();
+        // for desc in &split_array {
+        //     println!("{:#?}", &desc.partition_desc);
+        //     let p_desc = desc.partition_desc.iter().map(|k, v| format!("{}={}", k, v)).collect::<Vec<_>>().join(",");
+        //     let p_c_v = Arc::new(desc.partition_desc.clone());
+        //     let parquet_exec = Arc::new(ParquetExec::new(config.clone(), predicate.clone(), self.parquet_format.metadata_size_hint(state.config_options())));
+        //     for field in parquet_exec.schema().fields().iter() {
+        //         if field.is_nullable() {
+        //             column_nullable.insert(field.name().clone());
+        //         }
+        //     }
+        // }
+
+
         for config in &flatten_conf {
             let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(&config)?;
+            // println!("{}", partition_desc);
+            // println!("{:#?}", partition_columnar_value);
+
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
             let parquet_exec = Arc::new(ParquetExec::new(config.clone(), predicate.clone(), self.parquet_format.metadata_size_hint(state.config_options())));
@@ -155,7 +184,6 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     column_nullable.insert(field.name().clone());
                 }
             }
-
             if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc)
             {
                 inputs.push(parquet_exec);
@@ -182,7 +210,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     .collect::<Vec<_>>()
             )
         );
-
+        println!("{:#?}", inputs_map);
         let mut partitioned_exec = Vec::new();
         for (_, (partition_columnar_values, inputs)) in inputs_map {
             let merge_exec = Arc::new(MergeParquetExec::new_with_inputs(
@@ -575,20 +603,19 @@ fn make_sink_schema() -> SchemaRef {
 
 mod tests {
     use std::sync::Arc;
-    use datafusion::catalog::CatalogProvider;
 
+    use datafusion::catalog::CatalogProvider;
     use datafusion::prelude::SessionContext;
     use tokio::runtime::Runtime;
 
     use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder};
     use lakesoul_metadata::MetaDataClient;
 
-
     #[test_log::test]
     fn simple_test() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            println!("hello");
+            tracing::debug!("test");
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
             let mut cfg = LakeSoulIOConfigBuilder::new().build();
             let sc = Arc::new(create_session_context(&mut cfg).unwrap());
@@ -598,7 +625,7 @@ mod tests {
             // let vec = sma.table_names();
             // let arc = sma.table("KAtG7Fh6hB").await.unwrap();
             // println!("{:?}",.);
-            let test_sql = "select * from lk.default.a6ommcpjox;";
+            let test_sql = "select * from lk.default.h6a49kmgwl;";
             let df = sc.sql(test_sql).await.unwrap();
             df.show().await.unwrap()
         });
