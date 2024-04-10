@@ -457,6 +457,7 @@ public class DBManager {
                 int readPartitionVersion = 0;
                 if (readPartition != null) {
                     readPartitionVersion = readPartition.getVersion();
+
                 }
 
                 int newVersion = curVersion + 1;

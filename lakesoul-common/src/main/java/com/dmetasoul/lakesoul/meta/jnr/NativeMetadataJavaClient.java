@@ -205,7 +205,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         final CompletableFuture<Boolean> future = new CompletableFuture<>();
         tokioPostgresClient = libLakeSoulMetaData.create_tokio_postgres_client(
                 new ReferencedBooleanCallback((bool, msg) -> {
-                    if (msg.isEmpty()) {
+                    if (msg == null || msg.isEmpty()) {
                         future.complete(bool);
                     } else {
                         System.err.println(msg);
@@ -236,7 +236,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     final CompletableFuture<Integer> queryFuture = new CompletableFuture<>();
                     Pointer queryResult = getLibLakeSoulMetaData().execute_query(
                             new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg.isEmpty()) {
+                                if (msg == null || msg.isEmpty()) {
                                     queryFuture.complete(result);
                                 } else {
                                     queryFuture.completeExceptionally(new SQLException(msg));
@@ -262,7 +262,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                     final CompletableFuture<Boolean> importFuture = new CompletableFuture<>();
                     getLibLakeSoulMetaData().export_bytes_result(
                             new ReferencedBooleanCallback((result, msg) -> {
-                                if (msg.isEmpty()) {
+                                if (msg == null || msg.isEmpty()) {
                                     importFuture.complete(result);
                                 } else {
                                     importFuture.completeExceptionally(new SQLException(msg));
@@ -348,7 +348,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
                     getLibLakeSoulMetaData().execute_insert(
                             new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg.isEmpty()) {
+                                if (msg == null || msg.isEmpty()) {
                                     future.complete(result);
                                 } else {
                                     future.completeExceptionally(new SQLException(msg));
@@ -395,7 +395,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
                     getLibLakeSoulMetaData().execute_update(
                             new ReferencedIntegerCallback((result, msg) -> {
-                                if (msg.isEmpty()) {
+                                if (msg == null || msg.isEmpty()) {
                                     future.complete(result);
                                 } else {
                                     future.completeExceptionally(new SQLException(msg));
@@ -441,7 +441,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
 
                     getLibLakeSoulMetaData().execute_query_scalar(
                             new ReferencedStringCallback((result, msg) -> {
-                                if (msg.isEmpty()) {
+                                if (msg == null || msg.isEmpty()) {
                                     future.complete(result);
                                 } else {
                                     future.completeExceptionally(new SQLException(msg));
@@ -512,7 +512,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         try {
             instance.getLibLakeSoulMetaData().clean_meta_for_test(
                     new ReferencedIntegerCallback((result, msg) -> {
-                        if (msg.isEmpty()) {
+                        if (msg == null || msg.isEmpty()) {
                             future.complete(result);
                         } else {
                             future.completeExceptionally(new SQLException(msg));
@@ -600,21 +600,4 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             unlockReadLock();
         }
     }
-
-//    void filter_rel(io.substrait.proto.Expression e) {
-//        byte[] byteArray = e.toByteArray();
-//        int length = byteArray.length;
-//        Pointer buffer = fixedBuffer;
-//        if (length < fixedBuffer.size())
-//            fixedBuffer.put(0, byteArray, 0, length);
-//        else if (length < mutableBuffer.size()) {
-//            mutableBuffer.put(0, byteArray, 0, length);
-//            buffer = mutableBuffer;
-//        } else {
-//            mutableBuffer = Runtime.getRuntime(libLakeSoulMetaData).getMemoryManager().allocateDirect(length);
-//            mutableBuffer.put(0, byteArray, 0, length);
-//            buffer = mutableBuffer;
-//        }
-//        getLibLakeSoulMetaData().call_rust(buffer.address(), length);
-//    }
 }

@@ -28,6 +28,8 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -163,9 +165,14 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             TableSchemaIdentity identity = schemaAndRowData.f0;
             RowData rowData = schemaAndRowData.f1;
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
-            final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
-            final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
-            bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+            if (conf.get(DYNAMIC_BUCKETING)) {
+                final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+            } else {
+                final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
+                final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+            }
             recordsOutCounter.inc();
         }
     }
@@ -212,7 +219,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             TableSchemaWriterCreator creator) throws IOException {
         LakeSoulWriterBucket bucket = activeBuckets.get(Tuple2.of(identity, bucketId));
         if (bucket == null) {
-            final Path bucketPath = assembleBucketPath(creator.tableLocation, bucketId);
+            final Path bucketPath = creator.tableLocation;
             BucketWriter<RowData, String> bucketWriter = creator.createBucketWriter();
             bucket =
                     bucketFactory.getNewBucket(

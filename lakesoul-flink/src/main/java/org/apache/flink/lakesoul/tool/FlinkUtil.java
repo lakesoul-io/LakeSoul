@@ -48,6 +48,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
@@ -318,6 +319,9 @@ public class FlinkUtil {
         } catch (Exception e) {
             // ignore
         }
+        if (conf.containsKey(DEFAULT_FS.key())) {
+            setFSConf(conf, DEFAULT_FS.key(), DEFAULT_FS.key(), io);
+        }
 
         // try hadoop's s3 configs
         setFSConf(conf, "fs.s3a.access.key", "fs.s3a.access.key", io);
@@ -326,11 +330,12 @@ public class FlinkUtil {
         setFSConf(conf, "fs.s3a.endpoint.region", "fs.s3a.endpoint.region", io);
         setFSConf(conf, "fs.s3a.path.style.access", "fs.s3a.path.style.access", io);
         // try flink's s3 credential configs
-        setFSConf(conf, "s3.access-key", "fs.s3a.access.key", io);
-        setFSConf(conf, "s3.secret-key", "fs.s3a.secret.key", io);
-        setFSConf(conf, "s3.endpoint", "fs.s3a.endpoint", io);
+        setFSConf(conf, S3_ACCESS_KEY.key(), "fs.s3a.access.key", io);
+        setFSConf(conf, S3_SECRET_KEY.key(), "fs.s3a.secret.key", io);
+        setFSConf(conf, S3_ENDPOINT.key(), "fs.s3a.endpoint", io);
         setFSConf(conf, "s3.endpoint.region", "fs.s3a.endpoint.region", io);
-        setFSConf(conf, "s3.path.style.access", "fs.s3a.path.style.access", io);
+        setFSConf(conf, S3_PATH_STYLE_ACCESS.key(), "fs.s3a.path.style.access", io);
+        setFSConf(conf, S3_BUCKET.key(), "fs.s3a.bucket", io);
     }
 
     public static void setFSConf(Configuration conf, String confKey, String fsConfKey, NativeIOBase io) {
@@ -467,6 +472,27 @@ public class FlinkUtil {
 
     public static void setLocalTimeZone(Configuration options, ZoneId localTimeZone) {
         options.setString(TableConfigOptions.LOCAL_TIME_ZONE, localTimeZone.toString());
+    }
+
+    public static void setS3Options(Configuration dstConf, Configuration srcConf) {
+        if (srcConf.contains(S3_ACCESS_KEY)) {
+            dstConf.set(S3_ACCESS_KEY, srcConf.get(S3_ACCESS_KEY));
+        }
+        if (srcConf.contains(S3_SECRET_KEY)) {
+            dstConf.set(S3_SECRET_KEY, srcConf.get(S3_SECRET_KEY));
+        }
+        if (srcConf.contains(S3_ENDPOINT)) {
+            dstConf.set(S3_ENDPOINT, srcConf.get(S3_ENDPOINT));
+        }
+        if (srcConf.contains(S3_BUCKET)) {
+            dstConf.set(S3_BUCKET, srcConf.get(S3_BUCKET));
+        }
+        if (srcConf.contains(S3_PATH_STYLE_ACCESS)) {
+            dstConf.set(S3_PATH_STYLE_ACCESS, srcConf.get(S3_PATH_STYLE_ACCESS));
+        }
+        if (srcConf.contains(DEFAULT_FS)) {
+            dstConf.set(DEFAULT_FS, srcConf.get(DEFAULT_FS));
+        }
     }
 
     public static JSONObject getPropertiesFromConfiguration(Configuration conf) {

@@ -53,6 +53,7 @@ pub struct LakeSoulIOConfig {
     // range partitions column names
     pub(crate) range_partitions: Vec<String>,
     // number of hash bucket
+    #[derivative(Default(value = "1"))]
     pub(crate) hash_bucket_num: usize,
     // selecting columns
     pub(crate) columns: Vec<String>,
@@ -92,6 +93,10 @@ pub struct LakeSoulIOConfig {
 
     // to be compatible with hadoop's fs.defaultFS
     pub(crate) default_fs: String,
+
+    // if dynamic partition
+    #[derivative(Default(value = "false"))]
+    pub(crate) use_dynamic_partition: bool,
 }
 
 impl LakeSoulIOConfig {
@@ -245,6 +250,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    pub fn set_dynamic_partition(mut self, enable: bool) -> Self {
+        self.config.use_dynamic_partition = enable;
+        self
+    }
+
     pub fn build(self) -> LakeSoulIOConfig {
         self.config
     }
@@ -259,6 +269,10 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         self.config.aux_sort_cols_slice()
+    }
+
+    pub fn prefix(&self) -> &String {
+        &self.config.prefix
     }
 }
 
@@ -463,6 +477,13 @@ pub fn create_session_context_with_planner(
         config.default_fs = fs.clone();
         register_object_store(&fs, config, &runtime)?;
     };
+
+    if !config.prefix.is_empty() {
+        let prefix = config.prefix.clone();
+        let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
+        config.prefix = normalized_prefix;
+    }
+    
 
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist

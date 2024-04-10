@@ -7,10 +7,13 @@
 extern crate core;
 
 use core::ffi::{c_ptrdiff_t, c_size_t};
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uchar, c_void, CStr, CString};
+use std::io::Write;
 use std::ptr::NonNull;
 use std::slice;
 use std::sync::Arc;
+
+use bytes::BufMut;
 
 use arrow::array::Array;
 pub use arrow::array::StructArray;
@@ -102,9 +105,26 @@ pub struct Writer {
     private: [u8; 0],
 }
 
+#[repr(C)]
+pub struct BytesResult {
+    private: [u8; 0],
+}
+
+
 #[no_mangle]
 pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
     convert_to_opaque(LakeSoulIOConfigBuilder::new())
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_with_prefix(
+    builder: NonNull<IOConfigBuilder>,
+    prefix: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let prefix = CStr::from_ptr(prefix).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_prefix(prefix))
+    }
 }
 
 #[no_mangle]
@@ -190,6 +210,14 @@ pub extern "C" fn lakesoul_config_builder_set_thread_num(
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
+    builder: NonNull<IOConfigBuilder>,
+    enable: bool,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).set_dynamic_partition(enable))
+}
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<IOConfigBuilder>,
     batch_size: c_size_t,
@@ -214,6 +242,15 @@ pub extern "C" fn lakesoul_config_builder_set_buffer_size(
 ) -> NonNull<IOConfigBuilder> {
     convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_prefetch_size(buffer_size))
 }
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
+    builder: NonNull<IOConfigBuilder>,
+    hash_bucket_num: c_size_t,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_hash_bucket_num(hash_bucket_num))
+}
+
 
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_object_store_option(
@@ -258,6 +295,18 @@ pub extern "C" fn lakesoul_config_builder_add_single_primary_key(
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_primary_key(pk))
     }
 }
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
+    builder: NonNull<IOConfigBuilder>,
+    col: *const c_char,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let col = CStr::from_ptr(col).to_str().unwrap().to_string();
+        convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_range_partition(col))
+    }
+}
+
 
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_merge_op(
@@ -673,21 +722,58 @@ pub extern "C" fn write_record_batch_blocked(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn export_bytes_result(
+    callback: extern "C" fn(bool, *const c_char),
+    bytes: NonNull<CResult<BytesResult>>,
+    len: i32,
+    addr: c_ptrdiff_t,
+) {
+    let len = len as usize;
+    let bytes = unsafe { NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut() };
+
+    if bytes.len() != len {
+        call_result_callback(
+            callback,
+            false,
+            CString::new("Size of buffer and result mismatch at export_bytes_result.")
+                .unwrap()
+                .into_raw(),
+        );
+        return;
+    }
+    bytes.push(0u8);
+    bytes.shrink_to_fit();
+
+    let dst = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, len + 1) };
+    let mut writer = dst.writer();
+    let _ = writer.write_all(bytes.as_slice());
+
+    call_result_callback(callback, true, std::ptr::null());
+}
+
+
 // consumes the writer pointer
 // this writer cannot be used again
 #[no_mangle]
-pub extern "C" fn flush_and_close_writer(writer: NonNull<CResult<Writer>>, callback: ResultCallback) {
+pub extern "C" fn flush_and_close_writer(writer: NonNull<CResult<Writer>>, callback: I32ResultCallback) -> NonNull<CResult<BytesResult>> {
     unsafe {
         let writer =
             from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(NonNull::new_unchecked(writer.as_ref().ptr));
         let result = writer.flush_and_close();
         match result {
-            Ok(_) => call_result_callback(callback, true, std::ptr::null()),
-            Err(e) => call_result_callback(
-                callback,
-                false,
-                CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
-            ),
+            Ok(bytes) => {
+                call_i32_result_callback(callback, bytes.len() as i32, std::ptr::null());
+                convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(bytes))
+            }
+            Err(e) => {
+                call_i32_result_callback(
+                    callback,
+                    -1,
+                    CString::new(format!("{}", e).as_str()).unwrap().into_raw(),
+                );
+                convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
+            }
         }
     }
 }
@@ -847,10 +933,10 @@ mod tests {
     static mut WRITER_FAILED: Option<String> = None;
 
     #[no_mangle]
-    pub extern "C" fn writer_callback(status: bool, err: *const c_char) {
+    pub extern "C" fn writer_callback(status: i32, err: *const c_char) {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
-            if !status {
+            if status < 0 {
                 match err.as_ref() {
                     Some(e) => WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()),
                     None => {}
@@ -861,6 +947,23 @@ mod tests {
             CALL_BACK_CV.1.notify_one();
         }
     }
+
+    #[no_mangle]
+    pub extern "C" fn result_callback(status: bool, err: *const c_char) {
+        unsafe {
+            let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
+            if !status  {
+                match err.as_ref() {
+                    Some(e) => WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()),
+                    None => {}
+                }
+                WRITER_FINISHED = true;
+            }
+            *writer_called = true;
+            CALL_BACK_CV.1.notify_one();
+        }
+    }
+
 
     #[test]
     fn test_native_read_write() {
@@ -972,7 +1075,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback,
+                result_callback,
             );
             wait_callback();
 
@@ -1104,7 +1207,7 @@ mod tests {
                 writer,
                 std::ptr::addr_of!(schema_ptr) as c_ptrdiff_t,
                 std::ptr::addr_of!(array_ptr) as c_ptrdiff_t,
-                writer_callback,
+                result_callback,
             );
             wait_callback();
 

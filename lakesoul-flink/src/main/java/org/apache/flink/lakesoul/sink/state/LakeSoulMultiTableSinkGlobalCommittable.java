@@ -23,7 +23,7 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
 
     static final long serialVersionUID = 42L;
 
-    private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables;
+    private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable;
 
     public LakeSoulMultiTableSinkGlobalCommittable(
             Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
@@ -45,14 +45,14 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
             groupedCommitables.put(key, mergedCommittables);
         });
 
-        this.groupedCommitables = groupedCommitables;
+        this.groupedCommittable = groupedCommitables;
     }
 
     public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(
             List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
         Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
                 new HashMap<>();
-        globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommitables().forEach(
+        globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommittable().forEach(
                 (key, value) -> groupedCommitables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
         return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
     }
@@ -68,12 +68,12 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
     }
 
 
-    public Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> getGroupedCommitables() {
-        return groupedCommitables;
+    public Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> getGroupedCommittable() {
+        return groupedCommittable;
     }
 
     @Override
     public String toString() {
-        return "LakeSoulMultiTableSinkGlobalCommittable{" + "groupedCommitables=" + groupedCommitables + '}';
+        return "LakeSoulMultiTableSinkGlobalCommittable{" + "groupedCommitables=" + groupedCommittable + '}';
     }
 }

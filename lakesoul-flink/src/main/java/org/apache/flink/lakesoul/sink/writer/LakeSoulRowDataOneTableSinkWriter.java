@@ -63,7 +63,8 @@ public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTabl
                         conf);
     }
 
-    @Override protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
+    @Override
+    protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
         return this.creator;
     }
 

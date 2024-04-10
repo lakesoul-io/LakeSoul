@@ -8,7 +8,7 @@ use arrow::{array::{Array, ArrayRef, AsArray, StringBuilder}, compute::prep_null
 use arrow_cast::cast;
 use arrow_arith::boolean::and;
 
-use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
+use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr};
 use lakesoul_metadata::MetaDataClientRef;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
 use tracing::{debug, trace};
@@ -34,46 +34,6 @@ pub(crate) fn create_io_config_builder_from_table_info(table_info: Arc<TableInfo
         .with_hash_bucket_num(properties.hash_bucket_num.unwrap_or(1)))
 }
 
-
-pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String>>) -> datafusion::error::Result<Vec<(String, ScalarValue)>> {
-    range_partitions
-        .iter()
-        .map(|range_col| {
-            if let Some(array) = batch.column_by_name(&range_col) {
-                match ScalarValue::try_from_array(array, 0) {
-                    Ok(scalar) => Ok((range_col.clone(), scalar)),
-                    Err(e) => Err(e)
-                }
-            } else {
-                Err(datafusion::error::DataFusionError::External(format!("").into()))
-            }
-        })
-        .collect::<datafusion::error::Result<Vec<_>>>()
-}
-
-pub fn columnar_values_to_sub_path(columnar_values: &Vec<(String, ScalarValue)>) -> String {
-    if columnar_values.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}/", columnar_values
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("/"))
-    }
-}
-
-pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarValue)>) -> String {
-    if columnar_values.is_empty() {
-        "-5".to_string()
-    } else {
-        columnar_values
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
 
 pub async fn prune_partitions(
     all_partition_info: Vec<PartitionInfo>,

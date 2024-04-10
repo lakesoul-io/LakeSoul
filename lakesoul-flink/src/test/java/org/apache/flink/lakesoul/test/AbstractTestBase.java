@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.test;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.local.LocalFileSystem;
 import org.apache.flink.runtime.client.JobStatusMessage;
@@ -18,13 +19,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.IOException;
 import java.time.Duration;
+
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
 
 public abstract class AbstractTestBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(org.apache.flink.test.util.AbstractTestBase.class);
 
     private static final int DEFAULT_PARALLELISM = 16;
+
+    // disable LOCAL_FS for local minio test
+    public static final boolean LOCAL_FS = true;
+
+    public static final Configuration fsConfig;
+
+    static {
+        fsConfig = new org.apache.flink.configuration.Configuration();
+        if (!LOCAL_FS) {
+            fsConfig.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
+            fsConfig.set(S3_ENDPOINT, "http://localhost:9002");
+            fsConfig.set(S3_ACCESS_KEY, "minioadmin1");
+            fsConfig.set(S3_SECRET_KEY, "minioadmin1");
+            fsConfig.set(S3_PATH_STYLE_ACCESS, "true");
+            fsConfig.set(DEFAULT_FS, "s3://");
+            fsConfig.set(S3_BUCKET, "lakesoul-test-s3");
+            FileSystem.initialize(fsConfig, null);
+        }
+    }
 
     private static Configuration getConfig() {
         org.apache.flink.configuration.Configuration config = new org.apache.flink.configuration.Configuration();
@@ -45,7 +68,8 @@ public abstract class AbstractTestBase {
                             .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
                             .build());
 
-    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
+    @ClassRule
+    public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
     @After
     public final void cleanupRunningJobs() throws Exception {
@@ -75,6 +99,15 @@ public abstract class AbstractTestBase {
         Path tmpPath = new Path(tmp, path);
         File tmpDirFile = new File(tmpPath.toString());
         tmpDirFile.deleteOnExit();
-        return tmpPath.makeQualified(LocalFileSystem.getSharedInstance()).toUri().toString();
+        if (LOCAL_FS) {
+            return tmpPath.makeQualified(LocalFileSystem.getSharedInstance()).toUri().toString();
+        } else {
+            try {
+                return tmpPath.makeQualified(FileSystem.get(new Path("s3://lakesoul-test-s3").toUri())).toUri().toString();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
     }
 }

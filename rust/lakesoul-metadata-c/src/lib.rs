@@ -63,8 +63,7 @@ pub type IntegerResultCallBack = extern "C" fn(i32, *const c_char);
 
 /// for jnr
 /// can use as_ptr instead of into_raw?
-#[allow(unused)]
-fn call_result_callback(callback: ResultCallback, status: bool, err: *const c_char) {
+fn call_result_callback<T>(callback: extern "C" fn(T, *const c_char), status: T, err: *const c_char) {
     callback(status, err);
     // release error string
     if !err.is_null() {
@@ -152,8 +151,8 @@ pub extern "C" fn execute_insert(
     let result =
         runtime.block_on(async { lakesoul_metadata::execute_insert(client, prepared, insert_type, wrapper).await });
     match result {
-        Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
-        Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
+        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
 
@@ -174,8 +173,8 @@ pub extern "C" fn execute_update(
         lakesoul_metadata::execute_update(client, prepared, update_type, string_from_ptr(joined_string)).await
     });
     match result {
-        Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
-        Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
+        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
 
@@ -195,19 +194,23 @@ pub extern "C" fn execute_query_scalar(
     let result = runtime.block_on(async {
         lakesoul_metadata::execute_query_scalar(client, prepared, update_type, string_from_ptr(joined_string)).await
     });
-    match result {
-        Ok(Some(result)) => callback(
+    let (result, err): (*mut c_char, *const c_char) = match result {
+        Ok(Some(result)) =>  (
             CString::new(result.as_str()).unwrap().into_raw(),
-            CString::new("").unwrap().into_raw(),
+            std::ptr::null(),
         ),
-        Ok(None) => callback(
+        Ok(None) => (
             CString::new("").unwrap().into_raw(),
-            CString::new("").unwrap().into_raw(),
+            std::ptr::null(),
         ),
-        Err(e) => callback(
+        Err(e) => (
             CString::new("").unwrap().into_raw(),
             CString::new(e.to_string().as_str()).unwrap().into_raw(),
         ),
+    };
+    call_result_callback(callback, result, err);
+    unsafe {
+        let _ = CString::from_raw(result);
     }
 }
 
@@ -230,11 +233,11 @@ pub extern "C" fn execute_query(
     match result {
         Ok(u8_vec) => {
             let len = u8_vec.len();
-            callback(len as i32, CString::new("").unwrap().into_raw());
+            call_result_callback(callback, len as i32, std::ptr::null());
             convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
         }
         Err(e) => {
-            callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw());
+            call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw());
             convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
         }
     }
@@ -251,7 +254,8 @@ pub extern "C" fn export_bytes_result(
     let bytes = unsafe { NonNull::new_unchecked(bytes.as_ref().ptr as *mut Vec<c_uchar>).as_mut() };
 
     if bytes.len() != len {
-        callback(
+        call_result_callback(
+            callback,
             false,
             CString::new("Size of buffer and result mismatch at export_bytes_result.")
                 .unwrap()
@@ -266,7 +270,7 @@ pub extern "C" fn export_bytes_result(
     let mut writer = dst.writer();
     let _ = writer.write_all(bytes.as_slice());
 
-    callback(true, CString::new("").unwrap().into_raw());
+    call_result_callback(callback, true, std::ptr::null());
 }
 
 #[no_mangle]
@@ -284,8 +288,8 @@ pub extern "C" fn clean_meta_for_test(
     let client = unsafe { NonNull::new_unchecked(client.as_ref().ptr as *mut Client).as_ref() };
     let result = runtime.block_on(async { lakesoul_metadata::clean_meta_for_test(client).await });
     match result {
-        Ok(count) => callback(count, CString::new("").unwrap().into_raw()),
-        Err(e) => callback(-1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
+        Ok(count) => call_result_callback(callback, count, std::ptr::null()),
+        Err(e) => call_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw()),
     }
 }
 
@@ -318,11 +322,11 @@ pub extern "C" fn create_tokio_postgres_client(
 
     let result = match result {
         Ok(client) => {
-            callback(true, CString::new("").unwrap().into_raw());
+            call_result_callback(callback, true, std::ptr::null());
             CResult::<TokioPostgresClient>::new(client)
         }
         Err(e) => {
-            callback(false, CString::new(e.to_string().as_str()).unwrap().into_raw());
+            call_result_callback(callback, false, CString::new(e.to_string().as_str()).unwrap().into_raw());
             CResult::<TokioPostgresClient>::error(format!("{}", e).as_str())
         }
     };

@@ -77,14 +77,16 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
         });
     }
 
-    @Override public void write(Kryo kryo, Output output, BinarySourceRecord object) {
+    @Override
+    public void write(Kryo kryo, Output output, BinarySourceRecord object) {
         fury.execute(f -> {
             f.serializeJavaObject(output, object);
             return 0;
         });
     }
 
-    @Override public BinarySourceRecord read(Kryo kryo, Input input, Class<BinarySourceRecord> type) {
+    @Override
+    public BinarySourceRecord read(Kryo kryo, Input input, Class<BinarySourceRecord> type) {
         return fury.execute(f -> f.deserializeJavaObject(input, BinarySourceRecord.class));
     }
 }

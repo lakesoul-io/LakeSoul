@@ -54,17 +54,13 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
         DBManager lakeSoulDBManager = new DBManager();
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
             LOG.info("Commtting {}", committable);
-            if (committable.hasPendingFile()) {
-                assert committable.getPendingFiles() != null;
-                LOG.info("PendingFiles to commit {}", committable.getPendingFiles().size());
-                if (committable.getPendingFiles().isEmpty()) {
-                    continue;
-                }
+            for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
+                List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
 
                 // pending files to commit
                 List<String> files = new ArrayList<>();
                 for (InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable :
-                        committable.getPendingFiles()) {
+                        pendingFiles) {
                     if (pendingFileRecoverable instanceof NativeParquetWriter.NativeWriterPendingFileRecoverable) {
                         NativeParquetWriter.NativeWriterPendingFileRecoverable recoverable =
                                 (NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFileRecoverable;
@@ -92,8 +88,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                     dataFileOp.setFileExistCols(fileExistCols);
                     dataFileOpList.add(dataFileOp.build());
                 }
-                String partition = committable.getBucketId();
+                String partition = entry.getKey();
                 List<PartitionInfo> readPartitionInfoList = null;
+
 
                 TableNameId tableNameId =
                         lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());

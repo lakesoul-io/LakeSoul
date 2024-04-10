@@ -18,13 +18,20 @@ public interface LibLakeSoulIO {
 
     Pointer tokio_runtime_builder_set_thread_num(Pointer builder, int thread_num);
 
+
     Pointer create_tokio_runtime_from_builder(Pointer builder);
 
     Pointer new_lakesoul_io_config_builder();
 
     Pointer lakesoul_config_builder_add_single_file(Pointer builder, String file);
 
+    Pointer lakesoul_config_builder_with_prefix(Pointer builder, String file);
+
+    Pointer lakesoul_config_builder_set_hash_bucket_num(Pointer builder, int hash_bucket_num);
+
     Pointer lakesoul_config_builder_add_single_primary_key(Pointer builder, String pk);
+
+    Pointer lakesoul_config_builder_add_single_range_partition(Pointer builder, String col);
 
     Pointer lakesoul_config_builder_add_single_column(Pointer builder, String column);
 
@@ -41,6 +48,8 @@ public interface LibLakeSoulIO {
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, String key, String value);
 
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);
+
+    Pointer lakesoul_config_builder_set_dynamic_partition(Pointer builder, boolean enable);
 
     Pointer lakesoul_config_builder_set_batch_size(Pointer builder, int batch_size);
 
@@ -84,11 +93,14 @@ public interface LibLakeSoulIO {
 
     void free_lakesoul_reader(Pointer reader);
 
-    void flush_and_close_writer(Pointer writer, BooleanCallback callback);
+    Pointer flush_and_close_writer(Pointer writer, IntegerCallback callback);
 
     void abort_and_close_writer(Pointer writer, BooleanCallback callback);
 
     void free_tokio_runtime(Pointer runtime);
 
+    void export_bytes_result(BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
+
     void rust_logger_init();
+
 }

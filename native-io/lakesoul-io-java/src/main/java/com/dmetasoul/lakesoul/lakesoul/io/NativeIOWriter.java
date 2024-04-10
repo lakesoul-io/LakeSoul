@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.lakesoul.io;
 
 import jnr.ffi.Pointer;
+import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
@@ -13,6 +14,10 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
@@ -30,6 +35,11 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
             ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_add_single_aux_sort_column(ioConfigBuilder, col);
         }
     }
+
+    public void setHashBucketNum(Integer hashBucketNum) {
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_hash_bucket_num(ioConfigBuilder, hashBucketNum);
+    }
+
 
     public void setRowGroupRowNumber(int rowNum) {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_max_row_group_size(ioConfigBuilder, rowNum);
@@ -63,19 +73,63 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
-    public void flush() throws IOException {
+    public HashMap<String, List<String>> flush() throws IOException {
         AtomicReference<String> errMsg = new AtomicReference<>();
-        BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
-            if (!status && err != null) {
+        AtomicReference<Integer> lenResult = new AtomicReference<>();
+        IntegerCallback nativeIntegerCallback = new IntegerCallback((len, err) -> {
+            if (len < 0 && err != null) {
                 errMsg.set(err);
             }
-        }, boolReferenceManager);
-        nativeBooleanCallback.registerReferenceKey();
-        libLakeSoulIO.flush_and_close_writer(writer, nativeBooleanCallback);
+            lenResult.set(len);
+
+        }, intReferenceManager);
+        nativeIntegerCallback.registerReferenceKey();
+        Pointer ptrResult = libLakeSoulIO.flush_and_close_writer(writer, nativeIntegerCallback);
         writer = null;
         if (errMsg.get() != null && !errMsg.get().isEmpty()) {
             throw new IOException("Native writer flush failed with error: " + errMsg.get());
         }
+
+        Integer len = lenResult.get();
+        if (len != null && len > 0) {
+            int lenWithTail = len + 1;
+            Pointer buffer = fixedBuffer;
+            if (lenWithTail > fixedBuffer.size()) {
+                if (lenWithTail > mutableBuffer.size()) {
+                    mutableBuffer = Runtime.getRuntime(libLakeSoulIO).getMemoryManager().allocateDirect(lenWithTail);
+                }
+                buffer = mutableBuffer;
+            }
+            AtomicReference<Boolean> exported = new AtomicReference<>();
+            BooleanCallback nativeBooleanCallback = new BooleanCallback((status, err) -> {
+                if (!status && err != null) {
+                    errMsg.set(err);
+                }
+                exported.set(status);
+            }, boolReferenceManager);
+            nativeBooleanCallback.registerReferenceKey();
+            libLakeSoulIO.export_bytes_result(nativeBooleanCallback, ptrResult, len, buffer.address());
+
+            if (exported.get() != null && exported.get()) {
+                byte[] bytes = new byte[len];
+                buffer.get(0, bytes, 0, len);
+                String decodedResult = new String(bytes);
+                String[] splits = decodedResult.split("\u0001");
+                int partitionNum = Integer.parseInt(splits[0]);
+                if (partitionNum != splits.length - 1) {
+                    throw new IOException("Dynamic Partitions Result [" + decodedResult + "] encode error: partition number mismatch " + partitionNum + "!=" + (splits.length - 1));
+                }
+                HashMap<String, List<String>> partitionDescAndFilesMap = new HashMap<>();
+                for (int i = 1; i < splits.length; i++) {
+                    String[] partitionDescAndFiles = splits[i].split("\u0002");
+                    List<String> list = new ArrayList<>(Arrays.asList(partitionDescAndFiles).subList(1, partitionDescAndFiles.length));
+                    partitionDescAndFilesMap.put(partitionDescAndFiles[0], list);
+
+                }
+                return partitionDescAndFilesMap;
+            }
+        }
+        return null;
     }
 
     public void abort() throws IOException {

@@ -75,13 +75,13 @@ public class LakeSoulSinkGlobalCommittableSerializer
     private void serializeV1(LakeSoulMultiTableSinkGlobalCommittable globalCommittable,
                              DataOutputView dataOutputView)
             throws IOException {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
-                globalCommittable.getGroupedCommitables();
-        assert groupedCommitables != null;
-        List<LakeSoulMultiTableSinkCommittable> commitables =
-                groupedCommitables.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
-        dataOutputView.writeInt(commitables.size());
-        for (LakeSoulMultiTableSinkCommittable committable : commitables) {
+        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable =
+                globalCommittable.getGroupedCommittable();
+        assert groupedCommittable != null;
+        List<LakeSoulMultiTableSinkCommittable> committableList =
+                groupedCommittable.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+        dataOutputView.writeInt(committableList.size());
+        for (LakeSoulMultiTableSinkCommittable committable : committableList) {
             SimpleVersionedSerialization.writeVersionAndSerialize(committableSerializer, committable, dataOutputView);
         }
     }
