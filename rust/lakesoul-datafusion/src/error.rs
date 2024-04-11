@@ -4,7 +4,6 @@
 
 use std::{result, sync::Arc};
 use std::num::ParseIntError;
-use std::string::ParseError;
 
 use lakesoul_io::lakesoul_reader::{ArrowError, DataFusionError};
 use lakesoul_metadata::error::LakeSoulMetaDataError;

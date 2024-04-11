@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow::{array::{Array, ArrayRef, AsArray, StringBuilder}, compute::prep_null_mask_filter, datatypes::{DataType, Field, Fields, Schema}, record_batch::RecordBatch};
 use arrow_arith::boolean::and;
 use arrow_cast::cast;
-use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr, scalar::ScalarValue};
+use datafusion::{common::{DFField, DFSchema}, error::DataFusionError, execution::context::ExecutionProps, logical_expr::Expr, physical_expr::create_physical_expr};
 use object_store::{ObjectMeta, ObjectStore, path::Path};
 use serde_json::Value;
 use tracing::{debug, trace};
@@ -18,7 +18,7 @@ use lakesoul_metadata::MetaDataClientRef;
 use proto::proto::entity::{PartitionInfo, TableInfo};
 
 use crate::{
-    catalog::{LakeSoulTableProperty, parse_table_info_partitions},
+    catalog::parse_table_info_partitions,
     serialize::arrow_java::schema_from_metadata_str,
 };
 use crate::error::{LakeSoulError, Result};
@@ -171,3 +171,4 @@ pub async fn listing_partition_info(partition_info: PartitionInfo, store: &dyn O
         files.push(result);
     }
     Ok((partition_info, files))
+}

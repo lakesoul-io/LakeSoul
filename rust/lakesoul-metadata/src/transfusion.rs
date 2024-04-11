@@ -6,6 +6,7 @@
 //! [WIP]
 //! prototype
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
 use prost::Message;
@@ -69,7 +70,7 @@ pub fn table_without_pk(hash_bucket_num: &str) -> bool {
     hash_bucket_num == "-1"
 }
 
-// TODO  Refactor
+// (TODO) [refactor]
 pub async fn split_desc_array_with_client(client: MetaDataClientRef, table_name: &str, namespace: &str) -> Result<SplitDescArray> {
     split_desc_array(client.as_ref(), table_name, namespace).await
 }
@@ -140,7 +141,7 @@ pub async fn split_desc_array(
 }
 
 
-struct RawClient<'a> {
+pub struct RawClient<'a> {
     client: Mutex<&'a Client>,
     prepared: Mutex<&'a mut PreparedStatementMap>,
 }
@@ -273,7 +274,12 @@ impl<'a> RawClient<'a> {
     }
 }
 
-/// TODO MUST add safety and docs
+/// (TODO) [refactor this]
+/// create `SplitDescArray` use RawClient but the arguments can be MetaDataClient
+/// Safety
+/// RawClient is only used to read
+/// MetaDataClient lives longer than RawClient
+/// Anyway this is a tmp design
 impl<'a> From<&'a MetaDataClient> for RawClient<'a> {
     fn from(value: &'a MetaDataClient) -> Self {
         unsafe {
@@ -391,12 +397,21 @@ pub fn parse_table_info_partitions(partitions: &str) -> (Vec<String>, Vec<String
     )
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SplitDesc {
     pub file_paths: Vec<String>,
     pub primary_keys: Vec<String>,
     pub partition_desc: HashMap<String, String>,
     pub table_schema: String,
+}
+
+impl Hash for SplitDesc {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file_paths.hash(state);
+        self.primary_keys.hash(state);
+        self.partition_desc.iter().for_each(|(k, v)| { format!("{k}:{v}").hash(state) });
+        self.table_schema.hash(state);
+    }
 }
 
 /// Represents all partitions of a lakesoul table

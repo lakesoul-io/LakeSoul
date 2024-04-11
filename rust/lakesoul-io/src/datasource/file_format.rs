@@ -106,7 +106,7 @@ impl FileFormat for LakeSoulParquetFormat {
 
         // files to read
         let flatten_conf =
-            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
+            flatten_file_scan_config(state, self.parquet_format.clone(), &conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
 
 
         let merge_exec = Arc::new(MergeParquetExec::new(
@@ -152,7 +152,7 @@ impl FileFormat for LakeSoulParquetFormat {
 pub async fn flatten_file_scan_config(
     state: &SessionState,
     format: Arc<ParquetFormat>,
-    conf: FileScanConfig,
+    conf: &FileScanConfig,
     primary_keys: &[String],
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {

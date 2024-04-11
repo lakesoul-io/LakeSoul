@@ -20,6 +20,7 @@ use crate::error::{LakeSoulError, Result};
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
 mod lakesoul_catalog;
+#[allow(unused)]
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;

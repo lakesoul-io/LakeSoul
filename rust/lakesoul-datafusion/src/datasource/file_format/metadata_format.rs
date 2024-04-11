@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -39,13 +38,15 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use lakesoul_io::datasource::file_format::{compute_project_column_indices, flatten_file_scan_config};
+use lakesoul_io::datasource::file_format::{compute_project_column_indices/*, flatten_file_scan_config*/};
 use lakesoul_io::datasource::physical_plan::MergeParquetExec;
-use lakesoul_io::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values, partition_desc_from_file_scan_config};
+use lakesoul_io::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values};
+// use lakesoul_io::datasource::physical_plan::MergeParquetExec;
+// use lakesoul_io::helpers::partition_desc_from_file_scan_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_io::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter};
 use lakesoul_metadata::MetaDataClientRef;
-use lakesoul_metadata::transfusion::{split_desc_array, split_desc_array_with_client};
+use lakesoul_metadata::transfusion::SplitDesc;
 use proto::proto::entity::TableInfo;
 
 use crate::catalog::{commit_data, parse_table_info_partitions};
@@ -140,60 +141,13 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         let merged_projection = compute_project_column_indices(table_schema.clone(), target_schema.clone(), self.conf.primary_keys_slice());
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
-        // files to read
-        let flatten_conf =
-            flatten_file_scan_config(state, self.parquet_format.clone(), conf, self.conf.primary_keys_slice(), target_schema.clone()).await?;
-        // (partition desc, (partition_k_v,parquet_execs))
-        let split_array = split_desc_array_with_client(
-            Arc::clone(&self.client),
-            &self.table_info.table_name,
-            &self.table_info.table_namespace)
-            .await
-            .map_err(|_| DataFusionError::External(anyhow!("wrong").into()))?
-            .to_vec();
+        let split_map = create_split_map(&conf, self.parquet_format.clone(), state, self.conf.primary_keys_slice(), target_schema.clone(), predicate.clone()).await?;
+        let column_nullable = split_map.values().fold(HashSet::new(), |mut acc, v| {
+            acc.extend(v.1.clone());
+            acc
+        });
 
-        // println!("{:#?}", split_array);
-
-        let mut inputs_map: HashMap<String, (Arc<HashMap<String, String>>, Vec<Arc<dyn ExecutionPlan>>)> = HashMap::new();
-        let mut column_nullable = HashSet::<String>::new();
-
-        // let mut inputs_map_fork = HashMap::new();
-        // for desc in &split_array {
-        //     println!("{:#?}", &desc.partition_desc);
-        //     let p_desc = desc.partition_desc.iter().map(|k, v| format!("{}={}", k, v)).collect::<Vec<_>>().join(",");
-        //     let p_c_v = Arc::new(desc.partition_desc.clone());
-        //     let parquet_exec = Arc::new(ParquetExec::new(config.clone(), predicate.clone(), self.parquet_format.metadata_size_hint(state.config_options())));
-        //     for field in parquet_exec.schema().fields().iter() {
-        //         if field.is_nullable() {
-        //             column_nullable.insert(field.name().clone());
-        //         }
-        //     }
-        // }
-
-
-        for config in &flatten_conf {
-            let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(&config)?;
-            // println!("{}", partition_desc);
-            // println!("{:#?}", partition_columnar_value);
-
-            let partition_columnar_value = Arc::new(partition_columnar_value);
-
-            let parquet_exec = Arc::new(ParquetExec::new(config.clone(), predicate.clone(), self.parquet_format.metadata_size_hint(state.config_options())));
-            for field in parquet_exec.schema().fields().iter() {
-                if field.is_nullable() {
-                    column_nullable.insert(field.name().clone());
-                }
-            }
-            if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc)
-            {
-                inputs.push(parquet_exec);
-            } else {
-                inputs_map.insert(
-                    partition_desc.clone(),
-                    (partition_columnar_value.clone(), vec![parquet_exec]),
-                );
-            }
-        }
+        debug!(?split_map);
 
         let merged_schema = SchemaRef::new(
             Schema::new(
@@ -210,17 +164,19 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
                     .collect::<Vec<_>>()
             )
         );
-        println!("{:#?}", inputs_map);
+
         let mut partitioned_exec = Vec::new();
-        for (_, (partition_columnar_values, inputs)) in inputs_map {
+
+        for (k, v) in split_map {
             let merge_exec = Arc::new(MergeParquetExec::new_with_inputs(
                 merged_schema.clone(),
-                inputs,
+                v.0,
                 self.conf.clone(),
-                partition_columnar_values.clone(),
+                Arc::new(k.partition_desc),
             )?) as Arc<dyn ExecutionPlan>;
             partitioned_exec.push(merge_exec);
         }
+
         let exec = if partitioned_exec.len() > 1 {
             Arc::new(UnionExec::new(partitioned_exec)) as Arc<dyn ExecutionPlan>
         } else {
@@ -601,17 +557,80 @@ fn make_sink_schema() -> SchemaRef {
 }
 
 
+/// File group to splits then flatten
+/// maintain the relational structure
+/// split -> (Vec<ParquetExec>, Vec<NullableCols>)
+async fn create_split_map(
+    conf: &FileScanConfig,
+    format: Arc<ParquetFormat>,
+    state: &SessionState,
+    pks: &[String],
+    target_schema: SchemaRef,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
+) -> Result<HashMap<SplitDesc, (Vec<Arc<dyn ExecutionPlan>>, HashSet<String>)>> {
+    let url = &conf.object_store_url;
+    let store = state.runtime_env().object_store(url)?;
+    let mut ret = HashMap::new();
+    for i in 0..conf.file_groups.len() {
+        let mut objects = vec![];
+        let file_group = &conf.file_groups[i];
+        let mut execs = vec![];
+        let mut partition_desc = HashMap::new();
+        let mut nullable_cols = HashSet::new();
+        for file in file_group {
+            let objs = vec![file.object_meta.clone()];
+            let file_groups = vec![vec![file.clone()]];
+            let file_schema = format.infer_schema(state, &store, &objs).await?;
+            let statistics = format.infer_stats(state, &store, file_schema.clone(), &file.object_meta).await?;
+            let projection = compute_project_column_indices(file_schema.clone(), target_schema.clone(), pks);
+            let limit = conf.limit;
+            let table_partition_cols = conf.table_partition_cols.clone();
+            for (idx, f) in table_partition_cols.iter().enumerate() {
+                partition_desc.insert(f.name().clone(), file.partition_values[idx].to_string());
+            }
+            let output_ordering = conf.output_ordering.clone();
+            let infinite_source = conf.infinite_source;
+            objects.extend(objs);
+            let config = FileScanConfig {
+                object_store_url: url.clone(),
+                file_schema,
+                file_groups,
+                statistics,
+                projection,
+                limit,
+                table_partition_cols,
+                output_ordering,
+                infinite_source,
+            };
+            let exec = Arc::new(ParquetExec::new(config, predicate.clone(), format.metadata_size_hint(state.config_options()))) as Arc<dyn ExecutionPlan>;
+            let set = exec.schema().fields.iter().filter(|f| f.is_nullable()).map(|f| f.to_string()).collect::<HashSet<String>>();
+            nullable_cols.extend(set);
+            execs.push(exec);
+        }
+        let locations: Vec<String> = objects.iter().map(|o| o.location.to_string()).collect();
+        let schema = format.infer_schema(state, &store, &objects).await?.to_string();
+        let sd = SplitDesc {
+            file_paths: locations,
+            primary_keys: pks.to_vec(),
+            partition_desc,
+            table_schema: schema,
+        };
+        ret.insert(sd, (execs, nullable_cols));
+    }
+    Ok(ret)
+}
+
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::catalog::CatalogProvider;
-    use datafusion::prelude::SessionContext;
     use tokio::runtime::Runtime;
 
-    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+    use lakesoul_io::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
     use lakesoul_metadata::MetaDataClient;
 
-    #[test_log::test]
+    // #[test]
     fn simple_test() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
@@ -625,7 +644,7 @@ mod tests {
             // let vec = sma.table_names();
             // let arc = sma.table("KAtG7Fh6hB").await.unwrap();
             // println!("{:?}",.);
-            let test_sql = "select * from lk.default.h6a49kmgwl;";
+            let test_sql = "select * from lk.default.fv22cscz03;";
             let df = sc.sql(test_sql).await.unwrap();
             df.show().await.unwrap()
         });

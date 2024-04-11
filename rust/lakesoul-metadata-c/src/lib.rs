@@ -454,15 +454,14 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 /// TODO refactor this
 #[no_mangle]
 pub extern "C" fn rust_logger_init() {
-    let sub = tracing_subscriber::fmt();
     let timer = LocalTime::new(format_description!(
         "[year]-[month]-[day] [hour]:[minute]:[second]"
     ));
-    sub.with_env_filter(EnvFilter::from_default_env())
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
         .with_thread_ids(true)
         .with_thread_names(true)
         .with_line_number(true)
         .with_timer(timer)
-        .init();
-    let _ = tracing_subscriber::fmt::try_init();
+        .try_init();
 }

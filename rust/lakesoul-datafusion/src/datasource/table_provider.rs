@@ -30,7 +30,6 @@ use futures::StreamExt;
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
-use lakesoul_metadata::transfusion::SplitDesc;
 use proto::proto::entity::TableInfo;
 
 use crate::catalog::parse_table_info_partitions;

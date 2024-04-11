@@ -30,7 +30,7 @@ fn init() {
         .unwrap()
         .block_on(async {
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
-            // client.meta_cleanup().await.unwrap();
+            client.meta_cleanup().await.unwrap();
             debug!("clean metadata");
         })
 }
