@@ -96,6 +96,6 @@ public class LakeSoulSinkGlobalCommittableSerializer
                                 committableSerializer, dataInputView));
             }
         }
-        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables);
+        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables, false);
     }
 }

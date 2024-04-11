@@ -118,6 +118,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 flinkConf.set(DML_TYPE, PARTITION_DELETE);
             }
         }
+        flinkConf.set(IS_BOUNDED, String.valueOf(sinkContext.isBounded()));
         Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
         int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
         //rowData key tools

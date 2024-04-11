@@ -122,6 +122,12 @@ public class LakeSoulSinkOptions {
             .defaultValue(INSERT)
             .withDescription("DML type");
 
+    public static final ConfigOption<String> IS_BOUNDED = ConfigOptions
+            .key("is_bounded")
+            .stringType()
+            .defaultValue("true")
+            .withDescription("Whether sink is bounded");
+
     public static final ConfigOption<String> SOURCE_PARTITION_INFO = ConfigOptions
             .key("source_partition_info")
             .stringType()
