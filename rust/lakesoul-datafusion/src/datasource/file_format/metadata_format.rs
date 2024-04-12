@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use arrow::array::{ArrayRef, StringArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -141,13 +142,17 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         let merged_projection = compute_project_column_indices(table_schema.clone(), target_schema.clone(), self.conf.primary_keys_slice());
         let merged_schema = project_schema(&table_schema, merged_projection.as_ref())?;
 
-        let split_map = create_split_map(&conf, self.parquet_format.clone(), state, self.conf.primary_keys_slice(), target_schema.clone(), predicate.clone()).await?;
-        let column_nullable = split_map.values().fold(HashSet::new(), |mut acc, v| {
-            acc.extend(v.1.clone());
-            acc
-        });
+        let splits = splits_from_file_config(&conf, Arc::clone(&self.parquet_format), state, self.conf.primary_keys_slice()).await?;
+        debug!(?splits);
+        let execs = execs_from_splits(&conf, Arc::clone(&self.parquet_format), state, &splits, Arc::clone(&target_schema), predicate.clone()).await?;
+        debug!(?execs);
+        let column_nullable = execs
+            .iter()
+            .flat_map(|e| e.schema().fields.to_vec())
+            .filter(|f| f.is_nullable())
+            .map(|f| f.to_string())
+            .collect::<HashSet<String>>();
 
-        debug!(?split_map);
 
         let merged_schema = SchemaRef::new(
             Schema::new(
@@ -166,13 +171,16 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         );
 
         let mut partitioned_exec = Vec::new();
-
-        for (k, v) in split_map {
+        let mut exec_iter = execs.into_iter();
+        for split in splits {
+            let inputs = (0..split.file_paths.len())
+                .map(|_| exec_iter.next().ok_or(DataFusionError::External(anyhow!("exec does not match").into())))
+                .collect::<Result<Vec<_>>>()?;
             let merge_exec = Arc::new(MergeParquetExec::new_with_inputs(
                 merged_schema.clone(),
-                v.0,
+                inputs,
                 self.conf.clone(),
-                Arc::new(k.partition_desc),
+                Arc::new(split.partition_desc),
             )?) as Arc<dyn ExecutionPlan>;
             partitioned_exec.push(merge_exec);
         }
@@ -221,9 +229,9 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
     }
 }
 
-// /// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
-// ///
-// /// Returns a single row with the number of values written
+/// Execution plan for writing record batches to a [`LakeSoulParquetSink`]
+///
+/// Returns a single row with the number of values written
 pub struct LakeSoulHashSinkExec {
     /// Input plan that produces the record batches to be written.
     input: Arc<dyn ExecutionPlan>,
@@ -557,40 +565,63 @@ fn make_sink_schema() -> SchemaRef {
 }
 
 
-/// File group to splits then flatten
-/// maintain the relational structure
-/// split -> (Vec<ParquetExec>, Vec<NullableCols>)
-async fn create_split_map(
+/// use file config to create splits
+async fn splits_from_file_config(
     conf: &FileScanConfig,
     format: Arc<ParquetFormat>,
     state: &SessionState,
     pks: &[String],
-    target_schema: SchemaRef,
-    predicate: Option<Arc<dyn PhysicalExpr>>,
-) -> Result<HashMap<SplitDesc, (Vec<Arc<dyn ExecutionPlan>>, HashSet<String>)>> {
+) -> Result<Vec<SplitDesc>> {
     let url = &conf.object_store_url;
     let store = state.runtime_env().object_store(url)?;
-    let mut ret = HashMap::new();
+    let mut ret = vec![];
     for i in 0..conf.file_groups.len() {
         let mut objects = vec![];
         let file_group = &conf.file_groups[i];
-        let mut execs = vec![];
         let mut partition_desc = HashMap::new();
-        let mut nullable_cols = HashSet::new();
         for file in file_group {
-            let objs = vec![file.object_meta.clone()];
-            let file_groups = vec![vec![file.clone()]];
-            let file_schema = format.infer_schema(state, &store, &objs).await?;
-            let statistics = format.infer_stats(state, &store, file_schema.clone(), &file.object_meta).await?;
-            let projection = compute_project_column_indices(file_schema.clone(), target_schema.clone(), pks);
-            let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             for (idx, f) in table_partition_cols.iter().enumerate() {
                 partition_desc.insert(f.name().clone(), file.partition_values[idx].to_string());
             }
-            let output_ordering = conf.output_ordering.clone();
+            objects.push(file.object_meta.clone());
+        }
+        let locations: Vec<String> = objects.iter().map(|o| o.location.to_string()).collect();
+        let schema = format.infer_schema(state, &store, &objects).await?.to_string();
+        let sd = SplitDesc {
+            file_paths: locations,
+            primary_keys: pks.to_vec(),
+            partition_desc,
+            table_schema: schema,
+        };
+        ret.push(sd);
+    }
+    Ok(ret)
+}
+
+/// use splits to create execs
+async fn execs_from_splits(
+    conf: &FileScanConfig,
+    format: Arc<ParquetFormat>,
+    state: &SessionState,
+    splits: &[SplitDesc],
+    target_schema: SchemaRef,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
+) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
+    let url = &conf.object_store_url;
+    let store = state.runtime_env().object_store(url)?;
+    let mut ret = vec![];
+    for (split, files) in splits.iter().zip(conf.file_groups.iter()) {
+        for file in files {
+            let objs = vec![file.object_meta.clone()];
+            let file_groups = vec![vec![file.clone()]];
+            let file_schema = format.infer_schema(state, &store, &objs).await?;
+            let statistics = format.infer_stats(state, &store, file_schema.clone(), &file.object_meta).await?;
+            let projection = compute_project_column_indices(file_schema.clone(), target_schema.clone(), &split.primary_keys);
+            let limit = conf.limit;
+            let table_partition_cols = conf.table_partition_cols.clone();
             let infinite_source = conf.infinite_source;
-            objects.extend(objs);
+            let output_ordering = conf.output_ordering.clone();
             let config = FileScanConfig {
                 object_store_url: url.clone(),
                 file_schema,
@@ -603,23 +634,11 @@ async fn create_split_map(
                 infinite_source,
             };
             let exec = Arc::new(ParquetExec::new(config, predicate.clone(), format.metadata_size_hint(state.config_options()))) as Arc<dyn ExecutionPlan>;
-            let set = exec.schema().fields.iter().filter(|f| f.is_nullable()).map(|f| f.to_string()).collect::<HashSet<String>>();
-            nullable_cols.extend(set);
-            execs.push(exec);
+            ret.push(exec);
         }
-        let locations: Vec<String> = objects.iter().map(|o| o.location.to_string()).collect();
-        let schema = format.infer_schema(state, &store, &objects).await?.to_string();
-        let sd = SplitDesc {
-            file_paths: locations,
-            primary_keys: pks.to_vec(),
-            partition_desc,
-            table_schema: schema,
-        };
-        ret.insert(sd, (execs, nullable_cols));
     }
     Ok(ret)
 }
-
 
 #[cfg(test)]
 mod tests {
