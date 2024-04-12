@@ -157,7 +157,7 @@ public class SyncDatabase {
                 stringFieldTypes[i] = "FLOAT4";
             } else if (fieldTypes[i].getLogicalType() instanceof BinaryType) {
                 stringFieldTypes[i] = "BYTEA";
-            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType | fieldTypes[i].getLogicalType() instanceof TimestampType) {
+            } else if (fieldTypes[i].getLogicalType() instanceof LocalZonedTimestampType) {
                 stringFieldTypes[i] = "TIMESTAMP";
             } else if (fieldTypes[i].getLogicalType() instanceof VarBinaryType) {
                 stringFieldTypes[i] = "BYTEA";
