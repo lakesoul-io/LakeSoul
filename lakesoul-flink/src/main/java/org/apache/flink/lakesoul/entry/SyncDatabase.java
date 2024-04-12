@@ -243,8 +243,6 @@ public class SyncDatabase {
         Statement statement = conn.createStatement();
         // Create the target table in MySQL
         statement.executeUpdate(createTableSql.toString());
-//        String createCatalog = "create catalog postgres_catalog with('type'='jdbc','default-database'=" + "'" + targetDatabase + "'" + "," + "'username'=" +
-//                "'" + username + "'" + "," + "'password'=" + "'" + password + "'" + "," + "'base-url'=" + "'" + url + "'" + ")";
         StringBuilder coulmns = new StringBuilder();
         for (int i = 0; i < fieldTypes.length; i++) {
             if (stringFieldsTypes[i].equals("BYTEA")) {
