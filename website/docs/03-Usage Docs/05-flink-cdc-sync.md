@@ -226,10 +226,9 @@ For more Mongodb configuration,please refer to https://nightlies.apache.org/flin
     --flink.checkpoint "file:/tmp/data/lakesoul/mongidb/" \
     --warehouse_path "file:/home/cyh/data/lakesoul/mongodb"
 ```
-MongoDB CDC usage instructions：
+MongoDB CDC usage instructions：  
 1 The MongoDB table should contain the primary key field represented by "_id"   
-2
-The data type of the same field should be consistent, and the field value is allowed to be null. The following situations are allowed:
+2 The data type of the same field should be consistent, and the field value is allowed to be null. The following situations are allowed:
 ````bash
 [
   { _id: 1, name: 'Bob', age: null },
@@ -246,6 +245,14 @@ When a field has inconsistent data types for the same field before and after.
   { _id: 2, col: 12 } 
 ]
 ````
+3 The field types of nested type fields should be consistent. The following situations are not allowed:
+````bash
+[ 
+  { _id: 1, struct: {f1: 12} }, 
+  { _id: 2, struct: {f1: 13 ,f2:"hello"} } 
+]
+````
+If the types of nested type fields are inconsistent before and after, it will not be read correctly due to type conflicts when reading.
 
 ## LakeSoul Flink CDC Sink job execution process
 

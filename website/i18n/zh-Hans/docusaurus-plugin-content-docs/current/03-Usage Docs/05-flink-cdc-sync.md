@@ -232,6 +232,33 @@ db.runCommand({
     --flink.checkpoint "file:/tmp/data/lakesoul/mongodb" \
     --warehouse_path "file:/home/cyh/data/lakesoul/mongodb"
 ```
+MongoDB CDC 使用注意事项：   
+1 MongoDB 表应包含由“_id”表示的主键字段   
+2 The data type of the same field should be consistent, and the field value is allowed to be null. The following situations are allowed:
+````bash
+[
+  { _id: 1, name: 'Bob', age: null },
+  { _id: 2, name: 'Tom', age: 18 },
+  { _id: 3, name: 'Sam'}
+]
+
+````
+The following situations are not allowed:   
+When a field has inconsistent data types for the same field before and after.
+````bash
+[ 
+  { _id: 1, col: 'word' }, 
+  { _id: 2, col: 12 } 
+]
+````
+3 嵌套类型字段的字段类型应该前后保持一致，以下情况是不被允许的
+````bash
+[ 
+  { _id: 1, struct: {f1: 12} }, 
+  { _id: 2, struct: {f1: 13 ,f2:"hello"} } 
+]
+````
+若出现了嵌套类型字段前后类型不一致的情况，则在读取的时候会因为类型冲突而导致不能正确读取
 
 LakeSoul Flink 作业启动后初始化阶段，首先会读取配置的 MySQL DB 中的所有表（排除掉不需要同步的表）。对每一个表，首先判断在 LakeSoul 中是否存在，如果不存在则自动创建一个 LakeSoul 表，其 Schema 与 MySQL 对应表一致。
 
