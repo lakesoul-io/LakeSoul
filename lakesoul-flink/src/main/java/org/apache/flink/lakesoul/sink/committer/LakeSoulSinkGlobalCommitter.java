@@ -53,12 +53,15 @@ public class LakeSoulSinkGlobalCommitter
     private final DBManager dbManager;
     private final Configuration conf;
 
+    private final boolean isBounded;
+
     private final boolean logicallyDropColumn;
 
     public LakeSoulSinkGlobalCommitter(Configuration conf) {
         committer = LakeSoulSinkCommitter.INSTANCE;
         dbManager = new DBManager();
         this.conf = conf;
+        isBounded = conf.get(IS_BOUNDED).equals("true");
         logicallyDropColumn = conf.getBoolean(LOGICALLY_DROP_COLUM);
     }
 
@@ -94,7 +97,7 @@ public class LakeSoulSinkGlobalCommitter
     @Override
     public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables)
             throws IOException {
-        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables);
+        return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables, isBounded);
     }
 
     /**
@@ -109,11 +112,11 @@ public class LakeSoulSinkGlobalCommitter
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
             List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
-                LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables);
+                LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables, isBounded);
         LOG.info("Committing: {}", globalCommittable);
 
         int index = 0;
-        String dbType = this.conf.getString(SOURCE_DB_TYPE,"");
+        String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
 
         for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
                 globalCommittable.getGroupedCommittable()
@@ -122,7 +125,7 @@ public class LakeSoulSinkGlobalCommitter
             List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
-            if (tableNamespace==null){
+            if (tableNamespace == null) {
                 tableNamespace = identity.tableId.catalog();
             }
             boolean isCdc = identity.useCDC;
@@ -161,7 +164,7 @@ public class LakeSoulSinkGlobalCommitter
                         !new HashSet<>(partitionKeys.rangeKeys).containsAll(identity.partitionKeyList)) {
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
-                StructType origSchema ;
+                StructType origSchema;
                 if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
                     Schema arrowSchema = Schema.fromJSON(tableInfo.getTableSchema());
                     origSchema = ArrowUtils.fromArrowSchema(arrowSchema);
@@ -179,11 +182,11 @@ public class LakeSoulSinkGlobalCommitter
                 StructType mergeStructType = equalOrCanCastTuple3._3();
 
                 boolean schemaChangeFound = false;
-                if (dbType.equals("mongodb")){
-                    if (mergeStructType.length() > origSchema.size()){
+                if (dbType.equals("mongodb")) {
+                    if (mergeStructType.length() > origSchema.size()) {
                         schemaChangeFound = schemaChanged;
                     }
-                }else {
+                } else {
                     schemaChangeFound = equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST());
                 }
                 if (schemaChangeFound) {
@@ -209,9 +212,9 @@ public class LakeSoulSinkGlobalCommitter
                                 msgSchema,
                                 identity.useCDC,
                                 identity.cdcColumn);
-                        if (dbType.equals("mongodb")){
-                            dbManager.updateTableSchema(tableInfo.getTableId(), ArrowUtils.toArrowSchema(mergeStructType,"UTC").toJson());
-                        }else {
+                        if (dbType.equals("mongodb")) {
+                            dbManager.updateTableSchema(tableInfo.getTableId(), ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
+                        } else {
                             dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
                         }
                         if (JSONObject.parseObject(tableInfo.getProperties()).containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {

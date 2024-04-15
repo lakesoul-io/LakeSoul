@@ -196,7 +196,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     public void merge(LakeSoulMultiTableSinkCommittable committable) {
         Preconditions.checkState(identity.equals(committable.getIdentity()));
-        Preconditions.checkState(creationTime == committable.getCreationTime());
+//        Preconditions.checkState(creationTime == committable.getCreationTime());
 
         for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
             String bucketId = entry.getKey();
@@ -213,17 +213,18 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         if (sourcePartitionInfo == null) {
             sourcePartitionInfo = committable.getSourcePartitionInfo();
         } else {
+            if (committable.getSourcePartitionInfo() == null || committable.getSourcePartitionInfo().isEmpty()) return;
             try {
                 JniWrapper jniWrapper = JniWrapper
-                        .parseFrom(sourcePartitionInfo.getBytes())
+                        .parseFrom(Base64.getDecoder().decode(committable.getSourcePartitionInfo()))
                         .toBuilder()
                         .addAllPartitionInfo(
                                 JniWrapper
-                                        .parseFrom(committable.getSourcePartitionInfo().getBytes())
+                                        .parseFrom(Base64.getDecoder().decode(committable.getSourcePartitionInfo()))
                                         .getPartitionInfoList()
                         )
                         .build();
-                sourcePartitionInfo = new String(jniWrapper.toByteArray());
+                sourcePartitionInfo = Base64.getEncoder().encodeToString(jniWrapper.toByteArray());
             } catch (InvalidProtocolBufferException e) {
                 throw new RuntimeException(e);
             }

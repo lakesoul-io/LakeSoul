@@ -26,7 +26,7 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
     private final Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable;
 
     public LakeSoulMultiTableSinkGlobalCommittable(
-            Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables) {
+            Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables, boolean isBounded) {
         groupedCommitables.forEach((key, disorderedCommitables) -> {
             disorderedCommitables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
             List<LakeSoulMultiTableSinkCommittable> mergedCommittables = new ArrayList<>();
@@ -35,7 +35,7 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
                     mergedCommittables.add(committable);
                 } else {
                     LakeSoulMultiTableSinkCommittable tail = mergedCommittables.get(mergedCommittables.size() - 1);
-                    if (tail.getCreationTime() == committable.getCreationTime()) {
+                    if (isBounded || tail.getCreationTime() == committable.getCreationTime()) {
                         tail.merge(committable);
                     } else {
                         mergedCommittables.add(committable);
@@ -49,22 +49,22 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
     }
 
     public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkGlobalCommittable(
-            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) {
+            List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables, boolean isBounded) {
         Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
                 new HashMap<>();
         globalCommittables.forEach(globalCommittable -> globalCommittable.getGroupedCommittable().forEach(
                 (key, value) -> groupedCommitables.computeIfAbsent(key, tuple2 -> new ArrayList<>()).addAll(value)));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables, isBounded);
     }
 
     public static LakeSoulMultiTableSinkGlobalCommittable fromLakeSoulMultiTableSinkCommittable(
-            List<LakeSoulMultiTableSinkCommittable> committables) {
+            List<LakeSoulMultiTableSinkCommittable> committables, boolean isBounded) {
         Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommitables =
                 new HashMap<>();
         committables.forEach(committable -> groupedCommitables.computeIfAbsent(
                         Tuple2.of(committable.getIdentity(), committable.getBucketId()), tuple2 -> new ArrayList<>())
                 .add(committable));
-        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables);
+        return new LakeSoulMultiTableSinkGlobalCommittable(groupedCommitables, isBounded);
     }
 
 
