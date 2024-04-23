@@ -746,7 +746,9 @@ public final class ArrowUtils {
         public ArrowType visit(TimestampType timestampType) {
             if (timestampType.getPrecision() == 0) {
                 return new ArrowType.Timestamp(SECOND, null);
-            } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 6) {
+            } else if (timestampType.getPrecision() >= 1 && timestampType.getPrecision() <= 3) {
+                return new ArrowType.Timestamp(MILLISECOND, null);
+            } else if (timestampType.getPrecision() >= 4 && timestampType.getPrecision() <= 6) {
                 return new ArrowType.Timestamp(MICROSECOND, null);
             } else {
                 return new ArrowType.Timestamp(NANOSECOND, null);

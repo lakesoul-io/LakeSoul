@@ -32,8 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestUtils {
 
-    private static final String BATCH_TYPE = "batch";
-    private static final String STREAMING_TYPE = "streaming";
+    public static final String BATCH_TYPE = "batch";
+    public static final String STREAMING_TYPE = "streaming";
 
     public static TableEnvironment createTableEnv(String mode) {
         TableEnvironment createTableEnv;

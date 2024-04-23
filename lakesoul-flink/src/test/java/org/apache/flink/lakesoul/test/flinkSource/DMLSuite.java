@@ -16,8 +16,9 @@ import org.junit.Test;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
+
 public class DMLSuite extends AbstractTestBase {
-    private final String BATCH_TYPE = "batch";
 
     @Test
     public void testInsertSQL() throws ExecutionException, InterruptedException {

@@ -16,8 +16,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
+
 public class BatchReadSuite extends AbstractTestBase {
-    private final String BATCH_TYPE = "batch";
     private String startTime;
     private String endTime;
 

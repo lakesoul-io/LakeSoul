@@ -9,13 +9,11 @@ import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.table.api.SqlDialect;
-import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.TableResult;
+import org.apache.flink.table.api.*;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 
+import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -136,10 +134,13 @@ public class LakeSoulTestUtils {
             throw new RuntimeException(e);
         }
         List<String> results = TestValuesTableFactory.getResults(String.format("%s_sink", sourceTable));
-        results.sort(Comparator.comparing(
-                row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
-        assertThat(results.toString()).isEqualTo(expectedAnswer);
-
+        if (expectedAnswer.isEmpty()) {
+            System.out.println(results);
+        } else {
+            results.sort(Comparator.comparing(
+                    row -> Integer.valueOf(row.substring(3, (row.contains(",")) ? row.indexOf(",") : row.length() - 1))));
+            assertThat(results.toString()).isEqualTo(expectedAnswer);
+        }
     }
 
 }

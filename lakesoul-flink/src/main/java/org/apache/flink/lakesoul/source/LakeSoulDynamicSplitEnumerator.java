@@ -28,7 +28,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     private final long discoveryInterval;
     private final String parDesc;
     private final Set<Integer> taskIdsAwaitingSplit;
-    String tid;
+    String tableId;
     private long startTime;
     private long nextStartTime;
     private int hashBucketNum = -1;
@@ -36,11 +36,11 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     public LakeSoulDynamicSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context,
                                           LakeSoulDynSplitAssigner splitAssigner, long discoveryInterval,
-                                          long startTime, String tid, String parDesc, String hashBucketNum) {
+                                          long startTime, String tableId, String parDesc, String hashBucketNum) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
-        this.tid = tid;
+        this.tableId = tableId;
         this.startTime = startTime;
         this.parDesc = parDesc;
         this.hashBucketNum = Integer.parseInt(hashBucketNum);
@@ -49,7 +49,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
 
     @Override
     public void start() {
-        context.callAsync(() -> this.enumerateSplits(tid), this::processDiscoveredSplits, discoveryInterval,
+        context.callAsync(() -> this.enumerateSplits(tableId), this::processDiscoveredSplits, discoveryInterval,
                 discoveryInterval);
     }
 
@@ -60,9 +60,9 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
             return;
         }
         int tasksSize = context.registeredReaders().size();
-        Optional<LakeSoulSplit> al = this.splitAssigner.getNext(subtaskId, tasksSize);
-        if (al.isPresent()) {
-            context.assignSplit(al.get(), subtaskId);
+        Optional<LakeSoulSplit> nextSplit = this.splitAssigner.getNext(subtaskId, tasksSize);
+        if (nextSplit.isPresent()) {
+            context.assignSplit(nextSplit.get(), subtaskId);
             taskIdsAwaitingSplit.remove(subtaskId);
         } else {
             taskIdsAwaitingSplit.add(subtaskId);
@@ -83,7 +83,7 @@ public class LakeSoulDynamicSplitEnumerator implements SplitEnumerator<LakeSoulS
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
         LakeSoulPendingSplits pendingSplits =
-                new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tid, this.parDesc,
+                new LakeSoulPendingSplits(splitAssigner.remainingSplits(), this.nextStartTime, this.tableId, this.parDesc,
                         this.discoveryInterval, this.hashBucketNum);
         LOG.info("LakeSoulDynamicSplitEnumerator snapshotState {}", pendingSplits);
         return pendingSplits;

@@ -96,7 +96,7 @@ public class FlinkUtil {
         return new org.apache.arrow.vector.types.pojo.Schema(fields);
     }
 
-    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tsc, Optional<String> cdcColumn) throws CatalogException {
+    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tableSchema, Optional<String> cdcColumn) throws CatalogException {
         List<Field> fields = new ArrayList<>();
         String cdcColName = null;
         if (cdcColumn.isPresent()) {
@@ -105,12 +105,15 @@ public class FlinkUtil {
             fields.add(cdcField);
         }
 
-        for (int i = 0; i < tsc.getFieldCount(); i++) {
-            String name = tsc.getFieldName(i).get();
-            DataType dt = tsc.getFieldDataType(i).get();
+        for (int i = 0; i < tableSchema.getFieldCount(); i++) {
+            if (tableSchema.getTableColumn(i).get() instanceof TableColumn.ComputedColumn) {
+                continue;
+            }
+            String name = tableSchema.getFieldName(i).get();
+            DataType dataType = tableSchema.getFieldDataType(i).get();
             if (name.equals(SORT_FIELD)) continue;
 
-            LogicalType logicalType = dt.getLogicalType();
+            LogicalType logicalType = dataType.getLogicalType();
             Field arrowField = ArrowUtils.toArrowField(name, logicalType);
             if (name.equals(cdcColName)) {
                 if (!arrowField.toString().equals(fields.get(0).toString())) {
@@ -213,10 +216,22 @@ public class FlinkUtil {
             }
             bd.column(field.getName(), field.getType().asSerializableString());
         }
+        if (properties.getString(COMPUTE_COLUMN_JSON) != null) {
+            JSONObject computeColumnJson = JSONObject.parseObject(properties.getString(COMPUTE_COLUMN_JSON));
+            computeColumnJson.forEach((column, columnExpr) -> bd.columnByExpression(column, (String) columnExpr));
+        }
+
         DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
         if (!partitionKeys.primaryKeys.isEmpty()) {
             bd.primaryKey(partitionKeys.primaryKeys);
         }
+
+        if (properties.getString(WATERMARK_SPEC_JSON) != null) {
+            JSONObject watermarkJson = JSONObject.parseObject(properties.getString(WATERMARK_SPEC_JSON));
+            watermarkJson.forEach((column, watermarkExpr) -> bd.watermark(column, (String) watermarkExpr));
+        }
+
+
         List<String> parKeys = partitionKeys.rangeKeys;
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
@@ -551,4 +566,15 @@ public class FlinkUtil {
             hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE));
         }
     }
+
+    public static String serializeWatermarkSpec(List<WatermarkSpec> watermarkSpecs) {
+        Map<String, String> map = new HashMap<>();
+        for (WatermarkSpec watermarkSpec : watermarkSpecs) {
+            // Deserialize: watermarkSpec.getWatermarkExprOutputType() will be inferred from LakeSoul TableSchema
+            map.put(watermarkSpec.getRowtimeAttribute(), watermarkSpec.getWatermarkExpr());
+        }
+        return JSON.toJSONString(map);
+    }
+
+
 }

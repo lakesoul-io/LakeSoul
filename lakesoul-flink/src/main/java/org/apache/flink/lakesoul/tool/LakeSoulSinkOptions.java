@@ -26,6 +26,10 @@ public class LakeSoulSinkOptions {
 
     public static final String CDC_CHANGE_COLUMN = "lakesoul_cdc_change_column";
 
+    public static final String WATERMARK_SPEC_JSON = "flink:watermark_spec_json";
+
+    public static final String COMPUTE_COLUMN_JSON = "flink:compute_column_json";
+
     public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
 
     public static final String SORT_FIELD = "__sort_filed__";
