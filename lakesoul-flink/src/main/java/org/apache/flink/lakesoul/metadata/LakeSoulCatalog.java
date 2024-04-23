@@ -16,6 +16,7 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.table.LakeSoulDynamicTableFactory;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.table.api.TableColumn;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
 import org.apache.flink.table.catalog.*;
@@ -302,6 +303,20 @@ public class LakeSoulCatalog implements Catalog {
             tableOptions.put(VIEW_ORIGINAL_QUERY, ((ResolvedCatalogView) table).getOriginalQuery());
             tableOptions.put(VIEW_EXPANDED_QUERY, ((ResolvedCatalogView) table).getExpandedQuery());
         }
+        if (!schema.getWatermarkSpecs().isEmpty()) {
+            tableOptions.put(WATERMARK_SPEC_JSON, FlinkUtil.serializeWatermarkSpec(schema.getWatermarkSpecs()));
+        }
+
+        Map<String, String> computedColumns = new HashMap<>();
+        schema.getTableColumns().forEach(tableColumn -> {
+            if (tableColumn instanceof TableColumn.ComputedColumn) {
+                computedColumns.put(tableColumn.getName(), ((TableColumn.ComputedColumn) tableColumn).getExpression());
+            }
+        });
+        if (!computedColumns.isEmpty()) {
+            tableOptions.put(COMPUTE_COLUMN_JSON, JSON.toJSONString(computedColumns));
+        }
+
         String json = JSON.toJSONString(tableOptions);
         JSONObject properties = JSON.parseObject(json);
         String tableName = tablePath.getObjectName();

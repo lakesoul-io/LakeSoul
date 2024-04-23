@@ -12,11 +12,10 @@ import java.util.List;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class SubstraitTest extends AbstractTestBase {
-
-    private final String BATCH_TYPE = "batch";
 
     @Test
     public void dateTypeTest() throws ExecutionException, InterruptedException {

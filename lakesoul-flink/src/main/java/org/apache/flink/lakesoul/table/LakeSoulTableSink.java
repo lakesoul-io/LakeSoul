@@ -122,7 +122,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
         Path path = FlinkUtil.makeQualifiedPath(new Path(flinkConf.getString(CATALOG_PATH)));
         int bucketParallelism = flinkConf.getInteger(HASH_BUCKET_NUM);
         //rowData key tools
-        RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
+        RowType rowType = (RowType) schema.toPhysicalRowDataType().notNull().getLogicalType();
         //bucket file name config
         OutputFileConfig fileNameConfig = OutputFileConfig.builder().withPartSuffix(".parquet").build();
         //file rolling rule

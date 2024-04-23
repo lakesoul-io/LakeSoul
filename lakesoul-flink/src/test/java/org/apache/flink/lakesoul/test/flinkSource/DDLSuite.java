@@ -13,9 +13,10 @@ import org.junit.Test;
 
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.STREAMING_TYPE;
+
 public class DDLSuite extends AbstractTestBase {
-    private String BATCH_TYPE = "batch";
-    private String STREAMING_TYPE = "streaming";
 
     @Test
     public void dropTable() throws ExecutionException, InterruptedException {
@@ -55,14 +56,13 @@ public class DDLSuite extends AbstractTestBase {
 //        tEnv.executeSql("select * from user_info").print();
 //        tEnv.executeSql("alter table user_info drop partition `date`='1995-10-01'");
 //    }
-
     @Test
     public void alterTableNotSupported() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceTableUser(tEnv);
         try {
             tEnv.executeSql("ALTER TABLE user_info RENAME TO NewUsers");
-        }catch (TableException e) {
+        } catch (TableException e) {
             System.out.println("Rename lakesoul table not supported now");
         }
     }
@@ -84,22 +84,22 @@ public class DDLSuite extends AbstractTestBase {
     }
 
     @Test
-    public void loadLakeSoulModuleNotSupported(){
+    public void loadLakeSoulModuleNotSupported() {
         StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
         try {
             streamTableEnv.executeSql("LOAD MODULE lakesoul WITH ('format'='lakesoul')");
-        }catch (ValidationException e) {
+        } catch (ValidationException e) {
             System.out.println("LOAD lakesoul module not supported now");
         }
     }
 
     @Test
-    public void unloadModuleTest(){
+    public void unloadModuleTest() {
         StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
         try {
             streamTableEnv.executeSql("UNLOAD MODULE core");
             streamTableEnv.executeSql("SHOW MODULES");
-        }catch (ValidationException e) {
+        } catch (ValidationException e) {
             System.out.println("UNLOAD lakesoul module not supported now");
         }
     }
