@@ -11,29 +11,29 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-postgres = "0.19.5"
-tokio-postgres = { version = "0.7.8", features = ["default", "with-serde_json-1", "with-uuid-1", "array-impls"] }
-postgres-types = { version = "0.2.5", features = ["derive"] }
-bytes = {version = "1.5.0"}
+postgres = "0.19"
+tokio-postgres = { version = "0.7", features = ["default", "with-serde_json-1", "with-uuid-1", "array-impls"] }
+postgres-types = { version = "0.2", features = ["derive"] }
+bytes = { version = "1.6" }
 
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 proto = { path = "../proto" }
 prost = { workspace = true }
 
-num_enum = "0.5.1"
+num_enum = "0.5"
 uuid = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-regex = "1.10.3"
+regex = "1.10"
 serde = { workspace = true }
 
 
 [dev-dependencies]
-test-log = "0.2.14"
-tracing-subscriber = "0.3.18"
-rand = "0.8.5"
-rand_chacha = "0.3.1"
+test-log = "0.2"
+tracing-subscriber = "0.3"
+rand = "0.8"
+rand_chacha = "0.3"
 
