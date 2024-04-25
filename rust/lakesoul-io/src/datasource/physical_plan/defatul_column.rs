@@ -7,10 +7,11 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use datafusion::{
-    execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
+    execution::TaskContext
+    ,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
+use datafusion::physical_plan::{ExecutionPlanProperties, PlanProperties};
 use datafusion_common::{DataFusionError, Result};
 
 use crate::default_column_stream::DefaultColumnStream;
@@ -19,19 +20,24 @@ use crate::default_column_stream::DefaultColumnStream;
 pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
-    default_column_value: Arc<HashMap<String, String>>
+    default_column_value: Arc<HashMap<String, String>>,
+    cache: PlanProperties,
 }
 
 impl DefaultColumnExec {
     pub fn new(
-        input: Arc<dyn ExecutionPlan>, 
+        input: Arc<dyn ExecutionPlan>,
         target_schema: SchemaRef,
-        default_column_value: Arc<HashMap<String, String>>
+        default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
+        let eq_prop = input.equivalence_properties().clone();
+        let partitioning = input.output_partitioning();
+        let cache = PlanProperties::new(eq_prop, partitioning.clone(), input.execution_mode());
         Ok(Self {
             input,
             target_schema,
-            default_column_value
+            default_column_value,
+            cache,
         })
     }
 }
@@ -51,16 +57,12 @@ impl ExecutionPlan for DefaultColumnExec {
         self.target_schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn properties(&self) -> &PlanProperties {
+       &self.cache
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![]
+        vec![self.input.clone()]
     }
 
     fn with_new_children(self: Arc<Self>, _: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {

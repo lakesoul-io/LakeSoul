@@ -8,10 +8,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
-use crate::sorted_merge::merge_operator::MergeOperator;
-use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
-
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -19,8 +15,12 @@ use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{expressions::col, RecordBatchStream, SendableRecordBatchStream};
 use datafusion_common::DataFusionError::ArrowError;
-use futures::stream::{Fuse, FusedStream};
 use futures::{Stream, StreamExt};
+use futures::stream::{Fuse, FusedStream};
+
+use crate::sorted_merge::combiner::{RangeCombiner, RangeCombinerResult};
+use crate::sorted_merge::merge_operator::MergeOperator;
+use crate::sorted_merge::sort_key_range::SortKeyBatchRange;
 
 pub(crate) struct SortedStream {
     stream: SendableRecordBatchStream,
@@ -200,7 +200,7 @@ impl SortedStreamMerger {
                         let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,
                             Err(e) => {
-                                return Poll::Ready(Err(ArrowError(e)));
+                                return Poll::Ready(Err(ArrowError(e, None)));
                             }
                         };
 
@@ -259,7 +259,7 @@ impl SortedStreamMerger {
         loop {
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => {
-                    return Poll::Ready(Some(Err(ArrowError(e))));
+                    return Poll::Ready(Some(Err(ArrowError(e, None))));
                 }
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
@@ -284,7 +284,7 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(ArrowError))),
+                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None)))),
             }
         }
     }
@@ -309,22 +309,21 @@ mod tests {
     use std::ops::Index;
     use std::sync::Arc;
 
-    use arrow::array::as_primitive_array;
-    use arrow::array::ArrayRef;
     use arrow::array::{Int32Array, StringArray};
-    use arrow::datatypes::Int64Type;
+    use arrow::array::ArrayRef;
+    use arrow::array::as_primitive_array;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use arrow::datatypes::Int64Type;
     use arrow::record_batch::RecordBatch;
     use arrow::util::pretty::print_batches;
     use arrow_array::Float64Array;
+    use comfy_table::{Cell, Table};
     use datafusion::assert_batches_eq;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
     use datafusion::logical_expr::col as logical_col;
-    use datafusion::physical_plan::{common, memory::MemoryExec, ExecutionPlan};
+    use datafusion::physical_plan::{common, ExecutionPlan, memory::MemoryExec};
     use datafusion::prelude::{SessionConfig, SessionContext};
-
-    use comfy_table::{Cell, Table};
 
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
@@ -642,14 +641,14 @@ mod tests {
             vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let s2 = create_stream(
             vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let s3 = create_stream(
             vec![
                 s3b1.clone(),
@@ -661,8 +660,8 @@ mod tests {
             ],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -678,7 +677,7 @@ mod tests {
             2,
             vec![],
         )
-        .unwrap();
+            .unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
         print_batches(&merged).unwrap();
     }
@@ -830,14 +829,14 @@ mod tests {
             vec![s1b1.clone(), s1b2.clone(), s1b3.clone(), s1b4.clone(), s1b5.clone()],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let s2 = create_stream(
             vec![s2b1.clone(), s2b2.clone(), s2b3.clone(), s2b4.clone(), s2b5.clone()],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let s3 = create_stream(
             vec![
                 s3b1.clone(),
@@ -849,8 +848,8 @@ mod tests {
             ],
             task_ctx.clone(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -874,7 +873,7 @@ mod tests {
                 MergeOperator::UseLast,
             ],
         )
-        .unwrap();
+            .unwrap();
         let merged = common::collect(Box::pin(merge_stream)).await.unwrap();
         assert_batches_eq!(
             &[

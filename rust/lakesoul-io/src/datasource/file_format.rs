@@ -93,7 +93,7 @@ impl FileFormat for LakeSoulParquetFormat {
         // will not prune data based on the statistics.
         let predicate = self
             .parquet_format
-            .enable_pruning(state.config_options())
+            .enable_pruning()
             .then(|| filters.cloned())
             .flatten();
 
@@ -113,7 +113,7 @@ impl FileFormat for LakeSoulParquetFormat {
             merged_schema.clone(),
             flatten_conf,
             predicate,
-            self.parquet_format.metadata_size_hint(state.config_options()),
+            self.parquet_format.metadata_size_hint(),
             self.conf.clone(),
         )?);
         
@@ -174,7 +174,6 @@ pub async fn flatten_file_scan_config(
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
-            let infinite_source = conf.infinite_source;
             let config = FileScanConfig {
                 object_store_url: object_store_url.clone(),
                 file_schema,
@@ -184,7 +183,6 @@ pub async fn flatten_file_scan_config(
                 limit,
                 table_partition_cols,
                 output_ordering,
-                infinite_source,
             };
             flatten_configs.push(config);
         }

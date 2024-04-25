@@ -8,7 +8,7 @@ members = [
     "lakesoul-metadata",
     "lakesoul-metadata-c",
     "lakesoul-io",
-    #    "lakesoul-io-c",
+    "lakesoul-io-c",
     #    "lakesoul-datafusion"
 ]
 resolver = "2"

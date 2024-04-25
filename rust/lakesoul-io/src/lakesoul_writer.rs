@@ -2,10 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values};
-use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder};
-use crate::repartition::RepartitionByRangeAndHashExec;
-use crate::transform::{uniform_record_batch, uniform_schema};
+use std::any::Any;
+use std::borrow::Borrow;
+use std::collections::{HashMap, VecDeque};
+use std::fmt::{Debug, Formatter};
+use std::io::ErrorKind::AddrInUse;
+use std::io::Write;
+use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use arrow::record_batch::RecordBatch;
@@ -15,28 +18,21 @@ use atomic_refcell::AtomicRefCell;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::error::Result;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_expr::expressions::{col, Column};
-use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_expr::Partitioning::UnknownPartitioning;
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, ExecutionPlanProperties, Partitioning, PlanProperties, SendableRecordBatchStream};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream};
-use datafusion_common::{project_schema, DataFusionError};
+use datafusion_common::{DataFusionError, project_schema};
 use datafusion_common::DataFusionError::Internal;
-use object_store::path::Path;
 use object_store::{MultipartId, ObjectStore};
+use object_store::path::Path;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use rand::distributions::DistString;
-use tracing::debug;
-use std::any::Any;
-use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
-use std::fmt::{Debug, Formatter};
-use std::io::ErrorKind::AddrInUse;
-use std::io::Write;
-use std::sync::Arc;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
@@ -44,7 +40,13 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
+use tracing::debug;
 use url::Url;
+
+use crate::helpers::{columnar_values_to_partition_desc, columnar_values_to_sub_path, get_columnar_values};
+use crate::lakesoul_io_config::{create_session_context, IOSchema, LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+use crate::repartition::RepartitionByRangeAndHashExec;
+use crate::transform::{uniform_record_batch, uniform_schema};
 
 #[async_trait]
 pub trait AsyncBatchWriter {
@@ -126,15 +128,25 @@ impl Write for InMemBuf {
 
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
-    schema: SchemaRef,
+    cache: PlanProperties,
 }
 
 impl ReceiverStreamExec {
     pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
+        let cache = Self::compute_properties(schema);
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
-            schema,
+            cache,
         }
+    }
+
+    fn compute_properties(schema: SchemaRef) -> PlanProperties {
+        let eq_prop = EquivalenceProperties::new(schema);
+        PlanProperties::new(
+            eq_prop,
+            UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+        )
     }
 }
 
@@ -155,27 +167,19 @@ impl ExecutionPlan for ReceiverStreamExec {
         self
     }
 
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn with_new_children(self: Arc<Self>, _children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let builder = self
             .receiver_stream_builder
             .borrow_mut()
@@ -184,6 +188,7 @@ impl ExecutionPlan for ReceiverStreamExec {
         Ok(builder.build())
     }
 }
+
 
 impl MultiPartAsyncWriter {
     pub async fn try_new_with_context(config: &mut LakeSoulIOConfig, task_context: Arc<TaskContext>) -> Result<Self> {
@@ -214,12 +219,12 @@ impl MultiPartAsyncWriter {
         ))));
         let schema = uniform_schema(config.schema.0.clone());
 
-        let schema_projection_excluding_range = 
+        let schema_projection_excluding_range =
             schema
                 .fields()
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, field)| 
+                .filter_map(|(idx, field)|
                     match config.range_partitions.contains(field.name()) {
                         true => None,
                         false => Some(idx)
@@ -511,10 +516,10 @@ impl PartitioningAsyncWriter {
 
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-        let partitioned_file_path_and_row_count = 
+        let partitioned_file_path_and_row_count =
             Arc::new(
                 Mutex::new(
-                    HashMap::<String,(Vec<String>, u64)>::new()
+                    HashMap::<String, (Vec<String>, u64)>::new()
                 ));
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
@@ -535,7 +540,7 @@ impl PartitioningAsyncWriter {
             join_handles,
             partitioned_file_path_and_row_count.clone(),
         ));
-        
+
 
         Ok(Self {
             schema,
@@ -628,12 +633,12 @@ impl PartitioningAsyncWriter {
         partitioned_file_path_and_row_count: Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
-        let schema_projection_excluding_range = 
+        let schema_projection_excluding_range =
             data.schema()
                 .fields()
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, field)| 
+                .filter_map(|(idx, field)|
                     match range_partitions.contains(field.name()) {
                         true => None,
                         false => Some(idx)
@@ -653,22 +658,22 @@ impl PartitioningAsyncWriter {
                     let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
                     let partition_desc = columnar_values_to_partition_desc(&columnar_values);
                     let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
-                    let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", config_builder.prefix(), columnar_values_to_sub_path(&columnar_values), write_id, partition);            
-        
+                    let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", config_builder.prefix(), columnar_values_to_sub_path(&columnar_values), write_id, partition);
+
                     if !partitioned_writer.contains_key(&partition_desc) {
                         let mut config = config_builder
                             .clone()
                             .with_files(vec![file_absolute_path])
                             .build();
-        
+
                         let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                         partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
                     }
-        
+
                     if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
                         row_count += batch_excluding_range.num_rows();
                         async_writer.write_record_batch(batch_excluding_range).await?;
-                    }        
+                    }
                 }
                 // received abort signal
                 Err(e) => {
@@ -816,7 +821,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     .fields
                     .iter()
                     .filter(|f| !config.aux_sort_cols.contains(f.name()))
-                    .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+                    .map(|f| schema.index_of(f.name().as_str()).map_err(|e| DataFusionError::ArrowError(e, None)))
                     .collect::<Result<Vec<usize>>>()?;
                 Arc::new(schema.project(proj_indices.borrow())?)
             } else {
@@ -830,7 +835,7 @@ impl SyncSendableMutableLakeSoulWriter {
                 Box::new(PartitioningAsyncWriter::try_new(task_context, config, runtime.clone())?)
             } else if !config.primary_keys.is_empty() {
                 // sort primary key table
-                
+
                 writer_config.schema = IOSchema(uniform_schema(writer_schema));
                 let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
@@ -895,20 +900,22 @@ impl SyncSendableMutableLakeSoulWriter {
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use crate::lakesoul_reader::LakeSoulReader;
-    use crate::lakesoul_writer::{
-        AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter,
-    };
+    use std::fs::File;
+    use std::sync::Arc;
+
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
     use arrow_array::Array;
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
-    use std::fs::File;
-    use std::sync::Arc;
     use tokio::runtime::Builder;
+
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+    use crate::lakesoul_reader::LakeSoulReader;
+    use crate::lakesoul_writer::{
+        AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter,
+    };
 
     use super::SortAsyncWriter;
 

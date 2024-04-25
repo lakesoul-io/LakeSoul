@@ -843,6 +843,11 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
 }
 
+#[no_mangle]
+pub extern "C" fn rust_logger_init() {
+    let _ = env_logger::try_init();
+}
+
 #[cfg(test)]
 mod tests {
     use core::ffi::c_ptrdiff_t;
@@ -1227,7 +1232,4 @@ mod tests {
 }
 
 
-#[no_mangle]
-pub extern "C" fn rust_logger_init() {
-    let _ = env_logger::try_init();
-}
+

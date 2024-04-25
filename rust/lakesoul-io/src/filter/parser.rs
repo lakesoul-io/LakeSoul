@@ -8,28 +8,24 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use arrow_schema::{DataType, Field, Fields, SchemaRef, TimeUnit};
-use datafusion::logical_expr::{expr, BinaryExpr, BuiltinScalarFunction, Expr, Operator};
-use datafusion::prelude::col;
+use arrow_schema::{DataType, Field, Fields, SchemaRef};
+use async_recursion::async_recursion;
+use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, Expr, expr, Like, Operator, ScalarUDF, UserDefinedLogicalNode};
+use datafusion::prelude::{col, SessionContext};
 use datafusion::scalar::ScalarValue;
-use datafusion_common::{not_impl_err, plan_err, Column, DFSchema, DataFusionError, Result};
-use datafusion_substrait::substrait;
+use datafusion_common::{Column, DataFusionError, DFSchema, not_impl_err, plan_err, Result, substrait_datafusion_err, substrait_err};
+use datafusion_substrait::substrait::proto::{FunctionArgument, Plan, plan_rel, r#type, Rel, Type};
+use datafusion_substrait::substrait::proto::Expression;
+use datafusion_substrait::substrait::proto::expression::{FieldReference, Literal, RexType, ScalarFunction};
 use datafusion_substrait::substrait::proto::expression::field_reference::ReferenceType::DirectReference;
 use datafusion_substrait::substrait::proto::expression::literal::LiteralType;
 use datafusion_substrait::substrait::proto::expression::reference_segment::ReferenceType;
-use datafusion_substrait::substrait::proto::expression::{Literal, RexType};
 use datafusion_substrait::substrait::proto::extensions::simple_extension_declaration::MappingType;
 use datafusion_substrait::substrait::proto::function_argument::ArgType;
-use datafusion_substrait::substrait::proto::r#type::Nullability;
 use datafusion_substrait::substrait::proto::read_rel::ReadType;
 use datafusion_substrait::substrait::proto::rel::RelType;
-use datafusion_substrait::substrait::proto::{plan_rel, r#type, Expression, Plan, Rel, Type};
-use datafusion_substrait::variation_const::{
-    DATE_32_TYPE_REF, DATE_64_TYPE_REF, DECIMAL_128_TYPE_REF, DECIMAL_256_TYPE_REF, DEFAULT_CONTAINER_TYPE_REF,
-    DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF,
-    TIMESTAMP_NANO_TYPE_REF, TIMESTAMP_SECOND_TYPE_REF, UNSIGNED_INTEGER_TYPE_REF,
-};
-use log::debug;
+use datafusion_substrait::variation_const::{DATE_32_TYPE_REF, DATE_64_TYPE_REF, DEFAULT_CONTAINER_TYPE_REF, DEFAULT_TYPE_REF, LARGE_CONTAINER_TYPE_REF, TIMESTAMP_MICRO_TYPE_REF, TIMESTAMP_MILLI_TYPE_REF, TIMESTAMP_NANO_TYPE_REF, TIMESTAMP_SECOND_TYPE_REF, UNSIGNED_INTEGER_TYPE_REF};
+use tracing::debug;
 
 pub struct Parser {}
 
@@ -228,30 +224,51 @@ impl Parser {
         Ok(res)
     }
 
-    pub(crate) fn parse_proto(plan: &Plan, df_schema: &DFSchema) -> Result<Expr> {
-        let function_extension = plan
+    pub(crate) async fn parse_proto(ctx: &SessionContext, plan: &Plan, df_schema: &DFSchema) -> Result<Arc<Expr>> {
+        /// ex: equal:bool -> equal
+        fn delete_type(origin: &str) -> Result<String> {
+            debug!("origin func name: {}",origin);
+            let out = origin.split_once(":").ok_or(DataFusionError::Internal("wrong func name".into()))?.0;
+            debug!("after is {}",out);
+            Ok(out.to_string())
+        }
+
+        let function_extension_vec = plan
             .extensions
             .iter()
             .map(|e| match &e.mapping_type {
                 Some(ext) => match ext {
-                    MappingType::ExtensionFunction(ext_f) => Ok((ext_f.function_anchor, &ext_f.name)),
+                    MappingType::ExtensionFunction(ext_f) => {
+                        Ok((ext_f.function_anchor, &ext_f.name))
+                    }
                     _ => not_impl_err!("Extension type not supported: {ext:?}"),
                 },
                 None => not_impl_err!("Cannot parse empty extension"),
             })
-            .collect::<Result<HashMap<_, _>>>()?;
+            .collect::<Result<Vec<(_, _)>>>()?;
+
+        let mut container = vec![];
+        for v in function_extension_vec.iter() {
+            container.push(delete_type(v.1)?);
+        }
+
+        let mut function_extension = HashMap::new();
+        for (i, v) in function_extension_vec.iter().enumerate() {
+            function_extension.insert(v.0, &container[i]);
+        }
+
+
         // Parse relations
         match plan.relations.len() {
             1 => match plan.relations[0].rel_type.as_ref() {
                 Some(rt) => match rt {
-                    plan_rel::RelType::Rel(rel) => Ok(Parser::parse_rel(rel, &function_extension, df_schema)?),
-                    plan_rel::RelType::Root(root) => Ok(Parser::parse_rel(
-                        root.input
-                            .as_ref()
-                            .ok_or(DataFusionError::Substrait("wrong root".to_string()))?,
-                        &function_extension,
-                        df_schema,
-                    )?),
+                    plan_rel::RelType::Rel(rel) => Parser::parse_rel(ctx, rel, &function_extension, df_schema).await,
+                    plan_rel::RelType::Root(root) => Parser::parse_rel(ctx,
+                                                                       root.input
+                                                                           .as_ref()
+                                                                           .ok_or(DataFusionError::Substrait("wrong root".to_string()))?,
+                                                                       &function_extension,
+                                                                       df_schema).await,
                 },
                 None => plan_err!("Cannot parse plan relation: None"),
             },
@@ -262,7 +279,7 @@ impl Parser {
         }
     }
 
-    fn parse_rel(rel: &Rel, extensions: &HashMap<u32, &String>, df_schema: &DFSchema) -> Result<Expr> {
+    async fn parse_rel(ctx: &SessionContext, rel: &Rel, extensions: &HashMap<u32, &String>, df_schema: &DFSchema) -> Result<Arc<Expr>> {
         match &rel.rel_type {
             Some(RelType::Read(read)) => match &read.as_ref().read_type {
                 None => {
@@ -273,7 +290,7 @@ impl Parser {
                         .filter
                         .as_ref()
                         .ok_or(DataFusionError::Substrait("wrong filter".to_string()))?;
-                    Parser::parse_rex(e.as_ref(), df_schema, extensions)
+                    parse_rex(ctx, e.as_ref(), df_schema, extensions).await
                 }
                 Some(_) => {
                     not_impl_err!("un supported")
@@ -282,139 +299,359 @@ impl Parser {
             _ => not_impl_err!("un supported"),
         }
     }
+}
 
-    // recursion
-    fn parse_rex(e: &Expression, input_schema: &DFSchema, extensions: &HashMap<u32, &String>) -> Result<Expr> {
-        match &e.rex_type {
-            Some(RexType::Selection(field_ref)) => match &field_ref.reference_type {
-                Some(DirectReference(direct)) => match &direct.reference_type.as_ref() {
-                    Some(ReferenceType::MapKey(x)) => match &x.child.as_ref() {
-                        Some(_) => not_impl_err!("MapKey is not supported"),
-                        None => {
-                            let literal = x
-                                .map_key
-                                .as_ref()
-                                .ok_or(DataFusionError::Substrait("can not get map key".into()))?;
-                            let sv = from_substrait_literal(literal)?;
-                            let field_name = match sv {
-                                ScalarValue::Utf8(s) => {
-                                    s.ok_or(DataFusionError::Substrait("can not get map key".into()))
-                                }
-                                _ => not_impl_err!("map key wrong type"),
-                            }?;
-                            debug!("field name: {}", field_name);
-                            let column = input_schema
-                                .field_with_unqualified_name(&field_name)?
-                                .qualified_column();
-                            Ok(Expr::Column(Column {
-                                relation: column.relation,
-                                name: column.name,
-                            }))
-                        }
-                    },
-                    _ => not_impl_err!("Direct reference with types other than MapKey is not supported"),
-                },
-                _ => not_impl_err!("unsupported field ref type"),
-            },
-            Some(RexType::ScalarFunction(f)) => {
-                let fn_name = extensions.get(&f.function_reference).ok_or_else(|| {
-                    DataFusionError::NotImplemented(format!(
-                        "Aggregated function not found: function reference = {:?}",
-                        f.function_reference
-                    ))
-                })?;
-                let fn_type = scalar_function_type_from_str(fn_name)?;
-                match fn_type {
-                    ScalarFunctionType::Builtin(fun) => {
-                        let mut args = Vec::with_capacity(f.arguments.len());
-                        for arg in &f.arguments {
-                            let arg_expr = match &arg.arg_type {
-                                Some(ArgType::Value(e)) => Parser::parse_rex(e, input_schema, extensions),
-                                _ => not_impl_err!("Aggregated function argument non-Value type not supported"),
-                            };
-                            args.push(arg_expr?);
-                        }
-                        Ok(Expr::ScalarFunction(expr::ScalarFunction { fun, args }))
-                    }
-                    ScalarFunctionType::Op(op) => {
-                        if f.arguments.len() != 2 {
-                            return not_impl_err!("Expect two arguments for binary operator {op:?}");
-                        }
-                        let lhs = &f.arguments[0].arg_type;
-                        let rhs = &f.arguments[1].arg_type;
+fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
+    if let Ok(field) = schema.field_with_name(expr_str) {
+        Some((col(Column::new_unqualified(expr_str)), Arc::new(field.clone())))
+    } else {
+        let mut expr: Option<(Expr, Arc<Field>)> = None;
+        let mut root = "".to_owned();
+        let mut sub_fields: &Fields = schema.fields();
+        for expr_substr in expr_str.split('.') {
+            root = if root.is_empty() {
+                expr_substr.to_owned()
+            } else {
+                format!("{}.{}", root, expr_substr)
+            };
+            if let Some((_, field)) = sub_fields.find(&root) {
+                expr = if let Some((folding_exp, _)) = expr {
+                    Some((folding_exp.field(field.name()), field.clone()))
+                } else {
+                    Some((col(Column::new_unqualified(field.name())), field.clone()))
+                };
+                root = "".to_owned();
 
-                        match (lhs, rhs) {
-                            (Some(ArgType::Value(l)), Some(ArgType::Value(r))) => Ok(Expr::BinaryExpr(BinaryExpr {
-                                left: Box::new(Parser::parse_rex(l, input_schema, extensions)?),
-                                op,
-                                right: Box::new(Parser::parse_rex(r, input_schema, extensions)?),
-                            })),
-                            (l, r) => not_impl_err!("Invalid arguments for binary expression: {l:?} and {r:?}"),
-                        }
-                    }
-                    ScalarFunctionType::Not => {
-                        let arg = f.arguments.first().ok_or_else(|| {
-                            DataFusionError::Substrait("expect one argument for `NOT` expr".to_string())
-                        })?;
-                        match &arg.arg_type {
-                            Some(ArgType::Value(e)) => {
-                                let expr = Parser::parse_rex(e, input_schema, extensions)?;
-                                Ok(Expr::Not(Box::new(expr)))
-                            }
-                            _ => not_impl_err!("Invalid arguments for Not expression"),
-                        }
-                    }
-                    ScalarFunctionType::IsNull => {
-                        let arg = f.arguments.first().ok_or_else(|| {
-                            DataFusionError::Substrait("expect one argument for `IS NULL` expr".to_string())
-                        })?;
-                        match &arg.arg_type {
-                            Some(ArgType::Value(e)) => {
-                                let expr = Parser::parse_rex(e, input_schema, extensions)?;
-                                Ok(Expr::IsNull(Box::new(expr)))
-                            }
-                            _ => not_impl_err!("Invalid arguments for IS NULL expression"),
-                        }
-                    }
-                    ScalarFunctionType::IsNotNull => {
-                        let arg = f.arguments.first().ok_or_else(|| {
-                            DataFusionError::Substrait("expect one argument for `IS NOT NULL` expr".to_string())
-                        })?;
-                        match &arg.arg_type {
-                            Some(ArgType::Value(e)) => {
-                                let expr = Parser::parse_rex(e, input_schema, extensions)?;
-                                Ok(Expr::IsNotNull(Box::new(expr)))
-                            }
-                            _ => {
-                                not_impl_err!("Invalid arguments for IS NOT NULL expression")
-                            }
-                        }
-                    }
-                    _ => not_impl_err!("not implemented"),
-                }
+                sub_fields = match field.data_type() {
+                    DataType::Struct(struct_sub_fields) => &struct_sub_fields,
+                    _ => sub_fields,
+                };
             }
-            Some(RexType::Literal(lit)) => {
-                let scalar_value = from_substrait_literal(lit)?;
-                Ok(Expr::Literal(scalar_value))
-            }
-            _ => unimplemented!(),
         }
+        expr
     }
 }
 
-enum ScalarFunctionType {
-    Builtin(BuiltinScalarFunction),
-    Op(Operator),
-    /// [Expr::Not]
-    Not,
-    /// [Expr::Like] Used for filtering rows based on the given wildcard pattern. Case-sensitive
-    Like,
-    /// [Expr::Like] Case insensitive operator counterpart of `Like`
-    ILike,
-    /// [Expr::IsNull]
-    IsNull,
-    /// [Expr::IsNotNull]
-    IsNotNull,
+struct BuiltinExprBuilder {
+    expr_name: String,
+}
+
+impl BuiltinExprBuilder {
+    pub fn try_from_name(name: &str) -> Option<Self> {
+        match name {
+            "not" | "like" | "ilike" | "is_null" | "is_not_null" | "is_true"
+            | "is_false" | "is_not_true" | "is_not_false" | "is_unknown"
+            | "is_not_unknown" | "negative" => Some(Self {
+                expr_name: name.to_string(),
+            }),
+            _ => None,
+        }
+    }
+
+    pub async fn build(
+        self,
+        ctx: &SessionContext,
+        f: &ScalarFunction,
+        input_schema: &DFSchema,
+        extensions: &HashMap<u32, &String>,
+    ) -> Result<Arc<Expr>> {
+        match self.expr_name.as_str() {
+            "like" => {
+                Self::build_like_expr(ctx, false, f, input_schema, extensions).await
+            }
+            "ilike" => {
+                Self::build_like_expr(ctx, true, f, input_schema, extensions).await
+            }
+            "not" | "negative" | "is_null" | "is_not_null" | "is_true" | "is_false"
+            | "is_not_true" | "is_not_false" | "is_unknown" | "is_not_unknown" => {
+                Self::build_unary_expr(ctx, &self.expr_name, f, input_schema, extensions)
+                    .await
+            }
+            _ => {
+                not_impl_err!("Unsupported builtin expression: {}", self.expr_name)
+            }
+        }
+    }
+
+    async fn build_unary_expr(
+        ctx: &SessionContext,
+        fn_name: &str,
+        f: &ScalarFunction,
+        input_schema: &DFSchema,
+        extensions: &HashMap<u32, &String>,
+    ) -> Result<Arc<Expr>> {
+        if f.arguments.len() != 1 {
+            return substrait_err!("Expect one argument for {fn_name} expr");
+        }
+        let Some(ArgType::Value(expr_substrait)) = &f.arguments[0].arg_type else {
+            return substrait_err!("Invalid arguments type for {fn_name} expr");
+        };
+        let arg = parse_rex(ctx, expr_substrait, input_schema, extensions)
+            .await?
+            .as_ref()
+            .clone();
+        let arg = Box::new(arg);
+
+        let expr = match fn_name {
+            "not" => Expr::Not(arg),
+            "negative" => Expr::Negative(arg),
+            "is_null" => Expr::IsNull(arg),
+            "is_not_null" => Expr::IsNotNull(arg),
+            "is_true" => Expr::IsTrue(arg),
+            "is_false" => Expr::IsFalse(arg),
+            "is_not_true" => Expr::IsNotTrue(arg),
+            "is_not_false" => Expr::IsNotFalse(arg),
+            "is_unknown" => Expr::IsUnknown(arg),
+            "is_not_unknown" => Expr::IsNotUnknown(arg),
+            _ => return not_impl_err!("Unsupported builtin expression: {}", fn_name),
+        };
+
+        Ok(Arc::new(expr))
+    }
+
+    async fn build_like_expr(
+        ctx: &SessionContext,
+        case_insensitive: bool,
+        f: &ScalarFunction,
+        input_schema: &DFSchema,
+        extensions: &HashMap<u32, &String>,
+    ) -> Result<Arc<Expr>> {
+        let fn_name = if case_insensitive { "ILIKE" } else { "LIKE" };
+        if f.arguments.len() != 3 {
+            return substrait_err!("Expect three arguments for `{fn_name}` expr");
+        }
+
+        let Some(ArgType::Value(expr_substrait)) = &f.arguments[0].arg_type else {
+            return substrait_err!("Invalid arguments type for `{fn_name}` expr");
+        };
+        let expr = parse_rex(ctx, expr_substrait, input_schema, extensions)
+            .await?
+            .as_ref()
+            .clone();
+        let Some(ArgType::Value(pattern_substrait)) = &f.arguments[1].arg_type else {
+            return substrait_err!("Invalid arguments type for `{fn_name}` expr");
+        };
+        let pattern =
+            parse_rex(ctx, pattern_substrait, input_schema, extensions)
+                .await?
+                .as_ref()
+                .clone();
+        let Some(ArgType::Value(escape_char_substrait)) = &f.arguments[2].arg_type else {
+            return substrait_err!("Invalid arguments type for `{fn_name}` expr");
+        };
+        let escape_char_expr =
+            parse_rex(ctx, escape_char_substrait, input_schema, extensions)
+                .await?
+                .as_ref()
+                .clone();
+        let Expr::Literal(ScalarValue::Utf8(escape_char)) = escape_char_expr else {
+            return substrait_err!(
+                "Expect Utf8 literal for escape char, but found {escape_char_expr:?}"
+            );
+        };
+
+        Ok(Arc::new(Expr::Like(Like {
+            negated: false,
+            expr: Box::new(expr),
+            pattern: Box::new(pattern),
+            escape_char: escape_char.map(|c| c.chars().next().unwrap()),
+            case_insensitive,
+        })))
+    }
+}
+
+
+#[async_recursion]
+async fn parse_rex(ctx: &SessionContext, e: &Expression, input_schema: &DFSchema, extensions: &HashMap<u32, &String>) -> Result<Arc<Expr>> {
+    match &e.rex_type {
+        Some(RexType::Selection(field_ref)) => Ok(Arc::new(
+            from_substrait_field_reference(field_ref, input_schema)?,
+        )),
+        Some(RexType::ScalarFunction(f)) => {
+            let fn_name = extensions.get(&f.function_reference).ok_or_else(|| {
+                DataFusionError::NotImplemented(format!(
+                    "Aggregated function not found: function reference = {:?}",
+                    f.function_reference
+                ))
+            })?;
+
+            // Convert function arguments from Substrait to DataFusion
+            async fn decode_arguments(
+                ctx: &SessionContext,
+                input_schema: &DFSchema,
+                extensions: &HashMap<u32, &String>,
+                function_args: &[FunctionArgument],
+            ) -> Result<Vec<Expr>> {
+                let mut args = Vec::with_capacity(function_args.len());
+                for arg in function_args {
+                    let arg_expr = match &arg.arg_type {
+                        Some(ArgType::Value(e)) => {
+                            parse_rex(ctx, e, input_schema, extensions).await
+                        }
+                        _ => not_impl_err!(
+                            "Aggregated function argument non-Value type not supported"
+                        ),
+                    }?;
+                    args.push(arg_expr.as_ref().clone());
+                }
+                Ok(args)
+            }
+
+            let fn_type = scalar_function_type_from_str(ctx, fn_name)?;
+            match fn_type {
+                ScalarFunctionType::Builtin(fun) => {
+                    let args = decode_arguments(
+                        ctx,
+                        input_schema,
+                        extensions,
+                        f.arguments.as_slice(),
+                    )
+                        .await?;
+                    Ok(Arc::new(Expr::ScalarFunction(expr::ScalarFunction::new(
+                        fun, args,
+                    ))))
+                }
+                ScalarFunctionType::Op(op) => {
+                    if f.arguments.len() != 2 {
+                        return not_impl_err!(
+                            "Expect two arguments for binary operator {op:?}"
+                        );
+                    }
+                    let lhs = &f.arguments[0].arg_type;
+                    let rhs = &f.arguments[1].arg_type;
+
+                    match (lhs, rhs) {
+                        (Some(ArgType::Value(l)), Some(ArgType::Value(r))) => {
+                            Ok(Arc::new(Expr::BinaryExpr(BinaryExpr {
+                                left: Box::new(
+                                    parse_rex(ctx, l, input_schema, extensions)
+                                        .await?
+                                        .as_ref()
+                                        .clone(),
+                                ),
+                                op,
+                                right: Box::new(
+                                    parse_rex(ctx, r, input_schema, extensions)
+                                        .await?
+                                        .as_ref()
+                                        .clone(),
+                                ),
+                            })))
+                        }
+                        (l, r) => not_impl_err!(
+                            "Invalid arguments for binary expression: {l:?} and {r:?}"
+                        ),
+                    }
+                }
+                ScalarFunctionType::Expr(builder) => {
+                    builder.build(ctx, f, input_schema, extensions).await
+                }
+                ScalarFunctionType::Udf(fun) => {
+                    let args = decode_arguments(
+                        ctx,
+                        input_schema,
+                        extensions,
+                        f.arguments.as_slice(),
+                    )
+                        .await?;
+                    Ok(Arc::new(Expr::ScalarFunction(
+                        expr::ScalarFunction::new_udf(fun, args),
+                    )))
+                }
+            }
+        }
+        Some(RexType::Literal(lit)) => {
+            let scalar_value = from_substrait_literal(lit)?;
+            Ok(Arc::new(Expr::Literal(scalar_value)))
+        }
+        _ => unimplemented!()
+    }
+}
+
+
+pub(crate) fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
+    let scalar_value = match &lit.literal_type {
+        Some(LiteralType::Boolean(b)) => ScalarValue::Boolean(Some(*b)),
+        Some(LiteralType::I8(n)) => match lit.type_variation_reference {
+            DEFAULT_TYPE_REF => ScalarValue::Int8(Some(*n as i8)),
+            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt8(Some(*n as u8)),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::I16(n)) => match lit.type_variation_reference {
+            DEFAULT_TYPE_REF => ScalarValue::Int16(Some(*n as i16)),
+            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt16(Some(*n as u16)),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::I32(n)) => match lit.type_variation_reference {
+            DEFAULT_TYPE_REF => ScalarValue::Int32(Some(*n)),
+            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt32(Some(*n as u32)),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::I64(n)) => match lit.type_variation_reference {
+            DEFAULT_TYPE_REF => ScalarValue::Int64(Some(*n)),
+            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt64(Some(*n as u64)),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::Fp32(f)) => ScalarValue::Float32(Some(*f)),
+        Some(LiteralType::Fp64(f)) => ScalarValue::Float64(Some(*f)),
+        Some(LiteralType::Timestamp(t)) => match lit.type_variation_reference {
+            TIMESTAMP_SECOND_TYPE_REF => ScalarValue::TimestampSecond(Some(*t), None),
+            TIMESTAMP_MILLI_TYPE_REF => ScalarValue::TimestampMillisecond(Some(*t), None),
+            TIMESTAMP_MICRO_TYPE_REF => ScalarValue::TimestampMicrosecond(Some(*t), None),
+            TIMESTAMP_NANO_TYPE_REF => ScalarValue::TimestampNanosecond(Some(*t), None),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
+        Some(LiteralType::String(s)) => match lit.type_variation_reference {
+            DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Utf8(Some(s.clone())),
+            LARGE_CONTAINER_TYPE_REF => ScalarValue::LargeUtf8(Some(s.clone())),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::Binary(b)) => match lit.type_variation_reference {
+            DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Binary(Some(b.clone())),
+            LARGE_CONTAINER_TYPE_REF => ScalarValue::LargeBinary(Some(b.clone())),
+            others => {
+                return substrait_err!("Unknown type variation reference {others}");
+            }
+        },
+        Some(LiteralType::FixedBinary(b)) => {
+            ScalarValue::FixedSizeBinary(b.len() as _, Some(b.clone()))
+        }
+        Some(LiteralType::Decimal(d)) => {
+            let value: [u8; 16] = d
+                .value
+                .clone()
+                .try_into()
+                .or(substrait_err!("Failed to parse decimal value"))?;
+            let p = d.precision.try_into().map_err(|e| {
+                substrait_datafusion_err!("Failed to parse decimal precision: {e}")
+            })?;
+            let s = d.scale.try_into().map_err(|e| {
+                substrait_datafusion_err!("Failed to parse decimal scale: {e}")
+            })?;
+            ScalarValue::Decimal128(
+                Some(std::primitive::i128::from_le_bytes(value)),
+                p,
+                s,
+            )
+        }
+        Some(LiteralType::Null(ntype)) => from_substrait_null(ntype)?,
+        _ => return not_impl_err!("Unsupported literal_type: {:?}", lit.literal_type),
+    };
+
+    Ok(scalar_value)
 }
 
 pub fn name_to_op(name: &str) -> Result<Operator> {
@@ -450,11 +687,23 @@ pub fn name_to_op(name: &str) -> Result<Operator> {
     }
 }
 
-fn scalar_function_type_from_str(name: &str) -> Result<ScalarFunctionType> {
-    let (name, _) = name
-        .split_once(':')
-        .ok_or(DataFusionError::Substrait("wrong func type".to_string()))?;
-    if let Ok(op) = datafusion_substrait::logical_plan::consumer::name_to_op(name) {
+enum ScalarFunctionType {
+    Builtin(BuiltinScalarFunction),
+    Op(Operator),
+    Expr(BuiltinExprBuilder),
+    Udf(Arc<ScalarUDF>),
+}
+
+fn scalar_function_type_from_str(
+    ctx: &SessionContext,
+    name: &str,
+) -> Result<ScalarFunctionType> {
+    let s = ctx.state();
+    if let Some(func) = s.scalar_functions().get(name) {
+        return Ok(ScalarFunctionType::Udf(func.to_owned()));
+    }
+
+    if let Ok(op) = name_to_op(name) {
         return Ok(ScalarFunctionType::Op(op));
     }
 
@@ -462,99 +711,11 @@ fn scalar_function_type_from_str(name: &str) -> Result<ScalarFunctionType> {
         return Ok(ScalarFunctionType::Builtin(fun));
     }
 
-    match name {
-        "not" => Ok(ScalarFunctionType::Not),
-        "like" => Ok(ScalarFunctionType::Like),
-        "ilike" => Ok(ScalarFunctionType::ILike),
-        "is_null" => Ok(ScalarFunctionType::IsNull),
-        "is_not_null" => Ok(ScalarFunctionType::IsNotNull),
-        others => not_impl_err!("Unsupported function name: {others:?}"),
+    if let Some(builder) = BuiltinExprBuilder::try_from_name(name) {
+        return Ok(ScalarFunctionType::Expr(builder));
     }
-}
 
-fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
-    let scalar_value = match &lit.literal_type {
-        Some(LiteralType::Boolean(b)) => ScalarValue::Boolean(Some(*b)),
-        Some(LiteralType::I8(n)) => match lit.type_variation_reference {
-            DEFAULT_TYPE_REF => ScalarValue::Int8(Some(*n as i8)),
-            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt8(Some(*n as u8)),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::I16(n)) => match lit.type_variation_reference {
-            DEFAULT_TYPE_REF => ScalarValue::Int16(Some(*n as i16)),
-            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt16(Some(*n as u16)),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::I32(n)) => match lit.type_variation_reference {
-            DEFAULT_TYPE_REF => ScalarValue::Int32(Some(*n)),
-            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt32(Some(*n as u32)),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::I64(n)) => match lit.type_variation_reference {
-            DEFAULT_TYPE_REF => ScalarValue::Int64(Some(*n)),
-            UNSIGNED_INTEGER_TYPE_REF => ScalarValue::UInt64(Some(*n as u64)),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::Fp32(f)) => ScalarValue::Float32(Some(*f)),
-        Some(LiteralType::Fp64(f)) => ScalarValue::Float64(Some(*f)),
-        Some(LiteralType::Timestamp(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
-        Some(LiteralType::TimestampTz(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
-
-        Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
-        Some(LiteralType::String(s)) => match lit.type_variation_reference {
-            DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Utf8(Some(s.clone())),
-            LARGE_CONTAINER_TYPE_REF => ScalarValue::LargeUtf8(Some(s.clone())),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::Binary(b)) => match lit.type_variation_reference {
-            DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Binary(Some(b.clone())),
-            LARGE_CONTAINER_TYPE_REF => ScalarValue::LargeBinary(Some(b.clone())),
-            others => {
-                return Err(DataFusionError::Substrait(format!(
-                    "Unknown type variation reference {others}",
-                )));
-            }
-        },
-        Some(LiteralType::FixedBinary(b)) => ScalarValue::FixedSizeBinary(b.len() as _, Some(b.clone())),
-        Some(LiteralType::Decimal(d)) => {
-            let value: [u8; 16] = d.value.clone().try_into().or(Err(DataFusionError::Substrait(
-                "Failed to parse decimal value".to_string(),
-            )))?;
-            let p = d
-                .precision
-                .try_into()
-                .map_err(|e| DataFusionError::Substrait(format!("Failed to parse decimal precision: {e}")))?;
-            let s = d
-                .scale
-                .try_into()
-                .map_err(|e| DataFusionError::Substrait(format!("Failed to parse decimal scale: {e}")))?;
-            ScalarValue::Decimal128(Some(std::primitive::i128::from_le_bytes(value)), p, s)
-        }
-        Some(LiteralType::Null(ntype)) => from_substrait_null(ntype)?,
-        _ => return not_impl_err!("Unsupported literal_type: {:?}", lit.literal_type),
-    };
-
-    Ok(scalar_value)
+    not_impl_err!("Unsupported function name: {name:?}")
 }
 
 fn from_substrait_null(null_type: &Type) -> Result<ScalarValue> {
@@ -564,49 +725,75 @@ fn from_substrait_null(null_type: &Type) -> Result<ScalarValue> {
             r#type::Kind::I8(integer) => match integer.type_variation_reference {
                 DEFAULT_TYPE_REF => Ok(ScalarValue::Int8(None)),
                 UNSIGNED_INTEGER_TYPE_REF => Ok(ScalarValue::UInt8(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::I16(integer) => match integer.type_variation_reference {
                 DEFAULT_TYPE_REF => Ok(ScalarValue::Int16(None)),
                 UNSIGNED_INTEGER_TYPE_REF => Ok(ScalarValue::UInt16(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::I32(integer) => match integer.type_variation_reference {
                 DEFAULT_TYPE_REF => Ok(ScalarValue::Int32(None)),
                 UNSIGNED_INTEGER_TYPE_REF => Ok(ScalarValue::UInt32(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::I64(integer) => match integer.type_variation_reference {
                 DEFAULT_TYPE_REF => Ok(ScalarValue::Int64(None)),
                 UNSIGNED_INTEGER_TYPE_REF => Ok(ScalarValue::UInt64(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::Fp32(_) => Ok(ScalarValue::Float32(None)),
             r#type::Kind::Fp64(_) => Ok(ScalarValue::Float64(None)),
             r#type::Kind::Timestamp(ts) => match ts.type_variation_reference {
                 TIMESTAMP_SECOND_TYPE_REF => Ok(ScalarValue::TimestampSecond(None, None)),
-                TIMESTAMP_MILLI_TYPE_REF => Ok(ScalarValue::TimestampMillisecond(None, None)),
-                TIMESTAMP_MICRO_TYPE_REF => Ok(ScalarValue::TimestampMicrosecond(None, None)),
-                TIMESTAMP_NANO_TYPE_REF => Ok(ScalarValue::TimestampNanosecond(None, None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                TIMESTAMP_MILLI_TYPE_REF => {
+                    Ok(ScalarValue::TimestampMillisecond(None, None))
+                }
+                TIMESTAMP_MICRO_TYPE_REF => {
+                    Ok(ScalarValue::TimestampMicrosecond(None, None))
+                }
+                TIMESTAMP_NANO_TYPE_REF => {
+                    Ok(ScalarValue::TimestampNanosecond(None, None))
+                }
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::Date(date) => match date.type_variation_reference {
                 DATE_32_TYPE_REF => Ok(ScalarValue::Date32(None)),
                 DATE_64_TYPE_REF => Ok(ScalarValue::Date64(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             r#type::Kind::Binary(binary) => match binary.type_variation_reference {
                 DEFAULT_CONTAINER_TYPE_REF => Ok(ScalarValue::Binary(None)),
                 LARGE_CONTAINER_TYPE_REF => Ok(ScalarValue::LargeBinary(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
             // FixedBinary is not supported because `None` doesn't have length
             r#type::Kind::String(string) => match string.type_variation_reference {
                 DEFAULT_CONTAINER_TYPE_REF => Ok(ScalarValue::Utf8(None)),
                 LARGE_CONTAINER_TYPE_REF => Ok(ScalarValue::LargeUtf8(None)),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {kind:?}"),
+                v => not_impl_err!(
+                    "Unsupported Substrait type variation {v} of type {kind:?}"
+                ),
             },
-            r#type::Kind::Decimal(d) => Ok(ScalarValue::Decimal128(None, d.precision as u8, d.scale as i8)),
+            r#type::Kind::Decimal(d) => Ok(ScalarValue::Decimal128(
+                None,
+                d.precision as u8,
+                d.scale as i8,
+            )),
             _ => not_impl_err!("Unsupported Substrait type: {kind:?}"),
         }
     } else {
@@ -614,125 +801,54 @@ fn from_substrait_null(null_type: &Type) -> Result<ScalarValue> {
     }
 }
 
-fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>)> {
-    if let Ok(field) = schema.field_with_name(expr_str) {
-        Some((col(Column::new_unqualified(expr_str)), Arc::new(field.clone())))
-    } else {
-        let mut expr: Option<(Expr, Arc<Field>)> = None;
-        let mut root = "".to_owned();
-        let mut sub_fields: &Fields = schema.fields();
-        for expr_substr in expr_str.split('.') {
-            root = if root.is_empty() {
-                expr_substr.to_owned()
-            } else {
-                format!("{}.{}", root, expr_substr)
-            };
-            if let Some((_, field)) = sub_fields.find(&root) {
-                expr = if let Some((folding_exp, _)) = expr {
-                    Some((folding_exp.field(field.name()), field.clone()))
-                } else {
-                    Some((col(Column::new_unqualified(field.name())), field.clone()))
-                };
-                root = "".to_owned();
-
-                sub_fields = match field.data_type() {
-                    DataType::Struct(struct_sub_fields) => &struct_sub_fields,
-                    _ => sub_fields,
-                };
-            }
-        }
-        expr
-    }
-}
-
-fn _from_substrait_type(dt: &substrait::proto::Type) -> Result<(DataType, Nullability)> {
-    match &dt.kind {
-        Some(s_kind) => match s_kind {
-            r#type::Kind::Bool(b) => Ok((DataType::Boolean, b.nullability())),
-            r#type::Kind::I8(integer) => match integer.type_variation_reference {
-                DEFAULT_TYPE_REF => Ok((DataType::Int8, integer.nullability())),
-                UNSIGNED_INTEGER_TYPE_REF => Ok((DataType::UInt8, integer.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
+fn from_substrait_field_reference(
+    field_ref: &FieldReference,
+    input_schema: &DFSchema,
+) -> Result<Expr> {
+    match &field_ref.reference_type {
+        Some(DirectReference(direct)) => match &direct.reference_type.as_ref() {
+            Some(ReferenceType::MapKey(x)) => match &x.child.as_ref() {
+                Some(_) => not_impl_err!(
+                    "Direct reference StructField with child is not supported"
+                ),
+                None => {
+                    // let column = input_schema.field(x.field as usize).qualified_column();
+                    // Ok(Expr::Column(Column {
+                    //     relation: column.relation,
+                    //     name: column.name,
+                    // }))
+                    let literal = x
+                        .map_key
+                        .as_ref()
+                        .ok_or(DataFusionError::Substrait("can not get map key".into()))?;
+                    let sv = from_substrait_literal(literal)?;
+                    let field_name = match sv {
+                        ScalarValue::Utf8(s) => {
+                            s.ok_or(DataFusionError::Substrait("can not get map key".into()))
+                        }
+                        _ => not_impl_err!("map key wrong type"),
+                    }?;
+                    debug!("field name: {}", field_name);
+                    let column = input_schema
+                        .field_with_unqualified_name(&field_name)?
+                        .qualified_column();
+                    Ok(Expr::Column(Column {
+                        relation: column.relation,
+                        name: column.name,
+                    }))
+                }
             },
-            r#type::Kind::I16(integer) => match integer.type_variation_reference {
-                DEFAULT_TYPE_REF => Ok((DataType::Int16, integer.nullability())),
-                UNSIGNED_INTEGER_TYPE_REF => Ok((DataType::UInt16, integer.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::I32(integer) => match integer.type_variation_reference {
-                DEFAULT_TYPE_REF => Ok((DataType::Int32, integer.nullability())),
-                UNSIGNED_INTEGER_TYPE_REF => Ok((DataType::UInt32, integer.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::I64(integer) => match integer.type_variation_reference {
-                DEFAULT_TYPE_REF => Ok((DataType::Int64, integer.nullability())),
-                UNSIGNED_INTEGER_TYPE_REF => Ok((DataType::UInt64, integer.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::Fp32(fp) => Ok((DataType::Float32, fp.nullability())),
-            r#type::Kind::Fp64(fp) => Ok((DataType::Float64, fp.nullability())),
-            r#type::Kind::Timestamp(ts) => Ok((DataType::Timestamp(TimeUnit::Microsecond, None), ts.nullability())),
-            r#type::Kind::TimestampTz(tz) => Ok((
-                DataType::Timestamp(TimeUnit::Microsecond, Some(crate::constant::LAKESOUL_TIMEZONE.into())),
-                tz.nullability(),
-            )),
-            r#type::Kind::Date(date) => match date.type_variation_reference {
-                DATE_32_TYPE_REF => Ok((DataType::Date32, date.nullability())),
-                DATE_64_TYPE_REF => Ok((DataType::Date64, date.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::Binary(binary) => match binary.type_variation_reference {
-                DEFAULT_CONTAINER_TYPE_REF => Ok((DataType::Binary, binary.nullability())),
-                LARGE_CONTAINER_TYPE_REF => Ok((DataType::LargeBinary, binary.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::FixedBinary(fixed) => Ok((DataType::FixedSizeBinary(fixed.length), fixed.nullability())),
-            r#type::Kind::String(string) => match string.type_variation_reference {
-                DEFAULT_CONTAINER_TYPE_REF => Ok((DataType::Utf8, string.nullability())),
-                LARGE_CONTAINER_TYPE_REF => Ok((DataType::LargeUtf8, string.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            r#type::Kind::List(_list) => {
-                not_impl_err!("Unsupported")
-                // let (inner_type, _nullability) =
-                //     from_substrait_type(list.r#type.as_ref().ok_or_else(|| {
-                //         DataFusionError::Substrait(
-                //             "List type must have inner type".to_string(),
-                //         )
-                //     })?)?;
-                // let field = Arc::new(Field::new("list_item", inner_type, true));
-                // match list.type_variation_reference {
-                //     DEFAULT_CONTAINER_TYPE_REF => Ok(DataType::List(field)),
-                //     LARGE_CONTAINER_TYPE_REF => Ok(DataType::LargeList(field)),
-                //     v => not_impl_err!(
-                //         "Unsupported Substrait type variation {v} of type {s_kind:?}"
-                //     )?,
-                // }
-            }
-            r#type::Kind::Decimal(d) => match d.type_variation_reference {
-                DECIMAL_128_TYPE_REF => Ok((DataType::Decimal128(d.precision as u8, d.scale as i8), d.nullability())),
-                DECIMAL_256_TYPE_REF => Ok((DataType::Decimal256(d.precision as u8, d.scale as i8), d.nullability())),
-                v => not_impl_err!("Unsupported Substrait type variation {v} of type {s_kind:?}"),
-            },
-            _ => not_impl_err!("Unsupported Substrait type: {s_kind:?}"),
+            _ => not_impl_err!(
+                "Direct reference with types other than MapKey is not supported"
+            ),
         },
-        _ => not_impl_err!("`None` Substrait kind is not supported"),
+        _ => not_impl_err!("unsupported field ref type"),
     }
 }
 
-fn _from_nullability(nullability: Nullability) -> bool {
-    match nullability {
-        Nullability::Unspecified => true,
-        Nullability::Nullable => true,
-        Nullability::Required => false,
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::result::Result;
 
-    use datafusion::prelude::{ParquetReadOptions, SessionContext};
     use prost::Message;
 
     use super::*;
@@ -750,12 +866,12 @@ mod tests {
     #[tokio::test]
     async fn tt() {
         let ctx = SessionContext::new();
-        let options = ParquetReadOptions::default();
-        let table_path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/type/part-00000-97db3149-f99e-404a-aa9a-2af4ab3f7a44_00000.c000.parquet";
-        // let df = ctx.read_parquet(table_path, options).await.unwrap();
-        let _ = ctx.register_parquet("type_info", table_path, options).await;
-        let test_sql = "select * from type_info";
-        let df = ctx.sql(test_sql).await.unwrap();
+        // let options = ParquetReadOptions::default();
+        // let table_path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/type/part-00000-97db3149-f99e-404a-aa9a-2af4ab3f7a44_00000.c000.parquet";
+        // // let df = ctx.read_parquet(table_path, options).await.unwrap();
+        // let _ = ctx.register_parquet("type_info", table_path, options).await;
+        // let test_sql = "select * from type_info";
+        // let df = ctx.sql(test_sql).await.unwrap();
         let byte_array = [
             10, 30, 8, 1, 18, 26, 47, 102, 117, 110, 99, 116, 105, 111, 110, 115, 95, 99, 111, 109, 112, 97, 114, 105,
             115, 111, 110, 46, 121, 97, 109, 108, 18, 16, 26, 14, 8, 1, 26, 10, 103, 116, 58, 97, 110, 121, 95, 97,
@@ -765,9 +881,11 @@ mod tests {
         ];
         let byte_array = unsafe { std::mem::transmute::<&[i8], &[u8]>(&byte_array[..]) };
         let plan = Plan::decode(&byte_array[..]).unwrap();
-        let e = Parser::parse_proto(&plan, df.schema()).unwrap();
-        let df = df.filter(e).unwrap();
-        let df = df.explain(true, true).unwrap();
-        df.show().await.unwrap()
+        println!("{:?}", plan);
+        // let e = Parser::parse_proto(&ctx, &plan, )).unwrap();
+        // println!("{:?}",e);
+        // let df = df.filter(e).unwrap();
+        // let df = df.explain(true, true).unwrap();
+        // df.show().await.unwrap()
     }
 }

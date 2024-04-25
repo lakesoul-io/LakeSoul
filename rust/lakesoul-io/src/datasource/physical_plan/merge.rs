@@ -9,12 +9,15 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetExec},
     execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, SendableRecordBatchStream},
 };
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_expr::Expr;
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{ExecutionMode, ExecutionPlanProperties, Partitioning, PlanProperties};
+use datafusion::prelude::SessionContext;
 use datafusion_common::{DataFusionError, DFSchemaRef, Result};
+use datafusion_common::config::TableParquetOptions;
 use datafusion_substrait::substrait::proto::Plan;
 use log::debug;
 
@@ -27,11 +30,11 @@ use crate::sorted_merge::sorted_stream_merger::{SortedStream, SortedStreamMerger
 
 #[derive(Debug)]
 pub struct MergeParquetExec {
-    schema: SchemaRef,
     primary_keys: Arc<Vec<String>>,
     default_column_value: Arc<HashMap<String, String>>,
     merge_operators: Arc<HashMap<String, String>>,
     inputs: Vec<Arc<dyn ExecutionPlan>>,
+    cache: PlanProperties,
 }
 
 impl MergeParquetExec {
@@ -46,7 +49,8 @@ impl MergeParquetExec {
         // source file parquet scan
         let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
         for config in flatten_configs {
-            let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint));
+            // TODO: change config
+            let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint, TableParquetOptions::default()));
             inputs.push(single_exec);
         }
         let schema = SchemaRef::new(Schema::new(
@@ -74,13 +78,24 @@ impl MergeParquetExec {
         let default_column_value = Arc::new(io_config.default_column_value);
         let merge_operators: Arc<HashMap<String, String>> = Arc::new(io_config.merge_operators);
 
+        let cache = Self::compute_properties(schema);
+
         Ok(Self {
-            schema,
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
+            cache,
         })
+    }
+
+    fn compute_properties(schema: Arc<Schema>) -> PlanProperties {
+        let eq_prop = EquivalenceProperties::new(schema);
+        PlanProperties::new(
+            eq_prop,
+            Partitioning::UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+        )
     }
 
     pub fn new_with_inputs(
@@ -91,13 +106,13 @@ impl MergeParquetExec {
     ) -> Result<Self> {
         let primary_keys = Arc::new(io_config.primary_keys);
         let merge_operators = Arc::new(io_config.merge_operators);
-
+        let cache = Self::compute_properties(schema);
         Ok(Self {
-            schema,
             inputs,
             primary_keys,
             default_column_value,
             merge_operators,
+            cache,
         })
     }
 
@@ -125,16 +140,8 @@ impl ExecutionPlan for MergeParquetExec {
         self
     }
 
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
-    }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
+    fn properties(&self) -> &PlanProperties {
+       &self.cache
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
@@ -143,11 +150,11 @@ impl ExecutionPlan for MergeParquetExec {
 
     fn with_new_children(self: Arc<Self>, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(Self {
-            schema: self.schema(),
             inputs,
             primary_keys: self.primary_keys(),
             default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
+            cache: self.cache.clone(),
         }))
     }
 
@@ -251,7 +258,7 @@ fn schema_intersection(df_schema: DFSchemaRef, request_schema: SchemaRef) -> Vec
     exprs
 }
 
-pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
+pub async fn convert_filter(ctx: &SessionContext, df: &DataFrame, filter_str: Vec<String>, filter_protos: Vec<Plan>) -> Result<Vec<Expr>> {
     let arrow_schema = Arc::new(Schema::from(df.schema()));
     debug!("schema:{:?}",arrow_schema);
     let mut str_filters = vec![];
@@ -261,8 +268,9 @@ pub fn convert_filter(df: &DataFrame, filter_str: Vec<String>, filter_protos: Ve
         str_filters.push(filter);
     }
     for p in &filter_protos {
-        let e = FilterParser::parse_proto(p, df.schema())?;
-        proto_filters.push(e);
+        let e = FilterParser::parse_proto(ctx, p, df.schema()).await?;
+        // may use Arc?
+        proto_filters.push(e.as_ref().clone());
     }
     debug!("str filters: {:#?}", str_filters);
     debug!("proto filters: {:#?}", proto_filters);

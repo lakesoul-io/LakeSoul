@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 lakesoul-io = { path = "../lakesoul-io" }
-arrow = { workspace = true, features = ["ffi"] }
+arrow = { version = "51", features = ["prettyprint", "ffi"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
@@ -23,15 +23,14 @@ env_logger = "0.11"
 
 
 [target.'cfg(target_os = "windows")'.dependencies]
-datafusion-substrait = { workspace = true }
+datafusion-substrait = { version = "37" }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true, features = ["protoc"] }
-
+datafusion-substrait = { version = "37", features = ["protoc"] }
 
 [features]
-hdfs = ["lakesoul-io/hdfs"]
-simd = ["lakesoul-io/simd"]
+#hdfs = ["lakesoul-io/hdfs"]
+#simd = ["lakesoul-io/simd"]
 default = []
 
 [build-dependencies]

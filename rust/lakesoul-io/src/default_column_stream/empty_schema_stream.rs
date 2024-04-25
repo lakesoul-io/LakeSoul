@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow_array::RecordBatchOptions;
-use futures::Stream;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,11 +9,12 @@ use std::task::{Context, Poll};
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+use arrow_array::RecordBatchOptions;
 use arrow_schema::Schema;
-
 use datafusion::error::Result;
 use datafusion::physical_plan::RecordBatchStream;
 use datafusion_common::DataFusionError::ArrowError;
+use futures::Stream;
 
 #[derive(Debug)]
 pub(crate) struct EmptySchemaStream {
@@ -52,7 +51,7 @@ impl Stream for EmptySchemaStream {
                 vec![],
                 &RecordBatchOptions::new().with_row_count(Some(row_count)),
             );
-            Poll::Ready(Some(batch.map_err(ArrowError)))
+            Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
         } else {
             Poll::Ready(None)
         }

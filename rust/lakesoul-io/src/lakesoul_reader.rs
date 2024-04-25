@@ -2,22 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use atomic_refcell::AtomicRefCell;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::physical_plan::SendableRecordBatchStream;
 use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
-
+use atomic_refcell::AtomicRefCell;
 pub use datafusion::arrow::error::ArrowError;
 pub use datafusion::arrow::error::Result as ArrowResult;
 pub use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
 pub use datafusion::error::{DataFusionError, Result};
-
+use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
-
 use futures::StreamExt;
-
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -63,17 +59,17 @@ impl LakeSoulReader {
                 file_format,
                 false,
             )
-            .await?;
+                .await?;
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
-            let filters = convert_filter(&dataframe, self.config.filter_strs.clone(), self.config.filter_protos.clone())?;
+            let filters = convert_filter(&self.sess_ctx, &dataframe, self.config.filter_strs.clone(), self.config.filter_protos.clone()).await?;
             let stream = prune_filter_and_execute(
                 dataframe,
                 schema.clone(),
                 filters,
                 self.config.batch_size,
             )
-            .await?;
+                .await?;
             self.schema = Some(stream.schema());
             self.stream = Some(stream);
 
@@ -155,16 +151,23 @@ impl SyncSendableMutableLakeSoulReader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rand::prelude::*;
     use std::mem::ManuallyDrop;
     use std::ops::Not;
     use std::sync::mpsc::sync_channel;
+    use std::thread;
     use std::time::Instant;
-    use tokio::runtime::Builder;
 
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::util::pretty::print_batches;
+    use datafusion::logical_expr::{col, Expr};
+    use datafusion_common::ScalarValue;
+    use rand::prelude::*;
+    use tokio::runtime::Builder;
+    use tokio::time::{Duration, sleep};
+
+    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_reader_local() -> Result<()> {
@@ -172,7 +175,7 @@ mod tests {
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
-                ])
+            ])
             .with_thread_num(1)
             .with_batch_size(256)
             .build();
@@ -193,7 +196,7 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                 project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
+                project_dir.join("../lakesoul-io-java/src/test/resources/sample-parquet-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(2)
             .with_batch_size(11)
@@ -276,8 +279,6 @@ mod tests {
         Ok(())
     }
 
-    use tokio::time::{sleep, Duration};
-
     #[tokio::test]
     async fn test_reader_s3() -> Result<()> {
         let reader_conf = LakeSoulIOConfigBuilder::new()
@@ -309,7 +310,6 @@ mod tests {
         Ok(())
     }
 
-    use std::thread;
     #[test]
     fn test_reader_s3_blocked() -> Result<()> {
         let reader_conf = LakeSoulIOConfigBuilder::new()
@@ -358,10 +358,6 @@ mod tests {
         }
         Ok(())
     }
-
-    use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
-    use datafusion::logical_expr::{col, Expr};
-    use datafusion_common::ScalarValue;
 
     async fn get_num_rows_of_file_with_filters(file_path: String, filters: Vec<Expr>) -> Result<usize> {
         let reader_conf = LakeSoulIOConfigBuilder::new()

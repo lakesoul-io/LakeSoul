@@ -117,7 +117,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-    .map_err(ArrowError)
+    .map_err(|e|ArrowError(e,None))
 }
 
 pub fn transform_array(
@@ -185,7 +185,7 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(ArrowError)?
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e|ArrowError(e,None))?
             } else {
                 array.clone()
             }
