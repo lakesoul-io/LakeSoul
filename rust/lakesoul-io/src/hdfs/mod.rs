@@ -2,10 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-mod util;
+use std::fmt::{Debug, Display, Formatter};
+use std::io::{Read, Seek, SeekFrom};
+use std::io::ErrorKind::NotFound;
+use std::ops::Range;
+use std::sync::Arc;
 
-use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
-use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::error::Result;
@@ -13,17 +15,18 @@ use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 // use futures::TryStreamExt;
 use hdrs::Client;
-use object_store::path::Path;
-use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, PutOptions, PutResult};
+use object_store::Error::Generic;
+use object_store::path::Path;
 use parquet::data_type::AsBytes;
-use std::fmt::{Debug, Display, Formatter};
-use std::io::ErrorKind::NotFound;
-use std::io::{Read, Seek, SeekFrom};
-use std::ops::Range;
-use std::sync::Arc;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
+
+use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
+use crate::lakesoul_io_config::LakeSoulIOConfig;
+
+mod util;
+
 // use tokio_util::io::ReaderStream;
 
 pub struct Hdfs {
@@ -37,7 +40,7 @@ impl Hdfs {
             None => Client::connect(host),
             Some(user) => Client::connect_as_user(host, user.as_str()),
         }
-        .map_err(DataFusionError::IoError)?;
+            .map_err(DataFusionError::IoError)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -63,7 +66,7 @@ impl Hdfs {
                 Ok(_) => Ok(true),
             }
         }))
-        .await
+            .await
     }
 }
 
@@ -81,7 +84,7 @@ impl Debug for Hdfs {
 
 #[async_trait]
 impl ObjectStore for Hdfs {
-    async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
+    async fn put_opts(&self, location: &Path, bytes: Bytes, _opts: PutOptions) -> object_store::Result<PutResult> {
         let location = add_leading_slash(location);
         let mut async_write = self
             .client
@@ -104,20 +107,17 @@ impl ObjectStore for Hdfs {
             store: "hdfs",
             source: Box::new(e),
         })?;
-        async_write.shutdown().await.map_err(|e| Generic {
+        let _ = async_write.shutdown().await.map_err(|e| Generic {
             store: "hdfs",
             source: Box::new(e),
+        })?;
+        Ok(PutResult {
+            e_tag: None,
+            version: None,
         })
     }
 
-    async fn put_opts(&self, location: &Path, bytes: Bytes, opts: PutOptions) -> object_store::Result<PutResult> {
-        todo!()
-    }
-
-    async fn put_multipart(
-        &self,
-        location: &Path,
-    ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
+    async fn put_multipart(&self, location: &Path) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
         // hdrs uses Unblocking underneath, so we don't have to
         // implement concurrent write
         let location = add_leading_slash(location);
@@ -145,6 +145,20 @@ impl ObjectStore for Hdfs {
         }
     }
 
+
+    async fn get_opts(&self, location: &Path, _options: GetOptions) -> object_store::Result<GetResult> {
+        self.get(location).await
+    }
+
+    async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
+        // tweak coalesce size and concurrency for hdfs
+        coalesce_ranges(
+            ranges,
+            |range| self.get_range(location, range),
+            OBJECT_STORE_COALESCE_DEFAULT,
+        )
+            .await
+    }
     // async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
     //     let path = add_leading_slash(location);
     //     let async_file = self
@@ -166,10 +180,6 @@ impl ObjectStore for Hdfs {
     //         meta:
     //     })
     // }
-
-    async fn get_opts(&self, location: &Path, _options: GetOptions) -> object_store::Result<GetResult> {
-        self.get(location).await
-    }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
         let location = add_leading_slash(location);
@@ -195,17 +205,7 @@ impl ObjectStore for Hdfs {
             })?;
             Ok(buf.into())
         })
-        .await
-    }
-
-    async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> object_store::Result<Vec<Bytes>> {
-        // tweak coalesce size and concurrency for hdfs
-        coalesce_ranges(
-            ranges,
-            |range| self.get_range(location, range),
-            OBJECT_STORE_COALESCE_DEFAULT,
-        )
-        .await
+            .await
     }
 
     async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
@@ -227,7 +227,7 @@ impl ObjectStore for Hdfs {
                 version: None,
             })
         })
-        .await
+            .await
     }
 
     async fn delete(&self, location: &Path) -> object_store::Result<()> {
@@ -244,13 +244,10 @@ impl ObjectStore for Hdfs {
                 source: Box::new(e),
             }),
         })
-        .await
+            .await
     }
 
-    async fn list(
-        &self,
-        _prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
+    fn list(&self, _prefix: Option<&Path>) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
         todo!()
     }
 
@@ -305,7 +302,7 @@ impl ObjectStore for Hdfs {
                 source: Box::new(e),
             })
         })
-        .await
+            .await
     }
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
@@ -335,24 +332,27 @@ impl ObjectStore for Hdfs {
     }
 }
 
+
 fn add_leading_slash(path: &Path) -> String {
     ["/", path.as_ref().trim_start_matches('/')].join("")
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use std::sync::Arc;
+
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
-    use object_store::path::Path;
     use object_store::GetResult::Stream;
-    use object_store::{GetResult, ObjectStore};
+    use object_store::ObjectStore;
+    use object_store::path::Path;
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
-    use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
     use url::Url;
+
+    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
 
     fn bytes_to_string(bytes: Vec<Bytes>) -> String {
         unsafe {
@@ -367,19 +367,11 @@ mod tests {
 
     async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
         let file = object_store.get(&Path::from(path)).await.unwrap();
-        todo!()
-        // match file {
-        //     Stream(s) => {
-        //         let read_result = s
-        //             .collect::<Vec<object_store::Result<Bytes>>>()
-        //             .await
-        //             .into_iter()
-        //             .collect::<object_store::Result<Vec<Bytes>>>()
-        //             .unwrap();
-        //         bytes_to_string(read_result)
-        //     }
-        //     _ => panic!("expect getting a stream"),
-        // }
+        let collect = file.collect::<Vec<object_store::Result<Bytes>>>()
+            .await
+            .into_iter()
+            .collect::<object_store::Result<Vec<Bytes>>>()
+            .unwrap();
     }
 
     #[tokio::test]
