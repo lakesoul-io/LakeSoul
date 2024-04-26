@@ -8,29 +8,24 @@ use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
-
 use async_trait::async_trait;
-
-use datafusion::common::{project_schema, FileTypeWriterOptions, Statistics, ToDFSchema};
-use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::{execution::context::SessionState, logical_expr::Expr};
+use datafusion::common::{project_schema, Statistics, ToDFSchema};
 use datafusion::datasource::file_format::FileFormat;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
-
-use datafusion::optimizer::utils::conjunction;
+use datafusion::logical_expr::expr::Sort;
+use datafusion::logical_expr::utils::conjunction;
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
-use datafusion::{execution::context::SessionState, logical_expr::Expr};
-
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-
 
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
@@ -84,20 +79,20 @@ impl LakeSoulTableProvider {
                 true => range_partition_projection.push(idx)
             };
         }
-        
+
         let file_schema = Arc::new(table_schema.project(&file_schema_projection)?);
         let table_schema = Arc::new(table_schema.project(&[file_schema_projection, range_partition_projection].concat())?);
 
-        let file_format: Arc<dyn FileFormat> = 
+        let file_format: Arc<dyn FileFormat> =
             Arc::new(LakeSoulMetaDataParquetFormat::new(
                 client.clone(),
-                Arc::new(ParquetFormat::new()), 
-                table_info.clone(), 
-                lakesoul_io_config.clone()
+                Arc::new(ParquetFormat::new()),
+                table_info.clone(),
+                lakesoul_io_config.clone(),
             ).await?);
 
         let (_, listing_table) = listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?;
-        
+
         Ok(Self {
             listing_table,
             client,
@@ -156,7 +151,7 @@ impl LakeSoulTableProvider {
         self.file_schema.clone()
     }
 
-    pub fn table_partition_cols(&self) -> &[(String, DataType)]{
+    pub fn table_partition_cols(&self) -> &[(String, DataType)] {
         &self.options().table_partition_cols
     }
 
@@ -165,7 +160,7 @@ impl LakeSoulTableProvider {
         let mut all_sort_orders = vec![];
 
         for exprs in &self.options().file_sort_order {
-            // Construct PhsyicalSortExpr objects from Expr objects:
+            // Construct PhysicalSortExpr objects from Expr objects:
             let sort_exprs = exprs
                 .iter()
                 .map(|expr| {
@@ -196,8 +191,7 @@ impl LakeSoulTableProvider {
         }
         Ok(all_sort_orders)
     }
-        
-    
+
 
     async fn list_files_for_scan<'a>(
         &'a self,
@@ -216,11 +210,11 @@ impl LakeSoulTableProvider {
             .await
             .map_err(|_| DataFusionError::External(format!("get all partition_info of table {} failed", &self.table_info().table_name).into()))?;
 
-        let prune_partition_info = 
+        let prune_partition_info =
             prune_partitions(all_partition_info, filters, self.table_partition_cols())
                 .await
                 .map_err(|_| DataFusionError::External(format!("get all partition_info of table {} failed", &self.table_info().table_name).into()))?;
-        
+
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
             futures.push(listing_partition_info(partition, store.as_ref(), self.client()))
@@ -243,7 +237,7 @@ impl LakeSoulTableProvider {
 
             let files = object_metas
                 .into_iter()
-                .map(|object_meta| 
+                .map(|object_meta|
                     PartitionedFile {
                         object_meta,
                         partition_values: partition_values.clone(),
@@ -257,7 +251,6 @@ impl LakeSoulTableProvider {
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
-
 }
 
 #[async_trait]
@@ -288,7 +281,7 @@ impl TableProvider for LakeSoulTableProvider {
         if partitioned_file_lists.is_empty() {
             let schema = self.schema();
             let projected_schema = project_schema(&schema, projection)?;
-            return Ok(Arc::new(EmptyExec::new(false, projected_schema)));
+            return Ok(Arc::new(EmptyExec::new(projected_schema)));
         }
 
         // extract types of partition columns
@@ -299,14 +292,13 @@ impl TableProvider for LakeSoulTableProvider {
             .iter()
             .map(|col| Ok(self.schema().field_with_name(&col.0)?.clone()))
             .collect::<Result<Vec<_>>>()?;
-        
+
         let filters = if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
             let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
             let filters = create_physical_expr(
                 &expr,
                 &table_df_schema,
-                &self.schema(),
                 state.execution_props(),
             )?;
             Some(filters)
@@ -317,7 +309,7 @@ impl TableProvider for LakeSoulTableProvider {
         let object_store_url = if let Some(url) = self.listing_table.table_paths().get(0) {
             url.object_store()
         } else {
-            return Ok(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))));
+            return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         };
 
         // create the execution plan
@@ -335,12 +327,10 @@ impl TableProvider for LakeSoulTableProvider {
                     limit,
                     output_ordering: self.try_create_output_ordering()?,
                     table_partition_cols,
-                    infinite_source: false,
                 },
                 filters.as_ref(),
             )
             .await
-    
     }
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
@@ -354,7 +344,6 @@ impl TableProvider for LakeSoulTableProvider {
                 }
             })
             .collect()
-        
     }
 
     async fn insert_into(
@@ -363,17 +352,9 @@ impl TableProvider for LakeSoulTableProvider {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        
         let table_path = &self.listing_table.table_paths()[0];
         // Get the object store for the table path.
         let _store = state.runtime_env().object_store(table_path)?;
-
-        let file_format = self.options().format.as_ref();
-
-        let file_type_writer_options = match &self.options().file_type_write_options {
-            Some(opt) => opt.clone(),
-            None => FileTypeWriterOptions::build_default(&file_format.file_type(), state.config_options())?,
-        };
 
         // Sink related option, apart from format
         let config = FileSinkConfig {
@@ -382,17 +363,7 @@ impl TableProvider for LakeSoulTableProvider {
             file_groups: vec![],
             output_schema: self.schema(),
             table_partition_cols: self.options().table_partition_cols.clone(),
-            writer_mode: datafusion::datasource::file_format::write::FileWriterMode::PutMultipart,
-            // A plan can produce finite number of rows even if it has unbounded sources, like LIMIT
-            // queries. Thus, we can check if the plan is streaming to ensure file sink input is
-            // unbounded. When `unbounded_input` flag is `true` for sink, we occasionally call `yield_now`
-            // to consume data at the input. When `unbounded_input` flag is `false` (e.g. non-streaming data),
-            // all the data at the input is sink after execution finishes. See discussion for rationale:
-            // https://github.com/apache/arrow-datafusion/pull/7610#issuecomment-1728979918
-            unbounded_input: false,
-            single_file_output: self.options().single_file,
             overwrite,
-            file_type_writer_options,
         };
 
         let unsorted: Vec<Vec<Expr>> = vec![];

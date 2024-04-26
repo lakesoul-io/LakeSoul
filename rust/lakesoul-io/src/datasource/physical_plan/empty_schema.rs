@@ -20,17 +20,15 @@ use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 #[derive(Debug)]
 pub struct EmptySchemaScanExec {
     count: usize,
-    empty_schema: SchemaRef,
     cache: PlanProperties,
 }
 
 impl EmptySchemaScanExec {
     pub fn new(count: usize) -> Self {
         let empty_schema = SchemaRef::new(Schema::empty());
-        let eq_prop = EquivalenceProperties::new(empty_schema.clone());
+        let eq_prop = EquivalenceProperties::new(empty_schema);
         Self {
             count,
-            empty_schema,
             cache: PlanProperties::new(eq_prop, Partitioning::UnknownPartitioning(1), ExecutionMode::Bounded),
         }
     }

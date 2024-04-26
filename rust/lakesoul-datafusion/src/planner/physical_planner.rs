@@ -5,21 +5,18 @@
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
-
+use async_trait::async_trait;
 use datafusion::common::{DFSchema, SchemaExt};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::{DmlStatement, WriteOp};
 use datafusion::physical_expr::PhysicalExpr;
-
-use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
-use async_trait::async_trait;
-
-use datafusion::logical_expr::{DmlStatement, WriteOp};
-use lakesoul_io::helpers::{column_names_to_physical_sort_expr, column_names_to_physical_expr};
+use lakesoul_io::helpers::{column_names_to_physical_expr, column_names_to_physical_sort_expr};
 use lakesoul_io::repartition::RepartitionByRangeAndHashExec;
 
 use crate::lakesoul_table::LakeSoulTable;
@@ -46,11 +43,11 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match logical_plan {
             LogicalPlan::Dml(DmlStatement {
-                table_name,
-                op: WriteOp::InsertInto,
-                input,
-                ..
-            }) => {
+                                 table_name,
+                                 op: WriteOp::InsertInto,
+                                 input,
+                                 ..
+                             }) => {
                 let name = table_name.table();
                 let schema = table_name.schema();
                 // let schema = session_state.schema_for_ref(table_name)?;
@@ -72,31 +69,27 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                     "Inserting query must have the same schema with the table.".to_string(),
                                 ));
                             }
-                        } 
-                        let  physical_input = if !lakesoul_table.primary_keys().is_empty() || !lakesoul_table.range_partitions().is_empty() {
-                            let input_schema = physical_input.schema();
+                        }
+                        let physical_input = if !lakesoul_table.primary_keys().is_empty() || !lakesoul_table.range_partitions().is_empty() {
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = column_names_to_physical_sort_expr(
                                 [
-                                    lakesoul_table.range_partitions().clone(), 
+                                    lakesoul_table.range_partitions().clone(),
                                     lakesoul_table.primary_keys().clone(),
                                 ].concat().as_slice(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
                             let hash_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.primary_keys(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
-                            
+
                             let hash_partitioning = Partitioning::Hash(hash_partitioning_expr, lakesoul_table.hash_bucket_num());
                             let range_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.range_partitions(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
                             let sort_exec = Arc::new(SortExec::new(sort_expr, physical_input));
@@ -137,10 +130,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         &self,
         expr: &Expr,
         input_dfschema: &DFSchema,
-        input_schema: &Schema,
         session_state: &SessionState,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         self.default_planner
-            .create_physical_expr(expr, input_dfschema, input_schema, session_state)
+            .create_physical_expr(expr, input_dfschema, session_state)
     }
 }

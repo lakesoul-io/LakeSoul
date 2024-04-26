@@ -274,6 +274,7 @@ impl From<&FieldRef> for ArrowJavaField {
             DataType::Duration(_) => todo!("Duration type not supported"),
             DataType::Interval(_) => todo!("Interval type not supported"),
             DataType::RunEndEncoded(_, _) => todo!("RunEndEncoded type not supported"),
+            unknown_type => { todo!("{} unsupported type", unknown_type) }
         };
         let nullable = field.is_nullable();
         ArrowJavaField {

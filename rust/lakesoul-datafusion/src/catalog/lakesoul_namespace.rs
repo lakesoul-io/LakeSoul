@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::catalog::create_io_config_builder;
+use std::any::Any;
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+
+use anyhow::anyhow;
 use async_trait::async_trait;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -10,17 +14,17 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
-use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
-use lakesoul_io::datasource::listing::LakeSoulListingTable;
-use lakesoul_metadata::error::LakeSoulMetaDataError;
-use lakesoul_metadata::MetaDataClientRef;
-use std::any::Any;
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::field::debug;
+
+use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
+use lakesoul_io::datasource::listing::LakeSoulListingTable;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::MetaDataClientRef;
+
+use crate::catalog::create_io_config_builder;
 
 /// A [`SchemaProvider`] that query pg to automatically discover tables.
 /// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.
@@ -91,53 +95,29 @@ impl SchemaProvider for LakeSoulNamespace {
                 .await
                 .expect("spawn failed")
         })
-        .into_iter()
-        .map(|v| v.table_name)
-        .collect()
+            .into_iter()
+            .map(|v| v.table_name)
+            .collect()
     }
 
     /// Search table by name
     /// return LakeSoulListing table
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>, DataFusionError> {
         let _guard = self.namespace_lock.read().await;
-        if self
+        self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
-            .await
-            .is_ok()
-        {
-            debug!("call table() on table: {}.{}", &self.namespace, name);
-            let config;
-            if let Ok(config_builder) =
-                create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace()).await
-            {
-                config = config_builder.build();
-            } else {
-                return None;
-            }
-            // Maybe should change
-            let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
-                config.clone(),
-            ));
-            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
-                &self.context.state(),
-                config,
-                file_format,
-                // care this
-                false,
-            )
-            .await
-            {
-                debug!("get table provider success");
-                return Some(Arc::new(table_provider));
-            }
-            debug("get table provider fail");
-            return None;
-        } else {
-            debug("get table provider fail");
-            None
-        }
+            .await.map_err(|e| DataFusionError::External(anyhow!(e).into()))?;
+        debug!("call table() on table: {}.{}", &self.namespace, name);
+        let builder = create_io_config_builder(self.metadata_client.clone(), Some(name), true, self.namespace()).await.map_err(|e| DataFusionError::External(anyhow!(e).into()))?;
+        let config = builder.build();
+        // Maybe should change
+        let file_format = Arc::new(LakeSoulParquetFormat::new(
+            Arc::new(ParquetFormat::new()),
+            config.clone(),
+        ));
+        let table_provider = LakeSoulListingTable::new_with_config_and_format(&self.context.state(), config, file_format, false).await.map_err(|e| DataFusionError::External(anyhow!(e).into()))?;
+        return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
     }
 
     /// If supported by the implementation, adds a new table to this schema.
@@ -147,6 +127,7 @@ impl SchemaProvider for LakeSoulNamespace {
         // the type info of dyn TableProvider is not enough or use AST??????
         unimplemented!("schema provider does not support registering tables")
     }
+
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
     #[allow(unused_variables)]
@@ -183,7 +164,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                 // care this
                                 false,
                             )
-                            .await
+                                .await
                             {
                                 debug!("get table provider success");
                                 client
@@ -223,8 +204,8 @@ impl SchemaProvider for LakeSoulNamespace {
                 .await
                 .expect("spawn failed")
         })
-        .into_iter()
-        .map(|v| v.table_name)
-        .any(|s| s == name)
+            .into_iter()
+            .map(|v| v.table_name)
+            .any(|s| s == name)
     }
 }

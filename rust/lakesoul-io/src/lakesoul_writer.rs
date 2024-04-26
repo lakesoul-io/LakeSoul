@@ -175,16 +175,16 @@ impl ExecutionPlan for ReceiverStreamExec {
         unimplemented!()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(self: Arc<Self>, _children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, _partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
         let builder = self
             .receiver_stream_builder
             .borrow_mut()
             .take()
-            .ok_or(DataFusionError::Internal("empty receiver stream".to_string()))?;
+            .ok_or(Internal("empty receiver stream".to_string()))?;
         Ok(builder.build())
     }
 }

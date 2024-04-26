@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use arrow_schema::{DataType, Field, Fields, SchemaRef};
 use async_recursion::async_recursion;
-use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, Expr, expr, Like, Operator, ScalarUDF, UserDefinedLogicalNode};
+use datafusion::logical_expr::{BinaryExpr, BuiltinScalarFunction, Expr, expr, Like, Operator, ScalarUDF};
 use datafusion::prelude::{col, SessionContext};
 use datafusion::scalar::ScalarValue;
 use datafusion_common::{Column, DataFusionError, DFSchema, not_impl_err, plan_err, Result, substrait_datafusion_err, substrait_err};
@@ -846,12 +846,12 @@ fn from_substrait_field_reference(
     }
 }
 
+#[cfg(test)]
 mod tests {
-    use std::result::Result;
-
+    use datafusion::prelude::SessionContext;
+    use datafusion_substrait::substrait::proto::Plan;
     use prost::Message;
-
-    use super::*;
+    use crate::filter::parser::Parser;
 
     #[test]
     fn test_filter_parser() -> Result<(), String> {
@@ -865,7 +865,7 @@ mod tests {
 
     #[tokio::test]
     async fn tt() {
-        let ctx = SessionContext::new();
+        let _ctx = SessionContext::new();
         // let options = ParquetReadOptions::default();
         // let table_path = "/var/folders/_b/qyl87wbn1119cvw8kts6fqtw0000gn/T/lakeSource/type/part-00000-97db3149-f99e-404a-aa9a-2af4ab3f7a44_00000.c000.parquet";
         // // let df = ctx.read_parquet(table_path, options).await.unwrap();

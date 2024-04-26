@@ -178,7 +178,7 @@ mod catalog_tests {
                 assert_eq!(names.len(), tables.len());
                 for name in names {
                     assert!(schema.table_exist(&name));
-                    assert!(schema.table(&name).await.is_some());
+                    assert!(schema.table(&name).await.unwrap().is_some());
                     assert!(schema.deregister_table(&name).unwrap().is_some());
                 }
             }
