@@ -15,7 +15,7 @@ use futures::stream::BoxStream;
 use hdrs::Client;
 use object_store::path::Path;
 use object_store::Error::Generic;
-use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, PutOptions, PutResult};
 use parquet::data_type::AsBytes;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind::NotFound;
@@ -108,6 +108,10 @@ impl ObjectStore for Hdfs {
             store: "hdfs",
             source: Box::new(e),
         })
+    }
+
+    async fn put_opts(&self, location: &Path, bytes: Bytes, opts: PutOptions) -> object_store::Result<PutResult> {
+        todo!()
     }
 
     async fn put_multipart(
@@ -220,6 +224,7 @@ impl ObjectStore for Hdfs {
                 last_modified: meta.modified().into(),
                 size: meta.len() as usize,
                 e_tag: None,
+                version: None,
             })
         })
         .await
@@ -342,7 +347,7 @@ mod tests {
     use futures::StreamExt;
     use object_store::path::Path;
     use object_store::GetResult::Stream;
-    use object_store::ObjectStore;
+    use object_store::{GetResult, ObjectStore};
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
     use std::sync::Arc;
@@ -362,18 +367,19 @@ mod tests {
 
     async fn read_file_from_hdfs(path: String, object_store: Arc<dyn ObjectStore>) -> String {
         let file = object_store.get(&Path::from(path)).await.unwrap();
-        match file {
-            Stream(s) => {
-                let read_result = s
-                    .collect::<Vec<object_store::Result<Bytes>>>()
-                    .await
-                    .into_iter()
-                    .collect::<object_store::Result<Vec<Bytes>>>()
-                    .unwrap();
-                bytes_to_string(read_result)
-            }
-            _ => panic!("expect getting a stream"),
-        }
+        todo!()
+        // match file {
+        //     Stream(s) => {
+        //         let read_result = s
+        //             .collect::<Vec<object_store::Result<Bytes>>>()
+        //             .await
+        //             .into_iter()
+        //             .collect::<object_store::Result<Vec<Bytes>>>()
+        //             .unwrap();
+        //         bytes_to_string(read_result)
+        //     }
+        //     _ => panic!("expect getting a stream"),
+        // }
     }
 
     #[tokio::test]

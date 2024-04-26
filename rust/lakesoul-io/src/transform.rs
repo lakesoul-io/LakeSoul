@@ -5,13 +5,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::array::{as_primitive_array, as_struct_array, make_array, Array};
+use arrow::array::{Array, as_primitive_array, as_struct_array, make_array};
 use arrow::compute::kernels::cast::cast_with_options;
 use arrow::record_batch::RecordBatch;
 use arrow_array::{
-    new_null_array, types::*, ArrayRef, BooleanArray, PrimitiveArray, RecordBatchOptions, StringArray, StructArray,
+    ArrayRef, BooleanArray, new_null_array, PrimitiveArray, RecordBatchOptions, StringArray, StructArray, types::*,
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use chrono::DateTime;
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{ArrowError, External, Internal};
 
@@ -117,7 +118,7 @@ pub fn transform_record_batch(
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )
-    .map_err(|e|ArrowError(e,None))
+        .map_err(|e| ArrowError(e, None))
 }
 
 pub fn transform_array(
@@ -185,7 +186,7 @@ pub fn transform_array(
         }
         target_datatype => {
             if target_datatype != *array.data_type() {
-                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e|ArrowError(e,None))?
+                cast_with_options(&array, &target_datatype, &ARROW_CAST_OPTIONS).map_err(|e| ArrowError(e, None))?
             } else {
                 array.clone()
             }
@@ -257,9 +258,9 @@ fn date_str_to_epoch_days(value: &str) -> Result<i32> {
     let datetime = date
         .and_hms_opt(12, 12, 12)
         .ok_or(Internal("invalid h/m/s".to_string()))?;
-    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
         "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
-    ))?;
+    ))?.naive_utc();
 
     Ok(datetime.signed_duration_since(epoch_time).num_days() as i32)
 }

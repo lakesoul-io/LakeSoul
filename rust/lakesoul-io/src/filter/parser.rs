@@ -602,15 +602,17 @@ pub(crate) fn from_substrait_literal(lit: &Literal) -> Result<ScalarValue> {
         },
         Some(LiteralType::Fp32(f)) => ScalarValue::Float32(Some(*f)),
         Some(LiteralType::Fp64(f)) => ScalarValue::Float64(Some(*f)),
-        Some(LiteralType::Timestamp(t)) => match lit.type_variation_reference {
-            TIMESTAMP_SECOND_TYPE_REF => ScalarValue::TimestampSecond(Some(*t), None),
-            TIMESTAMP_MILLI_TYPE_REF => ScalarValue::TimestampMillisecond(Some(*t), None),
-            TIMESTAMP_MICRO_TYPE_REF => ScalarValue::TimestampMicrosecond(Some(*t), None),
-            TIMESTAMP_NANO_TYPE_REF => ScalarValue::TimestampNanosecond(Some(*t), None),
-            others => {
-                return substrait_err!("Unknown type variation reference {others}");
-            }
-        },
+        Some(LiteralType::Timestamp(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
+        Some(LiteralType::TimestampTz(t)) => ScalarValue::TimestampMicrosecond(Some(*t), None),
+        // Some(LiteralType::Timestamp(t)) => match lit.type_variation_reference {
+        //     TIMESTAMP_SECOND_TYPE_REF => ScalarValue::TimestampSecond(Some(*t), None),
+        //     TIMESTAMP_MILLI_TYPE_REF => ScalarValue::TimestampMillisecond(Some(*t), None),
+        //     TIMESTAMP_MICRO_TYPE_REF => ScalarValue::TimestampMicrosecond(Some(*t), None),
+        //     TIMESTAMP_NANO_TYPE_REF => ScalarValue::TimestampNanosecond(Some(*t), None),
+        //     others => {
+        //         return substrait_err!("Unknown type variation reference {others}");
+        //     }
+        // },
         Some(LiteralType::Date(d)) => ScalarValue::Date32(Some(*d)),
         Some(LiteralType::String(s)) => match lit.type_variation_reference {
             DEFAULT_CONTAINER_TYPE_REF => ScalarValue::Utf8(Some(s.clone())),
@@ -851,6 +853,7 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion_substrait::substrait::proto::Plan;
     use prost::Message;
+
     use crate::filter::parser::Parser;
 
     #[test]

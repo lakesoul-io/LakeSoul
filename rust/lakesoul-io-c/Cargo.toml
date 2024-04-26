@@ -29,7 +29,7 @@ datafusion-substrait = { version = "37" }
 datafusion-substrait = { version = "37", features = ["protoc"] }
 
 [features]
-#hdfs = ["lakesoul-io/hdfs"]
+hdfs = ["lakesoul-io/hdfs"]
 #simd = ["lakesoul-io/simd"]
 default = []
 
