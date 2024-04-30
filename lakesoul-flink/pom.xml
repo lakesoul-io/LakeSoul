@@ -223,11 +223,6 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
-            <artifactId>flink-python</artifactId>
-            <version>${flink.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils</artifactId>
             <version>${flink.version}</version>
             <exclusions>
@@ -360,7 +355,7 @@ SPDX-License-Identifier: Apache-2.0
             <plugin>
                 <groupId>net.alchim31.maven</groupId>
                 <artifactId>scala-maven-plugin</artifactId>
-                <version>4.6.3</version>
+                <version>4.9.0</version>
                 <executions>
                     <execution>
                         <id>scala-compile-first</id>
@@ -428,7 +423,6 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
                             <include>com.alibaba:fastjson</include>
-                            <include>org.apache.flink:flink-python</include>
                             <include>org.apache.spark:spark-core_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-catalyst_${scala.binary.version}</include>
                             <include>org.apache.spark:spark-unsafe_${scala.binary.version}</include>
@@ -483,13 +477,6 @@ SPDX-License-Identifier: Apache-2.0
                                 <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
                         </filter>
-                        <filter>
-                            <artifact>org.apache.flink:flink-python</artifact>
-                            <includes>
-                                <include>org/apache/flink/fnexecution/v1/**</include>
-                                <include>org/apache/flink/api/python/shaded/com/google/protobuf/**</include>
-                            </includes>
-                        </filter>
                     </filters>
                     <relocations>
                         <relocation>
@@ -517,8 +504,12 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>org.apache.flink.table.runtime.arrow</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime.arrow</shadedPattern>
+                            <pattern>org.apache.flink.table.runtime</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.table.runtime</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.flink.fnexecution</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.flink.fnexecution</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>io.netty</pattern>
