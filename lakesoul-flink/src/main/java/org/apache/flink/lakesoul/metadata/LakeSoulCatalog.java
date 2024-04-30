@@ -19,8 +19,22 @@ import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.table.api.TableColumn;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.api.constraints.UniqueConstraint;
-import org.apache.flink.table.catalog.*;
-import org.apache.flink.table.catalog.exceptions.*;
+import org.apache.flink.table.catalog.Catalog;
+import org.apache.flink.table.catalog.CatalogBaseTable;
+import org.apache.flink.table.catalog.CatalogDatabase;
+import org.apache.flink.table.catalog.CatalogFunction;
+import org.apache.flink.table.catalog.CatalogPartition;
+import org.apache.flink.table.catalog.CatalogPartitionSpec;
+import org.apache.flink.table.catalog.ObjectPath;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
+import org.apache.flink.table.catalog.ResolvedCatalogView;
+import org.apache.flink.table.catalog.exceptions.CatalogException;
+import org.apache.flink.table.catalog.exceptions.DatabaseNotEmptyException;
+import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
+import org.apache.flink.table.catalog.exceptions.FunctionNotExistException;
+import org.apache.flink.table.catalog.exceptions.PartitionNotExistException;
+import org.apache.flink.table.catalog.exceptions.TableAlreadyExistException;
+import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.CallExpression;
@@ -28,11 +42,28 @@ import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.factories.Factory;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FLINK_WAREHOUSE_DIR;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_PARTITIONS;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW_TYPE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_EXPANDED_QUERY;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_ORIGINAL_QUERY;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulCatalog implements Catalog {
@@ -103,7 +134,8 @@ public class LakeSoulCatalog implements Catalog {
             throw new CatalogException(String.format("database %s already exists", databaseName));
         }
         try {
-            dbManager.createNewNamespace(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
+            dbManager.createNewNamespace(databaseName,
+                    DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -149,7 +181,8 @@ public class LakeSoulCatalog implements Catalog {
                 return;
             }
         }
-        dbManager.updateNamespaceProperties(databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
+        dbManager.updateNamespaceProperties(databaseName,
+                DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
     }
 
     @Override
@@ -279,6 +312,7 @@ public class LakeSoulCatalog implements Catalog {
         List<String> partitionKeys = Collections.emptyList();
         if (table instanceof ResolvedCatalogTable) {
             partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
+            validatePrimaryAndPartitionKeys(primaryKeyColumns, partitionKeys);
             String path = null;
             if (tableOptions.containsKey(TABLE_PATH)) {
                 path = tableOptions.get(TABLE_PATH);
@@ -549,5 +583,21 @@ public class LakeSoulCatalog implements Catalog {
 
     public void cleanForTest() {
         dbManager.cleanMeta();
+    }
+
+    private void validatePrimaryAndPartitionKeys(Optional<UniqueConstraint> primaryKeyColumns,
+                                                 List<String> partitionKeys) {
+        primaryKeyColumns.map(uniqueConstraint -> {
+            Set<String> result = uniqueConstraint.getColumns().stream()
+                    .distinct()
+                    .filter(partitionKeys::contains)
+                    .collect(Collectors.toSet());
+            if (!result.isEmpty()) {
+                throw new RuntimeException(
+                        String.format("Primray columns (%s) and partition columns (%s) cannot overlap",
+                                uniqueConstraint.getColumns(), partitionKeys));
+            }
+            return 0;
+        });
     }
 }
