@@ -34,10 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - uses: actions-rs/toolchain@v1
@@ -93,10 +93,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - name: Install psql
@@ -161,10 +161,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - name: Install psql
@@ -229,10 +229,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - name: Install psql
@@ -309,10 +309,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - name: Install psql
@@ -377,10 +377,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 8
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
-          java-version: '8'
+          java-version: '11'
           distribution: 'temurin'
           cache: maven
       - name: Install psql
@@ -422,7 +422,7 @@ jobs:
           path: ./rust/target/release/
       - name: Build with Maven
         run: |
-          MAVEN_OPTS="-Xmx5g" mvn -X -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
+          MAVEN_OPTS="-Xmx5g" mvn -B clean test -pl lakesoul-flink -am -Pcross-build --file pom.xml -Dtest='LakeSoulRBACTest' -Dsurefire.failIfNoSpecifiedTests=false
       - name: Generate Report Site
         if: always()
         run: |
