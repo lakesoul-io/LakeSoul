@@ -21,11 +21,8 @@ SPDX-License-Identifier: Apache-2.0
     <version>1.17-${revision}</version>
     <properties>
         <flink.version>1.17.1</flink.version>
-        <scala.binary.version>2.12</scala.binary.version>
-        <scala.version>2.12.10</scala.version>
         <log4j.version>2.17.2</log4j.version>
         <cdc.version>3.0.0</cdc.version>
-        <local.scope>provided</local.scope>
     </properties>
 
     <dependencies>
@@ -308,6 +305,16 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-unsafe_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.twitter</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
