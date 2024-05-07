@@ -12,6 +12,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
+import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesArrowFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultOneTableBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
@@ -31,8 +32,8 @@ import java.util.Optional;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulMultiTablesSink<IN> implements
-                                         Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
-                                                 LakeSoulMultiTableSinkGlobalCommittable> {
+        Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
+                LakeSoulMultiTableSinkGlobalCommittable> {
 
     private final BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder;
 
@@ -48,6 +49,11 @@ public class LakeSoulMultiTablesSink<IN> implements
 
     public static DefaultMultiTablesBulkFormatBuilder forMultiTablesBulkFormat(Configuration conf) {
         return new DefaultMultiTablesBulkFormatBuilder(new Path(conf.getString(LakeSoulSinkOptions.WAREHOUSE_PATH)),
+                conf);
+    }
+
+    public static DefaultMultiTablesArrowFormatBuilder forMultiTablesArrowFormat(Configuration conf) {
+        return new DefaultMultiTablesArrowFormatBuilder(new Path(conf.getString(LakeSoulSinkOptions.WAREHOUSE_PATH)),
                 conf);
     }
 

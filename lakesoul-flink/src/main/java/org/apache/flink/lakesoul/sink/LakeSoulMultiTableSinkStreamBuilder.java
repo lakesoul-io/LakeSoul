@@ -11,6 +11,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.BinarySourceRecord;
 import org.apache.flink.lakesoul.types.LakeSoulRecordConvert;
+import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -60,6 +61,22 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .withPartSuffix(".parquet")
                 .build();
         LakeSoulMultiTablesSink<BinarySourceRecord> sink = LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
+                .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
+                .withRollingPolicy(rollingPolicy)
+                .withOutputFileConfig(fileNameConfig)
+                .build();
+        return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
+                .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+    }
+
+    public DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(DataStream<LakeSoulArrowWrapper> stream) {
+        context.conf.set(DYNAMIC_BUCKETING, false);
+        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
+                context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
+        OutputFileConfig fileNameConfig = OutputFileConfig.builder()
+                .withPartSuffix(".parquet")
+                .build();
+        LakeSoulMultiTablesSink<LakeSoulArrowWrapper> sink = LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)
                 .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
                 .withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig)
