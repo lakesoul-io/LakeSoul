@@ -94,7 +94,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 TableNameId tableNameId =
                         lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.schema());
-                if (identity.tableId.schema() == null){
+                if (identity.tableId.schema() == null) {
                     tableNameId = lakeSoulDBManager.shortTableName(identity.tableId.table(), identity.tableId.catalog());
                 }
 
@@ -115,6 +115,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                     dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
                 } else if (LakeSoulSinkOptions.PARTITION_DELETE.equals(committable.getDmlType())) {
                     dataCommitInfo.setCommitOp(CommitOp.DeleteCommit);
+                } else if (LakeSoulSinkOptions.UPDATE.equals(committable.getDmlType()) && identity.primaryKeys.isEmpty()) {
+                    dataCommitInfo.setCommitOp(CommitOp.UpdateCommit);
                 } else {
                     dataCommitInfo.setCommitOp(CommitOp.AppendCommit);
                 }

@@ -6,7 +6,6 @@ package org.apache.flink.lakesoul.test.flinkSource;
 
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
@@ -72,6 +71,26 @@ public class DMLSuite extends AbstractTestBase {
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         TestUtils.checkEqualInAnyOrder(results,
                 new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 100]", "+I[3, Jack, 100]", "+I[4, Mike, 70]"});
+    }
+
+
+    @Test
+    public void testUpdate() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceNonPkTableUser(tEnv);
+        tEnv.executeSql("INSERT INTO user_info_2 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)")
+                .await();
+        try {
+            tEnv.executeSql("UPDATE user_info_2 set name = cast('Johny' as varchar) where order_id = 4").await();
+        } catch (Throwable e) {
+            System.out.println("Unsupported UPDATE SQL");
+        }
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_2";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results,
+                new String[]{"+I[2, Alice, 80]", "+I[3, Amy, 95]", "+I[3, Jack, 75]", "+I[4, Johny, 70]"});
     }
 
     @Test
@@ -215,6 +234,20 @@ public class DMLSuite extends AbstractTestBase {
         TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
+    }
+
+    private void createLakeSoulSourceNonPkTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create table user_info_2 (" +
+                "    order_id INT," +
+                "    name varchar," +
+                "    score DECIMAL" +
+                ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'path'='" + getTempDirUri("/lakeSource/user2") +
+                "' )";
+        tEnvs.executeSql("DROP TABLE if exists user_info_2");
+        tEnvs.executeSql(createUserSql);
     }
 
     private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
