@@ -27,7 +27,7 @@ services:
       - ./meta_cleanup.sql:/meta_cleanup.sql
 
   mysql:
-    image: mysql:8.4
+    image: mysql:8.0
     ports:
       - "3306:3306"
     restart: always
