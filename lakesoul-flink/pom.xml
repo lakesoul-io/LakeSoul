@@ -464,6 +464,10 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.google.protobuf:protobuf-java</include>
                             <!--substrait-->
                             <inclue>io.substrait:core</inclue>
+                            <include>com.fasterxml.jackson.dataformat:jackson-dataformat-yaml</include>
+                            <include>com.fasterxml.jackson.datatype:jackson-datatype-jdk8</include>
+                            <include>org.antlr:*</include>
+                            <include>org.yaml:snakeyaml</include>
                         </includes>
                         <excludes>
                             <exclude>org.apache.logging.log4j:*</exclude>
