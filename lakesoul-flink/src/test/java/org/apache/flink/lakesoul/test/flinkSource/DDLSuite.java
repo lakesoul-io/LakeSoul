@@ -11,6 +11,7 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
+import org.junit.Assert;
 import org.junit.Test;
 
 import java.util.List;
@@ -134,6 +135,18 @@ public class DDLSuite extends AbstractTestBase {
         streamTableEnv.executeSql("DROP TABLE if exists time_test_table");
     }
 
+    @Test
+    public void primaryKeyAndPartitionKeyOverlapTest() {
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
+        Assert.assertThrows("cannot overlap", TableException.class, () -> {
+            streamTableEnv.executeSql("drop table if exists test_table");
+            streamTableEnv.executeSql(
+                    "create table test_table (id int, primary key(id) not enforced) partitioned by (id) with " +
+                            "('connector'='lakesoul'," +
+                            "'hashBucketNum'='2')");
+        });
+    }
+
     private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info (" +
                 "    order_id INT," +
@@ -148,7 +161,8 @@ public class DDLSuite extends AbstractTestBase {
         tEnvs.executeSql(createUserSql);
     }
 
-    private void createLakeSoulSourceTableViewUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+    private void createLakeSoulSourceTableViewUser(TableEnvironment tEnvs)
+            throws ExecutionException, InterruptedException {
         String createUserSql = "create view if not exists user_info_view as select * from user_info";
         tEnvs.executeSql("DROP view if exists user_info_view");
         tEnvs.executeSql(createUserSql);
