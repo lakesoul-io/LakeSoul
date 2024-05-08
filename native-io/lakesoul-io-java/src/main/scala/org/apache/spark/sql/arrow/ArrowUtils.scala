@@ -66,6 +66,8 @@ object ArrowUtils {
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH => YearMonthIntervalType()
     case di: ArrowType.Duration if di.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
+    case ti: ArrowType.Time if ti.getBitWidth == 32 => IntegerType
+    case ti: ArrowType.Time if ti.getBitWidth == 64 => LongType
     case _ => throw QueryExecutionErrors.unsupportedDataTypeError(dt.toString)
   }
 

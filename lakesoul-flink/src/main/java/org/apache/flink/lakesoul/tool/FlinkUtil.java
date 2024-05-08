@@ -7,7 +7,12 @@ package org.apache.flink.lakesoul.tool;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
-import com.dmetasoul.lakesoul.meta.*;
+import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.DataFileInfo;
+import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
+import com.dmetasoul.lakesoul.meta.MetaVersion;
+import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -15,10 +20,19 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.core.fs.SafetyNetWrapperFileSystem;
 import org.apache.flink.runtime.fs.hdfs.HadoopFileSystem;
 import org.apache.flink.runtime.util.HadoopUtils;
-import org.apache.flink.table.api.*;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Schema.Builder;
+import org.apache.flink.table.api.SqlDialect;
+import org.apache.flink.table.api.TableColumn;
+import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.WatermarkSpec;
 import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.CatalogBaseTable;
 import org.apache.flink.table.catalog.CatalogTable;
@@ -43,13 +57,37 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
-import static org.apache.flink.lakesoul.tool.JobOptions.*;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.JobOptions.DEFAULT_FS;
+import static org.apache.flink.lakesoul.tool.JobOptions.S3_ACCESS_KEY;
+import static org.apache.flink.lakesoul.tool.JobOptions.S3_BUCKET;
+import static org.apache.flink.lakesoul.tool.JobOptions.S3_ENDPOINT;
+import static org.apache.flink.lakesoul.tool.JobOptions.S3_PATH_STYLE_ACCESS;
+import static org.apache.flink.lakesoul.tool.JobOptions.S3_SECRET_KEY;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.COMPUTE_COLUMN_JSON;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW_KIND;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW_TYPE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_EXPANDED_QUERY;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_ORIGINAL_QUERY;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WATERMARK_SPEC_JSON;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
@@ -62,7 +100,8 @@ public class FlinkUtil {
         return schema.toRowDataType().toString();
     }
 
-    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(RowType rowType, Optional<String> cdcColumn) throws CatalogException {
+    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(RowType rowType, Optional<String> cdcColumn)
+            throws CatalogException {
         List<Field> fields = new ArrayList<>();
         String cdcColName = null;
         if (cdcColumn.isPresent()) {
@@ -96,7 +135,9 @@ public class FlinkUtil {
         return new org.apache.arrow.vector.types.pojo.Schema(fields);
     }
 
-    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tableSchema, Optional<String> cdcColumn) throws CatalogException {
+    public static org.apache.arrow.vector.types.pojo.Schema toArrowSchema(TableSchema tableSchema,
+                                                                          Optional<String> cdcColumn)
+            throws CatalogException {
         List<Field> fields = new ArrayList<>();
         String cdcColName = null;
         if (cdcColumn.isPresent()) {
@@ -173,7 +214,9 @@ public class FlinkUtil {
 
     public static boolean isView(TableInfo tableInfo) {
         JSONObject jsb = DBUtil.stringToJSON(tableInfo.getProperties());
-        if (jsb.containsKey(LAKESOUL_VIEW.key()) && "true".equals(jsb.getString(LAKESOUL_VIEW.key())) && LAKESOUL_VIEW_KIND.equals(jsb.getString(LAKESOUL_VIEW_TYPE.key()))) {
+        if (jsb.containsKey(LAKESOUL_VIEW.key()) &&
+                "true".equals(jsb.getString(LAKESOUL_VIEW.key())) &&
+                LAKESOUL_VIEW_KIND.equals(jsb.getString(LAKESOUL_VIEW_TYPE.key()))) {
             return true;
         } else {
             return false;
@@ -236,7 +279,8 @@ public class FlinkUtil {
         HashMap<String, String> conf = new HashMap<>();
         properties.forEach((key, value) -> conf.put(key, (String) value));
         if (FlinkUtil.isView(tableInfo)) {
-            return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY), properties.getString(VIEW_EXPANDED_QUERY), conf);
+            return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY),
+                    properties.getString(VIEW_EXPANDED_QUERY), conf);
         } else {
             return CatalogTable.of(bd.build(), "", parKeys, conf);
 
@@ -524,6 +568,7 @@ public class FlinkUtil {
             FlinkUtil.class.getClassLoader().loadClass("org.apache.hadoop.hdfs.DistributedFileSystem");
             return true;
         } catch (ClassNotFoundException e) {
+            LOG.info("HDFS classes not in classpath, ignore dir permission setting");
             return false;
         }
     }
@@ -544,24 +589,30 @@ public class FlinkUtil {
         if (!hasHdfsClasses()) return;
 
         FileSystem fs = p.getFileSystem();
-        if (fs instanceof HadoopFileSystem) {
+        if ((fs instanceof HadoopFileSystem)
+                || (fs instanceof SafetyNetWrapperFileSystem
+                && ((SafetyNetWrapperFileSystem) fs).getWrappedDelegate() instanceof HadoopFileSystem)) {
             String userName = DBUtil.getUser();
             String domain = DBUtil.getDomain();
-            if (userName == null || domain.equals("public")) return;
-
-            HadoopFileSystem hfs = (HadoopFileSystem) fs;
+            HadoopFileSystem hfs = fs instanceof HadoopFileSystem ? (HadoopFileSystem) fs
+                    : (HadoopFileSystem) ((SafetyNetWrapperFileSystem) fs).getWrappedDelegate();
             org.apache.hadoop.fs.FileSystem hdfs = hfs.getHadoopFileSystem();
+
+            LOG.info("Set dir {} permission for {}:{} with flink fs {}, hadoop fs {}", p, userName, domain,
+                    hfs.getClass(), hdfs.getClass());
+
+            if (userName == null || domain == null || domain.contains("public")) return;
+
             org.apache.hadoop.fs.Path nsDir = HadoopFileSystem.toHadoopPath(p.getParent());
             if (!hdfs.exists(nsDir)) {
                 hdfs.mkdirs(nsDir);
-                hdfs.setOwner(nsDir, userName, domain);
-                hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             }
+            hdfs.setOwner(nsDir, userName, domain);
+            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
-            if (hdfs.exists(tbDir)) {
-                throw new IOException("Table directory already exists: " + tbDir);
+            if (!hdfs.exists(tbDir)) {
+                hdfs.mkdirs(tbDir);
             }
-            hdfs.mkdirs(tbDir);
             hdfs.setOwner(tbDir, userName, domain);
             hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE));
         }

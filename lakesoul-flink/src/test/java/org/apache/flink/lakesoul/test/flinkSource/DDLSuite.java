@@ -9,8 +9,11 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
@@ -102,6 +105,33 @@ public class DDLSuite extends AbstractTestBase {
         } catch (ValidationException e) {
             System.out.println("UNLOAD lakesoul module not supported now");
         }
+    }
+
+    @Test
+    public void timeTypeTest() throws ExecutionException, InterruptedException {
+        TableEnvironment streamTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String createUserSql = "create table time_test_table (" +
+                "    t1 TIME," +
+                "    t2 TIME(3)," +
+                "    t3 TIME(6)," +
+                "    t4 TIME(9)" +
+                ") WITH (" +
+                "    'connector'='lakesoul'," +
+                "    'path'='" + getTempDirUri("/lakeSource/time_test") +
+                "' )";
+        streamTableEnv.executeSql(createUserSql);
+        streamTableEnv.executeSql("INSERT INTO time_test_table VALUES " +
+                "(" +
+                "time '10:10:10.999', " +
+                "time '10:10:11.999', " +
+                "time '10:10:12.999', " +
+                "time '10:10:13.999' " +
+                ")").await();
+        List<Row> results = CollectionUtil.iteratorToList(
+                streamTableEnv.executeSql("select * from time_test_table").collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{
+                "+I[10:10:10, 10:10:11, 10:10:12, 10:10:13]"});
+        streamTableEnv.executeSql("DROP TABLE if exists time_test_table");
     }
 
     private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
