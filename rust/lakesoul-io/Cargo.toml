@@ -62,5 +62,5 @@ datafusion-substrait = { workspace = true, features = ["protoc"] }
 [dev-dependencies]
 tempfile = "3.3.0"
 comfy-table = "6.0"
-whoami = "1.3"
+whoami = "1.5"
 rand = "0.8"
