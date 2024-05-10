@@ -234,7 +234,7 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                         this.optionParams);
         lsts.projectedFields = this.projectedFields;
         lsts.remainingPartitions = this.remainingPartitions;
-        lsts.filter = this.filter;
+        lsts.pushedFilters = this.pushedFilters;
         lsts.modificationContext = this.modificationContext;
         return lsts;
     }

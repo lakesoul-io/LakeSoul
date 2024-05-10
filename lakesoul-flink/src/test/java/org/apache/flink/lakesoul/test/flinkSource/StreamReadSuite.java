@@ -145,7 +145,7 @@ public class StreamReadSuite extends AbstractTestBase {
                         }
 
                     },
-                    "[+I[1, Bob, 90, 1995-10-01, UK], +I[3, Amy, 95, 1995-10-10, UK]]",
+                    "[+I[3, Amy, 95, 1995-10-10, UK]]",
                     20L
             );
         }

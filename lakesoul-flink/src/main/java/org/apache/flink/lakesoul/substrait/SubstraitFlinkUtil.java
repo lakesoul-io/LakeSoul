@@ -20,31 +20,31 @@ import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.*;
 public class SubstraitFlinkUtil {
 
     public static Tuple2<SupportsFilterPushDown.Result, io.substrait.proto.Plan> flinkExprToSubStraitPlan(
-            List<ResolvedExpression> exprs,
+            List<ResolvedExpression> nonPartitionFilters,
             List<ResolvedExpression> remaining,
             String tableName
     ) {
-        List<ResolvedExpression> accepted = new ArrayList<>();
+        List<ResolvedExpression> pushed = new ArrayList<>();
         Expression last = null;
-        for (ResolvedExpression expr : exprs) {
-            Expression e = doTransform(expr);
-            if (e == null) {
-                remaining.add(expr);
+        for (ResolvedExpression fExpr : nonPartitionFilters) {
+            Expression substraitExpr = toSubstraitExpr(fExpr);
+            if (substraitExpr == null) {
+                remaining.add(fExpr);
             } else {
-                accepted.add(expr);
+                pushed.add(fExpr);
                 if (last != null) {
                     SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(BooleanNamespace, "and:bool");
-                    last = ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, last, e);
+                    last = ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, last, substraitExpr);
                 } else {
-                    last = e;
+                    last = substraitExpr;
                 }
             }
         }
         Plan filter = exprToFilter(last, tableName);
-        return Tuple2.of(SupportsFilterPushDown.Result.of(accepted, remaining), planToProto(filter));
+        return Tuple2.of(SupportsFilterPushDown.Result.of(pushed, remaining), planToProto(filter));
     }
 
-    public static Expression doTransform(ResolvedExpression flinkExpression) {
+    public static Expression toSubstraitExpr(ResolvedExpression flinkExpression) {
         SubstraitVisitor substraitVisitor = new SubstraitVisitor();
         return flinkExpression.accept(substraitVisitor);
     }
