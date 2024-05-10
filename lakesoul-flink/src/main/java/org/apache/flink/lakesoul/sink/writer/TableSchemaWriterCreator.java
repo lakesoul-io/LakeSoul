@@ -5,10 +5,12 @@
 package org.apache.flink.lakesoul.sink.writer;
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.bucket.CdcPartitionComputer;
 import org.apache.flink.lakesoul.sink.bucket.FlinkBucketAssigner;
+import org.apache.flink.lakesoul.sink.writer.arrow.NativeArrowBucketWriter;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
@@ -24,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
+import java.util.Vector;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_NULL_STRING;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
@@ -85,6 +88,17 @@ public class TableSchemaWriterCreator implements Serializable {
         if (NativeIOBase.isNativeIOLibExist()) {
             LOG.info("Create natvie bucket writer");
             return new NativeBucketWriter(this.identity.rowType, this.primaryKeys, this.partitionKeyList, this.conf);
+        } else {
+            String msg = "Cannot load lakesoul native writer";
+            LOG.error(msg);
+            throw new IOException(msg);
+        }
+    }
+
+    public BucketWriter<VectorSchemaRoot, String> createArrowBucketWriter() throws IOException {
+        if (NativeIOBase.isNativeIOLibExist()) {
+            LOG.info("Create natvie bucket writer");
+            return new NativeArrowBucketWriter(this.identity.rowType, this.primaryKeys, this.partitionKeyList, this.conf);
         } else {
             String msg = "Cannot load lakesoul native writer";
             LOG.error(msg);

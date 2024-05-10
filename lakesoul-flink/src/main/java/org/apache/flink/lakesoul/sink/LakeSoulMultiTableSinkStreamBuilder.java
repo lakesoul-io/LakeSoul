@@ -69,8 +69,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 
-    public DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(DataStream<LakeSoulArrowWrapper> stream) {
-        context.conf.set(DYNAMIC_BUCKETING, false);
+    public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context, DataStream<LakeSoulArrowWrapper> stream) {
         LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
@@ -81,7 +80,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                 .withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig)
                 .build();
-        return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
+        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink")
                 .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 

@@ -1,5 +1,9 @@
 package org.apache.flink.lakesoul.test.connector;
 
+import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
@@ -22,8 +26,18 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(10, 1000L));
         String name = "Print Sink";
         PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
+
+        Configuration conf = new Configuration();
+        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        context.env = execEnv;
+        context.conf = conf;
+
+//        LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
+
+
         DataStreamSink<LakeSoulArrowWrapper> sink = source.addSink(printFunction).name(name);
         execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
+
 
     }
 }

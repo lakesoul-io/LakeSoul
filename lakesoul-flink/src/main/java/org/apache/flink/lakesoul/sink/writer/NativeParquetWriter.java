@@ -141,7 +141,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
         public long creationTime;
 
-        NativeWriterPendingFileRecoverable(String path, long creationTime) {
+        public NativeWriterPendingFileRecoverable(String path, long creationTime) {
             this.path = path;
             this.creationTime = creationTime;
         }

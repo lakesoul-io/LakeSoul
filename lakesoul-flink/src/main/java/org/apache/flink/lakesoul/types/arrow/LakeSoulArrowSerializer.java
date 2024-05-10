@@ -1,25 +1,24 @@
 package org.apache.flink.lakesoul.types.arrow;
 
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowStreamReader;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
+import org.apache.flink.core.io.SimpleVersionedSerialization;
+import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.table.runtime.arrow.ArrowUtils;
+import org.apache.flink.lakesoul.sink.state.TableSchemaIdentitySerializer;
+import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.channels.Channels;
 
 public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper> {
 
+    private static final SimpleVersionedSerializer<TableSchemaIdentity> tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
+
     public LakeSoulArrowSerializer(Schema schema) {
+
     }
 
     /**
@@ -99,21 +98,15 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      */
     @Override
     public void serialize(LakeSoulArrowWrapper record, DataOutputView target) throws IOException {
-        VectorSchemaRoot recordBatch = record.getVectorSchemaRoot();
-        try (
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                ArrowStreamWriter writer = new ArrowStreamWriter(recordBatch, /*DictionaryProvider=*/null, Channels.newChannel(out));
-        ) {
-            writer.start();
-            writer.writeBatch();
-            writer.end();
-            byte[] bytes = out.toByteArray();
-            target.writeInt(bytes.length);
+        byte[] encodedTableInfo = record.getEncodedTableInfo();
+        target.writeInt(encodedTableInfo.length);
+        target.write(encodedTableInfo);
 
-            target.write(bytes);
-        }
+        byte[] encodedBatch = record.getEncodedBatch();
 
-
+        target.writeInt(encodedBatch.length);
+        target.write(encodedBatch);
+        
     }
 
     /**
@@ -128,16 +121,13 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
     @Override
     public LakeSoulArrowWrapper deserialize(DataInputView source) throws IOException {
         int len = source.readInt();
-        byte[] bytes = new byte[len];
-        source.read(bytes);
+        byte[] encodedTableInfo = new byte[len];
+        source.read(encodedTableInfo);
+        len = source.readInt();
+        byte[] encodedBatch = new byte[len];
+        source.read(encodedBatch);
 
-        VectorSchemaRoot recordBatch = null;
-        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(bytes), ArrowUtils.getRootAllocator())) {
-            reader.loadNextBatch();
-            recordBatch = reader.getVectorSchemaRoot();
-            Schema schema = recordBatch.getSchema();
-            return new LakeSoulArrowWrapper(null, recordBatch);
-        }
+        return new LakeSoulArrowWrapper(encodedTableInfo, encodedBatch);
     }
 
     /**
@@ -154,16 +144,13 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
     @Override
     public LakeSoulArrowWrapper deserialize(LakeSoulArrowWrapper reuse, DataInputView source) throws IOException {
         int len = source.readInt();
-        byte[] bytes = new byte[len];
-        source.read(bytes);
+        byte[] encodedTableInfo = new byte[len];
+        source.read(encodedTableInfo);
+        len = source.readInt();
+        byte[] encodedBatch = new byte[len];
+        source.read(encodedBatch);
 
-        VectorSchemaRoot recordBatch = null;
-        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(bytes), ArrowUtils.getRootAllocator())) {
-            reader.loadNextBatch();
-            recordBatch = reader.getVectorSchemaRoot();
-            Schema schema = recordBatch.getSchema();
-        }
-        return new LakeSoulArrowWrapper(null, recordBatch);
+        return new LakeSoulArrowWrapper(encodedTableInfo, encodedBatch);
     }
 
     /**
@@ -179,7 +166,16 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
      */
     @Override
     public void copy(DataInputView source, DataOutputView target) throws IOException {
+        int len = source.readInt();
+        target.writeInt(len);
 
+        byte[] bytes = new byte[len];
+        source.read(bytes);
+        target.write(bytes);
+
+        TableSchemaIdentity identity = SimpleVersionedSerialization.readVersionAndDeSerialize(
+                tableSchemaIdentitySerializer, source);
+        SimpleVersionedSerialization.writeVersionAndSerialize(tableSchemaIdentitySerializer, identity, target);
     }
 
     @Override

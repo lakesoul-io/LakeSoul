@@ -1,5 +1,7 @@
 package org.apache.flink.lakesoul.test.mock;
 
+import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.dmetasoul.lakesoul.meta.entity.TableInfoOrBuilder;
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -19,14 +21,19 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowTypeInfo;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
+import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Arrays;
+import java.util.Collections;
+
+import static org.apache.flink.lakesoul.test.AbstractTestBase.getTempDirUri;
 
 public class MockLakeSoulArrowSource {
 
@@ -80,7 +87,7 @@ public class MockLakeSoulArrowSource {
         public void run(SourceContext<LakeSoulArrowWrapper> ctx) throws Exception {
             for (int i = 0; i < count; i++) {
                 long now = System.currentTimeMillis();
-                ctx.collect(new LakeSoulArrowWrapper(mockTableSchemaIdentity(now), mockVectorSchemaRoot(now)));
+                ctx.collect(new LakeSoulArrowWrapper(mockTableInfo(now), mockVectorSchemaRoot(now)));
                 Thread.sleep(interval);
             }
 
@@ -288,8 +295,8 @@ public class MockLakeSoulArrowSource {
         }
 
 
-        private TableSchemaIdentity mockTableSchemaIdentity(long now) {
-            return null;
+        private TableInfo mockTableInfo(long now) {
+            return TableInfo.newBuilder().build();
         }
 
         /**
