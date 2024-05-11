@@ -17,6 +17,7 @@ import org.apache.flink.table.types.logical.*;
 import org.apache.fury.Fury;
 import org.apache.fury.ThreadLocalFury;
 import org.apache.fury.config.Language;
+import org.apache.fury.io.FuryInputStream;
 
 import java.io.Serializable;
 
@@ -87,6 +88,6 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
 
     @Override
     public BinarySourceRecord read(Kryo kryo, Input input, Class<BinarySourceRecord> type) {
-        return fury.execute(f -> f.deserializeJavaObject(input.getBuffer(), BinarySourceRecord.class));
+        return fury.execute(f -> f.deserializeJavaObject(new FuryInputStream(input), BinarySourceRecord.class));
     }
 }
