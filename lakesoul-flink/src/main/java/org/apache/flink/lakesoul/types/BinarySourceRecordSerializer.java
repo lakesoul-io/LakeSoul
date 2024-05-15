@@ -81,7 +81,8 @@ public class BinarySourceRecordSerializer extends Serializer<BinarySourceRecord>
     @Override
     public void write(Kryo kryo, Output output, BinarySourceRecord object) {
         fury.execute(f -> {
-            f.serializeJavaObject(output, object);
+            byte[] buf = f.serializeJavaObject(object);
+            output.write(buf);
             return 0;
         });
     }
