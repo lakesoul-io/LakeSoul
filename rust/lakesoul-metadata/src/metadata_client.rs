@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::{collections::HashMap, env, fs, vec};
 use std::fmt::{Debug, Formatter};
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::{collections::HashMap, env, fs, vec};
 
 use prost::Message;
 use tokio::sync::Mutex;
@@ -17,11 +17,11 @@ use proto::proto::entity::{
     self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo, TableInfo, TableNameId, TablePathId,
 };
 
-use crate::error::{LakeSoulMetaDataError, Result};
 use crate::{
-    clean_meta_for_test, create_connection, execute_insert, execute_query, execute_update, DaoType,
-    PreparedStatementMap, PARAM_DELIM, PARTITION_DESC_DELIM,
+    clean_meta_for_test, create_connection, DaoType, execute_insert, execute_query, execute_update,
+    PARAM_DELIM, PARTITION_DESC_DELIM, PreparedStatementMap,
 };
+use crate::error::{LakeSoulMetaDataError, Result};
 
 pub struct MetaDataClient {
     client: Arc<Mutex<Client>>,
@@ -68,14 +68,14 @@ impl MetaDataClient {
                     config_map.get("lakesoul.pg.username=").unwrap_or(&"lakesoul_test"),
                     config_map.get("lakesoul.pg.password=").unwrap_or(&"lakesoul_test")
                 ))
-                .await
+                    .await
             }
             Err(_) => {
                 Self::from_config(
                     "host=127.0.0.1 port=5432 dbname=lakesoul_test user=lakesoul_test password=lakesoul_test"
                         .to_string(),
                 )
-                .await
+                    .await
             }
         }
     }
@@ -92,6 +92,14 @@ impl MetaDataClient {
             prepared,
             max_retry,
         })
+    }
+
+    pub fn client(&self) -> &Mutex<Client> {
+        self.client.as_ref()
+    }
+
+    pub fn prepared(&self) -> Arc<Mutex<PreparedStatementMap>> {
+        Arc::clone(&self.prepared)
     }
 
     pub async fn create_namespace(&self, namespace: Namespace) -> Result<()> {
@@ -114,7 +122,7 @@ impl MetaDataClient {
             DaoType::DeleteNamespaceByNamespace as i32,
             [namespace].join(PARAM_DELIM),
         )
-        .await?;
+            .await?;
         Ok(())
     }
 
@@ -144,14 +152,14 @@ impl MetaDataClient {
             DaoType::DeletePartitionInfoByTableId as i32,
             [table_id].join(PARAM_DELIM),
         )
-        .await
+            .await
     }
     pub async fn delete_data_commit_info_by_table_id(&self, table_id: &str) -> Result<i32> {
         self.execute_update(
             DaoType::DeleteDataCommitInfoByTableId as i32,
             [table_id].join(PARAM_DELIM),
         )
-        .await
+            .await
     }
 
     pub async fn delete_table_info_by_id_and_path(&self, id: &str, path: &str) -> Result<i32> {
@@ -167,7 +175,7 @@ impl MetaDataClient {
                 insert_type,
                 wrapper.clone(),
             )
-            .await
+                .await
             {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
@@ -185,7 +193,7 @@ impl MetaDataClient {
                 update_type,
                 joined_string.clone(),
             )
-            .await
+                .await
             {
                 Ok(count) => return Ok(count),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
@@ -203,7 +211,7 @@ impl MetaDataClient {
                 query_type,
                 joined_string.clone(),
             )
-            .await
+                .await
             {
                 Ok(encoded) => return Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?),
                 Err(_) if times < self.max_retry as i64 - 1 => continue,
@@ -221,7 +229,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_table_info(&self, table_info: &TableInfo) -> Result<i32> {
@@ -232,7 +240,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_table_name_id(&self, table_name_id: &TableNameId) -> Result<i32> {
@@ -243,7 +251,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_table_path_id(&self, table_path_id: &TablePathId) -> Result<i32> {
@@ -254,7 +262,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn insert_data_commit_info(&self, data_commit_info: &DataCommitInfo) -> Result<i32> {
@@ -265,7 +273,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     async fn transaction_insert_partition_info(&self, partition_info_list: Vec<PartitionInfo>) -> Result<i32> {
@@ -276,7 +284,7 @@ impl MetaDataClient {
                 ..Default::default()
             },
         )
-        .await
+            .await
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
@@ -287,7 +295,7 @@ impl MetaDataClient {
             comment: "".to_string(),
             domain: "public".to_string(),
         })
-        .await
+            .await
     }
 
     pub async fn commit_data(&self, meta_info: MetaInfo, commit_op: CommitOp) -> Result<()> {
@@ -419,7 +427,7 @@ impl MetaDataClient {
             CommitOp::try_from(commit_op)
                 .map_err(|_| LakeSoulMetaDataError::Internal("unknown commit_op".to_string()))?,
         )
-        .await
+            .await
     }
 
     pub fn get_table_domain(&self, _table_id: &str) -> Result<String> {
@@ -448,8 +456,8 @@ impl MetaDataClient {
             DaoType::SelectNamespaceByNamespace as i32,
             [namespace].join(PARAM_DELIM),
         )
-        .await
-        .map(|wrapper| wrapper.namespace[0].clone())
+            .await
+            .map(|wrapper| wrapper.namespace[0].clone())
     }
 
     pub async fn get_table_name_id_by_table_name(&self, table_name: &str, namespace: &str) -> Result<TableNameId> {
@@ -522,22 +530,20 @@ impl MetaDataClient {
     }
 
     pub async fn get_data_files_of_partitions(
-        &self, 
-        partition_list: Vec<PartitionInfo>, 
+        &self,
+        partition_list: Vec<PartitionInfo>,
     ) -> Result<Vec<String>> {
         let mut data_files = Vec::<String>::new();
         for partition_info in &partition_list {
             let _data_file_list = self.get_data_files_of_single_partition(partition_info).await?;
             data_files.extend_from_slice(&_data_file_list);
-            
         }
         Ok(data_files)
-
     }
 
     pub async fn get_data_files_of_single_partition(
-        &self, 
-        partition_info: &PartitionInfo, 
+        &self,
+        partition_info: &PartitionInfo,
     ) -> Result<Vec<String>> {
         let data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
         // let data_commit_info_list = Vec::<DataCommitInfo>::new();
@@ -552,7 +558,6 @@ impl MetaDataClient {
             })
             .collect::<Vec<String>>();
         Ok(data_file_list)
-
     }
 
 

@@ -12,9 +12,12 @@ use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
 use std::ptr::{NonNull, null, null_mut};
 
-use log::debug;
 use prost::bytes::BufMut;
 use prost::Message;
+use time_macros::format_description;
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::LocalTime;
 
 use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
@@ -386,7 +389,7 @@ pub extern "C" fn create_split_desc_array(
     let table_name = c_char2str(table_name);
     let namespace = c_char2str(namespace);
     let result: Result<*mut c_char, LakeSoulMetaDataError> = runtime.block_on(async {
-        let ret = lakesoul_metadata::transfusion::split_desc_array(client, prepared, table_name, namespace).await?;
+        let ret = lakesoul_metadata::transfusion::split_desc_array((client, prepared), table_name, namespace).await?;
         let v = serde_json::to_vec(&ret)?;
         Ok(CString::new(v)
             .map_err(|e| LakeSoulMetaDataError::Internal(e.to_string()))?
@@ -448,9 +451,17 @@ pub unsafe extern "C" fn free_c_string(c_string: *mut c_char) {
 
 /// init a global logger for rust code
 /// now use RUST_LOG=LEVEL to activate
-/// TODO use tokio::tracing
-/// TODO add logger format
+/// TODO refactor this
 #[no_mangle]
 pub extern "C" fn rust_logger_init() {
-    let _ = env_logger::try_init();
+    let timer = LocalTime::new(format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second]"
+    ));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_line_number(true)
+        .with_timer(timer)
+        .try_init();
 }

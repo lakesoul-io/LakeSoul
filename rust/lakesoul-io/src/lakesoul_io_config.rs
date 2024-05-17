@@ -99,6 +99,7 @@ pub struct LakeSoulIOConfig {
     pub(crate) use_dynamic_partition: bool,
 }
 
+
 impl LakeSoulIOConfig {
     pub fn schema(&self) -> SchemaRef {
         self.schema.0.clone()
@@ -520,6 +521,7 @@ pub fn create_session_context_with_planner(
 
     Ok(SessionContext::new_with_state(state))
 }
+
 
 #[cfg(test)]
 mod tests {

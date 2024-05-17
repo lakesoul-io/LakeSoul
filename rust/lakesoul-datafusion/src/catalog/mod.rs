@@ -20,9 +20,7 @@ use crate::error::{LakeSoulError, Result};
 // pub mod lakesoul_sink;
 // pub mod lakesoul_source;
 mod lakesoul_catalog;
-//  used in catalog_test, but still say unused_imports, I think it is a bug about rust-lint.
-// this is a workaround
-#[cfg(test)]
+#[allow(unused)]
 pub use lakesoul_catalog::*;
 mod lakesoul_namespace;
 pub use lakesoul_namespace::*;

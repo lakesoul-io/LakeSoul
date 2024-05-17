@@ -2,18 +2,21 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::catalog::LakeSoulNamespace;
-use datafusion::catalog::schema::SchemaProvider;
-use datafusion::catalog::CatalogProvider;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::prelude::SessionContext;
-use lakesoul_metadata::error::LakeSoulMetaDataError;
-use lakesoul_metadata::MetaDataClientRef;
-use proto::proto::entity::Namespace;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
+
+use datafusion::catalog::CatalogProvider;
+use datafusion::catalog::schema::SchemaProvider;
+use datafusion::error::{DataFusionError, Result};
+use datafusion::prelude::SessionContext;
 use tokio::runtime::Handle;
+
+use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::MetaDataClientRef;
+use proto::proto::entity::Namespace;
+
+use crate::catalog::LakeSoulNamespace;
 
 /// A metadata wrapper
 /// may need a lock
@@ -105,6 +108,7 @@ impl CatalogProvider for LakeSoulCatalog {
             domain: "public".into(),
         };
         let _ = futures::executor::block_on(async move {
+            // need a special runtime to finish sync jobs
             Handle::current()
                 .spawn(async move { client.create_namespace(np).await })
                 .await

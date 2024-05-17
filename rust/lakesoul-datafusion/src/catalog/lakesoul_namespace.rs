@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::catalog::create_io_config_builder;
+use std::any::Any;
+use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use datafusion::catalog::schema::SchemaProvider;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -10,17 +13,17 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
+use tokio::runtime::Handle;
+use tokio::sync::RwLock;
+use tracing::debug;
+
 use lakesoul_io::datasource::file_format::LakeSoulParquetFormat;
 use lakesoul_io::datasource::listing::LakeSoulListingTable;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::MetaDataClientRef;
-use std::any::Any;
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use tokio::runtime::Handle;
-use tokio::sync::RwLock;
-use tracing::debug;
-use tracing::field::debug;
+
+use crate::catalog::create_io_config_builder;
+use crate::datasource::table_provider::LakeSoulTableProvider;
 
 /// A [`SchemaProvider`] that query pg to automatically discover tables.
 /// Due to the restriction of datafusion 's api, "CREATE [EXTERNAL] Table ... " is not supported.
@@ -91,20 +94,19 @@ impl SchemaProvider for LakeSoulNamespace {
                 .await
                 .expect("spawn failed")
         })
-        .into_iter()
-        .map(|v| v.table_name)
-        .collect()
+            .into_iter()
+            .map(|v| v.table_name)
+            .collect()
     }
 
     /// Search table by name
     /// return LakeSoulListing table
     async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
         let _guard = self.namespace_lock.read().await;
-        if self
+        if let Ok(table_info) = self
             .metadata_client
             .get_table_info_by_table_name(name, &self.namespace)
             .await
-            .is_ok()
         {
             debug!("call table() on table: {}.{}", &self.namespace, name);
             let config;
@@ -115,27 +117,40 @@ impl SchemaProvider for LakeSoulNamespace {
             } else {
                 return None;
             }
-            // Maybe should change
-            let file_format = Arc::new(LakeSoulParquetFormat::new(
-                Arc::new(ParquetFormat::new()),
-                config.clone(),
-            ));
-            if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
+            let Ok(provider) = LakeSoulTableProvider::try_new(
                 &self.context.state(),
+                Arc::clone(&self.metadata_client),
                 config,
-                file_format,
+                Arc::new(table_info),
                 // care this
                 false,
-            )
-            .await
-            {
-                debug!("get table provider success");
-                return Some(Arc::new(table_provider));
-            }
-            debug("get table provider fail");
-            return None;
+            ).await else {
+                debug!("get table provider fail");
+                return None;
+            };
+            debug!("get table provider success");
+            Some(Arc::new(provider))
+            // Maybe should change
+            // let file_format = Arc::new(LakeSoulParquetFormat::new(
+            //     Arc::new(ParquetFormat::new()),
+            //     config.clone(),
+            // ));
+            // if let Ok(table_provider) = LakeSoulListingTable::new_with_config_and_format(
+            //     &self.context.state(),
+            //     config,
+            //     file_format,
+            //     // care this
+            //     false,
+            // )
+            //     .await
+            // {
+            //     debug!("get table provider success");
+            //     return Some(Arc::new(table_provider));
+            // }
+            // debug!("get table provider fail");
+            // return None;
         } else {
-            debug("get table provider fail");
+            debug!("get table provider fail");
             None
         }
     }
@@ -183,7 +198,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                 // care this
                                 false,
                             )
-                            .await
+                                .await
                             {
                                 debug!("get table provider success");
                                 client
@@ -192,7 +207,7 @@ impl SchemaProvider for LakeSoulNamespace {
                                     .map_err(|_| DataFusionError::External("delete table info failed".into()))?;
                                 return Ok(Some(Arc::new(table_provider) as Arc<dyn TableProvider>));
                             }
-                            debug("get table provider fail");
+                            debug!("get table provider fail");
                             Err(DataFusionError::External("get table provider failed".into()))
                         }
                         Err(e) => match e {
@@ -223,8 +238,8 @@ impl SchemaProvider for LakeSoulNamespace {
                 .await
                 .expect("spawn failed")
         })
-        .into_iter()
-        .map(|v| v.table_name)
-        .any(|s| s == name)
+            .into_iter()
+            .map(|v| v.table_name)
+            .any(|s| s == name)
     }
 }

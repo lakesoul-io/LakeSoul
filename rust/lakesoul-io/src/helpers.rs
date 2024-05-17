@@ -232,4 +232,3 @@ pub async fn infer_schema(sc: &SessionState, table_paths: &[ListingTableUrl], fi
     // Resolve the schema
     file_format.infer_schema(sc, &store, &objects).await
 }
-
