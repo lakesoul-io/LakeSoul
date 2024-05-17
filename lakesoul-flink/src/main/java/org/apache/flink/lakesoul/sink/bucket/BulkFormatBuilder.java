@@ -46,7 +46,7 @@ public abstract class BulkFormatBuilder<IN, T extends BulkFormatBuilder<IN, T>>
                 conf,
                 DEFAULT_BUCKET_CHECK_INTERVAL,
                 OnCheckpointRollingPolicy.build(),
-                new DefaultLakeSoulWriterBucketFactory(),
+                new DefaultLakeSoulWriterBucketFactory(conf),
                 OutputFileConfig.builder().build());
     }
 

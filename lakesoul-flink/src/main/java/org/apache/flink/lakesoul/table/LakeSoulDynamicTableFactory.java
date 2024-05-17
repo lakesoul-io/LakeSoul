@@ -4,6 +4,8 @@
 
 package org.apache.flink.lakesoul.table;
 
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
@@ -22,9 +24,12 @@ import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
+import org.apache.flink.table.runtime.arrow.ArrowUtils;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FACTORY_IDENTIFIER;
@@ -85,29 +90,32 @@ public class LakeSoulDynamicTableFactory implements DynamicTableSinkFactory, Dyn
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
+        RowType tableRowType = (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType();
         List<String> pkColumns;
         if (schema.getPrimaryKey().isPresent()) {
             pkColumns = schema.getPrimaryKey().get().getColumns();
         } else {
             pkColumns = new ArrayList<>();
         }
-        catalogTable.getPartitionKeys();
-        boolean isStreaming = true;
+        List<String> partitionColumns = catalogTable.getPartitionKeys();
+
+        boolean isBounded = false;
         final RuntimeExecutionMode mode = context.getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
         if (mode == RuntimeExecutionMode.AUTOMATIC) {
             throw new RuntimeException(
                     String.format("Runtime execution mode '%s' is not supported yet.", mode));
         } else {
             if (mode == RuntimeExecutionMode.BATCH) {
-                isStreaming = false;
+                isBounded = true;
             }
         }
 
         return new LakeSoulLookupTableSource(
                 new TableId(io.debezium.relational.TableId.parse(objectIdentifier.asSummaryString())),
-                (RowType) catalogTable.getResolvedSchema().toSourceRowDataType().notNull().getLogicalType(),
-                isStreaming,
+                tableRowType,
+                isBounded,
                 pkColumns,
+                partitionColumns,
                 catalogTable,
                 options.toMap()
         );

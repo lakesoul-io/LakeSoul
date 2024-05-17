@@ -47,7 +47,7 @@ impl LakeSoulReader {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let schema: SchemaRef = self.config.schema.0.clone();
+        let target_schema: SchemaRef = self.config.target_schema.0.clone();
         if self.config.files.is_empty() {
             Err(DataFusionError::Internal(
                 "LakeSoulReader has wrong number of file".to_string(),
@@ -69,7 +69,7 @@ impl LakeSoulReader {
             let filters = convert_filter(&dataframe, self.config.filter_strs.clone(), self.config.filter_protos.clone())?;
             let stream = prune_filter_and_execute(
                 dataframe,
-                schema.clone(),
+                target_schema.clone(),
                 filters,
                 self.config.batch_size,
             )

@@ -456,12 +456,11 @@ public class FlinkUtil {
         }
     }
 
-    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(String tid,
+    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(TableInfo tableInfo,
                                                                                               DataFileInfo[] dfinfos) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
-        TableInfo tif = DataOperation.dbManager().getTableInfoByTableId(tid);
         for (DataFileInfo pif : dfinfos) {
-            if (isExistHashPartition(tif) && pif.file_bucket_id() != -1) {
+            if (isExistHashPartition(tableInfo) && pif.file_bucket_id() != -1) {
                 splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(pif.file_bucket_id(), v -> new ArrayList<>())
                         .add(new Path(pif.path()));

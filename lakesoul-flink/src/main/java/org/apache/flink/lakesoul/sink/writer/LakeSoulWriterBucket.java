@@ -4,10 +4,14 @@
 
 package org.apache.flink.lakesoul.sink.writer;
 
+import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.apache.flink.table.data.RowData;
@@ -47,6 +51,7 @@ public class LakeSoulWriterBucket {
     private final OutputFileConfig outputFileConfig;
 
     private final String uniqueId;
+    private final Configuration conf;
 
     private long tsMs;
 
@@ -67,9 +72,11 @@ public class LakeSoulWriterBucket {
      * Constructor to create a new empty bucket.
      */
     private LakeSoulWriterBucket(
-            int subTaskId, TableSchemaIdentity tableId,
+            int subTaskId,
+            TableSchemaIdentity tableId,
             String bucketId,
             Path bucketPath,
+            Configuration conf,
             BucketWriter<RowData, String> bucketWriter,
             RollingPolicy<RowData, String> rollingPolicy,
             OutputFileConfig outputFileConfig) {
@@ -77,6 +84,7 @@ public class LakeSoulWriterBucket {
         this.tableId = checkNotNull(tableId);
         this.bucketId = checkNotNull(bucketId);
         this.bucketPath = checkNotNull(bucketPath);
+        this.conf = checkNotNull(conf);
         this.bucketWriter = checkNotNull(bucketWriter);
         this.rollingPolicy = checkNotNull(rollingPolicy);
         this.outputFileConfig = checkNotNull(outputFileConfig);
@@ -91,6 +99,7 @@ public class LakeSoulWriterBucket {
     private LakeSoulWriterBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
+            Configuration conf,
             BucketWriter<RowData, String> partFileFactory,
             RollingPolicy<RowData, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
@@ -100,6 +109,7 @@ public class LakeSoulWriterBucket {
                 subTaskId, tableId,
                 bucketState.getBucketId(),
                 bucketState.getBucketPath(),
+                conf,
                 partFileFactory,
                 rollingPolicy,
                 outputFileConfig);
@@ -171,12 +181,16 @@ public class LakeSoulWriterBucket {
         long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
                 ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst().get().get(0)).creationTime;
 
-        // this.pendingFiles would be cleared later, we need to make a copy
-//        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
-//        committables.add(new LakeSoulMultiTableSinkCommittable(
-//                getBucketId(),
-//                tmpPending,
-//                time, tableId, tsMs, dmlType));
+        if (dmlType.equals(LakeSoulSinkOptions.DELETE)) {
+            List<PartitionInfo> sourcePartitionInfoList = JniWrapper
+                    .parseFrom(Base64.getDecoder().decode(sourcePartitionInfo))
+                    .getPartitionInfoList();
+
+            for (PartitionInfo partitionInfo : sourcePartitionInfoList) {
+                String partitionDesc = partitionInfo.getPartitionDesc();
+                pendingFilesMap.computeIfAbsent(partitionDesc, _partitionDesc -> new ArrayList());
+            }
+        }
         committables.add(new LakeSoulMultiTableSinkCommittable(
 //                getBucketId(),
                 tableId,
@@ -312,12 +326,13 @@ public class LakeSoulWriterBucket {
             final TableSchemaIdentity tableId,
             final String bucketId,
             final Path bucketPath,
+            final Configuration conf,
             final BucketWriter<RowData, String> bucketWriter,
             final RollingPolicy<RowData, String> rollingPolicy,
             final OutputFileConfig outputFileConfig) {
         return new LakeSoulWriterBucket(
                 subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                bucketId, bucketPath, conf, bucketWriter, rollingPolicy, outputFileConfig);
     }
 
     /**
@@ -333,9 +348,10 @@ public class LakeSoulWriterBucket {
             int subTaskId,
             final TableSchemaIdentity tableId,
             final BucketWriter<RowData, String> bucketWriter,
+            final Configuration conf,
             final RollingPolicy<RowData, String> rollingPolicy,
             final LakeSoulWriterBucketState bucketState,
             final OutputFileConfig outputFileConfig) throws IOException {
-        return new LakeSoulWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
+        return new LakeSoulWriterBucket(subTaskId, tableId, conf, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
     }
 }

@@ -65,6 +65,14 @@ public class NativeIOBase implements AutoCloseable {
         libLakeSoulIO.rust_logger_init();
     }
 
+    public ObjectReferenceManager<IntegerCallback> getIntReferenceManager() {
+        return intReferenceManager;
+    }
+
+    public ObjectReferenceManager<BooleanCallback> getBoolReferenceManager() {
+        return boolReferenceManager;
+    }
+
     public void setExternalAllocator(BufferAllocator allocator) {
         this.allocator = allocator;
     }
@@ -100,6 +108,16 @@ public class NativeIOBase implements AutoCloseable {
         CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
         Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_schema(ioConfigBuilder, ffiSchema.memoryAddress());
+        tmpProvider.close();
+        ffiSchema.close();
+    }
+
+    public void setPartitionSchema(Schema schema) {
+        assert ioConfigBuilder != null;
+        ArrowSchema ffiSchema = ArrowSchema.allocateNew(allocator);
+        CDataDictionaryProvider tmpProvider = new CDataDictionaryProvider();
+        Data.exportSchema(allocator, schema, tmpProvider, ffiSchema);
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_partition_schema(ioConfigBuilder, ffiSchema.memoryAddress());
         tmpProvider.close();
         ffiSchema.close();
     }

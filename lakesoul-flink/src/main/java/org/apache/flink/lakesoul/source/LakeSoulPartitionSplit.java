@@ -14,7 +14,7 @@ import java.util.stream.Collectors;
 /**
  * Source split for LakeSoul's flink source
  */
-public class LakeSoulSplit implements SourceSplit, Serializable {
+public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
     private final String id;
     private long skipRecord = 0;
@@ -22,14 +22,14 @@ public class LakeSoulSplit implements SourceSplit, Serializable {
     private final List<Path> files;
     private int bucketId = -1;
 
-    public LakeSoulSplit(String id, List<Path> files, long skipRecord) {
+    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord) {
         assert id != null;
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
     }
 
-    public LakeSoulSplit(String id, List<Path> files, long skipRecord, int bucketId) {
+    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, int bucketId) {
         assert id != null;
         this.id = id;
         this.files = files;

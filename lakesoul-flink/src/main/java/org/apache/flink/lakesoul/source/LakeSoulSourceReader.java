@@ -16,34 +16,34 @@ import java.util.function.Supplier;
 
 public class LakeSoulSourceReader
         extends SingleThreadMultiplexSourceReaderBase<
-        RowData, RowData, LakeSoulSplit, LakeSoulSplit> {
+        RowData, RowData, LakeSoulPartitionSplit, LakeSoulPartitionSplit> {
 
-    public LakeSoulSourceReader(Supplier<SplitReader<RowData, LakeSoulSplit>> splitReaderSupplier,
-                                RecordEmitter<RowData, RowData, LakeSoulSplit> recordEmitter,
+    public LakeSoulSourceReader(Supplier<SplitReader<RowData, LakeSoulPartitionSplit>> splitReaderSupplier,
+                                RecordEmitter<RowData, RowData, LakeSoulPartitionSplit> recordEmitter,
                                 Configuration config,
                                 SourceReaderContext context) {
         super(splitReaderSupplier, recordEmitter, config, context);
     }
 
     @Override
-    public void start(){
-        if(getNumberOfCurrentlyAssignedSplits() == 0) {
+    public void start() {
+        if (getNumberOfCurrentlyAssignedSplits() == 0) {
             context.sendSplitRequest();
         }
     }
 
     @Override
-    protected void onSplitFinished(Map<String, LakeSoulSplit> finishedSplitIds) {
+    protected void onSplitFinished(Map<String, LakeSoulPartitionSplit> finishedSplitIds) {
         context.sendSplitRequest();
     }
 
     @Override
-    protected LakeSoulSplit initializedState(LakeSoulSplit split) {
+    protected LakeSoulPartitionSplit initializedState(LakeSoulPartitionSplit split) {
         return split;
     }
 
     @Override
-    protected LakeSoulSplit toSplitType(String splitId, LakeSoulSplit splitState) {
+    protected LakeSoulPartitionSplit toSplitType(String splitId, LakeSoulPartitionSplit splitState) {
 
         return splitState;
     }

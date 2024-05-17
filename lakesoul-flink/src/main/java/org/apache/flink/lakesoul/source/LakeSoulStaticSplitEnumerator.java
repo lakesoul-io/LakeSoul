@@ -14,22 +14,23 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 
-public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulSplit, LakeSoulPendingSplits> {
+public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulStaticSplitEnumerator.class);
 
-    private final SplitEnumeratorContext<LakeSoulSplit> context;
+    private final SplitEnumeratorContext<LakeSoulPartitionSplit> context;
 
     private final LakeSoulSimpleSplitAssigner splitAssigner;
 
-    public LakeSoulStaticSplitEnumerator(SplitEnumeratorContext<LakeSoulSplit> context,
+    public LakeSoulStaticSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> context,
                                          LakeSoulSimpleSplitAssigner splitAssigner) {
         this.context = context;
         this.splitAssigner = splitAssigner;
     }
 
     @Override
-    public void start() {}
+    public void start() {
+    }
 
     @Override
     public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
@@ -38,9 +39,9 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulSp
             return;
         }
 
-        final Optional<LakeSoulSplit> nextSplit = splitAssigner.getNext();
+        final Optional<LakeSoulPartitionSplit> nextSplit = splitAssigner.getNext();
         if (nextSplit.isPresent()) {
-            final LakeSoulSplit split = nextSplit.get();
+            final LakeSoulPartitionSplit split = nextSplit.get();
             context.assignSplit(split, subtaskId);
             LOG.info("Assigned split to subtask {} : {}", subtaskId, split);
         } else {
@@ -50,13 +51,14 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulSp
     }
 
     @Override
-    public void addSplitsBack(List<LakeSoulSplit> splits, int subtaskId) {
+    public void addSplitsBack(List<LakeSoulPartitionSplit> splits, int subtaskId) {
         LOG.info("Add split back: {}", splits);
         splitAssigner.addSplits(splits);
     }
 
     @Override
-    public void addReader(int subtaskId) {}
+    public void addReader(int subtaskId) {
+    }
 
     @Override
     public LakeSoulPendingSplits snapshotState(long checkpointId) throws Exception {
@@ -65,5 +67,6 @@ public class LakeSoulStaticSplitEnumerator implements SplitEnumerator<LakeSoulSp
     }
 
     @Override
-    public void close() throws IOException {}
+    public void close() throws IOException {
+    }
 }

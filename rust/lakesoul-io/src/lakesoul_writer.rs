@@ -212,7 +212,7 @@ impl MultiPartAsyncWriter {
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
             16 * 1024 * 1024, // 16kb
         ))));
-        let schema = uniform_schema(config.schema.0.clone());
+        let schema = uniform_schema(config.target_schema.0.clone());
 
         let schema_projection_excluding_range = 
             schema
@@ -351,7 +351,7 @@ impl SortAsyncWriter {
         runtime: Arc<Runtime>,
     ) -> Result<Self> {
         let _ = runtime.enter();
-        let schema = config.schema.0.clone();
+        let schema = config.target_schema.0.clone();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
         let tx = receiver_stream_builder.tx();
         let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema.clone());
@@ -362,7 +362,7 @@ impl SortAsyncWriter {
             // add aux sort cols to sort expr
             .chain(config.aux_sort_cols.iter())
             .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &config.schema.0)?;
+                let col = Column::new_with_schema(pk.as_str(), &config.target_schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -376,7 +376,7 @@ impl SortAsyncWriter {
             sort_exec
         } else {
             let proj_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = config
-                .schema
+                .target_schema
                 .0
                 .fields
                 .iter()
@@ -385,7 +385,7 @@ impl SortAsyncWriter {
                         // exclude aux sort cols
                         None
                     } else {
-                        Some(col(f.name().as_str(), &config.schema.0).map(|e| (e, f.name().clone())))
+                        Some(col(f.name().as_str(), &config.target_schema.0).map(|e| (e, f.name().clone())))
                     }
                 })
                 .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>>>()?;
@@ -499,7 +499,7 @@ impl PartitioningAsyncWriter {
         runtime: Arc<Runtime>,
     ) -> Result<Self> {
         let _ = runtime.enter();
-        let schema = config.schema.0.clone();
+        let schema = config.target_schema.0.clone();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
         let tx = receiver_stream_builder.tx();
         let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema.clone());
@@ -554,7 +554,7 @@ impl PartitioningAsyncWriter {
             // add aux sort cols to sort expr
             .chain(config.aux_sort_cols.iter())
             .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &config.schema.0)?;
+                let col = Column::new_with_schema(pk.as_str(), &config.target_schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -572,7 +572,7 @@ impl PartitioningAsyncWriter {
             sort_exec
         } else {
             let proj_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = config
-                .schema
+                .target_schema
                 .0
                 .fields
                 .iter()
@@ -581,7 +581,7 @@ impl PartitioningAsyncWriter {
                         // exclude aux sort cols
                         None
                     } else {
-                        Some(col(f.name().as_str(), &config.schema.0).map(|e| (e, f.name().clone())))
+                        Some(col(f.name().as_str(), &config.target_schema.0).map(|e| (e, f.name().clone())))
                     }
                 })
                 .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>>>()?;
@@ -811,7 +811,7 @@ impl SyncSendableMutableLakeSoulWriter {
             // if aux sort cols exist, we need to adjust the schema of final writer
             // to exclude all aux sort cols
             let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
-                let schema = config.schema.0.clone();
+                let schema = config.target_schema.0.clone();
                 let proj_indices = schema
                     .fields
                     .iter()
@@ -820,7 +820,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     .collect::<Result<Vec<usize>>>()?;
                 Arc::new(schema.project(proj_indices.borrow())?)
             } else {
-                config.schema.0.clone()
+                config.target_schema.0.clone()
             };
 
 
@@ -831,12 +831,12 @@ impl SyncSendableMutableLakeSoulWriter {
             } else if !config.primary_keys.is_empty() {
                 // sort primary key table
                 
-                writer_config.schema = IOSchema(uniform_schema(writer_schema));
+                writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
                 let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
             } else {
                 // else multipart
-                writer_config.schema = IOSchema(uniform_schema(writer_schema));
+                writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
                 let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
                 Box::new(writer)
             };

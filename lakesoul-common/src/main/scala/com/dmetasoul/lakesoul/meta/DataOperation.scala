@@ -60,7 +60,7 @@ object DataOperation {
   val dbManager = new DBManager
 
   def getTableDataInfo(tableId: String): Array[DataFileInfo] = {
-    getTableDataInfo(MetaVersion.getAllPartitionInfo(tableId))
+    getTableDataInfo(MetaVersion.getAllPartitionInfoScala(tableId))
   }
 
   def getTableDataInfo(partition_info_arr: Array[PartitionInfoScala]): Array[DataFileInfo] = {
@@ -76,7 +76,7 @@ object DataOperation {
 
 
   def getTableDataInfo(tableId: String, partitions: List[String]): Array[DataFileInfo] = {
-    val Pars = MetaVersion.getAllPartitionInfo(tableId)
+    val Pars = MetaVersion.getAllPartitionInfoScala(tableId)
     val partitionInfos = new ArrayBuffer[PartitionInfoScala]()
     for (partition_info <- Pars) {
       var contained = true;

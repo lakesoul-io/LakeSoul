@@ -236,6 +236,42 @@ public class DMLSuite extends AbstractTestBase {
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
     }
 
+    @Test
+    public void testDeleteAllPartitionedDataExactlySQL() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulSourceTableUserWithRange(tEnv);
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Bob', 110)").await();
+        try {
+            // LakeSoulTableSource::applyPartition will be called and LakeSoulTableSource::applyFilters will not be called
+            tEnv.executeSql("DELETE FROM user_info_1 where order_id = 3 and score > 60").await();
+        } catch (Throwable e) {
+            System.out.println("Unsupported DELETE SQL");
+        }
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_1";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
+    }
+
+    @Test
+    public void testDeletePartitionedCdcTable() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createLakeSoulPartitionedCDCSourceTableUser(tEnv);
+        tEnv.executeSql("INSERT INTO user_info_1 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Bob', 110)").await();
+        try {
+            // LakeSoulTableSource::applyPartition will be called and LakeSoulTableSource::applyFilters will not be called
+            tEnv.executeSql("DELETE FROM user_info_1 where order_id = 3").await();
+        } catch (Throwable e) {
+            System.out.println("Unsupported DELETE SQL");
+        }
+        StreamTableEnvironment streamEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        String testSelect = "select * from user_info_1";
+        TableImpl flinkTable = (TableImpl) streamEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
+    }
+
     private void createLakeSoulSourceNonPkTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info_2 (" +
                 "    order_id INT," +
@@ -285,6 +321,22 @@ public class DMLSuite extends AbstractTestBase {
                 "    name STRING PRIMARY KEY NOT ENFORCED," +
                 "    score DECIMAL" +
                 ") WITH (" +
+                "    'format'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'use_cdc'='true'," +
+                "    'path'='" + getTempDirUri("/lakeSource/user") +
+                "' )";
+        tEnvs.executeSql("DROP TABLE if exists user_info");
+        tEnvs.executeSql(createUserSql);
+    }
+
+    private void createLakeSoulPartitionedCDCSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
+        String createUserSql = "create table user_info (" +
+                "    order_id INT," +
+                "    name STRING PRIMARY KEY NOT ENFORCED," +
+                "    score DECIMAL" +
+                ") PARTITIONED BY ( order_id )" +
+                " WITH (" +
                 "    'format'='lakesoul'," +
                 "    'hashBucketNum'='2'," +
                 "    'use_cdc'='true'," +

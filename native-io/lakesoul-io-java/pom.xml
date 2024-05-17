@@ -29,10 +29,16 @@ SPDX-License-Identifier: Apache-2.0
         <scalatest.version>3.1.0</scalatest.version>
         <substrait.version>0.28.0</substrait.version>
         <protobuf.version>3.22.0</protobuf.version>
+        <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
     </properties>
 
 
     <dependencies>
+        <dependency>
+            <groupId>com.dmetasoul</groupId>
+            <artifactId>lakesoul-common</artifactId>
+            <version>${revision}</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>

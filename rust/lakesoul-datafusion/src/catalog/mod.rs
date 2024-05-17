@@ -46,7 +46,7 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
                     .ok_or(LakeSoulError::Internal("can not get $TMPDIR".to_string()))?,
                 table_name
             ),
-            table_schema: serde_json::to_string::<ArrowJavaSchema>(&config.schema().into())?,
+            table_schema: serde_json::to_string::<ArrowJavaSchema>(&config.target_schema().into())?,
             table_namespace: "default".to_string(),
             properties: serde_json::to_string(&LakeSoulTableProperty {
                 hash_bucket_num: Some(4),

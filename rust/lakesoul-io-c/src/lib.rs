@@ -17,16 +17,18 @@ use bytes::BufMut;
 
 use arrow::array::Array;
 pub use arrow::array::StructArray;
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_substrait::substrait::proto::Plan;
 use prost::Message;
 use tokio::runtime::{Builder, Runtime};
 
+use proto::proto::entity;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
+use lakesoul_io::helpers;
 use log::debug;
 
 #[repr(C)]
@@ -197,6 +199,21 @@ pub extern "C" fn lakesoul_config_builder_set_schema(
         let schema = Schema::try_from(&schema_data).unwrap();
         convert_to_opaque(
             from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_schema(Arc::new(schema)),
+        )
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_partition_schema(
+    builder: NonNull<IOConfigBuilder>,
+    schema_addr: c_ptrdiff_t,
+) -> NonNull<IOConfigBuilder> {
+    unsafe {
+        let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+        let schema_data = std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty());
+        let schema = Schema::try_from(&schema_data).unwrap();
+        convert_to_opaque(
+            from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_partition_schema(Arc::new(schema)),
         )
     }
 }
@@ -841,6 +858,52 @@ pub extern "C" fn create_tokio_runtime_from_builder(builder: NonNull<TokioRuntim
 #[no_mangle]
 pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
     from_nonnull(runtime).free::<Runtime>();
+}
+
+#[no_mangle]
+pub extern "C" fn apply_partition_filter(
+    callback: extern "C" fn(i32, *const c_char),
+    len: i32, 
+    jni_wrapper_addr: c_ptrdiff_t, 
+    schema_addr: *mut FFI_ArrowSchema, 
+    filter_len:i32, 
+    filter_addr: c_ptrdiff_t
+) -> NonNull<CResult<BytesResult>> {
+    let raw_parts = unsafe { 
+        std::slice::from_raw_parts(jni_wrapper_addr as *const u8, len as usize) 
+    };
+    let wrapper = entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
+
+    let dst = unsafe { 
+        slice::from_raw_parts(filter_addr as *const u8, filter_len as usize) 
+    };
+    let filter = Plan::decode(&*dst).unwrap();
+
+    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+    let schema_data = unsafe {
+        std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty())   
+    };
+    let schema = SchemaRef::from(Schema::try_from(&schema_data).unwrap());
+    
+    let filtered_partition = helpers::apply_partition_filter(wrapper, schema, filter);
+    
+    match filtered_partition {
+        Ok(wrapper) => {
+            let u8_vec = wrapper.encode_to_vec();
+            let len = u8_vec.len();
+            call_i32_result_callback(callback, len as i32, std::ptr::null());
+            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(u8_vec))
+        }
+        Err(e) => {
+            call_i32_result_callback(callback, -1, CString::new(e.to_string().as_str()).unwrap().into_raw());
+            convert_to_nonnull(CResult::<BytesResult>::new::<Vec<u8>>(vec![]))
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn free_bytes_result(bytes: NonNull<CResult<BytesResult>>) {
+    from_nonnull(bytes).free::<Vec<u8>>();
 }
 
 #[cfg(test)]

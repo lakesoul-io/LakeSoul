@@ -9,6 +9,7 @@ import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
 import io.substrait.proto.Plan;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
@@ -34,25 +35,28 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulOneSplitRecordsReader.class);
 
-    private final LakeSoulSplit split;
+    private final LakeSoulPartitionSplit split;
 
     private final Configuration conf;
 
     // requested schema of the sql query
-    private final RowType schema;
+    private final RowType projectedRowType;
 
     // schema to pass to native reader
-    private final RowType schemaWithPk;
+    private final RowType projectedRowTypeWithPk;
 
     private final long skipRecords;
 
     private final Set<String> finishedSplit;
+    private final List<String> partitionColumns;
+    private final RowType tableRowType;
+    private final Schema partitionSchema;
 
     List<String> pkColumns;
 
-    LinkedHashMap<String, String> partitions;
+    LinkedHashMap<String, String> partitionValues;
 
-    boolean isStreaming;
+    boolean isBounded;
 
     String cdcColumn;
 
@@ -76,24 +80,32 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private final Plan filter;
 
     public LakeSoulOneSplitRecordsReader(Configuration conf,
-                                         LakeSoulSplit split,
-                                         RowType schema,
-                                         RowType schemaWithPk,
+                                         LakeSoulPartitionSplit split,
+                                         RowType tableRowType,
+                                         RowType projectedRowType,
+                                         RowType projectedRowTypeWithPk,
                                          List<String> pkColumns,
-                                         boolean isStreaming,
+                                         boolean isBounded,
                                          String cdcColumn,
+                                         List<String> partitionColumns,
                                          Plan filter)
             throws Exception {
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = new Configuration(conf);
-        this.schema = schema;
-        this.schemaWithPk = schemaWithPk;
+        this.tableRowType = tableRowType;
+        this.projectedRowType = projectedRowType;
+        this.projectedRowTypeWithPk = projectedRowTypeWithPk;
         this.pkColumns = pkColumns;
         this.splitId = split.splitId();
-        this.isStreaming = isStreaming;
+        this.isBounded = isBounded;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
+        this.partitionColumns = partitionColumns;
+        Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
+        List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
+
+        this.partitionSchema = new Schema(partitionFields);
         this.filter = filter;
         initializeReader();
         recoverFromSkipRecord();
@@ -104,27 +116,29 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         for (Path path : split.getFiles()) {
             reader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
-        this.partitions = PartitionPathUtils.extractPartitionSpecFromPath(split.getFiles().get(0));
+        this.partitionValues = PartitionPathUtils.extractPartitionSpecFromPath(split.getFiles().get(0));
 
         List<String> nonPartitionColumns =
-                this.schema.getFieldNames().stream().filter(name -> !this.partitions.containsKey(name))
+                this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))
                         .collect(Collectors.toList());
 
         if (!nonPartitionColumns.isEmpty()) {
             ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
             // native reader requires pk columns in schema
-            Schema arrowSchema = ArrowUtils.toArrowSchema(schemaWithPk);
+            Schema arrowSchema = ArrowUtils.toArrowSchema(projectedRowTypeWithPk);
             reader.setSchema(arrowSchema);
             reader.setPrimaryKeys(pkColumns);
             FlinkUtil.setFSConfigs(conf, reader);
         }
 
+        reader.setPartitionSchema(partitionSchema);
+
         if (!cdcColumn.isEmpty()) {
-            int cdcField = schemaWithPk.getFieldIndex(cdcColumn);
+            int cdcField = projectedRowTypeWithPk.getFieldIndex(cdcColumn);
             cdcFieldGetter = RowData.createFieldGetter(new VarCharType(), cdcField);
         }
 
-        for (Map.Entry<String, String> partition : this.partitions.entrySet()) {
+        for (Map.Entry<String, String> partition : this.partitionValues.entrySet()) {
             reader.setDefaultColumnValue(partition.getKey(), partition.getValue());
         }
 
@@ -136,7 +150,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                         " non partition cols={}, cdc column={}, filter={}",
                 split,
                 pkColumns,
-                partitions,
+                partitionValues,
                 nonPartitionColumns,
                 cdcColumn,
                 filter);
@@ -148,16 +162,16 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     // final returned row should only contain requested schema in query
     private void makeCurrentArrowReader() {
         this.curArrowReader = ArrowUtils.createArrowReader(currentVCR,
-                this.schemaWithPk);
+                this.projectedRowTypeWithPk);
         // this.schema contains only requested fields, which does not include cdc column
         // and may not include pk columns
         ArrayList<FieldVector> requestedVectors = new ArrayList<>();
-        for (String fieldName : schema.getFieldNames()) {
-            int index = schemaWithPk.getFieldIndex(fieldName);
+        for (String fieldName : projectedRowType.getFieldNames()) {
+            int index = projectedRowTypeWithPk.getFieldIndex(fieldName);
             requestedVectors.add(currentVCR.getVector(index));
         }
         this.curArrowReaderRequestedSchema =
-                ArrowUtils.createArrowReader(new VectorSchemaRoot(requestedVectors), schema);
+                ArrowUtils.createArrowReader(new VectorSchemaRoot(requestedVectors), projectedRowType);
     }
 
     private void recoverFromSkipRecord() throws Exception {
@@ -230,7 +244,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
                 // row kind by default is insert
                 rd = this.curArrowReader.read(rowId);
                 if (!cdcColumn.isEmpty()) {
-                    if (this.isStreaming) {
+                    if (!this.isBounded) {
                         // set rowkind according to cdc row kind field value
                         rk = FlinkUtil.operationToRowKind((StringData) cdcFieldGetter.getFieldOrNull(rd));
                         LOG.debug("Set RowKind to {}", rk);

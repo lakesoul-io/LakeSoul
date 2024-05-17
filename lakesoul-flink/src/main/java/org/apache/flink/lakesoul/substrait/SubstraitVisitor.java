@@ -223,7 +223,7 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
             fieldReference = (FieldReferenceExpression) fieldReference.getChildren().get(0);
         }
         LogicalType logicalType = fieldReference.getOutputDataType().getLogicalType();
-        Type type = mapType(logicalType);
+        Type type = logicalTypeToSubstraitType(logicalType);
         if (type == null) {
             // not supported
             return null;
@@ -242,7 +242,7 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
         return null;
     }
 
-    public static Type mapType(LogicalType logicalType) {
+    public static Type logicalTypeToSubstraitType(LogicalType logicalType) {
         LogicalTypeRoot typeRoot = logicalType.getTypeRoot();
         boolean nullable = logicalType.isNullable();
         TypeCreator R = TypeCreator.of(nullable);
@@ -290,9 +290,10 @@ class FieldRefVisitor extends ExpressionDefaultVisitor<FieldReference> {
                 return R.TIMESTAMP_TZ;
             }
             default:
-                LOG.info("unsupported type");
+                String msg = String.format("Unsupported LogicalType %s for LogicalTypeToSubstraitType", typeRoot);
+                LOG.info(msg);
+                throw new RuntimeException(msg);
         }
-        return null;
     }
 
 

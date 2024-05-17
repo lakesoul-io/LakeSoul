@@ -76,7 +76,10 @@ pub struct LakeSoulIOConfig {
     pub(crate) parquet_filter_pushdown: bool,
 
     // arrow schema
-    pub(crate) schema: IOSchema,
+    pub(crate) target_schema: IOSchema,
+
+    // arrow schema of partition columns
+    pub(crate) partition_schema: IOSchema,
 
     // object store related configs
     pub(crate) object_store_options: HashMap<String, String>,
@@ -100,8 +103,12 @@ pub struct LakeSoulIOConfig {
 }
 
 impl LakeSoulIOConfig {
-    pub fn schema(&self) -> SchemaRef {
-        self.schema.0.clone()
+    pub fn target_schema(&self) -> SchemaRef {
+        self.target_schema.0.clone()
+    }
+
+    pub fn partition_schema(&self) -> SchemaRef {
+        self.partition_schema.0.clone()
     }
 
     pub fn primary_keys_slice(&self) -> &[String] {
@@ -211,7 +218,12 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn with_schema(mut self, schema: SchemaRef) -> Self {
-        self.config.schema = IOSchema(schema);
+        self.config.target_schema = IOSchema(schema);
+        self
+    }
+
+    pub fn with_partition_schema(mut self, schema: SchemaRef) -> Self {
+        self.config.partition_schema = IOSchema(schema);
         self
     }
 
@@ -260,7 +272,7 @@ impl LakeSoulIOConfigBuilder {
     }
 
     pub fn schema(&self) -> SchemaRef {
-        self.config.schema()
+        self.config.target_schema()
     }
 
     pub fn primary_keys_slice(&self) -> &[String] {
