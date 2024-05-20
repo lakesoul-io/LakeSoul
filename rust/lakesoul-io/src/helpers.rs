@@ -76,13 +76,13 @@ pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String
     range_partitions
         .iter()
         .map(|range_col| {
-            if let Some(array) = batch.column_by_name(&range_col) {
+            if let Some(array) = batch.column_by_name(range_col) {
                 match ScalarValue::try_from_array(array, 0) {
                     Ok(scalar) => Ok((range_col.clone(), scalar)),
                     Err(e) => Err(e)
                 }
             } else {
-                Err(datafusion::error::DataFusionError::External(format!("").into()))
+                Err(datafusion::error::DataFusionError::External(format!("Invalid partition desc of {}", range_col).into()))
             }
         })
         .collect::<datafusion::error::Result<Vec<_>>>()
@@ -132,7 +132,7 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
         Ok(vec![])
     } else {
         let mut part_values = Vec::with_capacity(schema.fields().len());
-        for part in partition_desc.split(",") {
+        for part in partition_desc.split(',') {
             match part.split_once('=') {
                 Some((name, val)) => {
                     part_values.push((name, val));
@@ -169,7 +169,7 @@ pub fn partition_desc_from_file_scan_config(
                      .iter()
                      .enumerate()
                      .map(|(idx, col)| {
-                         format!("{}={}", col.name().clone(), file.partition_values[idx].to_string())
+                         format!("{}={}", col.name().clone(), file.partition_values[idx])
                      })
                      .collect::<Vec<_>>()
                      .join(","),
@@ -325,7 +325,7 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
     let mut fields_with_index = schema
         .all_fields()
         .into_iter()
-        .map(|f| f.clone())
+        .cloned()
         .collect::<Vec<_>>();
     fields_with_index.push(index_field);
     let schema_with_index = SchemaRef::new(Schema::new(fields_with_index));

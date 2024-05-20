@@ -491,6 +491,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
     }
 }
 
+type PartitionedWriterInfo = Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>;
 
 impl PartitioningAsyncWriter {
     pub fn try_new(
@@ -625,7 +626,7 @@ impl PartitioningAsyncWriter {
         config_builder: LakeSoulIOConfigBuilder,
         range_partitions: Arc<Vec<String>>,
         write_id: String,
-        partitioned_file_path_and_row_count: Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>,
+        partitioned_file_path_and_row_count: PartitionedWriterInfo,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
         let schema_projection_excluding_range = 
@@ -715,7 +716,7 @@ impl PartitioningAsyncWriter {
 
     async fn await_and_summary(
         join_handles: Vec<JoinHandle<Result<u64>>>,
-        partitioned_file_path_and_row_count: Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>,
+        partitioned_file_path_and_row_count: PartitionedWriterInfo,
     ) -> Result<Vec<u8>> {
         let _ =
             futures::future::join_all(join_handles)

@@ -877,9 +877,9 @@ pub extern "C" fn apply_partition_filter(
     let dst = unsafe { 
         slice::from_raw_parts(filter_addr as *const u8, filter_len as usize) 
     };
-    let filter = Plan::decode(&*dst).unwrap();
+    let filter = Plan::decode(dst).unwrap();
 
-    let ffi_schema = schema_addr as *mut FFI_ArrowSchema;
+    let ffi_schema = schema_addr;
     let schema_data = unsafe {
         std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty())   
     };

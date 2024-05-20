@@ -147,7 +147,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
         let mut column_nullable = HashSet::<String>::new();
 
         for config in &flatten_conf {
-            let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(&config)?;
+            let (partition_desc, partition_columnar_value) = partition_desc_from_file_scan_config(config)?;
             let partition_columnar_value = Arc::new(partition_columnar_value);
 
             let parquet_exec = Arc::new(ParquetExec::new(config.clone(), predicate.clone(), self.parquet_format.metadata_size_hint(state.config_options())));
