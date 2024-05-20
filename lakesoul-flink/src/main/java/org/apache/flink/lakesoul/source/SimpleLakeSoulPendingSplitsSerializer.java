@@ -12,6 +12,7 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSerializer<LakeSoulPendingSplits> {
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
@@ -38,6 +39,7 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
             }
             out.writeLong(split.getSkipRecord());
             out.writeInt(split.getBucketId());
+            out.writeUTF(split.getPartitionDesc());
         }
         out.writeUTF(splits.getTableId());
         out.writeUTF(splits.getParDesc());
@@ -65,7 +67,8 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                 }
                 final long skipRecord = in.readLong();
                 final int bucketID = in.readInt();
-                lsplits[j] = new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketID);
+                final String partitionDesc = in.readUTF();
+                lsplits[j] = new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketID, partitionDesc);
             }
             final String tableid = in.readUTF();
             final String parDesc = in.readUTF();

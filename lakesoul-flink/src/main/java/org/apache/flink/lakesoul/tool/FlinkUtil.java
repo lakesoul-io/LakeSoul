@@ -457,17 +457,17 @@ public class FlinkUtil {
     }
 
     public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(TableInfo tableInfo,
-                                                                                              DataFileInfo[] dfinfos) {
+                                                                                              DataFileInfo[] dataFileInfoArray) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
-        for (DataFileInfo pif : dfinfos) {
-            if (isExistHashPartition(tableInfo) && pif.file_bucket_id() != -1) {
-                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
-                        .computeIfAbsent(pif.file_bucket_id(), v -> new ArrayList<>())
-                        .add(new Path(pif.path()));
+        for (DataFileInfo dataFileInfo : dataFileInfoArray) {
+            if (isExistHashPartition(tableInfo) && dataFileInfo.file_bucket_id() != -1) {
+                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
+                        .computeIfAbsent(dataFileInfo.file_bucket_id(), v -> new ArrayList<>())
+                        .add(new Path(dataFileInfo.path()));
             } else {
-                splitByRangeAndHashPartition.computeIfAbsent(pif.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
                         .computeIfAbsent(-1, v -> new ArrayList<>())
-                        .add(new Path(pif.path()));
+                        .add(new Path(dataFileInfo.path()));
             }
         }
         return splitByRangeAndHashPartition;

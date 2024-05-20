@@ -6,6 +6,7 @@ package org.apache.flink.lakesoul.source;
 
 import com.dmetasoul.lakesoul.LakeSoulArrowReader;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader;
+import com.dmetasoul.lakesoul.meta.DBUtil;
 import io.substrait.proto.Plan;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -21,7 +22,6 @@ import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
-import org.apache.flink.table.utils.PartitionPathUtils;
 import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,6 +106,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
         this.partitionSchema = new Schema(partitionFields);
+        this.partitionValues = DBUtil.parsePartitionDesc(split.getPartitionDesc());
         this.filter = filter;
         initializeReader();
         recoverFromSkipRecord();
@@ -116,7 +117,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         for (Path path : split.getFiles()) {
             reader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
-        this.partitionValues = PartitionPathUtils.extractPartitionSpecFromPath(split.getFiles().get(0));
 
         List<String> nonPartitionColumns =
                 this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))

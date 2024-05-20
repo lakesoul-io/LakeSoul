@@ -190,7 +190,8 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
                 tmp.add(new Path(dataFileInfo.path()));
                 splits.add(new LakeSoulPartitionSplit(String.valueOf(dataFileInfo.hashCode()),
                         tmp,
-                        0));
+                        0,
+                        dataFileInfo.range_partitions()));
             }
         } else {
             Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
@@ -200,7 +201,8 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()),
                             split.getValue(),
-                            0));
+                            0,
+                            entry.getKey()));
                 }
             }
         }

@@ -9,6 +9,7 @@ import org.apache.flink.core.fs.Path;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -22,19 +23,23 @@ public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
     private final List<Path> files;
     private int bucketId = -1;
 
-    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord) {
+    private final String partitionDesc;
+
+    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, String partitionDesc) {
         assert id != null;
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
+        this.partitionDesc = partitionDesc;
     }
 
-    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, int bucketId) {
+    public LakeSoulPartitionSplit(String id, List<Path> files, long skipRecord, int bucketId, String partitionDesc) {
         assert id != null;
         this.id = id;
         this.files = files;
         this.skipRecord = skipRecord;
         this.bucketId = bucketId;
+        this.partitionDesc = partitionDesc;
     }
 
     @Override
@@ -44,6 +49,10 @@ public class LakeSoulPartitionSplit implements SourceSplit, Serializable {
 
     public List<Path> getFiles() {
         return files;
+    }
+
+    public String getPartitionDesc() {
+        return partitionDesc;
     }
 
     public void incrementRecord() {

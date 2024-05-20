@@ -164,7 +164,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
                         FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo, dataFileInfos);
                 for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                     for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
-                        splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey()));
+                        splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey(), partitionDesc));
                     }
                 }
             }
