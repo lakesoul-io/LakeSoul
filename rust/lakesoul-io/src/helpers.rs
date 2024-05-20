@@ -5,7 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::UInt32Type;
-use arrow_array::{Int32Array, RecordBatch, UInt32Array};
+use arrow_array::{RecordBatch, UInt32Array};
 use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::{
     datasource::{
@@ -19,7 +19,6 @@ use datafusion_substrait::substrait::proto::Plan;
 use object_store::path::Path;
 use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
-use tracing::debug;
 use url::Url;
 
 use crate::{constant::{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING}, filter::parser::Parser, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
