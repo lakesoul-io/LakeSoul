@@ -170,6 +170,34 @@ SPDX-License-Identifier: Apache-2.0
                             <pattern>org.objectweb.asm</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>com.google.gson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.gson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.fasterxml.jackson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.fasterxml.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.commons</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.commons</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>dev.failsafe</pattern>
+                            <shadedPattern>com.lakesoul.shaded.dev.failsafe</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.aspectj</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.aspectj</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.checkerframework</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.checkerframework</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.protobuf</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>
+                        </relocation>
                     </relocations>
                 </configuration>
             </plugin>
