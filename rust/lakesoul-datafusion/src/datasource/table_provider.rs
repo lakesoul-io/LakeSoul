@@ -180,15 +180,15 @@ impl LakeSoulTableProvider {
                                 },
                             })
                         } else {
-                            return Err(DataFusionError::Plan(
+                            Err(DataFusionError::Plan(
                                 // Return an error if schema of the input query does not match with the table schema.
                                 format!("Expected single column references in output_ordering, got {}", expr)
-                            ));
+                            ))
                         }
                     } else {
-                        return Err(DataFusionError::Plan(
+                        Err(DataFusionError::Plan(
                             format!("Expected Expr::Sort in output_ordering, but got {}", expr)
-                        ));
+                        ))
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -314,7 +314,7 @@ impl TableProvider for LakeSoulTableProvider {
             None
         };
 
-        let object_store_url = if let Some(url) = self.listing_table.table_paths().get(0) {
+        let object_store_url = if let Some(url) = self.listing_table.table_paths().first() {
             url.object_store()
         } else {
             return Ok(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))));

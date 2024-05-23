@@ -81,6 +81,9 @@ IOConfigBuilder *lakesoul_config_builder_add_filter_proto(IOConfigBuilder *build
 IOConfigBuilder *lakesoul_config_builder_set_schema(IOConfigBuilder *builder,
                                                     c_ptrdiff_t schema_addr);
 
+IOConfigBuilder *lakesoul_config_builder_set_partition_schema(IOConfigBuilder *builder,
+                                                              c_ptrdiff_t schema_addr);
+
 IOConfigBuilder *lakesoul_config_builder_set_thread_num(IOConfigBuilder *builder,
                                                         c_size_t thread_num);
 
@@ -182,6 +185,15 @@ TokioRuntimeBuilder *tokio_runtime_builder_set_thread_num(TokioRuntimeBuilder *b
 TokioRuntime *create_tokio_runtime_from_builder(TokioRuntimeBuilder *builder);
 
 void free_tokio_runtime(CResult<TokioRuntime> *runtime);
+
+CResult<BytesResult> *apply_partition_filter(void (*callback)(int32_t, const char*),
+                                             int32_t len,
+                                             c_ptrdiff_t jni_wrapper_addr,
+                                             FFI_ArrowSchema *schema_addr,
+                                             int32_t filter_len,
+                                             c_ptrdiff_t filter_addr);
+
+void free_bytes_result(CResult<BytesResult> *bytes);
 
 void rust_logger_init();
 

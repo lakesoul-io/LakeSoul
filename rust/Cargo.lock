@@ -1831,6 +1831,7 @@ dependencies = [
  "lakesoul-io",
  "log",
  "prost",
+ "proto",
  "serde",
  "serde_json",
  "tokio",

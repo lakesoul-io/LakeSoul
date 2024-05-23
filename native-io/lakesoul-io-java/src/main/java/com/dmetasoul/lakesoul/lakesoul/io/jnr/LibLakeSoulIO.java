@@ -45,6 +45,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_set_schema(Pointer builder, @LongLong long schemaAddr);
 
+    Pointer lakesoul_config_builder_set_partition_schema(Pointer builder, @LongLong long schemaAddr);
+
     Pointer lakesoul_config_builder_set_object_store_option(Pointer builder, String key, String value);
 
     Pointer lakesoul_config_builder_set_thread_num(Pointer builder, int thread_num);
@@ -99,7 +101,11 @@ public interface LibLakeSoulIO {
 
     void free_tokio_runtime(Pointer runtime);
 
+    Pointer apply_partition_filter(IntegerCallback callback, int pbLen, long jniWrapperAddr, long schemaAddr, int filterLen, long filterAddr);
+
     void export_bytes_result(BooleanCallback booleanCallback, Pointer bytes, Integer len, @LongLong long addr);
+
+    void free_bytes_result(Pointer bytes);
 
     void rust_logger_init();
 

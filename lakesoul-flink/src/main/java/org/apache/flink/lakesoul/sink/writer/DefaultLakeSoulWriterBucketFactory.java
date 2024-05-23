@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.sink.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
@@ -21,6 +22,12 @@ import java.io.IOException;
 @Internal
 public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketFactory {
 
+    private final Configuration conf;
+
+    public DefaultLakeSoulWriterBucketFactory(Configuration conf) {
+        this.conf = conf;
+    }
+
     @Override
     public LakeSoulWriterBucket getNewBucket(
             int subTaskId,
@@ -32,7 +39,7 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             OutputFileConfig outputFileConfig) {
         return LakeSoulWriterBucket.getNew(
                 subTaskId, tableId,
-                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                bucketId, bucketPath, conf, bucketWriter, rollingPolicy, outputFileConfig);
     }
 
     @Override
@@ -44,7 +51,7 @@ public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketF
             LakeSoulWriterBucketState bucketState,
             OutputFileConfig outputFileConfig)
             throws IOException {
-        return LakeSoulWriterBucket.restore(subTaskId, tableId, bucketWriter,
+        return LakeSoulWriterBucket.restore(subTaskId, tableId, bucketWriter, conf,
                 rollingPolicy, bucketState, outputFileConfig);
     }
 }

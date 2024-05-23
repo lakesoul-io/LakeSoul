@@ -52,12 +52,14 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
                                      RowType rowType,
                                      boolean isStreaming,
                                      List<String> pkColumns,
+                                     List<String> partitionColumns,
                                      ResolvedCatalogTable catalogTable,
                                      Map<String, String> optionParams) {
         super(tableId,
                 rowType,
                 isStreaming,
                 pkColumns,
+                partitionColumns,
                 optionParams);
         this.catalogTable = catalogTable;
         this.producedDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
@@ -225,18 +227,20 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource implements Lo
      */
     @Override
     public DynamicTableSource copy() {
-        LakeSoulLookupTableSource lsts =
+        LakeSoulLookupTableSource newInstance =
                 new LakeSoulLookupTableSource(this.tableId,
-                        this.rowType,
-                        this.isStreaming,
+                        this.tableRowType,
+                        this.isBounded,
                         this.pkColumns,
+                        this.partitionColumns,
                         this.catalogTable,
                         this.optionParams);
-        lsts.projectedFields = this.projectedFields;
-        lsts.remainingPartitions = this.remainingPartitions;
-        lsts.filter = this.filter;
-        lsts.modificationContext = this.modificationContext;
-        return lsts;
+        newInstance.projectedFields = this.projectedFields;
+        newInstance.remainingPartitions = this.remainingPartitions;
+        newInstance.pushedFilters = this.pushedFilters;
+        newInstance.modificationContext = this.modificationContext;
+        newInstance.partitionFilters = this.partitionFilters;
+        return newInstance;
     }
 
     /**

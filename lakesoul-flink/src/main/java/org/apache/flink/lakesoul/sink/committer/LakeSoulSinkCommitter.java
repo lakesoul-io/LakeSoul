@@ -70,7 +70,9 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 LOG.info("Files to commit {}", String.join("; ", files));
 
-                if (files.isEmpty()) continue;
+                if (files.isEmpty() && !LakeSoulSinkOptions.DELETE.equals(committable.getDmlType())) {
+                    continue;
+                }
 
                 // commit LakeSoul Meta
                 TableSchemaIdentity identity = committable.getIdentity();

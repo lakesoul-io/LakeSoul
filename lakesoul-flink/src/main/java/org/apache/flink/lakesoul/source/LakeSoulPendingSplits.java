@@ -11,7 +11,7 @@ public class LakeSoulPendingSplits {
     /**
      * Split to read for both batch and streaming
      */
-    private final List<LakeSoulSplit> splits;
+    private final List<LakeSoulPartitionSplit> splits;
 
     /**
      * Already discovered latest version's timestamp
@@ -19,20 +19,21 @@ public class LakeSoulPendingSplits {
      */
     private final long lastReadTimestamp;
 
-    private final String tableid;
+    private final String tableId;
     private final String parDesc;
     private final long discoverInterval;
     private final int hashBucketNum;
-    public LakeSoulPendingSplits(List<LakeSoulSplit> splits, long lastReadTimestamp, String tableid, String parDesc, long discoverInterval, int hashBucketNum) {
+
+    public LakeSoulPendingSplits(List<LakeSoulPartitionSplit> splits, long lastReadTimestamp, String tableId, String parDesc, long discoverInterval, int hashBucketNum) {
         this.splits = splits;
         this.lastReadTimestamp = lastReadTimestamp;
-        this.tableid = tableid;
+        this.tableId = tableId;
         this.parDesc = parDesc;
         this.discoverInterval = discoverInterval;
         this.hashBucketNum = hashBucketNum;
     }
 
-    public List<LakeSoulSplit> getSplits() {
+    public List<LakeSoulPartitionSplit> getSplits() {
         return splits;
     }
 
@@ -40,8 +41,8 @@ public class LakeSoulPendingSplits {
         return lastReadTimestamp;
     }
 
-    public String getTableid() {
-        return tableid;
+    public String getTableId() {
+        return tableId;
     }
 
     public String getParDesc() {
@@ -59,7 +60,7 @@ public class LakeSoulPendingSplits {
     @Override
     public String toString() {
         return "LakeSoulPendingSplits{" + "splits=" + splits + ", lastReadTimestamp=" + lastReadTimestamp +
-                ", tableid='" + tableid + '\'' + ", parDesc='" + parDesc + '\'' + ", discoverInterval=" +
+                ", tableid='" + tableId + '\'' + ", parDesc='" + parDesc + '\'' + ", discoverInterval=" +
                 discoverInterval + ", hashBucketNum=" + hashBucketNum + '}';
     }
 }

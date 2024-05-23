@@ -4,25 +4,24 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema, SchemaBuilder, SchemaRef};
+use arrow::datatypes::UInt32Type;
+use arrow_array::{RecordBatch, UInt32Array};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use datafusion::{
     datasource::{
         file_format::FileFormat, 
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl}, 
-        physical_plan::FileScanConfig}, 
-        execution::context::SessionState, 
-        logical_expr::col, 
-        physical_expr::{create_physical_expr, PhysicalSortExpr}, 
-        physical_plan::PhysicalExpr, 
-        physical_planner::create_physical_sort_expr
+        physical_plan::FileScanConfig}, execution::context::{SessionContext, SessionState}, logical_expr::col, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::PhysicalExpr, physical_planner::create_physical_sort_expr
 };
-use datafusion_common::{DFSchema, DataFusionError, Result, ScalarValue};
+use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Result, ScalarValue};
 
+use datafusion_substrait::substrait::proto::Plan;
 use object_store::path::Path;
+use proto::proto::entity::JniWrapper;
+use rand::distributions::DistString;
 use url::Url;
 
-use crate::{constant::{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING}, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
+use crate::{constant::{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING}, filter::parser::Parser, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
 
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
@@ -77,13 +76,13 @@ pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String
     range_partitions
         .iter()
         .map(|range_col| {
-            if let Some(array) = batch.column_by_name(&range_col) {
+            if let Some(array) = batch.column_by_name(range_col) {
                 match ScalarValue::try_from_array(array, 0) {
                     Ok(scalar) => Ok((range_col.clone(), scalar)),
                     Err(e) => Err(e)
                 }
             } else {
-                Err(datafusion::error::DataFusionError::External(format!("").into()))
+                Err(datafusion::error::DataFusionError::External(format!("Invalid partition desc of {}", range_col).into()))
             }
         })
         .collect::<datafusion::error::Result<Vec<_>>>()
@@ -128,6 +127,35 @@ pub fn columnar_values_to_partition_desc(columnar_values: &Vec<(String, ScalarVa
     }
 }
 
+pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String) -> Result<Vec<ScalarValue>> {
+    if partition_desc == "-5" {
+        Ok(vec![])
+    } else {
+        let mut part_values = Vec::with_capacity(schema.fields().len());
+        for part in partition_desc.split(',') {
+            match part.split_once('=') {
+                Some((name, val)) => {
+                    part_values.push((name, val));
+                }
+                _ => {
+                    return Err(datafusion::error::DataFusionError::External(format!("Invalid partition_desc: {}", partition_desc).into()))
+                }
+            }
+        };
+        let mut scalar_values = Vec::with_capacity(schema.fields().len());
+        for field in schema.fields() {
+            for (name, val) in part_values.iter() {
+                if field.name() == name {
+                    let scalar = ScalarValue::try_from_string(val.to_string(), field.data_type())?;
+                    scalar_values.push(scalar);
+                    break;
+                }
+            }
+        }
+        Ok(scalar_values)
+    }
+}
+
 pub fn partition_desc_from_file_scan_config(
     conf: &FileScanConfig
 ) -> Result<(String, HashMap<String, String>)> {
@@ -141,7 +169,7 @@ pub fn partition_desc_from_file_scan_config(
                      .iter()
                      .enumerate()
                      .map(|(idx, col)| {
-                         format!("{}={}", col.name().clone(), file.partition_values[idx].to_string())
+                         format!("{}={}", col.name().clone(), file.partition_values[idx])
                      })
                      .collect::<Vec<_>>()
                      .join(","),
@@ -177,7 +205,7 @@ pub async fn listing_table_from_lakesoul_io_config(
             // Resolve the schema
             let resolved_schema = infer_schema(session_state, &table_paths, Arc::clone(&file_format)).await?;
 
-            let target_schema = uniform_schema(lakesoul_io_config.schema());
+            let target_schema = uniform_schema(lakesoul_io_config.target_schema());
 
             let table_partition_cols = range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;
             let listing_options = ListingOptions::new(file_format.clone())
@@ -197,7 +225,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .with_schema(resolved_schema)
         }
         true => {
-            let target_schema = uniform_schema(lakesoul_io_config.schema());
+            let target_schema = uniform_schema(lakesoul_io_config.target_schema());
             let table_partition_cols = range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;
 
             let listing_options = ListingOptions::new(file_format.clone())
@@ -233,3 +261,77 @@ pub async fn infer_schema(sc: &SessionState, table_paths: &[ListingTableUrl], fi
     file_format.infer_schema(sc, &store, &objects).await
 }
 
+
+pub fn apply_partition_filter(wrapper: JniWrapper, schema: SchemaRef, filter: Plan) -> Result<JniWrapper> {
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let context = SessionContext::default();
+        let index_filed_name = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+        let index_filed = Field::new(index_filed_name, DataType::UInt32, false);
+        let schema_len = schema.fields().len();
+        let batch = batch_from_partition(&wrapper, schema, index_filed)?;
+    
+        let dataframe = context.read_batch(batch)?;
+        let df_filter = Parser::parse_proto(&filter, dataframe.schema())?;
+        
+        let results = dataframe
+            .filter(df_filter)?
+            .collect()
+            .await?;
+        
+        let mut partition_info = vec![];
+        for result_batch in results {
+            for index in  as_primitive_array::<UInt32Type>(result_batch.column(schema_len))?.values().iter() {
+                partition_info.push(wrapper.partition_info[*index as usize].clone());
+            }
+        }
+        
+    
+        Ok(
+            JniWrapper {
+                partition_info,
+                ..Default::default()
+            }
+        )
+    })
+}
+
+fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Field) -> Result<RecordBatch> {
+    let scalar_values = wrapper
+        .partition_info
+        .iter()
+        .map(|partition_info| 
+            partition_desc_to_scalar_values(schema.clone(), partition_info.partition_desc.clone())
+        )
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut columns = vec![vec![]; schema.fields().len()];
+    
+    for values in scalar_values.iter() {
+        values
+            .iter()
+            .enumerate()
+            .for_each(|(index, value)| {
+                columns[index].push(value.clone());
+            })
+    }
+    let mut columns = columns
+        .iter()
+        .map(|values| {
+            ScalarValue::iter_to_array(values.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Add index column
+    let mut fields_with_index = schema
+        .all_fields()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    fields_with_index.push(index_field);
+    let schema_with_index = SchemaRef::new(Schema::new(fields_with_index));
+    columns.push(
+        Arc::new(UInt32Array::from((0..wrapper.partition_info.len() as u32).collect::<Vec<_>>()))
+    );
+
+    Ok(RecordBatch::try_new(schema_with_index, columns)?)
+}

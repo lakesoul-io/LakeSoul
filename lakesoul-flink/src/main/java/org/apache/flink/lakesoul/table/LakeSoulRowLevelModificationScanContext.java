@@ -2,6 +2,7 @@ package org.apache.flink.lakesoul.table;
 
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
+import io.substrait.proto.Plan;
 import org.apache.flink.table.connector.RowLevelModificationScanContext;
 import org.apache.flink.table.connector.source.abilities.SupportsRowLevelModificationScan;
 
@@ -11,15 +12,21 @@ import java.util.Map;
 
 public class LakeSoulRowLevelModificationScanContext implements RowLevelModificationScanContext {
 
-    private final JniWrapper sourcePartitionInfo;
+    private JniWrapper sourcePartitionInfo;
     private final SupportsRowLevelModificationScan.RowLevelModificationType type;
 
-    private List<Map<String, String>> remainingPartitions;
+    Plan partitionFilters;
+
+    Plan nonPartitionFilters;
+
 
     public LakeSoulRowLevelModificationScanContext(SupportsRowLevelModificationScan.RowLevelModificationType type, List<PartitionInfo> listPartitionInfo) {
         this.type = type;
         sourcePartitionInfo = JniWrapper.newBuilder().addAllPartitionInfo(listPartitionInfo).build();
-        remainingPartitions = null;
+    }
+
+    public void setSourcePartitionInfo(JniWrapper sourcePartitionInfo) {
+        this.sourcePartitionInfo = sourcePartitionInfo;
     }
 
     public JniWrapper getSourcePartitionInfo() {
@@ -34,11 +41,37 @@ public class LakeSoulRowLevelModificationScanContext implements RowLevelModifica
         return type;
     }
 
-    public void setRemainingPartitions(List<Map<String, String>> remainingPartitions) {
-        this.remainingPartitions = remainingPartitions;
+    public void setNonPartitionFilters(Plan nonPartitionFilters) {
+        this.nonPartitionFilters = nonPartitionFilters;
     }
 
-    public List<Map<String, String>> getRemainingPartitions() {
-        return remainingPartitions;
+    public void setPartitionFilters(Plan partitionFilters) {
+        this.partitionFilters = partitionFilters;
+    }
+
+    public Plan getNonPartitionFilters() {
+        return nonPartitionFilters;
+    }
+
+    public Plan getPartitionFilters() {
+        return partitionFilters;
+    }
+
+    public boolean isDelete() {
+        return type == SupportsRowLevelModificationScan.RowLevelModificationType.DELETE;
+    }
+
+    public boolean isUpdate() {
+        return type == SupportsRowLevelModificationScan.RowLevelModificationType.UPDATE;
+    }
+
+    @Override
+    public String toString() {
+        return "LakeSoulRowLevelModificationScanContext{" +
+                "sourcePartitionInfo=" + sourcePartitionInfo +
+                ", type=" + type +
+                ", partitionFilters=" + partitionFilters +
+                ", nonPartitionFilters=" + nonPartitionFilters +
+                '}';
     }
 }

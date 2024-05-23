@@ -12,6 +12,7 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSerializer<LakeSoulPendingSplits> {
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
@@ -26,10 +27,10 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
     @Override
     public byte[] serialize(LakeSoulPendingSplits splits) throws IOException {
         final DataOutputSerializer out = SERIALIZER_CACHE.get();
-        List<LakeSoulSplit> lsplits = splits.getSplits();
+        List<LakeSoulPartitionSplit> lsplits = splits.getSplits();
         out.writeLong(splits.getLastReadTimestamp());
         out.writeInt(lsplits.size());
-        for (LakeSoulSplit split : lsplits) {
+        for (LakeSoulPartitionSplit split : lsplits) {
             out.writeUTF(split.splitId());
             List<Path> paths = split.getFiles();
             out.writeInt(paths.size());
@@ -38,8 +39,9 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
             }
             out.writeLong(split.getSkipRecord());
             out.writeInt(split.getBucketId());
+            out.writeUTF(split.getPartitionDesc());
         }
-        out.writeUTF(splits.getTableid());
+        out.writeUTF(splits.getTableId());
         out.writeUTF(splits.getParDesc());
         out.writeLong(splits.getDiscoverInterval());
         out.writeInt(splits.getHashBucketNum());
@@ -54,7 +56,7 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
             final DataInputDeserializer in = new DataInputDeserializer(serialized);
             final long startReadTime = in.readLong();
             final int splitSize = in.readInt();
-            final LakeSoulSplit[] lsplits = new LakeSoulSplit[splitSize];
+            final LakeSoulPartitionSplit[] lsplits = new LakeSoulPartitionSplit[splitSize];
             for (int j = 0; j < splitSize; j++) {
                 final String id = in.readUTF();
                 final int size = in.readInt();
@@ -65,7 +67,8 @@ public class SimpleLakeSoulPendingSplitsSerializer implements SimpleVersionedSer
                 }
                 final long skipRecord = in.readLong();
                 final int bucketID = in.readInt();
-                lsplits[j] = new LakeSoulSplit(id, Arrays.asList(paths), skipRecord, bucketID);
+                final String partitionDesc = in.readUTF();
+                lsplits[j] = new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketID, partitionDesc);
             }
             final String tableid = in.readUTF();
             final String parDesc = in.readUTF();

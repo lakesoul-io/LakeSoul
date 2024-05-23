@@ -5,6 +5,7 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.alibaba.fastjson.JSONObject
+import com.dmetasoul.lakesoul.meta.entity.PartitionInfo
 
 import java.util
 import java.util.UUID
@@ -184,9 +185,13 @@ object MetaVersion {
     (false, "")
   }
 
-  def getAllPartitionInfo(table_id: String): Array[PartitionInfoScala] = {
+  def getAllPartitionInfo(table_id: String): util.List[PartitionInfo] = {
+    dbManager.getAllPartitionInfo(table_id)
+  }
+
+  def getAllPartitionInfoScala(table_id: String): Array[PartitionInfoScala] = {
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfoScala]()
-    val res_itr = dbManager.getAllPartitionInfo(table_id).iterator()
+    val res_itr = getAllPartitionInfo(table_id).iterator()
     while (res_itr.hasNext) {
       val res = res_itr.next()
       partitionVersionBuffer += PartitionInfoScala(

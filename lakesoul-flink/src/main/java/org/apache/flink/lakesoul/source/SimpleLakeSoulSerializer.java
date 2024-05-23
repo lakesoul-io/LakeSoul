@@ -13,7 +13,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
-public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeSoulSplit> {
+public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeSoulPartitionSplit> {
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
     private static final int VERSION = 1;
@@ -24,7 +24,7 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
     }
 
     @Override
-    public byte[] serialize(LakeSoulSplit split) throws IOException {
+    public byte[] serialize(LakeSoulPartitionSplit split) throws IOException {
         final DataOutputSerializer out = SERIALIZER_CACHE.get();
 
         out.writeUTF(split.splitId());
@@ -35,6 +35,7 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
         }
         out.writeLong(split.getSkipRecord());
         out.writeInt(split.getBucketId());
+        out.writeUTF(split.getPartitionDesc());
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -42,7 +43,7 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
 
 
     @Override
-    public LakeSoulSplit deserialize(int version, byte[] serialized) throws IOException {
+    public LakeSoulPartitionSplit deserialize(int version, byte[] serialized) throws IOException {
         if (version == 1) {
             final DataInputDeserializer in = new DataInputDeserializer(serialized);
 
@@ -55,7 +56,8 @@ public class SimpleLakeSoulSerializer implements SimpleVersionedSerializer<LakeS
             }
             final long skipRecord = in.readLong();
             final int bucketid = in.readInt();
-            return new LakeSoulSplit(id, Arrays.asList(paths), skipRecord, bucketid);
+            final String partitionDesc = in.readUTF();
+            return new LakeSoulPartitionSplit(id, Arrays.asList(paths), skipRecord, bucketid, partitionDesc);
         }
         throw new IOException("Unknown version: " + version);
     }

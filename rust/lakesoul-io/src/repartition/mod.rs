@@ -152,8 +152,7 @@ impl BatchPartitioner {
             hash_buffer.clear();
             hash_buffer.resize(batch.num_rows(), 0);
 
-            let mut range_buffer = Vec::<u32>::new();
-            range_buffer.resize(batch.num_rows(), 0);
+            let mut range_buffer = vec![0; batch.num_rows()];
 
             create_hashes(&hash_arrays, hash_buffer)?;
             create_hashes(&range_arrays, &mut range_buffer)?;
@@ -164,9 +163,9 @@ impl BatchPartitioner {
                 .collect();
 
             for (index, (hash, range_hash)) in hash_buffer.iter().zip(range_buffer).enumerate() {
-                if !indices[(*hash % *partitions as u32) as usize].contains_key(&range_hash) {
-                    indices[(*hash % *partitions as u32) as usize].insert(range_hash, UInt64Builder::with_capacity(batch.num_rows()));
-                }
+                indices[(*hash % *partitions as u32) as usize]
+                    .entry(range_hash)
+                    .or_insert_with(|| UInt64Builder::with_capacity(batch.num_rows()));
                 if let Some(entry) = indices[(*hash % *partitions as u32) as usize].get_mut(&range_hash)  {
                     entry.append_value(index as u64);
                 } 

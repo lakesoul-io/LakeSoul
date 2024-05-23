@@ -83,7 +83,7 @@ public class StreamReadSuite extends AbstractTestBase {
     }
 
     @Test
-    public void testLakesoulSourceSelectMultiRangeAndHash() {
+    public void testLakesoulSourceSelectMultiRangeAndHashConditionAnd() {
         for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
             int hashBucketNum = tup.f0;
             int parallelism = tup.f1;
@@ -145,7 +145,78 @@ public class StreamReadSuite extends AbstractTestBase {
                         }
 
                     },
-                    "[+I[1, Bob, 90, 1995-10-01, UK], +I[3, Amy, 95, 1995-10-10, UK]]",
+                    "[+I[3, Amy, 95, 1995-10-10, UK]]",
+                    20L
+            );
+        }
+    }
+
+    @Test
+    public void testLakesoulSourceSelectMultiRangeAndHashConditionOr() {
+        for (Tuple2<Integer, Integer> tup : BUCKET_NUM_AND_PARALLELISM) {
+            int hashBucketNum = tup.f0;
+            int parallelism = tup.f1;
+            System.out.println(
+                    "testLakesoulSourceSelectMultiRangeAndHash with hashBucketNum=" + hashBucketNum + ", parallelism=" +
+                            parallelism);
+            TableEnvironment createTableEnv = LakeSoulTestUtils.createTableEnvInBatchMode();
+            LakeSoulCatalog lakeSoulCatalog = LakeSoulTestUtils.createLakeSoulCatalog(true);
+            LakeSoulTestUtils.registerLakeSoulCatalog(createTableEnv, lakeSoulCatalog);
+
+            String createSql = "create table user_multi (" +
+                    "    `id` INT," +
+                    "    name STRING," +
+                    "    score INT," +
+                    "    `date` DATE," +
+                    "    region STRING," +
+                    "PRIMARY KEY (`id`,`name`) NOT ENFORCED" +
+                    ") " +
+                    "PARTITIONED BY (`region`,`date`)" +
+                    "WITH (" +
+                    "    'connector'='lakesoul'," +
+                    String.format("    'hashBucketNum'='%d',", hashBucketNum) +
+                    "    'path'='" + getTempDirUri("/lakeSource/multi_range_hash") +
+                    "' )";
+            createTableEnv.executeSql("DROP TABLE if exists user_multi");
+            createTableEnv.executeSql(createSql);
+
+            String testMultiRangeSelect = "select id, name from user_multi" +
+                    " /*+ OPTIONS('discoveryinterval'='1000')*/ " +
+                    "where (`region`='UK' ) or score > 80";
+
+
+            StreamTableEnvironment tEnvs = LakeSoulTestUtils.createTableEnvInStreamingMode(
+                    LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L), parallelism);
+            LakeSoulTestUtils.registerLakeSoulCatalog(tEnvs, lakeSoulCatalog);
+            LakeSoulTestUtils.checkStreamingQueryAnswer(
+                    tEnvs,
+                    "user_multi",
+                    testMultiRangeSelect,
+                    "    `id` INT," +
+                            "    name STRING",
+
+//                            "    name STRING," +
+//                            "    score INT," +
+//                            "    `date` DATE," +
+//                            "    region STRING," +
+//                            "PRIMARY KEY (`id`,`name`) NOT ENFORCED",
+                    (s) -> {
+                        try {
+                            createTableEnv.executeSql(
+                                            "INSERT INTO user_multi VALUES (1, 'Bob', 90, TO_DATE('1995-10-01'), 'China'), (2, 'Alice', 80, TO_DATE('1995-10-10'), 'China')")
+                                    .await();
+                            createTableEnv.executeSql(
+                                            "INSERT INTO user_multi VALUES (3, 'Jack', 75,  TO_DATE('1995-10-15'), 'China')")
+                                    .await();
+                            createTableEnv.executeSql(
+                                            "INSERT INTO user_multi VALUES (3, 'Amy', 95,  TO_DATE('1995-10-10'),'UK'), (4, 'Mike', 70, TO_DATE('1995-10-15'), 'UK')")
+                                    .await();
+                        } catch (InterruptedException | ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
+
+                    },
+                    "[+I[1, Bob], +I[3, Amy], +I[4, Mike]]",
                     20L
             );
         }

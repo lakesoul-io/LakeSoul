@@ -97,7 +97,7 @@ impl FileFormat for LakeSoulParquetFormat {
             .then(|| filters.cloned())
             .flatten();
 
-        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), self.conf.schema());
+        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf);
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 

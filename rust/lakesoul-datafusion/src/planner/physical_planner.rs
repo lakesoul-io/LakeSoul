@@ -62,17 +62,17 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                     Ok(provider) => {
                         let physical_input = self.create_physical_plan(input, session_state).await?;
 
-                        if lakesoul_table.primary_keys().is_empty() {
-                            if !lakesoul_table
+                        if lakesoul_table.primary_keys().is_empty()
+                            && !lakesoul_table
                                 .schema()
                                 .logically_equivalent_names_and_types(&Schema::from(input.schema().as_ref()))
-                            {
-                                return Err(DataFusionError::Plan(
-                                    // Return an error if schema of the input query does not match with the table schema.
-                                    "Inserting query must have the same schema with the table.".to_string(),
-                                ));
-                            }
-                        } 
+                        {
+                            return Err(DataFusionError::Plan(
+                                // Return an error if schema of the input query does not match with the table schema.
+                                "Inserting query must have the same schema with the table.".to_string(),
+                            ));
+                        }
+                        
                         let  physical_input = if !lakesoul_table.primary_keys().is_empty() || !lakesoul_table.range_partitions().is_empty() {
                             let input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();

@@ -231,11 +231,11 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "\n" +
                         "== Optimized Physical Plan ==\n" +
                         "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col, part])\n" +
-                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\n" +
+                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, filter=[]]], fields=[id, real_col, part])\n" +
                         "\n" +
                         "== Optimized Execution Plan ==\n" +
                         "Sink(table=[lakesoul.db1.test_table], fields=[id, real_col, part])\n" +
-                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\n" +
+                        "+- TableSourceScan(table=[[lakesoul, db1, test_table, filter=[]]], fields=[id, real_col, part])\n" +
                         "\n" +
                         "== Physical Execution Plan ==\n" +
                         "{\n" +
@@ -243,7 +243,7 @@ public class LakeSoulTableSinkCase extends AbstractTestBase {
                         "    \"id\" : ,\n" +
                         "    \"type\" : \"Source: test_table[]\",\n" +
                         "    \"pact\" : \"Data Source\",\n" +
-                        "    \"contents\" : \"[]:TableSourceScan(table=[[lakesoul, db1, test_table, partitions=[]]], fields=[id, real_col, part])\",\n" +
+                        "    \"contents\" : \"[]:TableSourceScan(table=[[lakesoul, db1, test_table, filter=[]]], fields=[id, real_col, part])\",\n" +
                         "    \"parallelism\" : 2\n" +
                         "  }, {\n" +
                         "    \"id\" : ,\n" +

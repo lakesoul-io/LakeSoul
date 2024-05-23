@@ -28,10 +28,13 @@ import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
 import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelDelete;
 import org.apache.flink.table.connector.sink.abilities.SupportsRowLevelUpdate;
+import org.apache.flink.table.connector.source.abilities.SupportsRowLevelModificationScan;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -44,6 +47,8 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning,
         SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
 
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulTableSink.class);
+
     private final String summaryName;
     private final String tableName;
     private final DataType dataType;
@@ -53,6 +58,10 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
     private final List<String> partitionKeyList;
     private boolean overwrite;
     private LakeSoulRowLevelModificationScanContext modificationContext;
+
+    public LakeSoulRowLevelModificationScanContext getModificationContext() {
+        return modificationContext;
+    }
 
     public LakeSoulTableSink(String summaryName, String tableName, DataType dataType, List<String> primaryKeyList,
                              List<String> partitionKeyList, ReadableConfig flinkConf, ResolvedSchema schema) {
@@ -114,7 +123,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
             throws IOException {
 
         if (modificationContext != null) {
-            if (modificationContext.getRemainingPartitions() != null) {
+            if (modificationContext.getPartitionFilters() != null) {
                 flinkConf.set(DML_TYPE, PARTITION_DELETE);
             }
         }
@@ -154,7 +163,7 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public String asSummaryString() {
-        return "lakeSoul table sink";
+        return "LakeSoul Table Sink";
     }
 
     @Override
@@ -164,6 +173,16 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
 
     @Override
     public void applyStaticPartition(Map<String, String> map) {
+    }
+
+    private boolean isDelete() {
+        LakeSoulRowLevelModificationScanContext context = getModificationContext();
+        return context != null && context.isDelete();
+    }
+
+    private boolean isUpdate() {
+        LakeSoulRowLevelModificationScanContext context = getModificationContext();
+        return context != null && context.isUpdate();
     }
 
     @Override

@@ -7,20 +7,20 @@ package org.apache.flink.lakesoul.source;
 import java.util.*;
 
 public class LakeSoulDynSplitAssigner {
-    private final HashMap<Integer, ArrayList<LakeSoulSplit>> splits;
+    private final HashMap<Integer, ArrayList<LakeSoulPartitionSplit>> splits;
     private int hashBucketNum = -1;
 
-    public LakeSoulDynSplitAssigner(Collection<LakeSoulSplit> splits, String hashBucketNum) {
+    public LakeSoulDynSplitAssigner(Collection<LakeSoulPartitionSplit> splits, String hashBucketNum) {
         this.hashBucketNum = Integer.valueOf(hashBucketNum);
         this.splits = new HashMap<>(100);
         addSplitsFromCollection(splits);
     }
 
-    private void addSplitsFromCollection(Collection<LakeSoulSplit> splitsCol) {
+    private void addSplitsFromCollection(Collection<LakeSoulPartitionSplit> splitsCol) {
         if (splitsCol == null && splitsCol.size() == 0) {
             return;
         }
-        for (LakeSoulSplit lss : splitsCol) {
+        for (LakeSoulPartitionSplit lss : splitsCol) {
             if (!this.splits.containsKey(lss.getBucketId())) {
                 this.splits.put(lss.getBucketId(), new ArrayList<>());
             }
@@ -34,13 +34,12 @@ public class LakeSoulDynSplitAssigner {
     }
 
 
-
-    public Optional<LakeSoulSplit> getNext(int taskId, int tasksNum) {
+    public Optional<LakeSoulPartitionSplit> getNext(int taskId, int tasksNum) {
         final int size = splits.size();
         if (size > 0) {
             if (-1 == this.hashBucketNum) {
-                Collection<ArrayList<LakeSoulSplit>> all = this.splits.values();
-                for (ArrayList<LakeSoulSplit> al : all) {
+                Collection<ArrayList<LakeSoulPartitionSplit>> all = this.splits.values();
+                for (ArrayList<LakeSoulPartitionSplit> al : all) {
                     if (al.size() > 0) {
                         return Optional.of(al.remove(0));
                     }
@@ -48,11 +47,11 @@ public class LakeSoulDynSplitAssigner {
                 return Optional.empty();
             } else {
                 if (this.hashBucketNum <= tasksNum) {
-                    ArrayList<LakeSoulSplit> taskSplits = this.splits.get(taskId);
+                    ArrayList<LakeSoulPartitionSplit> taskSplits = this.splits.get(taskId);
                     return (taskSplits == null || taskSplits.size() == 0) ? Optional.empty() : Optional.of(taskSplits.remove(0));
                 } else {
                     for (int i = taskId; i < this.hashBucketNum; i += tasksNum) {
-                        ArrayList<LakeSoulSplit> splits = this.splits.get(i);
+                        ArrayList<LakeSoulPartitionSplit> splits = this.splits.get(i);
                         if (splits != null && splits.size() > 0) {
                             return Optional.of(splits.remove(0));
                         }
@@ -67,12 +66,12 @@ public class LakeSoulDynSplitAssigner {
 
     }
 
-    public void addSplits(Collection<LakeSoulSplit> newSplits) {
+    public void addSplits(Collection<LakeSoulPartitionSplit> newSplits) {
         addSplitsFromCollection(newSplits);
     }
 
-    public List<LakeSoulSplit> remainingSplits() {
-        ArrayList<LakeSoulSplit> als = new ArrayList<>(100);
+    public List<LakeSoulPartitionSplit> remainingSplits() {
+        ArrayList<LakeSoulPartitionSplit> als = new ArrayList<>(100);
         for (ArrayList al : this.splits.values()) {
             als.addAll(al);
         }

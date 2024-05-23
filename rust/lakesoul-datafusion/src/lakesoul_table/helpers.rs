@@ -136,7 +136,7 @@ where
     I: IntoIterator<Item = &'a str>,
 {
     let mut part_values = vec![];
-    for (part, pn) in partition_desc.split(",").zip(table_partition_cols) {
+    for (part, pn) in partition_desc.split(',').zip(table_partition_cols) {
         match part.split_once('=') {
             Some((name, val)) if name == pn => part_values.push(val),
             _ => {
