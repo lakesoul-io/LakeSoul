@@ -19,7 +19,7 @@ import java.io.Serializable;
 /**
  * The base abstract class for the {@link BulkFormatBuilder}.
  */
-public abstract class BucketsBuilder<IN, T extends BucketsBuilder<IN, T>>
+public abstract class BucketsBuilder<IN, OUT, T extends BucketsBuilder<IN, OUT, T>>
         implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -31,7 +31,7 @@ public abstract class BucketsBuilder<IN, T extends BucketsBuilder<IN, T>>
         return (T) this;
     }
 
-    public abstract AbstractLakeSoulMultiTableSinkWriter<IN> createWriter(final Sink.InitContext context, int subTaskId) throws IOException;
+    public abstract AbstractLakeSoulMultiTableSinkWriter<IN, OUT> createWriter(final Sink.InitContext context, int subTaskId) throws IOException;
 
     public abstract LakeSoulSinkCommitter createCommitter() throws IOException;
 

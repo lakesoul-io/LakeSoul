@@ -95,7 +95,6 @@ public class LakeSoulArrowTypeInfo extends TypeInformation<LakeSoulArrowWrapper>
      */
     @Override
     public TypeSerializer<LakeSoulArrowWrapper> createSerializer(ExecutionConfig config) {
-        System.out.println("[debug]createSerializer" + config);
         return new LakeSoulArrowSerializer(schema);
     }
 

@@ -4,9 +4,7 @@
 
 package com.dmetasoul.lakesoul.lakesoul.io.jnr;
 
-import jnr.ffi.Memory;
 import jnr.ffi.Pointer;
-import jnr.ffi.Runtime;
 import jnr.ffi.annotations.Delegate;
 import jnr.ffi.annotations.LongLong;
 import jnr.ffi.annotations.Out;
@@ -15,9 +13,6 @@ import jnr.ffi.byref.IntByReference;
 public interface LibLakeSoulIO {
 
     Pointer new_tokio_runtime_builder();
-
-    Pointer tokio_runtime_builder_set_thread_num(Pointer builder, int thread_num);
-
 
     Pointer create_tokio_runtime_from_builder(Pointer builder);
 
@@ -92,6 +87,8 @@ public interface LibLakeSoulIO {
     void write_record_batch(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr, BooleanCallback callback);
 
     String write_record_batch_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
+
+    String write_record_batch_ipc_blocked(Pointer writer, @LongLong long schemaAddr, @LongLong long arrayAddr);
 
     void free_lakesoul_reader(Pointer reader);
 

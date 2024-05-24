@@ -22,7 +22,7 @@ import java.util.stream.IntStream;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SERVER_TIME_ZONE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
 
-public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<RowData> {
+public class LakeSoulRowDataOneTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> {
 
     private final LakeSoulRecordConvert converter;
 

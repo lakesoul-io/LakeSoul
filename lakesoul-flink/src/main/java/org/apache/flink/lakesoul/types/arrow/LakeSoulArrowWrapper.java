@@ -2,6 +2,7 @@ package org.apache.flink.lakesoul.types.arrow;
 
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.apache.arrow.vector.ipc.ArrowStreamWriter;
@@ -14,6 +15,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.nio.channels.Channels;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class LakeSoulArrowWrapper implements Serializable {
@@ -46,25 +48,23 @@ public class LakeSoulArrowWrapper implements Serializable {
     @Override
     public String toString() {
         AtomicReference<String> result = new AtomicReference<>();
-        withDecoded((recordBatch) -> {
-            try {
-                result.set("LakeSoulVectorSchemaRootWrapper{" +
-                        "tableInfo=" + TableInfo.parseFrom(encodedTableInfo) +
-                        ", vectorSchemaRoot=" + recordBatch.contentToTSVString() +
-                        '}');
-            } catch (InvalidProtocolBufferException e) {
-                throw new RuntimeException(e);
-            }
+        withDecoded(ArrowUtils.getRootAllocator(), (tableInfo, recordBatch) -> {
+            result.set("LakeSoulVectorSchemaRootWrapper{" +
+                    "tableInfo=" + tableInfo +
+                    ", vectorSchemaRoot=" + recordBatch.contentToTSVString() +
+                    '}');
+
         });
         return result.get();
     }
 
-    public void withDecoded(Consumer<VectorSchemaRoot> consumer) {
-        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), ArrowUtils.getRootAllocator())) {
+    public void withDecoded(BufferAllocator allocator, BiConsumer<TableInfo, VectorSchemaRoot> consumer) {
+        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
             reader.loadNextBatch();
-            VectorSchemaRoot recordBatch = reader.getVectorSchemaRoot();
-            consumer.accept(recordBatch);
+            TableInfo tableInfo = TableInfo.parseFrom(encodedTableInfo);
+            consumer.accept(tableInfo, reader.getVectorSchemaRoot());
         } catch (IOException e) {
+            System.out.println("LakeSoulArrowWrapper::withDecoded error: " + e);
             throw new RuntimeException(e);
         }
     }
@@ -76,5 +76,14 @@ public class LakeSoulArrowWrapper implements Serializable {
 
     public byte[] getEncodedTableInfo() {
         return encodedTableInfo;
+    }
+
+    public TableSchemaIdentity generateTableSchemaIdentity() {
+        try {
+            TableInfo tableInfo = TableInfo.parseFrom(encodedTableInfo);
+            return TableSchemaIdentity.fromTableInfo(tableInfo);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

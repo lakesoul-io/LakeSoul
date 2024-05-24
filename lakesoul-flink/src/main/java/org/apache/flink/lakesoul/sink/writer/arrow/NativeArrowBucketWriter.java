@@ -4,16 +4,14 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.lakesoul.sink.writer.DynamicPartitionNativeParquetWriter;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
+import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.WriterProperties;
-import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
@@ -21,7 +19,7 @@ import java.util.List;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 
-public class NativeArrowBucketWriter implements BucketWriter<VectorSchemaRoot, String> {
+public class NativeArrowBucketWriter implements BucketWriter<LakeSoulArrowWrapper, String> {
 
     private final RowType rowType;
 
@@ -38,15 +36,15 @@ public class NativeArrowBucketWriter implements BucketWriter<VectorSchemaRoot, S
     }
 
     @Override
-    public InProgressFileWriter<VectorSchemaRoot, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
+    public InProgressFileWriter<LakeSoulArrowWrapper, String> openNewInProgressFile(String bucketId, Path path, long creationTime) throws IOException {
         if (DYNAMIC_BUCKET.equals(bucketId)) {
-            return new DynamicPartitionNativeArrowParquetWriter(rowType, primaryKeys, partitionKeys, path, creationTime, conf);
+            return new NativeLakeSoulArrowWrapperWriter(rowType, primaryKeys, partitionKeys, path, creationTime, conf);
         }
         throw new RuntimeException("Static Bucketing not supported");
     }
 
     @Override
-    public InProgressFileWriter<VectorSchemaRoot, String> resumeInProgressFileFrom(
+    public InProgressFileWriter<LakeSoulArrowWrapper, String> resumeInProgressFileFrom(
             String s,
             InProgressFileWriter.InProgressFileRecoverable inProgressFileSnapshot,
             long creationTime) throws IOException {

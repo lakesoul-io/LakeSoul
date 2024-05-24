@@ -4,66 +4,65 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.api.connector.sink.Sink;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
-import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucket;
-import org.apache.flink.lakesoul.sink.writer.LakeSoulWriterBucketFactory;
-import org.apache.flink.lakesoul.sink.writer.TableSchemaWriterCreator;
+import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
+import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.writer.*;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
+import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.streaming.api.connector.sink2.CommittableSummary;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.RowData;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<LakeSoulArrowWrapper> {
+public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<LakeSoulArrowWrapper, LakeSoulArrowWrapper> {
 
-    private final ConcurrentHashMap<TableSchemaIdentity, TableSchemaWriterCreator> perTableSchemaWriterCreator;
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSoulArrowMultiTableSinkWriter.class);
+
+    protected final LakeSoulArrowWriterBucketFactory arrowBucketFactory;
+    private Map<TableSchemaIdentity, LakeSoulArrowWriterBucket> activeArrowBuckets;
+    private long ccheckpointId;
 
     public LakeSoulArrowMultiTableSinkWriter(int subTaskId,
                                              SinkWriterMetricGroup metricGroup,
-                                             LakeSoulWriterBucketFactory bucketFactory,
-                                             RollingPolicy<RowData, String> rollingPolicy,
+                                             LakeSoulArrowWriterBucketFactory bucketFactory,
+                                             RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
                                              OutputFileConfig outputFileConfig,
                                              Sink.ProcessingTimeService processingTimeService,
                                              long bucketCheckInterval,
                                              Configuration conf) {
-        super(subTaskId, metricGroup, bucketFactory, rollingPolicy, outputFileConfig, processingTimeService,
+        super(subTaskId, metricGroup, new DefaultLakeSoulWriterBucketFactory(), rollingPolicy, outputFileConfig, processingTimeService,
                 bucketCheckInterval, conf);
-        this.perTableSchemaWriterCreator = new ConcurrentHashMap<>();
+        arrowBucketFactory = bucketFactory;
+        activeArrowBuckets = new HashMap<>();
     }
 
     @Override
     protected TableSchemaWriterCreator getOrCreateTableSchemaWriterCreator(TableSchemaIdentity identity) {
-        System.out.println("getOrCreateTableSchemaWriterCreator");
-        System.out.println(identity);
-        return perTableSchemaWriterCreator.computeIfAbsent(identity, identity1 -> {
-            try {
-                return TableSchemaWriterCreator.create(identity1.tableId, identity1.rowType,
-                        identity1.tableLocation, identity1.primaryKeys,
-                        identity1.partitionKeyList, conf);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        throw new RuntimeException("getOrCreateTableSchemaWriterCreator not implemented");
     }
 
     @Override
-    protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(LakeSoulArrowWrapper element) throws Exception {
-        System.out.println("extractTableSchemaAndRowData");
-        return null;
+    protected List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(LakeSoulArrowWrapper element) {
+        throw new RuntimeException("extractTableSchemaAndRowData not implemented");
     }
 
     @Override
@@ -74,25 +73,131 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                 context.currentWatermark(),
                 processingTimeService.getCurrentProcessingTime());
 
-        TableSchemaIdentity identity = null;
-        TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
+        TableSchemaIdentity identity = element.generateTableSchemaIdentity();
 
-        System.out.println("LakeSoulArrowMultiTableSinkWriter.write");
-        System.out.println(conf);
+
+        final LakeSoulArrowWriterBucket bucket = getOrCreateBucketForTableId(identity);
         if (conf.get(DYNAMIC_BUCKETING)) {
+            bucket.write(element, processingTimeService.getCurrentProcessingTime(), Long.MAX_VALUE);
 
-            final Path bucketPath = creator.tableLocation;
-            BucketWriter<VectorSchemaRoot, String> bucketWriter = creator.createArrowBucketWriter();
-
-            element.withDecoded((recordBatch) -> {
-
-                System.out.println(recordBatch.contentToTSVString());
-            });
         } else {
             throw new RuntimeException("Static Bucketing Not Support");
         }
-
-        System.out.println("LakeSoulArrowMultiTableSinkWriter.write()");
-        System.out.println(element);
     }
+
+    protected LakeSoulArrowWriterBucket getOrCreateBucketForTableId(TableSchemaIdentity identity) throws IOException {
+        LakeSoulArrowWriterBucket bucket = activeArrowBuckets.get(identity);
+        if (bucket == null) {
+            final Path bucketPath = FlinkUtil.makeQualifiedPath(identity.tableLocation);
+            BucketWriter<LakeSoulArrowWrapper, String> bucketWriter = new NativeArrowBucketWriter(identity.rowType, identity.primaryKeys, identity.partitionKeyList, conf);
+            bucket = arrowBucketFactory.getNewBucket(
+                    getSubTaskId(),
+                    identity,
+                    DYNAMIC_BUCKET,
+                    bucketPath,
+                    bucketWriter,
+                    getRollingPolicy(),
+                    getOutputFileConfig());
+            activeArrowBuckets.put(identity, bucket);
+            LOG.info("Create new bucket {}, {}",
+                    identity, bucketPath);
+        }
+        return bucket;
+    }
+
+    public void initializeState(List<LakeSoulWriterBucketState> bucketStates) throws IOException {
+        checkNotNull(bucketStates, "The retrieved state was null.");
+        LOG.info("initializeState size {}", bucketStates.size());
+        System.out.println("initializeState bucketStates=" + bucketStates);
+        for (LakeSoulWriterBucketState state : bucketStates) {
+            String bucketId = state.getBucketId();
+
+            LOG.info("initializeState restoring state: {}", state);
+
+            TableSchemaIdentity identity = state.getIdentity();
+            BucketWriter<LakeSoulArrowWrapper, String> bucketWriter = new NativeArrowBucketWriter(identity.rowType, identity.primaryKeys, identity.partitionKeyList, conf);
+            LakeSoulArrowWriterBucket restoredBucket =
+                    arrowBucketFactory.restoreBucket(
+                            getSubTaskId(),
+                            state.getIdentity(),
+                            bucketWriter,
+                            getRollingPolicy(),
+                            state,
+                            getOutputFileConfig());
+
+            updateActiveBucketId(identity, restoredBucket);
+        }
+        System.out.println("initializeState restore buckets done");
+
+        registerNextBucketInspectionTimer();
+        System.out.println("initializeState registerNextBucketInspectionTimer done");
+    }
+
+    private void updateActiveBucketId(TableSchemaIdentity tableId, LakeSoulArrowWriterBucket restoredBucket)
+            throws IOException {
+        final LakeSoulArrowWriterBucket bucket = activeArrowBuckets.get(tableId);
+        if (bucket != null) {
+            bucket.merge(restoredBucket);
+        } else {
+            activeArrowBuckets.put(tableId, restoredBucket);
+        }
+    }
+
+    @Override
+    public List<LakeSoulWriterBucketState> snapshotState(long checkpointId) throws IOException {
+        System.out.println("snapshotState checkpointId=" + checkpointId);
+        this.ccheckpointId = checkpointId;
+        List<LakeSoulWriterBucketState> states = new ArrayList<>();
+        for (LakeSoulArrowWriterBucket bucket : activeArrowBuckets.values()) {
+            LakeSoulWriterBucketState state = bucket.snapshotState();
+            System.out.println(state);
+            states.add(state);
+        }
+
+        return states;
+    }
+
+    @Override
+    public void close() {
+        super.close();
+        if (activeArrowBuckets != null) {
+            activeArrowBuckets.values().forEach(LakeSoulArrowWriterBucket::disposePartFile);
+        }
+    }
+
+    @Override
+    public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+        System.out.println("prepareCommit start");
+        List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
+        String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
+        String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
+        // Every time before we prepare commit, we first check and remove the inactive
+        // buckets. Checking the activeness right before pre-committing avoid re-creating
+        // the bucket every time if the bucket use OnCheckpointingRollingPolicy.
+        Iterator<Map.Entry<TableSchemaIdentity, LakeSoulArrowWriterBucket>> activeBucketIt =
+                activeArrowBuckets.entrySet().iterator();
+        while (activeBucketIt.hasNext()) {
+            Map.Entry<TableSchemaIdentity, LakeSoulArrowWriterBucket> entry = activeBucketIt.next();
+            if (!entry.getValue().isActive()) {
+                activeBucketIt.remove();
+            } else {
+                committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
+            }
+        }
+
+
+        System.out.println("prepareCommit done, committables=" + committables);
+        StreamRecord<CommittableSummary<Object>> summary = new StreamRecord<>(
+                new CommittableSummary<>(
+                        getSubTaskId(),
+                        2,
+                        ccheckpointId,
+                        committables.size(),
+                        committables.size(),
+                        0)
+        );
+        System.out.println(summary);
+        return committables;
+    }
+
 }

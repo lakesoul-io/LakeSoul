@@ -11,8 +11,10 @@ import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamReader;
 import org.apache.arrow.vector.types.pojo.Schema;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,6 +61,23 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
             writer = null;
             throw new IOException("Init native writer failed with error: " + p.getString(0));
         }
+    }
+
+    public void writeIpc(byte[] encodedBatch) throws IOException {
+        ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator);
+        if (reader.loadNextBatch()) {
+            ArrowArray array = ArrowArray.allocateNew(allocator);
+            ArrowSchema schema = ArrowSchema.allocateNew(allocator);
+            VectorSchemaRoot batch = reader.getVectorSchemaRoot();
+            Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
+            String errMsg = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+            array.close();
+            schema.close();
+            if (errMsg != null && !errMsg.isEmpty()) {
+                throw new IOException("Native writer write batch failed with error: " + errMsg);
+            }
+        }
+        reader.close();
     }
 
     public void write(VectorSchemaRoot batch) throws IOException {

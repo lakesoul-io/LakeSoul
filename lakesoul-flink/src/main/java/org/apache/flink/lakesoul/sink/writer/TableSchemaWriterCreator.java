@@ -15,6 +15,7 @@ import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
@@ -95,7 +96,7 @@ public class TableSchemaWriterCreator implements Serializable {
         }
     }
 
-    public BucketWriter<VectorSchemaRoot, String> createArrowBucketWriter() throws IOException {
+    public BucketWriter<LakeSoulArrowWrapper, String> createArrowBucketWriter() throws IOException {
         if (NativeIOBase.isNativeIOLibExist()) {
             LOG.info("Create natvie bucket writer");
             return new NativeArrowBucketWriter(this.identity.rowType, this.primaryKeys, this.partitionKeyList, this.conf);

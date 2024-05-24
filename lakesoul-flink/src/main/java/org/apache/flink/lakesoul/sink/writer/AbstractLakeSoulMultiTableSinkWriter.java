@@ -12,6 +12,8 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
@@ -41,7 +43,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * @param <IN> The type of input elements.
  */
-public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
+public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         implements SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState>,
         Sink.ProcessingTimeService.ProcessingTimeCallback {
 
@@ -51,7 +53,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final LakeSoulWriterBucketFactory bucketFactory;
 
-    private final RollingPolicy<RowData, String> rollingPolicy;
+    private final RollingPolicy<OUT, String> rollingPolicy;
 
     protected final Sink.ProcessingTimeService processingTimeService;
 
@@ -73,7 +75,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             int subTaskId,
             final SinkWriterMetricGroup metricGroup,
             final LakeSoulWriterBucketFactory bucketFactory,
-            final RollingPolicy<RowData, String> rollingPolicy,
+            final RollingPolicy<OUT, String> rollingPolicy,
             final OutputFileConfig outputFileConfig,
             final Sink.ProcessingTimeService processingTimeService,
             final long bucketCheckInterval,
@@ -256,10 +258,22 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         registerNextBucketInspectionTimer();
     }
 
-    private void registerNextBucketInspectionTimer() {
+    protected void registerNextBucketInspectionTimer() {
         final long nextInspectionTime =
                 processingTimeService.getCurrentProcessingTime() + bucketCheckInterval;
         processingTimeService.registerProcessingTimer(nextInspectionTime, this);
+    }
+
+    protected int getSubTaskId() {
+        return subTaskId;
+    }
+
+    public RollingPolicy<OUT, String> getRollingPolicy() {
+        return rollingPolicy;
+    }
+
+    public OutputFileConfig getOutputFileConfig() {
+        return outputFileConfig;
     }
 
     /**

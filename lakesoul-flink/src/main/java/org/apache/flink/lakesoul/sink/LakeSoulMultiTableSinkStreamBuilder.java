@@ -18,6 +18,7 @@ import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
@@ -55,12 +56,12 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
         context.conf.set(DYNAMIC_BUCKETING, false);
-        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
+        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl<RowData>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
                 .withPartSuffix(".parquet")
                 .build();
-        LakeSoulMultiTablesSink<BinarySourceRecord> sink = LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
+        LakeSoulMultiTablesSink<BinarySourceRecord, RowData> sink = LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
                 .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
                 .withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig)
@@ -70,12 +71,12 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context, DataStream<LakeSoulArrowWrapper> stream) {
-        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl(
+        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
                 .withPartSuffix(".parquet")
                 .build();
-        LakeSoulMultiTablesSink<LakeSoulArrowWrapper> sink = LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)
+        LakeSoulMultiTablesSink<LakeSoulArrowWrapper, LakeSoulArrowWrapper> sink = LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)
                 .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
                 .withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig)

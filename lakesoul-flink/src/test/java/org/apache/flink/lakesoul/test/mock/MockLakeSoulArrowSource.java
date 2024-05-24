@@ -19,12 +19,17 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.vector.util.Text;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.lakesoul.types.TableId;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowTypeInfo;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
+import org.apache.flink.runtime.state.FunctionInitializationContext;
+import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
@@ -32,21 +37,29 @@ import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.UUID;
 
+import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
 import static org.apache.flink.lakesoul.test.AbstractTestBase.getTempDirUri;
 
 public class MockLakeSoulArrowSource {
 
 
-    public static class MockSourceFunction implements SourceFunction<LakeSoulArrowWrapper>, ResultTypeQueryable {
+    public static class MockSourceFunction implements SourceFunction<LakeSoulArrowWrapper>, ResultTypeQueryable, CheckpointedFunction {
 
-        private final int count;
+
+        private transient ListState<Integer> checkpointedCount;
+        private final int total;
+
+        private int count;
         private final long interval;
 
         private final static BufferAllocator allocator = ArrowUtils.getRootAllocator();
 
         final static String STRUCT_INT_CHILD = "struct_int_child";
         final static String STRUCT_UTF8_CHILD = "struct_utf8_child";
+
+        private transient ValueState<Integer> latest;
 
         public static final Schema schema = new Schema(
                 Arrays.asList(
@@ -62,11 +75,16 @@ public class MockLakeSoulArrowSource {
                 )
         );
 
+        public static final String tableName = "MockArrowSinkTable";
+        private boolean isRunning;
 
-        public MockSourceFunction(int count, long interval) {
-            this.count = count;
+
+        public MockSourceFunction(int total, long interval) {
+            this.total = total;
             this.interval = interval;
+
         }
+
 
         /**
          * Starts the source. Implementations use the {@link SourceContext} to emit elements. Sources
@@ -85,21 +103,25 @@ public class MockLakeSoulArrowSource {
          */
         @Override
         public void run(SourceContext<LakeSoulArrowWrapper> ctx) throws Exception {
-            for (int i = 0; i < count; i++) {
-                long now = System.currentTimeMillis();
-                ctx.collect(new LakeSoulArrowWrapper(mockTableInfo(now), mockVectorSchemaRoot(now)));
-                Thread.sleep(interval);
+            while (count < total) {
+                // this synchronized block ensures that state checkpointing,
+                // internal state updates and emission of elements are an atomic operation
+                synchronized (ctx.getCheckpointLock()) {
+                    long now = System.currentTimeMillis();
+                    ctx.collect(new LakeSoulArrowWrapper(mockTableInfo(now), mockVectorSchemaRoot(count, now)));
+                    count++;
+                }
             }
 
         }
 
-        private VectorSchemaRoot mockVectorSchemaRoot(long now) {
+        private VectorSchemaRoot mockVectorSchemaRoot(int counter, long now) {
 
             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
-            int batchSize = 20;
+            int batchSize = 1024;
             root.setRowCount(batchSize);
             for (int idx = 0; idx < schema.getFields().size(); idx++) {
-                setValue(allocator, root, root.getVector(idx), idx, batchSize);
+                setValue(allocator, root, root.getVector(idx), counter * 10000, batchSize);
             }
 
             return root;
@@ -296,7 +318,16 @@ public class MockLakeSoulArrowSource {
 
 
         private TableInfo mockTableInfo(long now) {
-            return TableInfo.newBuilder().build();
+            return TableInfo
+                    .newBuilder()
+                    .setTableNamespace("default")
+                    .setTableId(TABLE_ID_PREFIX + UUID.randomUUID())
+                    .setTableName(tableName)
+                    .setTableSchema(schema.toJson())
+                    .setTablePath(getTempDirUri("/LakeSource/" + tableName))
+                    .setPartitions(";")
+                    .setProperties("{}")
+                    .build();
         }
 
         /**
@@ -331,6 +362,7 @@ public class MockLakeSoulArrowSource {
          */
         @Override
         public void cancel() {
+            isRunning = false;
         }
 
         /**
@@ -340,8 +372,50 @@ public class MockLakeSoulArrowSource {
          */
         @Override
         public TypeInformation getProducedType() {
-            System.out.println("[debug]getProducedType");
             return new LakeSoulArrowTypeInfo(schema);
+        }
+
+        /**
+         * This method is called when a snapshot for a checkpoint is requested. This acts as a hook to
+         * the function to ensure that all state is exposed by means previously offered through {@link
+         * FunctionInitializationContext} when the Function was initialized, or offered now by {@link
+         * FunctionSnapshotContext} itself.
+         *
+         * @param context the context for drawing a snapshot of the operator
+         * @throws Exception Thrown, if state could not be created ot restored.
+         */
+        @Override
+        public void snapshotState(FunctionSnapshotContext context) {
+            this.checkpointedCount.clear();
+            try {
+                this.checkpointedCount.add(count);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * This method is called when the parallel function instance is created during distributed
+         * execution. Functions typically set up their state storing data structures in this method.
+         *
+         * @param context the context for initializing the operator
+         * @throws Exception Thrown, if state could not be created ot restored.
+         */
+        @Override
+        public void initializeState(FunctionInitializationContext context) {
+            try {
+                this.checkpointedCount = context
+                        .getOperatorStateStore()
+                        .getListState(new ListStateDescriptor<>("count", Integer.class));
+
+                if (context.isRestored()) {
+                    for (Integer count : this.checkpointedCount.get()) {
+                        this.count = count;
+                    }
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 
