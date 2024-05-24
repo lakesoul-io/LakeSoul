@@ -17,7 +17,7 @@ public class DefaultMultiTablesBulkFormatBuilder
         extends BulkFormatBuilder<BinarySourceRecord, RowData, DefaultMultiTablesBulkFormatBuilder> {
 
     public DefaultMultiTablesBulkFormatBuilder(Path basePath, Configuration conf) {
-        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory());
+        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
     }
 
     @Override

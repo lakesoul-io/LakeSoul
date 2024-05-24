@@ -49,7 +49,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                                              Sink.ProcessingTimeService processingTimeService,
                                              long bucketCheckInterval,
                                              Configuration conf) {
-        super(subTaskId, metricGroup, new DefaultLakeSoulWriterBucketFactory(), rollingPolicy, outputFileConfig, processingTimeService,
+        super(subTaskId, metricGroup, new DefaultLakeSoulWriterBucketFactory(conf), rollingPolicy, outputFileConfig, processingTimeService,
                 bucketCheckInterval, conf);
         arrowBucketFactory = bucketFactory;
         activeArrowBuckets = new HashMap<>();

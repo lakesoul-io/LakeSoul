@@ -29,7 +29,7 @@ public final class DefaultOneTableBulkFormatBuilder
     public DefaultOneTableBulkFormatBuilder(
             TableSchemaIdentity identity,
             Path basePath, Configuration conf) {
-        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory());
+        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
         this.identity = identity;
     }
 

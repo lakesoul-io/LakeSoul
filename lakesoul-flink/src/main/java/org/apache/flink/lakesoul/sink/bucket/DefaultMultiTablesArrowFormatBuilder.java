@@ -21,7 +21,7 @@ public class DefaultMultiTablesArrowFormatBuilder
     protected final LakeSoulArrowWriterBucketFactory arrowBucketFactory;
 
     public DefaultMultiTablesArrowFormatBuilder(Path basePath, Configuration conf) {
-        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory());
+        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
         arrowBucketFactory = new LakeSoulArrowWriterBucketFactory();
     }
 
