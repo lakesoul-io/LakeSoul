@@ -166,6 +166,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
             dataFileInfoList = new ArrayList<>();
             List<String> partDescs = new ArrayList<>();
             String partitionDescOpt = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
+            System.out.println("remainingPartitions=" + remainingPartitions);
             if (partitionDescOpt.isEmpty() && remainingPartitions != null) {
                 for (Map<String, String> part : remainingPartitions) {
                     String desc = DBUtil.formatPartitionDesc(part);
@@ -174,6 +175,7 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
             } else {
                 partDescs.add(partitionDescOpt);
             }
+            System.out.println("partDescs=" + partDescs);
             for (String desc : partDescs) {
                 dataFileInfoList.addAll(Arrays.asList(DataOperation.getIncrementalPartitionDataInfo(tableInfo.getTableId(),
                         desc,

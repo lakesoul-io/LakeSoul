@@ -161,6 +161,7 @@ public class LakeSoulTableSource
             List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
             Schema partitionSchema = new Schema(partitionFields);
+            System.out.println("partitionSchema=" + partitionSchema);
             List<PartitionInfo> remainingPartitionInfo = applyPartitionFilters(allPartitionInfo, partitionSchema, this.partitionFilters);
             remainingPartitions = partitionInfoToPartitionMap(remainingPartitionInfo);
 

@@ -29,14 +29,13 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
 
         Configuration conf = new Configuration();
-        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 2);
+        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 1);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = execEnv;
         context.conf = conf;
 
         LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
-
 
         execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
 

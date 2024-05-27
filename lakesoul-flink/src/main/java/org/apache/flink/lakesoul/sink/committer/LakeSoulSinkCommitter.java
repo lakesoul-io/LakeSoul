@@ -47,13 +47,13 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
     @Override
     public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
             throws IOException {
-        LOG.info("Found {} committables for LakeSoul to commit", committables.size());
+        LOG.info("Found {} committable for LakeSoul to commit", committables.size());
         // commit by file creation time in ascending order
         committables.sort(LakeSoulMultiTableSinkCommittable::compareTo);
 
         DBManager lakeSoulDBManager = new DBManager();
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
-            LOG.info("Commtting {}", committable);
+            LOG.info("Committing {}", committable);
             for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
                 List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
 
@@ -138,6 +138,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
                 lakeSoulDBManager.commitDataCommitInfo(dataCommitInfo.build(), readPartitionInfoList);
             }
+            LOG.info("Committing done, committable={} ", committable);
         }
 
         return Collections.emptyList();
