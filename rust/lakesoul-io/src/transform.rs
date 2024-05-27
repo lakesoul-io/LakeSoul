@@ -15,7 +15,8 @@ use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, Sch
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{ArrowError, External, Internal};
 
-use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING};
+use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT};
+use crate::helpers::{date_str_to_epoch_days, timestamp_str_to_unix_time};
 
 /// adjust time zone to UTC
 pub fn uniform_field(orig_field: &FieldRef) -> FieldRef {
@@ -235,6 +236,56 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
                 )?;
             num_rows
         ])),
+        DataType::Timestamp(unit, _timezone) => {
+            match unit {
+                TimeUnit::Second => Arc::new(PrimitiveArray::<TimestampSecondType>::from(vec![
+                    // first try parsing epoch second int64 (for spark)
+                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
+                        unix_time
+                    } else {
+                    // then try parsing string timestamp to epoch seconds (for flink)
+                        timestamp_str_to_unix_time(value, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
+                    };
+                    num_rows
+                ])),
+                TimeUnit::Millisecond =>  Arc::new(PrimitiveArray::<TimestampMillisecondType>::from(vec![
+                    // first try parsing epoch second int64 (for spark)
+                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
+                        unix_time
+                    } else {
+                    // then try parsing string timestamp to epoch seconds (for flink)
+                        timestamp_str_to_unix_time(value, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
+                    };
+                    num_rows
+                ])),
+                TimeUnit::Microsecond => Arc::new(PrimitiveArray::<TimestampMicrosecondType>::from(vec![
+                    // first try parsing epoch second int64 (for spark)
+                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
+                        unix_time
+                    } else {
+                    // then try parsing string timestamp to epoch seconds (for flink)
+                        match timestamp_str_to_unix_time(value, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
+                            Some(microsecond) => microsecond,
+                            None => return Err(Internal("microsecond is out of range".to_string()))
+                        }
+                    };
+                    num_rows
+                ])),
+                TimeUnit::Nanosecond => Arc::new(PrimitiveArray::<TimestampNanosecondType>::from(vec![
+                    // first try parsing epoch second int64 (for spark)
+                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
+                        unix_time
+                    } else {
+                    // then try parsing string timestamp to epoch seconds (for flink)
+                        match timestamp_str_to_unix_time(value, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
+                            Some(nanosecond) => nanosecond,
+                            None => return Err(Internal("nanoseconds is out of range".to_string()))
+                        }
+                    };
+                    num_rows
+                ]))
+            }
+        }
         DataType::Boolean => Arc::new(BooleanArray::from(vec![
             value
                 .as_str()
@@ -252,14 +303,4 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
     })
 }
 
-fn date_str_to_epoch_days(value: &str) -> Result<i32> {
-    let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|e| External(Box::new(e)))?;
-    let datetime = date
-        .and_hms_opt(12, 12, 12)
-        .ok_or(Internal("invalid h/m/s".to_string()))?;
-    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
-        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
-    ))?;
 
-    Ok(datetime.signed_duration_since(epoch_time).num_days() as i32)
-}

@@ -534,7 +534,7 @@ impl PartitioningAsyncWriter {
 
         let join_handle = tokio::spawn(Self::await_and_summary(
             join_handles,
-            partitioned_file_path_and_row_count.clone(),
+            partitioned_file_path_and_row_count,
         ));
         
 
@@ -678,7 +678,6 @@ impl PartitioningAsyncWriter {
                 }
             }
         }
-
         if let Some(e) = err {
             for (_, writer) in partitioned_writer.into_iter() {
                 match writer.abort_and_close().await {

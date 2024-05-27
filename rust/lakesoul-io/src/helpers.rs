@@ -6,7 +6,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::UInt32Type;
 use arrow_array::{RecordBatch, UInt32Array};
-use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
+use chrono::Duration;
 use datafusion::{
     datasource::{
         file_format::FileFormat, 
@@ -14,6 +15,7 @@ use datafusion::{
         physical_plan::FileScanConfig}, execution::context::{SessionContext, SessionState}, logical_expr::col, physical_expr::{create_physical_expr, PhysicalSortExpr}, physical_plan::PhysicalExpr, physical_planner::create_physical_sort_expr
 };
 use datafusion_common::{cast::as_primitive_array, DFSchema, DataFusionError, Result, ScalarValue};
+use datafusion_common::DataFusionError::{External, Internal};
 
 use datafusion_substrait::substrait::proto::Plan;
 use object_store::path::Path;
@@ -21,7 +23,7 @@ use proto::proto::entity::JniWrapper;
 use rand::distributions::DistString;
 use url::Url;
 
-use crate::{constant::{LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING}, filter::parser::Parser, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
+use crate::{constant::{DATE32_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT}, filter::parser::Parser, lakesoul_io_config::LakeSoulIOConfig, transform::uniform_schema};
 
 pub fn column_names_to_physical_sort_expr(
     columns: &[String],
@@ -91,7 +93,7 @@ pub fn get_columnar_values(batch: &RecordBatch, range_partitions: Arc<Vec<String
 pub fn format_scalar_value(v: &ScalarValue) -> String {
     match v {
         ScalarValue::Date32(Some(days)) => 
-        format!("{}", chrono::NaiveDate::from_num_days_from_ce_opt(*days + 719163).unwrap().format("%Y-%m-%d")),
+            format!("{}", chrono::NaiveDate::from_num_days_from_ce_opt(*days + 719163).unwrap().format(DATE32_FORMAT)),
         ScalarValue::Null => LAKESOUL_NULL_STRING.to_string(),
         ScalarValue::Utf8(Some(s)) => 
             if s.is_empty() {
@@ -99,7 +101,75 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             } else {
                 s.clone()
             },
+        ScalarValue::TimestampSecond(Some(s), _) => {
+            let secs = *s;
+            let nsecs = 0;
+            format!("{}", chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap().format(TIMESTAMP_SECOND_FORMAT))
+        }
+        ScalarValue::TimestampMillisecond(Some(s), _) => {
+            let secs = *s / 1000;
+            let nsecs = u32::try_from(*s % 1000).unwrap() * 1000000;
+            format!("{}", chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap().format(TIMESTAMP_MILLSECOND_FORMAT))
+        }
+        ScalarValue::TimestampMicrosecond(Some(s), _) => {
+            let secs = *s / 1000000;
+            let nsecs = u32::try_from(*s % 1000000).unwrap() * 1000;
+            format!("{}", chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap().format(TIMESTAMP_MICROSECOND_FORMAT))
+        }
+        ScalarValue::TimestampNanosecond(Some(s), _) => {
+            let secs = *s / 1000000000;
+            let nsecs = u32::try_from(*s % 1000000000).unwrap();
+            format!("{}", chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap().format(TIMESTAMP_NANOSECOND_FORMAT))
+        }
         other => other.to_string()
+    }
+}
+
+pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue> {
+    if val.eq(LAKESOUL_NULL_STRING) {
+        Ok(ScalarValue::Null)
+    } else {
+        match data_type {
+            DataType::Date32 => {
+                Ok(ScalarValue::Date32(Some(date_str_to_epoch_days(val)?)))
+            }
+            DataType::Utf8 => {
+                if val.eq(LAKESOUL_EMPTY_STRING) {
+                    Ok(ScalarValue::Utf8(Some("".to_string())))
+                } else {
+                    Ok(ScalarValue::Utf8(Some(val.to_string())))
+                }
+            }
+            DataType::Timestamp(unit, timezone) => {
+                match unit {
+                    TimeUnit::Second => {
+                        let secs = timestamp_str_to_unix_time(val, TIMESTAMP_SECOND_FORMAT)?.num_seconds();
+                        Ok(ScalarValue::TimestampSecond(Some(secs), timezone.clone()))
+                    }
+                    TimeUnit::Millisecond => {
+                        let millsecs = timestamp_str_to_unix_time(val, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds();
+                        Ok(ScalarValue::TimestampMillisecond(Some(millsecs), timezone.clone()))
+                    }
+                    TimeUnit::Microsecond => {
+                        let microsecs = timestamp_str_to_unix_time(val, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds();
+                        Ok(ScalarValue::TimestampMicrosecond(microsecs, timezone.clone()))
+                    }
+                    TimeUnit::Nanosecond => {
+                        let nanosecs = timestamp_str_to_unix_time(val, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds();
+                        Ok(ScalarValue::TimestampNanosecond(nanosecs, timezone.clone()))
+                    }
+                }
+                // let scalar = i64::from_str_radix(&val, 10).map_err(|e| DataFusionError::External(e.into()))?;
+                // let scalar = Some(scalar);
+                // Ok(match unit {
+                //     TimeUnit::Second => ScalarValue::TimestampSecond(scalar, timezone.clone()),
+                //     TimeUnit::Millisecond => ScalarValue::TimestampMillisecond(scalar, timezone.clone()),
+                //     TimeUnit::Microsecond => ScalarValue::TimestampMicrosecond(scalar, timezone.clone()),
+                //     TimeUnit::Nanosecond => ScalarValue::TimestampNanosecond(scalar, timezone.clone())
+                // })
+            },
+            _ => ScalarValue::try_from_string(val.to_string(), data_type)
+        }
     }
 }
 
@@ -146,7 +216,7 @@ pub fn partition_desc_to_scalar_values(schema: SchemaRef, partition_desc: String
         for field in schema.fields() {
             for (name, val) in part_values.iter() {
                 if field.name() == name {
-                    let scalar = ScalarValue::try_from_string(val.to_string(), field.data_type())?;
+                    let scalar = into_scalar_value(val, field.data_type())?;
                     scalar_values.push(scalar);
                     break;
                 }
@@ -334,4 +404,25 @@ fn batch_from_partition(wrapper: &JniWrapper, schema: SchemaRef, index_field: Fi
     );
 
     Ok(RecordBatch::try_new(schema_with_index, columns)?)
+}
+
+pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
+    let date = chrono::NaiveDate::parse_from_str(value, DATE32_FORMAT).map_err(|e| External(Box::new(e)))?;
+    let datetime = date
+        .and_hms_opt(12, 12, 12)
+        .ok_or(Internal("invalid h/m/s".to_string()))?;
+    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
+    ))?;
+
+    Ok(datetime.signed_duration_since(epoch_time).num_days() as i32)
+}
+
+pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
+    let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt).map_err(|e| External(Box::new(e)))?;
+    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+        "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
+    ))?;
+
+    Ok(datetime.signed_duration_since(epoch_time))
 }

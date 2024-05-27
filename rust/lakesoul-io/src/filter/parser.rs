@@ -48,7 +48,7 @@ impl Parser {
             let inner = Parser::parse(right, schema)?;
             Expr::not(inner)
         } else {
-            let expr_filed = qualified_expr(left.as_str(), schema.clone());
+            let expr_filed = qualified_expr(left.as_str(), schema);
             if let Some((expr, field)) = expr_filed {
                 if right == "null" {
                     match op.as_str() {
@@ -636,7 +636,7 @@ fn qualified_expr(expr_str: &str, schema: SchemaRef) -> Option<(Expr, Arc<Field>
                 root = "".to_owned();
 
                 sub_fields = match field.data_type() {
-                    DataType::Struct(struct_sub_fields) => &struct_sub_fields,
+                    DataType::Struct(struct_sub_fields) => struct_sub_fields,
                     _ => sub_fields,
                 };
             }
