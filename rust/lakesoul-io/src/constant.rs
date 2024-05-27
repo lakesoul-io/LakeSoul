@@ -15,6 +15,12 @@ pub static LAKESOUL_TIMEZONE: &str = "UTC";
 pub static LAKESOUL_NULL_STRING: &str = "__L@KE$OUL_NULL__";
 pub static LAKESOUL_EMPTY_STRING: &str = "__L@KE$OUL_EMPTY_STRING__";
 
+pub static DATE32_FORMAT: &str = "%Y-%m-%d";
+pub static TIMESTAMP_SECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
+pub static TIMESTAMP_MILLSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%3f";
+pub static TIMESTAMP_MICROSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%6f";
+pub static TIMESTAMP_NANOSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%9f";
+
 lazy_static! {
     pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions::default();
 }
