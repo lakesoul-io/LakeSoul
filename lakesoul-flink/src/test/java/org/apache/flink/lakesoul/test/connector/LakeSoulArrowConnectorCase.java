@@ -21,7 +21,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
     @Test
     public void test() throws Exception {
         int parallelism = 2;
-        StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 1000L, 1000L);
+        StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 5000L, 5000L);
         StreamTableEnvironment tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(
                 execEnv, parallelism);
         DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(1000, 1000L));

@@ -18,6 +18,15 @@ mod hash_tests {
     }
 
     #[test]
+    fn chrono_datetime_test() {
+        let datetime = chrono::NaiveDateTime::parse_from_str("1990-10-01 10:10:10.100000000", lakesoul_io::constant::FLINK_TIMESTAMP_FORMAT).unwrap();
+        let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).unwrap();
+        
+        println!("{}", datetime.signed_duration_since(epoch_time).num_days() as i32);
+        println!("{}", chrono::NaiveDate::from_num_days_from_ce_opt(719162).unwrap().format("%Y-%m-%d"));
+    }
+
+    #[test]
     fn hash_value_test() {
         // let hash = "321".hash_one(HASH_SEED) as i32;
         // dbg!(hash);

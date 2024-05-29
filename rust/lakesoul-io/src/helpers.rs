@@ -159,14 +159,6 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                         Ok(ScalarValue::TimestampNanosecond(nanosecs, timezone.clone()))
                     }
                 }
-                // let scalar = i64::from_str_radix(&val, 10).map_err(|e| DataFusionError::External(e.into()))?;
-                // let scalar = Some(scalar);
-                // Ok(match unit {
-                //     TimeUnit::Second => ScalarValue::TimestampSecond(scalar, timezone.clone()),
-                //     TimeUnit::Millisecond => ScalarValue::TimestampMillisecond(scalar, timezone.clone()),
-                //     TimeUnit::Microsecond => ScalarValue::TimestampMicrosecond(scalar, timezone.clone()),
-                //     TimeUnit::Nanosecond => ScalarValue::TimestampNanosecond(scalar, timezone.clone())
-                // })
             },
             _ => ScalarValue::try_from_string(val.to_string(), data_type)
         }

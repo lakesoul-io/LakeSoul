@@ -27,7 +27,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
@@ -39,7 +38,6 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     protected final LakeSoulArrowWriterBucketFactory arrowBucketFactory;
     private Map<TableSchemaIdentity, LakeSoulArrowWriterBucket> activeArrowBuckets;
-    private long ccheckpointId;
 
     public LakeSoulArrowMultiTableSinkWriter(int subTaskId,
                                              SinkWriterMetricGroup metricGroup,
@@ -108,9 +106,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
     public void initializeState(List<LakeSoulWriterBucketState> bucketStates) throws IOException {
         checkNotNull(bucketStates, "The retrieved state was null.");
         LOG.info("initializeState size {}", bucketStates.size());
-        System.out.println("initializeState bucketStates=" + bucketStates);
         for (LakeSoulWriterBucketState state : bucketStates) {
-            String bucketId = state.getBucketId();
 
             LOG.info("initializeState restoring state: {}", state);
 
@@ -127,10 +123,8 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
             updateActiveBucketId(identity, restoredBucket);
         }
-        System.out.println("initializeState restore buckets done");
 
         registerNextBucketInspectionTimer();
-        System.out.println("initializeState registerNextBucketInspectionTimer done");
     }
 
     private void updateActiveBucketId(TableSchemaIdentity tableId, LakeSoulArrowWriterBucket restoredBucket)
@@ -145,12 +139,10 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     @Override
     public List<LakeSoulWriterBucketState> snapshotState(long checkpointId) throws IOException {
-        System.out.println("snapshotState checkpointId=" + checkpointId);
-        this.ccheckpointId = checkpointId;
+
         List<LakeSoulWriterBucketState> states = new ArrayList<>();
         for (LakeSoulArrowWriterBucket bucket : activeArrowBuckets.values()) {
             LakeSoulWriterBucketState state = bucket.snapshotState();
-            System.out.println(state);
             states.add(state);
         }
 
@@ -167,7 +159,6 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     @Override
     public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
-        System.out.println("prepareCommit start");
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
         String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
@@ -185,18 +176,6 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
             }
         }
 
-
-        System.out.println("prepareCommit done, committables=" + committables);
-        StreamRecord<CommittableSummary<Object>> summary = new StreamRecord<>(
-                new CommittableSummary<>(
-                        getSubTaskId(),
-                        2,
-                        ccheckpointId,
-                        committables.size(),
-                        committables.size(),
-                        0)
-        );
-        System.out.println(summary);
         return committables;
     }
 

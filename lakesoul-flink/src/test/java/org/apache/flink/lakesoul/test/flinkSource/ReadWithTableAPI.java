@@ -60,7 +60,7 @@ public class ReadWithTableAPI extends AbstractTestBase {
         Table filter = userInfo.filter($("region").isEqual("UK")).filter($("score").isGreater(80))
                 .select($("name"), $("score"), $("time"), $("region"));
         List<Row> results = CollectionUtil.iteratorToList(filter.execute().collect());
-        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[Amy, 95, 1990-10-10T10:10, UK]"});
+        TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[Amy, 95, 1990-10-10T10:10:10.100, UK]"});
     }
 
     @Test

@@ -62,7 +62,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
     public SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState> createWriter(
             InitContext context, List<LakeSoulWriterBucketState> states) throws IOException {
         int subTaskId = context.getSubtaskId();
-        System.out.println("createWriter context.getRestoredCheckpointId=" + context.getRestoredCheckpointId());
         AbstractLakeSoulMultiTableSinkWriter<IN, OUT> writer = bucketsBuilder.createWriter(context, subTaskId);
         writer.initializeState(states);
         return writer;
@@ -73,7 +72,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         try {
             return Optional.of(bucketsBuilder.getWriterStateSerializer());
         } catch (IOException e) {
-            System.err.println("getWriterStateSerializer");
             // it's not optimal that we have to do this but creating the serializers for the
             // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
             // IOException.
@@ -103,7 +101,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         try {
             return Optional.of(bucketsBuilder.getCommittableSerializer());
         } catch (IOException e) {
-            System.err.println("getCommittableSerializer");
             // it's not optimal that we have to do this but creating the serializers for the
             // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
             // IOException.
@@ -114,7 +111,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
     @Override
     public Optional<GlobalCommitter<LakeSoulMultiTableSinkCommittable, LakeSoulMultiTableSinkGlobalCommittable>> createGlobalCommitter()
             throws IOException {
-        System.err.println("createGlobalCommitter");
         return Optional.ofNullable(bucketsBuilder.createGlobalCommitter());
     }
 
@@ -123,7 +119,6 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
         try {
             return Optional.of(bucketsBuilder.getGlobalCommittableSerializer());
         } catch (IOException e) {
-            System.err.println("getGlobalCommittableSerializer");
             // it's not optimal that we have to do this but creating the serializers for the
             // LakeSoulMultiTablesSink requires (among other things) a call to FileSystem.get() which declares
             // IOException.
