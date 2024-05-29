@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.types.arrow;
 
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowStreamReader;
@@ -16,7 +19,6 @@ import java.io.Serializable;
 import java.nio.channels.Channels;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 public class LakeSoulArrowWrapper implements Serializable {
     private final byte[] encodedBatch;

@@ -129,8 +129,6 @@ public class CdcPartitionComputer implements PartitionComputer<RowData> {
             }
             partSpec.put(partitionColumns[i], partitionValue);
         }
-        System.out.println("[debug]generatePartValues");
-        System.out.println(partSpec);
         return partSpec;
     }
 

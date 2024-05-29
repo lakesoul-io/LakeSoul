@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.types.arrow;
 
-import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
@@ -17,7 +19,7 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
 
     private static final SimpleVersionedSerializer<TableSchemaIdentity> tableSchemaIdentitySerializer = new TableSchemaIdentitySerializer();
 
-    public LakeSoulArrowSerializer(Schema schema) {
+    public LakeSoulArrowSerializer() {
 
     }
 
@@ -106,7 +108,7 @@ public class LakeSoulArrowSerializer extends TypeSerializer<LakeSoulArrowWrapper
 
         target.writeInt(encodedBatch.length);
         target.write(encodedBatch);
-        
+
     }
 
     /**

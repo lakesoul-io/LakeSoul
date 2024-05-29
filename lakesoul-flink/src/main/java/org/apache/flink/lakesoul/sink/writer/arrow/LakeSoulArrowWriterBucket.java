@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.sink.writer.arrow;
 
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;

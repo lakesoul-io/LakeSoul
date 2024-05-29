@@ -1,15 +1,14 @@
+// SPDX-FileCopyrightText: 2023 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.types.arrow;
 
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
-import org.apache.flink.api.common.typeinfo.SqlTimeTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.common.typeutils.base.DateComparator;
-import org.apache.flink.api.common.typeutils.base.SqlDateSerializer;
-
-import java.sql.Date;
 
 public class LakeSoulArrowTypeInfo extends TypeInformation<LakeSoulArrowWrapper> {
 
@@ -95,7 +94,7 @@ public class LakeSoulArrowTypeInfo extends TypeInformation<LakeSoulArrowWrapper>
      */
     @Override
     public TypeSerializer<LakeSoulArrowWrapper> createSerializer(ExecutionConfig config) {
-        return new LakeSoulArrowSerializer(schema);
+        return new LakeSoulArrowSerializer();
     }
 
     @Override
