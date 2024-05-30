@@ -10,15 +10,15 @@ use core::ffi::c_ptrdiff_t;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
-use std::ptr::{NonNull, null, null_mut};
+use std::ptr::{null, null_mut, NonNull};
 
 use log::debug;
 use prost::bytes::BufMut;
 use prost::Message;
 
-use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
+use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
 use proto::proto::entity;
 
 #[repr(C)]
@@ -195,14 +195,8 @@ pub extern "C" fn execute_query_scalar(
         lakesoul_metadata::execute_query_scalar(client, prepared, update_type, string_from_ptr(joined_string)).await
     });
     let (result, err): (*mut c_char, *const c_char) = match result {
-        Ok(Some(result)) =>  (
-            CString::new(result.as_str()).unwrap().into_raw(),
-            std::ptr::null(),
-        ),
-        Ok(None) => (
-            CString::new("").unwrap().into_raw(),
-            std::ptr::null(),
-        ),
+        Ok(Some(result)) => (CString::new(result.as_str()).unwrap().into_raw(), std::ptr::null()),
+        Ok(None) => (CString::new("").unwrap().into_raw(), std::ptr::null()),
         Err(e) => (
             CString::new("").unwrap().into_raw(),
             CString::new(e.to_string().as_str()).unwrap().into_raw(),
@@ -326,7 +320,11 @@ pub extern "C" fn create_tokio_postgres_client(
             CResult::<TokioPostgresClient>::new(client)
         }
         Err(e) => {
-            call_result_callback(callback, false, CString::new(e.to_string().as_str()).unwrap().into_raw());
+            call_result_callback(
+                callback,
+                false,
+                CString::new(e.to_string().as_str()).unwrap().into_raw(),
+            );
             CResult::<TokioPostgresClient>::error(format!("{}", e).as_str())
         }
     };
@@ -395,8 +393,11 @@ pub extern "C" fn create_split_desc_array(
 
     let (ret, status, e) = match result {
         Ok(ptr) => (ptr, true, null()),
-        Err(e) =>
-            (null_mut(), false, CString::new(e.to_string()).unwrap().into_raw() as *const c_char),
+        Err(e) => (
+            null_mut(),
+            false,
+            CString::new(e.to_string()).unwrap().into_raw() as *const c_char,
+        ),
     };
     call_result_callback(callback, status, e);
     ret
@@ -418,7 +419,9 @@ pub extern "C" fn debug(callback: extern "C" fn(bool, *const c_char)) -> *mut c_
             primary_keys: vec![],
             partition_desc: HashMap::new(),
             table_schema: "".to_string(),
-        }; 1];
+        };
+        1
+    ];
     let array = lakesoul_metadata::transfusion::SplitDescArray(x);
     let json_vec = serde_json::to_vec(&array).unwrap();
     let c_string = CString::new(json_vec).unwrap();

@@ -21,15 +21,14 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream};
-use datafusion_common::{project_schema, DataFusionError};
 use datafusion_common::DataFusionError::Internal;
+use datafusion_common::{project_schema, DataFusionError};
 use object_store::path::Path;
 use object_store::{MultipartId, ObjectStore};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use rand::distributions::DistString;
-use tracing::debug;
 use std::any::Any;
 use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
@@ -44,6 +43,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
+use tracing::debug;
 use url::Url;
 
 #[async_trait]
@@ -87,7 +87,6 @@ pub struct SortAsyncWriter {
     join_handle: Option<JoinHandle<Result<Vec<u8>>>>,
     err: Option<DataFusionError>,
 }
-
 
 /// Wrap the above async writer with a RepartitionExec to
 /// dynamic repartitioning the batches before write to async writer
@@ -214,17 +213,15 @@ impl MultiPartAsyncWriter {
         ))));
         let schema = uniform_schema(config.target_schema.0.clone());
 
-        let schema_projection_excluding_range = 
-            schema
-                .fields()
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, field)| 
-                    match config.range_partitions.contains(field.name()) {
-                        true => None,
-                        false => Some(idx)
-                    })
-                .collect::<Vec<_>>();
+        let schema_projection_excluding_range = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, field)| match config.range_partitions.contains(field.name()) {
+                true => None,
+                false => Some(idx),
+            })
+            .collect::<Vec<_>>();
         let writer_schema = project_schema(&schema, Some(&schema_projection_excluding_range))?;
 
         let arrow_writer = ArrowWriter::try_new(
@@ -494,11 +491,7 @@ impl AsyncBatchWriter for SortAsyncWriter {
 type PartitionedWriterInfo = Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>;
 
 impl PartitioningAsyncWriter {
-    pub fn try_new(
-        task_context: Arc<TaskContext>,
-        config: LakeSoulIOConfig,
-        runtime: Arc<Runtime>,
-    ) -> Result<Self> {
+    pub fn try_new(task_context: Arc<TaskContext>, config: LakeSoulIOConfig, runtime: Arc<Runtime>) -> Result<Self> {
         let _ = runtime.enter();
         let schema = config.target_schema.0.clone();
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
@@ -512,11 +505,7 @@ impl PartitioningAsyncWriter {
 
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
-        let partitioned_file_path_and_row_count = 
-            Arc::new(
-                Mutex::new(
-                    HashMap::<String,(Vec<String>, u64)>::new()
-                ));
+        let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
@@ -536,7 +525,6 @@ impl PartitioningAsyncWriter {
             join_handles,
             partitioned_file_path_and_row_count,
         ));
-        
 
         Ok(Self {
             schema,
@@ -613,7 +601,11 @@ impl PartitioningAsyncWriter {
                 .collect::<Result<Vec<_>>>()?;
             let hash_partitioning = Partitioning::Hash(hash_partitioning_expr, config.hash_bucket_num);
 
-            Arc::new(RepartitionByRangeAndHashExec::try_new(sort_exec, range_partitioning_expr, hash_partitioning)?)
+            Arc::new(RepartitionByRangeAndHashExec::try_new(
+                sort_exec,
+                range_partitioning_expr,
+                hash_partitioning,
+            )?)
         };
 
         Ok(exec_plan)
@@ -629,17 +621,16 @@ impl PartitioningAsyncWriter {
         partitioned_file_path_and_row_count: PartitionedWriterInfo,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
-        let schema_projection_excluding_range = 
-            data.schema()
-                .fields()
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, field)| 
-                    match range_partitions.contains(field.name()) {
-                        true => None,
-                        false => Some(idx)
-                    })
-                .collect::<Vec<_>>();
+        let schema_projection_excluding_range = data
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, field)| match range_partitions.contains(field.name()) {
+                true => None,
+                false => Some(idx),
+            })
+            .collect::<Vec<_>>();
 
         let mut err = None;
 
@@ -654,22 +645,25 @@ impl PartitioningAsyncWriter {
                     let columnar_values = get_columnar_values(&batch, range_partitions.clone())?;
                     let partition_desc = columnar_values_to_partition_desc(&columnar_values);
                     let batch_excluding_range = batch.project(&schema_projection_excluding_range)?;
-                    let file_absolute_path = format!("{}{}part-{}_{:0>4}.parquet", config_builder.prefix(), columnar_values_to_sub_path(&columnar_values), write_id, partition);            
-        
+                    let file_absolute_path = format!(
+                        "{}{}part-{}_{:0>4}.parquet",
+                        config_builder.prefix(),
+                        columnar_values_to_sub_path(&columnar_values),
+                        write_id,
+                        partition
+                    );
+
                     if !partitioned_writer.contains_key(&partition_desc) {
-                        let mut config = config_builder
-                            .clone()
-                            .with_files(vec![file_absolute_path])
-                            .build();
-        
+                        let mut config = config_builder.clone().with_files(vec![file_absolute_path]).build();
+
                         let writer = MultiPartAsyncWriter::try_new_with_context(&mut config, context.clone()).await?;
                         partitioned_writer.insert(partition_desc.clone(), Box::new(writer));
                     }
-        
+
                     if let Some(async_writer) = partitioned_writer.get_mut(&partition_desc) {
                         row_count += batch_excluding_range.num_rows();
                         async_writer.write_record_batch(batch_excluding_range).await?;
-                    }        
+                    }
                 }
                 // received abort signal
                 Err(e) => {
@@ -685,10 +679,12 @@ impl PartitioningAsyncWriter {
                         Internal(ref err_msg) if err_msg == "external abort" => (),
                         _ => return Err(e),
                     },
-                    Err(abort_err) => return Err(Internal(format!(
-                        "Abort failed {:?}, previous error {:?}",
-                        abort_err, e
-                    ))),
+                    Err(abort_err) => {
+                        return Err(Internal(format!(
+                            "Abort failed {:?}, previous error {:?}",
+                            abort_err, e
+                        )))
+                    }
                 }
             }
             Ok(row_count as u64)
@@ -702,10 +698,8 @@ impl PartitioningAsyncWriter {
                     file_path_and_row_count.0.push(file_absolute_path);
                     file_path_and_row_count.1 += num_rows;
                 } else {
-                    partitioned_file_path_and_row_count_locked.insert(
-                        partition_desc.clone(),
-                        (vec![file_absolute_path], num_rows),
-                    );
+                    partitioned_file_path_and_row_count_locked
+                        .insert(partition_desc.clone(), (vec![file_absolute_path], num_rows));
                 }
                 writer.flush_and_close().await?;
             }
@@ -744,7 +738,10 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         // arrow_cast::pretty::print_batches(&[batch.clone()]);
         if let Some(err) = &self.err {
-            return Err(Internal(format!("PartitioningAsyncWriter already failed with error {:?}", err)));
+            return Err(Internal(format!(
+                "PartitioningAsyncWriter already failed with error {:?}",
+                err
+            )));
         }
         let send_result = self.sorter_sender.send(Ok(batch)).await;
         match send_result {
@@ -754,10 +751,16 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
                 if let Some(join_handle) = self.join_handle.take() {
                     let result = join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?;
                     self.err = result.err();
-                    Err(Internal(format!("Write to PartitioningAsyncWriter failed: {:?}", self.err)))
+                    Err(Internal(format!(
+                        "Write to PartitioningAsyncWriter failed: {:?}",
+                        self.err
+                    )))
                 } else {
                     self.err = Some(DataFusionError::External(Box::new(e)));
-                    Err(Internal(format!("Write to PartitioningAsyncWriter failed: {:?}", self.err)))
+                    Err(Internal(format!(
+                        "Write to PartitioningAsyncWriter failed: {:?}",
+                        self.err
+                    )))
                 }
             }
         }
@@ -769,7 +772,9 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
             drop(sender);
             join_handle.await.map_err(|e| DataFusionError::External(Box::new(e)))?
         } else {
-            Err(Internal("PartitioningAsyncWriter has been aborted, cannot flush".to_string()))
+            Err(Internal(
+                "PartitioningAsyncWriter has been aborted, cannot flush".to_string(),
+            ))
         }
     }
 
@@ -823,14 +828,13 @@ impl SyncSendableMutableLakeSoulWriter {
                 config.target_schema.0.clone()
             };
 
-
             let mut writer_config = config.clone();
             let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
                 let task_context = create_session_context(&mut writer_config)?.task_ctx();
                 Box::new(PartitioningAsyncWriter::try_new(task_context, config, runtime.clone())?)
             } else if !config.primary_keys.is_empty() {
                 // sort primary key table
-                
+
                 writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
                 let writer = MultiPartAsyncWriter::try_new(writer_config).await?;
                 Box::new(SortAsyncWriter::try_new(writer, config, runtime.clone())?)
@@ -841,7 +845,6 @@ impl SyncSendableMutableLakeSoulWriter {
                 Box::new(writer)
             };
             let schema = writer.schema();
-
 
             Ok(SyncSendableMutableLakeSoulWriter {
                 inner: Arc::new(Mutex::new(writer)),
@@ -897,9 +900,7 @@ impl SyncSendableMutableLakeSoulWriter {
 mod tests {
     use crate::lakesoul_io_config::LakeSoulIOConfigBuilder;
     use crate::lakesoul_reader::LakeSoulReader;
-    use crate::lakesoul_writer::{
-        AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter,
-    };
+    use crate::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter};
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
     use arrow_array::Array;

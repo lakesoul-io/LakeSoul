@@ -24,8 +24,8 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::{External, ObjectStore};
 use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
-use object_store::{ClientOptions, RetryConfig};
 use object_store::aws::AmazonS3Builder;
+use object_store::{ClientOptions, RetryConfig};
 use url::{ParseError, Url};
 
 #[cfg(feature = "hdfs")]
@@ -170,7 +170,6 @@ impl LakeSoulIOConfigBuilder {
         self.config.range_partitions.push(range_partition);
         self
     }
-
 
     pub fn with_range_partitions(mut self, range_partitions: Vec<String>) -> Self {
         self.config.range_partitions = range_partitions;
@@ -495,7 +494,6 @@ pub fn create_session_context_with_planner(
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
-    
 
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist
@@ -527,7 +525,13 @@ pub fn create_session_context_with_planner(
         .collect();
     state = state
         .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
-        .with_optimizer_rules(vec![Arc::new(PushDownFilter {}), Arc::new(PushDownProjection {}), Arc::new(SimplifyExpressions {}), Arc::new(UnwrapCastInComparison {}), Arc::new(RewriteDisjunctivePredicate {})])
+        .with_optimizer_rules(vec![
+            Arc::new(PushDownFilter {}),
+            Arc::new(PushDownProjection {}),
+            Arc::new(SimplifyExpressions {}),
+            Arc::new(UnwrapCastInComparison {}),
+            Arc::new(RewriteDisjunctivePredicate {}),
+        ])
         .with_physical_optimizer_rules(physical_opt_rules);
 
     Ok(SessionContext::new_with_state(state))

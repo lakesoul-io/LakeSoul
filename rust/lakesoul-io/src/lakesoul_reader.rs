@@ -66,14 +66,13 @@ impl LakeSoulReader {
             .await?;
 
             let dataframe = self.sess_ctx.read_table(Arc::new(source))?;
-            let filters = convert_filter(&dataframe, self.config.filter_strs.clone(), self.config.filter_protos.clone())?;
-            let stream = prune_filter_and_execute(
-                dataframe,
-                target_schema.clone(),
-                filters,
-                self.config.batch_size,
-            )
-            .await?;
+            let filters = convert_filter(
+                &dataframe,
+                self.config.filter_strs.clone(),
+                self.config.filter_protos.clone(),
+            )?;
+            let stream =
+                prune_filter_and_execute(dataframe, target_schema.clone(), filters, self.config.batch_size).await?;
             self.schema = Some(stream.schema());
             self.stream = Some(stream);
 

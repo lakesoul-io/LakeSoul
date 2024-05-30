@@ -24,12 +24,12 @@ use datafusion_substrait::substrait::proto::Plan;
 use prost::Message;
 use tokio::runtime::{Builder, Runtime};
 
-use proto::proto::entity;
+use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-use lakesoul_io::helpers;
 use log::debug;
+use proto::proto::entity;
 
 #[repr(C)]
 pub struct CResult<OpaqueT> {
@@ -111,7 +111,6 @@ pub struct Writer {
 pub struct BytesResult {
     private: [u8; 0],
 }
-
 
 #[no_mangle]
 pub extern "C" fn new_lakesoul_io_config_builder() -> NonNull<IOConfigBuilder> {
@@ -265,9 +264,10 @@ pub extern "C" fn lakesoul_config_builder_set_hash_bucket_num(
     builder: NonNull<IOConfigBuilder>,
     hash_bucket_num: c_size_t,
 ) -> NonNull<IOConfigBuilder> {
-    convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_hash_bucket_num(hash_bucket_num))
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_hash_bucket_num(hash_bucket_num),
+    )
 }
-
 
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_object_store_option(
@@ -323,7 +323,6 @@ pub extern "C" fn lakesoul_config_builder_add_single_range_partition(
         convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_range_partition(col))
     }
 }
-
 
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_add_merge_op(
@@ -769,11 +768,13 @@ pub extern "C" fn export_bytes_result(
     call_result_callback(callback, true, std::ptr::null());
 }
 
-
 // consumes the writer pointer
 // this writer cannot be used again
 #[no_mangle]
-pub extern "C" fn flush_and_close_writer(writer: NonNull<CResult<Writer>>, callback: I32ResultCallback) -> NonNull<CResult<BytesResult>> {
+pub extern "C" fn flush_and_close_writer(
+    writer: NonNull<CResult<Writer>>,
+    callback: I32ResultCallback,
+) -> NonNull<CResult<BytesResult>> {
     unsafe {
         let writer =
             from_opaque::<Writer, SyncSendableMutableLakeSoulWriter>(NonNull::new_unchecked(writer.as_ref().ptr));
@@ -863,30 +864,24 @@ pub extern "C" fn free_tokio_runtime(runtime: NonNull<CResult<TokioRuntime>>) {
 #[no_mangle]
 pub extern "C" fn apply_partition_filter(
     callback: extern "C" fn(i32, *const c_char),
-    len: i32, 
-    jni_wrapper_addr: c_ptrdiff_t, 
-    schema_addr: *mut FFI_ArrowSchema, 
-    filter_len:i32, 
-    filter_addr: c_ptrdiff_t
+    len: i32,
+    jni_wrapper_addr: c_ptrdiff_t,
+    schema_addr: *mut FFI_ArrowSchema,
+    filter_len: i32,
+    filter_addr: c_ptrdiff_t,
 ) -> NonNull<CResult<BytesResult>> {
-    let raw_parts = unsafe { 
-        std::slice::from_raw_parts(jni_wrapper_addr as *const u8, len as usize) 
-    };
+    let raw_parts = unsafe { std::slice::from_raw_parts(jni_wrapper_addr as *const u8, len as usize) };
     let wrapper = entity::JniWrapper::decode(prost::bytes::Bytes::from(raw_parts)).unwrap();
 
-    let dst = unsafe { 
-        slice::from_raw_parts(filter_addr as *const u8, filter_len as usize) 
-    };
+    let dst = unsafe { slice::from_raw_parts(filter_addr as *const u8, filter_len as usize) };
     let filter = Plan::decode(dst).unwrap();
 
     let ffi_schema = schema_addr;
-    let schema_data = unsafe {
-        std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty())   
-    };
+    let schema_data = unsafe { std::ptr::replace(ffi_schema, FFI_ArrowSchema::empty()) };
     let schema = SchemaRef::from(Schema::try_from(&schema_data).unwrap());
-    
+
     let filtered_partition = helpers::apply_partition_filter(wrapper, schema, filter);
-    
+
     match filtered_partition {
         Ok(wrapper) => {
             let u8_vec = wrapper.encode_to_vec();
@@ -1015,7 +1010,7 @@ mod tests {
     pub extern "C" fn result_callback(status: bool, err: *const c_char) {
         unsafe {
             let mut writer_called = CALL_BACK_CV.0.lock().unwrap();
-            if !status  {
+            if !status {
                 match err.as_ref() {
                     Some(e) => WRITER_FAILED = Some(CStr::from_ptr(e as *const c_char).to_str().unwrap().to_string()),
                     None => {}
@@ -1026,7 +1021,6 @@ mod tests {
             CALL_BACK_CV.1.notify_one();
         }
     }
-
 
     #[test]
     fn test_native_read_write() {
@@ -1288,7 +1282,6 @@ mod tests {
         free_lakesoul_reader(reader);
     }
 }
-
 
 #[no_mangle]
 pub extern "C" fn rust_logger_init() {

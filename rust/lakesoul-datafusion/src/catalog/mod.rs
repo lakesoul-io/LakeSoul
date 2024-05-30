@@ -81,9 +81,7 @@ pub(crate) async fn create_io_config_builder(
     if let Some(table_name) = table_name {
         let table_info = client.get_table_info_by_table_name(table_name, namespace).await?;
         let data_files = if fetch_files {
-            client
-                .get_data_files_by_table_name(table_name, namespace)
-                .await?
+            client.get_data_files_by_table_name(table_name, namespace).await?
         } else {
             vec![]
         };

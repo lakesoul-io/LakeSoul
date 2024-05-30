@@ -31,7 +31,6 @@ use datafusion::{execution::context::SessionState, logical_expr::Expr};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
-
 use lakesoul_io::helpers::listing_table_from_lakesoul_io_config;
 use lakesoul_io::lakesoul_io_config::LakeSoulIOConfig;
 use lakesoul_metadata::MetaDataClientRef;
@@ -81,23 +80,28 @@ impl LakeSoulTableProvider {
         for (idx, field) in table_schema.fields().iter().enumerate() {
             match range_partitions.contains(field.name()) {
                 false => file_schema_projection.push(idx),
-                true => range_partition_projection.push(idx)
+                true => range_partition_projection.push(idx),
             };
         }
-        
+
         let file_schema = Arc::new(table_schema.project(&file_schema_projection)?);
-        let table_schema = Arc::new(table_schema.project(&[file_schema_projection, range_partition_projection].concat())?);
+        let table_schema =
+            Arc::new(table_schema.project(&[file_schema_projection, range_partition_projection].concat())?);
 
-        let file_format: Arc<dyn FileFormat> = 
-            Arc::new(LakeSoulMetaDataParquetFormat::new(
+        let file_format: Arc<dyn FileFormat> = Arc::new(
+            LakeSoulMetaDataParquetFormat::new(
                 client.clone(),
-                Arc::new(ParquetFormat::new()), 
-                table_info.clone(), 
-                lakesoul_io_config.clone()
-            ).await?);
+                Arc::new(ParquetFormat::new()),
+                table_info.clone(),
+                lakesoul_io_config.clone(),
+            )
+            .await?,
+        );
 
-        let (_, listing_table) = listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?;
-        
+        let (_, listing_table) =
+            listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)
+                .await?;
+
         Ok(Self {
             listing_table,
             client,
@@ -133,12 +137,9 @@ impl LakeSoulTableProvider {
         &self.table_info.table_id
     }
 
-
     fn is_partition_filter(&self, f: &Expr) -> bool {
         if let Ok(cols) = f.to_columns() {
-            cols
-                .iter()
-                .all(|col| self.range_partitions.contains(&col.name))
+            cols.iter().all(|col| self.range_partitions.contains(&col.name))
         } else {
             false
         }
@@ -156,7 +157,7 @@ impl LakeSoulTableProvider {
         self.file_schema.clone()
     }
 
-    pub fn table_partition_cols(&self) -> &[(String, DataType)]{
+    pub fn table_partition_cols(&self) -> &[(String, DataType)] {
         &self.options().table_partition_cols
     }
 
@@ -182,13 +183,14 @@ impl LakeSoulTableProvider {
                         } else {
                             Err(DataFusionError::Plan(
                                 // Return an error if schema of the input query does not match with the table schema.
-                                format!("Expected single column references in output_ordering, got {}", expr)
+                                format!("Expected single column references in output_ordering, got {}", expr),
                             ))
                         }
                     } else {
-                        Err(DataFusionError::Plan(
-                            format!("Expected Expr::Sort in output_ordering, but got {}", expr)
-                        ))
+                        Err(DataFusionError::Plan(format!(
+                            "Expected Expr::Sort in output_ordering, but got {}",
+                            expr
+                        )))
                     }
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -196,8 +198,6 @@ impl LakeSoulTableProvider {
         }
         Ok(all_sort_orders)
     }
-        
-    
 
     async fn list_files_for_scan<'a>(
         &'a self,
@@ -211,16 +211,28 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let all_partition_info = self.client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|_| DataFusionError::External(format!("get all partition_info of table {} failed", &self.table_info().table_name).into()))?;
+        let all_partition_info = self.client.get_all_partition_info(self.table_id()).await.map_err(|_| {
+            DataFusionError::External(
+                format!(
+                    "get all partition_info of table {} failed",
+                    &self.table_info().table_name
+                )
+                .into(),
+            )
+        })?;
 
-        let prune_partition_info = 
-            prune_partitions(all_partition_info, filters, self.table_partition_cols())
-                .await
-                .map_err(|_| DataFusionError::External(format!("get all partition_info of table {} failed", &self.table_info().table_name).into()))?;
-        
+        let prune_partition_info = prune_partitions(all_partition_info, filters, self.table_partition_cols())
+            .await
+            .map_err(|_| {
+                DataFusionError::External(
+                    format!(
+                        "get all partition_info of table {} failed",
+                        &self.table_info().table_name
+                    )
+                    .into(),
+                )
+            })?;
+
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
             futures.push(listing_partition_info(partition, store.as_ref(), self.client()))
@@ -236,28 +248,23 @@ impl LakeSoulTableProvider {
                 .into_iter()
                 .flatten()
                 .zip(self.table_partition_cols())
-                .map(|(parsed, (_, datatype))| {
-                    ScalarValue::try_from_string(parsed.to_string(), datatype)
-                })
+                .map(|(parsed, (_, datatype))| ScalarValue::try_from_string(parsed.to_string(), datatype))
                 .collect::<Result<Vec<_>>>()?;
 
             let files = object_metas
                 .into_iter()
-                .map(|object_meta| 
-                    PartitionedFile {
-                        object_meta,
-                        partition_values: partition_values.clone(),
-                        range: None,
-                        extensions: None,
-                    }
-                )
+                .map(|object_meta| PartitionedFile {
+                    object_meta,
+                    partition_values: partition_values.clone(),
+                    range: None,
+                    extensions: None,
+                })
                 .collect::<Vec<_>>();
             file_groups.push(files)
         }
 
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
-
 }
 
 #[async_trait]
@@ -281,8 +288,7 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let (partitioned_file_lists, _) =
-            self.list_files_for_scan(state, filters, limit).await?;
+        let (partitioned_file_lists, _) = self.list_files_for_scan(state, filters, limit).await?;
 
         // if no files need to be read, return an `EmptyExec`
         if partitioned_file_lists.is_empty() {
@@ -299,16 +305,11 @@ impl TableProvider for LakeSoulTableProvider {
             .iter()
             .map(|col| Ok(self.schema().field_with_name(&col.0)?.clone()))
             .collect::<Result<Vec<_>>>()?;
-        
+
         let filters = if let Some(expr) = conjunction(filters.to_vec()) {
             // NOTE: Use the table schema (NOT file schema) here because `expr` may contain references to partition columns.
             let table_df_schema = self.schema().as_ref().clone().to_dfschema()?;
-            let filters = create_physical_expr(
-                &expr,
-                &table_df_schema,
-                &self.schema(),
-                state.execution_props(),
-            )?;
+            let filters = create_physical_expr(&expr, &table_df_schema, &self.schema(), state.execution_props())?;
             Some(filters)
         } else {
             None
@@ -340,7 +341,6 @@ impl TableProvider for LakeSoulTableProvider {
                 filters.as_ref(),
             )
             .await
-    
     }
 
     fn supports_filters_pushdown(&self, filters: &[&Expr]) -> Result<Vec<TableProviderFilterPushDown>> {
@@ -354,7 +354,6 @@ impl TableProvider for LakeSoulTableProvider {
                 }
             })
             .collect()
-        
     }
 
     async fn insert_into(
@@ -363,7 +362,6 @@ impl TableProvider for LakeSoulTableProvider {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        
         let table_path = &self.listing_table.table_paths()[0];
         // Get the object store for the table path.
         let _store = state.runtime_env().object_store(table_path)?;
