@@ -326,7 +326,7 @@ impl MetaDataClient {
 
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
-                let new_partition_list = meta_info
+                let mut new_partition_list = meta_info
                     .list_partition
                     .iter()
                     .map(|partition_info| {
@@ -356,6 +356,7 @@ impl MetaDataClient {
                         }
                     })
                     .collect::<Result<Vec<PartitionInfo>>>()?;
+                new_partition_list.push(PartitionInfo { ..Default::default() });
                 let val = self.transaction_insert_partition_info(new_partition_list).await?;
                 let vec = self.get_all_partition_info(table_info.table_id.as_str()).await?;
                 debug!("val = {val} ,get partition list after finished: {:?}", vec);

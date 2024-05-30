@@ -950,10 +950,11 @@ pub async fn execute_insert(
                 .await
         }
         DaoType::TransactionInsertPartitionInfo => {
-            let partition_info_list = wrapper.partition_info;
+            let mut partition_info_list = wrapper.partition_info.clone();
+            let snapshot_container = partition_info_list.pop().unwrap();
             let result = {
                 let transaction = client.transaction().await?;
-                let prepared = transaction
+                let transaction_insert_statement = match transaction
                     .prepare(
                         "insert into partition_info(
                         table_id,
@@ -966,8 +967,16 @@ pub async fn execute_insert(
                     )
                     values($1::TEXT, $2::TEXT, $3::INT, $4::TEXT, $5::_UUID, $6::TEXT, $7::TEXT)",
                     )
-                    .await;
-                let statement = match prepared {
+                    .await
+                {
+                    Ok(statement) => statement,
+                    Err(e) => return Err(LakeSoulMetaDataError::from(e)),
+                };
+
+                let update_statement = match transaction
+                    .prepare("update data_commit_info set committed = 'true' where commit_id = $1::UUID")
+                    .await
+                {
                     Ok(statement) => statement,
                     Err(e) => return Err(LakeSoulMetaDataError::from(e)),
                 };
@@ -981,7 +990,7 @@ pub async fn execute_insert(
 
                     let result = transaction
                         .execute(
-                            &statement,
+                            &transaction_insert_statement,
                             &[
                                 &partition_info.table_id,
                                 &partition_info.partition_desc,
@@ -1001,22 +1010,16 @@ pub async fn execute_insert(
                             Err(e) => Err(LakeSoulMetaDataError::from(e)),
                         };
                     };
-
-                    for uuid in &snapshot {
-                        let result = transaction
-                            .execute(
-                                "update data_commit_info set committed = 'true' where commit_id = $1::UUID",
-                                &[&uuid],
-                            )
-                            .await;
-
-                        if let Some(e) = result.err() {
-                            eprintln!("update committed error, err = {:?}", e);
-                            return match transaction.rollback().await {
-                                Ok(()) => Ok(0i32),
-                                Err(e) => Err(LakeSoulMetaDataError::from(e)),
-                            };
-                        }
+                }
+                for _uuid in &snapshot_container.snapshot {
+                    let uid = uuid::Uuid::from_u64_pair(_uuid.high, _uuid.low);
+                    let result = transaction.execute(&update_statement, &[&uid]).await;
+                    if let Some(e) = result.err() {
+                        eprintln!("update committed error, err = {:?}", e);
+                        return match transaction.rollback().await {
+                            Ok(()) => Ok(0i32),
+                            Err(e) => Err(LakeSoulMetaDataError::from(e)),
+                        };
                     }
                 }
                 match transaction.commit().await {

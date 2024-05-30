@@ -339,4 +339,38 @@ public class DBUtil {
         sb.append(low);
         return sb.toString();
     }
+
+    public static class Timer {
+
+        private final String name;
+        private long totalCost;
+        private long times;
+
+        private long startTimeOnce;
+
+        public Timer(String name) {
+            this.name = name;
+            initTimer();
+        }
+
+        public void initTimer() {
+            totalCost = 0L;
+            times = 0L;
+            startTimeOnce = 0L;
+        }
+
+        public void start() {
+            startTimeOnce = System.currentTimeMillis();
+        }
+
+        public void end() {
+            times += 1;
+            totalCost += System.currentTimeMillis() - startTimeOnce;
+        }
+
+        public void report() {
+            System.out.printf("Timer %s: totalCost=%d, times=%d, avgCost=%.3f\n", name, totalCost, times, (double) totalCost / times);
+        }
+
+    }
 }

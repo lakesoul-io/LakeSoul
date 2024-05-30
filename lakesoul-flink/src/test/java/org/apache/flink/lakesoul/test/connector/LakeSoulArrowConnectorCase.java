@@ -21,15 +21,15 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
     @Test
     public void test() throws Exception {
         int parallelism = 2;
-        StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 5000L, 5000L);
+        StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
         StreamTableEnvironment tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(
                 execEnv, parallelism);
-        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(1000, 1000L));
+        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(5000, 1000L));
         String name = "Print Sink";
         PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
 
         Configuration conf = new Configuration();
-        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, 1);
+        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, parallelism);
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = execEnv;
