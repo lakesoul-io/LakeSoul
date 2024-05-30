@@ -30,7 +30,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: nightly-2023-05-20
+          toolchain: stable
           components: clippy
           default: true
       - name: Install Protoc
@@ -42,5 +42,5 @@ jobs:
           workspaces: "./rust -> target"
           key: "ubuntu-latest-clippy"
       - name: Run Clippy
-        run: cd rust && cargo clippy --no-deps --all-features --package lakesoul-io-c --package lakesoul-metadata-c
+        run: cd rust && cargo clippy --no-deps --features hdfs --package lakesoul-io-c --package lakesoul-metadata-c
 
