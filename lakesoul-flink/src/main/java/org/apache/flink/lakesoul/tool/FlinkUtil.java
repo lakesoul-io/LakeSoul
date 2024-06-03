@@ -505,11 +505,12 @@ public class FlinkUtil {
     }
 
     public static ZoneId getLocalTimeZone(Configuration configuration) {
-        String zone = configuration.getString(TableConfigOptions.LOCAL_TIME_ZONE);
-        validateTimeZone(zone);
-        return TableConfigOptions.LOCAL_TIME_ZONE.defaultValue().equals(zone)
-                ? ZoneId.systemDefault()
-                : ZoneId.of(zone);
+        return ZoneId.of("UTC");
+//        String zone = configuration.getString(TableConfigOptions.LOCAL_TIME_ZONE);
+//        validateTimeZone(zone);
+//        return TableConfigOptions.LOCAL_TIME_ZONE.defaultValue().equals(zone)
+//                ? ZoneId.systemDefault()
+//                : ZoneId.of(zone);
     }
 
     /**

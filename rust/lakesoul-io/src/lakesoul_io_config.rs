@@ -44,9 +44,9 @@ impl Default for IOSchema {
 #[derive(Debug, Derivative)]
 #[derivative(Default, Clone)]
 pub struct LakeSoulIOConfig {
-    // root dir path of files
+    // unescaped root dir path of files
     pub(crate) prefix: String,
-    // files to read or write
+    // unescaped file paths to read or write
     pub(crate) files: Vec<String>,
     // primary key column names
     pub(crate) primary_keys: Vec<String>,

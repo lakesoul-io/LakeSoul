@@ -106,6 +106,7 @@ public class MockLakeSoulArrowSource {
                 synchronized (ctx.getCheckpointLock()) {
                     long now = System.currentTimeMillis();
                     ctx.collect(new LakeSoulArrowWrapper(mockTableInfo(now), mockVectorSchemaRoot(count, now)));
+                    Thread.sleep(interval);
                     count++;
                 }
             }
