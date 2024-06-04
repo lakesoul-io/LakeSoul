@@ -24,7 +24,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
         StreamTableEnvironment tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(
                 execEnv, parallelism);
-        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(5000, 1000L));
+        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(500, 100L));
         String name = "Print Sink";
         PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
 
