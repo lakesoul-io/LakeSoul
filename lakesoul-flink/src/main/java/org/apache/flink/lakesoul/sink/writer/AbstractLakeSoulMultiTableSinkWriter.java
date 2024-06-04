@@ -12,6 +12,8 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket;
+import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
@@ -41,7 +43,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  *
  * @param <IN> The type of input elements.
  */
-public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
+public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         implements SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState>,
         Sink.ProcessingTimeService.ProcessingTimeCallback {
 
@@ -51,15 +53,15 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final LakeSoulWriterBucketFactory bucketFactory;
 
-    private final RollingPolicy<RowData, String> rollingPolicy;
+    private final RollingPolicy<OUT, String> rollingPolicy;
 
-    private final Sink.ProcessingTimeService processingTimeService;
+    protected final Sink.ProcessingTimeService processingTimeService;
 
     private final long bucketCheckInterval;
 
     // --------------------------- runtime fields -----------------------------
 
-    private final BucketerContext bucketerContext;
+    protected final BucketerContext bucketerContext;
 
     private final Map<Tuple2<TableSchemaIdentity, String>, LakeSoulWriterBucket> activeBuckets;
 
@@ -67,13 +69,13 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
 
     private final Counter recordsOutCounter;
 
-    private final Configuration conf;
+    protected final Configuration conf;
 
     public AbstractLakeSoulMultiTableSinkWriter(
             int subTaskId,
             final SinkWriterMetricGroup metricGroup,
             final LakeSoulWriterBucketFactory bucketFactory,
-            final RollingPolicy<RowData, String> rollingPolicy,
+            final RollingPolicy<OUT, String> rollingPolicy,
             final OutputFileConfig outputFileConfig,
             final Sink.ProcessingTimeService processingTimeService,
             final long bucketCheckInterval,
@@ -213,7 +215,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         return states;
     }
 
-    private LakeSoulWriterBucket getOrCreateBucketForBucketId(
+    protected LakeSoulWriterBucket getOrCreateBucketForBucketId(
             TableSchemaIdentity identity,
             String bucketId,
             TableSchemaWriterCreator creator) throws IOException {
@@ -256,17 +258,29 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
         registerNextBucketInspectionTimer();
     }
 
-    private void registerNextBucketInspectionTimer() {
+    protected void registerNextBucketInspectionTimer() {
         final long nextInspectionTime =
                 processingTimeService.getCurrentProcessingTime() + bucketCheckInterval;
         processingTimeService.registerProcessingTimer(nextInspectionTime, this);
+    }
+
+    protected int getSubTaskId() {
+        return subTaskId;
+    }
+
+    public RollingPolicy<OUT, String> getRollingPolicy() {
+        return rollingPolicy;
+    }
+
+    public OutputFileConfig getOutputFileConfig() {
+        return outputFileConfig;
     }
 
     /**
      * The {@link BucketAssigner.Context} exposed to the {@link BucketAssigner#getBucketId(Object,
      * BucketAssigner.Context)} whenever a new incoming element arrives.
      */
-    private static final class BucketerContext implements BucketAssigner.Context {
+    protected static final class BucketerContext implements BucketAssigner.Context {
 
         @Nullable
         private Long elementTimestamp;
@@ -281,7 +295,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN>
             this.currentProcessingTime = Long.MIN_VALUE;
         }
 
-        void update(@Nullable Long elementTimestamp, long watermark, long currentProcessingTime) {
+        public void update(@Nullable Long elementTimestamp, long watermark, long currentProcessingTime) {
             this.elementTimestamp = elementTimestamp;
             this.currentWatermark = watermark;
             this.currentProcessingTime = currentProcessingTime;

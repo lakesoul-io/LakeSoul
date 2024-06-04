@@ -38,17 +38,16 @@ impl Debug for LakeSoulListingTable {
 }
 
 impl LakeSoulListingTable {
-
     pub async fn new_with_config_and_format(
         session_state: &SessionState,
         lakesoul_io_config: LakeSoulIOConfig,
         file_format: Arc<dyn FileFormat>,
         as_sink: bool,
     ) -> Result<Self> {
-
-        let (file_schema, listing_table) = listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink).await?;
-        let file_schema = file_schema
-            .ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
+        let (file_schema, listing_table) =
+            listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)
+                .await?;
+        let file_schema = file_schema.ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
         let table_schema = Self::compute_table_schema(file_schema, &lakesoul_io_config);
 
         Ok(Self {
@@ -81,7 +80,6 @@ impl LakeSoulListingTable {
         }
         Arc::new(builder.finish())
     }
-
 }
 
 #[async_trait]

@@ -16,23 +16,25 @@ import org.apache.flink.table.data.RowData;
 import java.io.IOException;
 import java.io.Serializable;
 
-/** A factory able to create {@link LakeSoulWriterBucket} for the {@link LakeSoulMultiTablesSink}. */
-public interface LakeSoulWriterBucketFactory extends Serializable {
+/**
+ * A factory able to create {@link LakeSoulWriterBucket} for the {@link LakeSoulMultiTablesSink}.
+ */
+public interface LakeSoulWriterBucketFactory<OUT> extends Serializable {
 
     LakeSoulWriterBucket getNewBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
             String bucketId,
             Path bucketPath,
-            BucketWriter<RowData, String> bucketWriter,
-            RollingPolicy<RowData, String> rollingPolicy,
+            BucketWriter<OUT, String> bucketWriter,
+            RollingPolicy<OUT, String> rollingPolicy,
             OutputFileConfig outputFileConfig) throws IOException;
 
     LakeSoulWriterBucket restoreBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
-            BucketWriter<RowData, String> bucketWriter,
-            RollingPolicy<RowData, String> rollingPolicy,
+            BucketWriter<OUT, String> bucketWriter,
+            RollingPolicy<OUT, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
             OutputFileConfig outputFileConfig) throws IOException;
 }

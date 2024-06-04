@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{any::Any, collections::HashMap};
 use std::sync::Arc;
+use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
 use datafusion::{
@@ -19,19 +19,19 @@ use crate::default_column_stream::DefaultColumnStream;
 pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
-    default_column_value: Arc<HashMap<String, String>>
+    default_column_value: Arc<HashMap<String, String>>,
 }
 
 impl DefaultColumnExec {
     pub fn new(
-        input: Arc<dyn ExecutionPlan>, 
+        input: Arc<dyn ExecutionPlan>,
         target_schema: SchemaRef,
-        default_column_value: Arc<HashMap<String, String>>
+        default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
         Ok(Self {
             input,
             target_schema,
-            default_column_value
+            default_column_value,
         })
     }
 }

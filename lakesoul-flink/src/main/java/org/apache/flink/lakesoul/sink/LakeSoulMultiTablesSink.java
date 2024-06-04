@@ -12,6 +12,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.sink.bucket.BucketsBuilder;
+import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesArrowFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultMultiTablesBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.bucket.DefaultOneTableBulkFormatBuilder;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
@@ -20,6 +21,7 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import java.io.IOException;
@@ -30,13 +32,13 @@ import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class LakeSoulMultiTablesSink<IN> implements
-                                         Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
-                                                 LakeSoulMultiTableSinkGlobalCommittable> {
+public class LakeSoulMultiTablesSink<IN, OUT> implements
+        Sink<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState,
+                LakeSoulMultiTableSinkGlobalCommittable> {
 
-    private final BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder;
+    private final BucketsBuilder<IN, OUT, ? extends BucketsBuilder<IN, OUT, ?>> bucketsBuilder;
 
-    public LakeSoulMultiTablesSink(BucketsBuilder<IN, ? extends BucketsBuilder<IN, ?>> bucketsBuilder) {
+    public LakeSoulMultiTablesSink(BucketsBuilder<IN, OUT, ? extends BucketsBuilder<IN, OUT, ?>> bucketsBuilder) {
         this.bucketsBuilder = checkNotNull(bucketsBuilder);
     }
 
@@ -51,11 +53,16 @@ public class LakeSoulMultiTablesSink<IN> implements
                 conf);
     }
 
+    public static DefaultMultiTablesArrowFormatBuilder forMultiTablesArrowFormat(Configuration conf) {
+        return new DefaultMultiTablesArrowFormatBuilder(new Path(conf.getString(LakeSoulSinkOptions.WAREHOUSE_PATH)),
+                conf);
+    }
+
     @Override
     public SinkWriter<IN, LakeSoulMultiTableSinkCommittable, LakeSoulWriterBucketState> createWriter(
             InitContext context, List<LakeSoulWriterBucketState> states) throws IOException {
         int subTaskId = context.getSubtaskId();
-        AbstractLakeSoulMultiTableSinkWriter<IN> writer = bucketsBuilder.createWriter(context, subTaskId);
+        AbstractLakeSoulMultiTableSinkWriter<IN, OUT> writer = bucketsBuilder.createWriter(context, subTaskId);
         writer.initializeState(states);
         return writer;
     }

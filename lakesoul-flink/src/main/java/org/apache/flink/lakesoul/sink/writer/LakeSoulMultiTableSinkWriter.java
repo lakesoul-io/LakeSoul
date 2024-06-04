@@ -21,7 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord> {
+public class LakeSoulMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<BinarySourceRecord, RowData> {
 
     private final ConcurrentHashMap<TableSchemaIdentity, TableSchemaWriterCreator> perTableSchemaWriterCreator;
 

@@ -9,6 +9,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
+import org.apache.flink.lakesoul.sink.writer.DefaultLakeSoulWriterBucketFactory;
 import org.apache.flink.lakesoul.sink.writer.LakeSoulRowDataOneTableSinkWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.table.data.RowData;
@@ -19,7 +20,7 @@ import java.io.IOException;
  * Builder for the vanilla {@link LakeSoulMultiTablesSink} using a bulk format.
  */
 public final class DefaultOneTableBulkFormatBuilder
-        extends BulkFormatBuilder<RowData, DefaultOneTableBulkFormatBuilder> {
+        extends BulkFormatBuilder<RowData, RowData, DefaultOneTableBulkFormatBuilder> {
 
     private static final long serialVersionUID = 7493169281036370228L;
 
@@ -28,12 +29,12 @@ public final class DefaultOneTableBulkFormatBuilder
     public DefaultOneTableBulkFormatBuilder(
             TableSchemaIdentity identity,
             Path basePath, Configuration conf) {
-        super(basePath, conf);
+        super(basePath, conf, new DefaultLakeSoulWriterBucketFactory(conf));
         this.identity = identity;
     }
 
     @Override
-    public AbstractLakeSoulMultiTableSinkWriter<RowData> createWriter(Sink.InitContext context, int subTaskId) throws
+    public AbstractLakeSoulMultiTableSinkWriter<RowData, RowData> createWriter(Sink.InitContext context, int subTaskId) throws
             IOException {
         return new LakeSoulRowDataOneTableSinkWriter(
                 subTaskId,
@@ -45,6 +46,6 @@ public final class DefaultOneTableBulkFormatBuilder
                 context.getProcessingTimeService(),
                 super.bucketCheckInterval,
                 super.conf
-                );
+        );
     }
 }

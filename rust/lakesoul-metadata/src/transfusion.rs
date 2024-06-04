@@ -17,12 +17,12 @@ use tokio_postgres::Client;
 
 use proto::proto::entity::{DataCommitInfo, DataFileOp, FileOp, JniWrapper, PartitionInfo, TableInfo};
 
-use crate::{DaoType, error::Result, execute_query, PARAM_DELIM, PreparedStatementMap};
 use crate::error::LakeSoulMetaDataError;
 use crate::transfusion::config::{
     LAKESOUL_HASH_PARTITION_SPLITTER, LAKESOUL_NON_PARTITION_TABLE_PART_DESC,
     LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH, LAKESOUL_RANGE_PARTITION_SPLITTER,
 };
+use crate::{error::Result, execute_query, DaoType, PreparedStatementMap, PARAM_DELIM};
 
 mod config {
     #![allow(unused)]
@@ -117,9 +117,7 @@ pub async fn split_desc_array(
                     None => {
                         return Err(LakeSoulMetaDataError::Internal("split error".to_string()));
                     }
-                    Some((k, v)) => {
-                        (k.to_string(), v.to_string())
-                    }
+                    Some((k, v)) => (k.to_string(), v.to_string()),
                 };
                 range_desc.insert(k, v);
             }
@@ -136,7 +134,6 @@ pub async fn split_desc_array(
     }
     Ok(SplitDescArray(splits))
 }
-
 
 struct RawClient<'a> {
     client: Mutex<&'a Client>,
@@ -173,8 +170,7 @@ impl<'a> RawClient<'_> {
     pub async fn get_table_data_info(&self, table_id: &str) -> Result<Vec<DataFileInfo>> {
         // logic from scala: DataOperation
         let vec = self.get_all_partition_info(table_id).await?;
-        self.get_table_data_info_by_partition_info(vec)
-            .await
+        self.get_table_data_info_by_partition_info(vec).await
     }
 
     async fn get_table_data_info_by_partition_info(
@@ -187,7 +183,6 @@ impl<'a> RawClient<'_> {
         }
         Ok(file_info_buf)
     }
-
 
     /// return file info in this partition that match the current read version
     async fn get_single_partition_data_info(&self, partition_info: &PartitionInfo) -> Result<Vec<DataFileInfo>> {
@@ -240,7 +235,7 @@ impl<'a> RawClient<'_> {
             query_type,
             joined_string.clone(),
         )
-            .await?;
+        .await?;
         Ok(JniWrapper::decode(prost::bytes::Bytes::from(encoded))?)
     }
 

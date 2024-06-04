@@ -38,12 +38,12 @@ trait TransactionalWrite {
     new DelayedCommitProtocol("lakesoul", outputPath.toString, None)
 
   /**
-   * Normalize the schema of the query, and return the QueryExecution to execute. The output
-   * attributes of the QueryExecution may not match the attributes we return as the output schema.
-   * This is because streaming queries create `IncrementalExecution`, which cannot be further
-   * modified. We can however have the Parquet writer use the physical plan from
-   * `IncrementalExecution` and the output schema provided through the attributes.
-   */
+    * Normalize the schema of the query, and return the QueryExecution to execute. The output
+    * attributes of the QueryExecution may not match the attributes we return as the output schema.
+    * This is because streaming queries create `IncrementalExecution`, which cannot be further
+    * modified. We can however have the Parquet writer use the physical plan from
+    * `IncrementalExecution` and the output schema provided through the attributes.
+    */
   protected def normalizeData(data: Dataset[_]): (QueryExecution, Seq[Attribute]) = {
     val normalizedData = SchemaUtils.normalizeColumnNames(tableInfo.schema, data)
     val cleanedData = SchemaUtils.dropNullTypeColumns(normalizedData)
@@ -92,13 +92,15 @@ trait TransactionalWrite {
     writeFiles(data, None, isCompaction = isCompaction)
 
   /**
-   * Writes out the dataframe after performing schema validation. Returns a list of
-   * actions to append these files to the reservoir.
-   */
+    * Writes out the dataframe after performing schema validation. Returns a list of
+    * actions to append these files to the reservoir.
+    */
   def writeFiles(oriData: Dataset[_],
                  writeOptions: Option[LakeSoulOptions],
                  isCompaction: Boolean): (Seq[DataFileInfo], Path) = {
     val spark = oriData.sparkSession
+    // LakeSoul always writes timestamp data with timezone=UTC
+    spark.conf.set("spark.sql.session.timeZone", "UTC")
     spark.sharedState.cacheManager.uncacheQuery(oriData, true)
     val data = Dataset.ofRows(spark, (if (!isCompaction && tableInfo.hash_partition_columns.nonEmpty) {
       oriData.repartition(tableInfo.bucket_num, tableInfo.hash_partition_columns.map(col): _*)
@@ -168,11 +170,11 @@ trait TransactionalWrite {
     }
     val partitioningColumns = {
       if (isCompaction) Seq.empty else
-      getPartitioningColumns(
-        rangePartitionSchema,
-        hashPartitionSchema,
-        output,
-        output.length < data.schema.size)
+        getPartitioningColumns(
+          rangePartitionSchema,
+          hashPartitionSchema,
+          output,
+          output.length < data.schema.size)
     }
 
     val committer = getCommitter(outputPath)

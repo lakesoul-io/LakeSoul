@@ -15,6 +15,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class PartitionInfoDao {
+    final DBUtil.Timer transactionInsertTimer = new DBUtil.Timer("transactionInsert");
 
     public void insert(PartitionInfo partitionInfo) {
         if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
@@ -38,50 +39,62 @@ public class PartitionInfoDao {
     }
 
     public boolean transactionInsert(List<PartitionInfo> partitionInfoList, List<String> snapshotList) {
-        if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
-            if (partitionInfoList.isEmpty()) return true;
-            Integer count = NativeMetadataJavaClient.insert(
-                    NativeUtils.CodedDaoType.TransactionInsertPartitionInfo,
-                    JniWrapper.newBuilder().addAllPartitionInfo(partitionInfoList).build());
-            return count > 0;
-        }
-        boolean flag = true;
-        Connection conn = null;
-        PreparedStatement pstmt = null;
         try {
-            conn = DBConnector.getConn();
-            pstmt = conn.prepareStatement("insert into partition_info (table_id, partition_desc, version, " +
-                    "commit_op, snapshot, expression, domain) values (?, ?, ?, ? ,?, ?, ?)");
-            conn.setAutoCommit(false);
-            for (PartitionInfo partitionInfo : partitionInfoList) {
-                insertSinglePartitionInfo(conn, pstmt, partitionInfo);
+            transactionInsertTimer.start();
+            if (NativeUtils.NATIVE_METADATA_UPDATE_ENABLED) {
+                if (partitionInfoList.isEmpty()) return true;
+                PartitionInfo snapshotContainer = PartitionInfo.newBuilder().addAllSnapshot(snapshotList.stream().map(s -> DBUtil.toProtoUuid(UUID.fromString(s))).collect(Collectors.toList())).build();
+
+                Integer count = NativeMetadataJavaClient.insert(
+                        NativeUtils.CodedDaoType.TransactionInsertPartitionInfo,
+                        JniWrapper.newBuilder()
+                                .addAllPartitionInfo(partitionInfoList)
+                                .addPartitionInfo(snapshotContainer)
+                                .build());
+                return count > 0;
             }
-            pstmt = conn.prepareStatement("update data_commit_info set committed = 'true' where commit_id = ?");
-            for (String uuid : snapshotList) {
-                pstmt.setString(1, uuid);
-                pstmt.execute();
-            }
-            conn.commit();
-        } catch (SQLException e) {
-            flag = false;
+            boolean flag = true;
+            Connection conn = null;
+            PreparedStatement pstmt = null;
             try {
-                if (conn != null) {
-                    conn.rollback();
+                conn = DBConnector.getConn();
+                pstmt = conn.prepareStatement("insert into partition_info (table_id, partition_desc, version, " +
+                        "commit_op, snapshot, expression, domain) values (?, ?, ?, ? ,?, ?, ?)");
+                conn.setAutoCommit(false);
+                for (PartitionInfo partitionInfo : partitionInfoList) {
+                    insertSinglePartitionInfo(conn, pstmt, partitionInfo);
                 }
-            } catch (SQLException ex) {
-                ex.printStackTrace();
+                pstmt = conn.prepareStatement("update data_commit_info set committed = 'true' where commit_id = ?");
+                for (String uuid : snapshotList) {
+                    pstmt.setString(1, uuid);
+                    pstmt.execute();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                flag = false;
+                try {
+                    if (conn != null) {
+                        conn.rollback();
+                    }
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+                if (e.getMessage().contains("duplicate key value violates unique constraint")) {
+                    // only when primary key conflicts could we ignore the exception
+                    e.printStackTrace();
+                } else {
+                    // throw exception in all other cases
+                    throw new RuntimeException(e);
+                }
+            } finally {
+                DBConnector.closeConn(pstmt, conn);
             }
-            if (e.getMessage().contains("duplicate key value violates unique constraint")) {
-                // only when primary key conflicts could we ignore the exception
-                e.printStackTrace();
-            } else {
-                // throw exception in all other cases
-                throw new RuntimeException(e);
-            }
+            return flag;
+
         } finally {
-            DBConnector.closeConn(pstmt, conn);
+            transactionInsertTimer.end();
+//            transactionInsertTimer.report();
         }
-        return flag;
     }
 
     private void insertSinglePartitionInfo(Connection conn, PreparedStatement pstmt, PartitionInfo partitionInfo)

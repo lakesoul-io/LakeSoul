@@ -92,10 +92,16 @@ class DelayedCommitProtocol(jobId: String,
   override def newTaskTempFile(taskContext: TaskAttemptContext, dir: Option[String], ext: String): String = {
     val filename = getFileName(taskContext, ext)
     val partitionValues = dir.map(parsePartitions).getOrElse(List.empty[(String, String)])
+    val unescapedDir = if (partitionValues.nonEmpty) {
+      Some(partitionValues.map(partitionValue => partitionValue._1 + "=" + partitionValue._2).mkString("/"))
+    } else {
+      dir
+    }
     val relativePath = randomPrefixLength.map { prefixLength =>
       getRandomPrefix(prefixLength) // Generate a random prefix as a first choice
     }.orElse {
-      dir // or else write into the partition directory if it is partitioned
+      // or else write into the partition unescaped directory if it is partitioned
+      unescapedDir
     }.map { subDir =>
       new Path(subDir, filename)
     }.getOrElse(new Path(filename)) // or directly write out to the output path

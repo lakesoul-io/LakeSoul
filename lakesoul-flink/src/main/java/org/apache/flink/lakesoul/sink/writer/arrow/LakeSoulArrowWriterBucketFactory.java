@@ -2,56 +2,48 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package org.apache.flink.lakesoul.sink.writer;
+package org.apache.flink.lakesoul.sink.writer.arrow;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
+import org.apache.flink.lakesoul.sink.writer.AbstractLakeSoulMultiTableSinkWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
+import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
-import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
+import java.io.Serializable;
 
 /**
  * A factory returning {@link AbstractLakeSoulMultiTableSinkWriter writer}.
  */
 @Internal
-public class DefaultLakeSoulWriterBucketFactory implements LakeSoulWriterBucketFactory<RowData> {
+public class LakeSoulArrowWriterBucketFactory implements Serializable {
 
-    private final Configuration conf;
-
-    public DefaultLakeSoulWriterBucketFactory(Configuration conf) {
-        this.conf = conf;
-    }
-
-    @Override
-    public LakeSoulWriterBucket getNewBucket(
+    public LakeSoulArrowWriterBucket getNewBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
             String bucketId,
             Path bucketPath,
-            BucketWriter<RowData, String> bucketWriter,
-            RollingPolicy<RowData, String> rollingPolicy,
+            BucketWriter<LakeSoulArrowWrapper, String> bucketWriter,
+            RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             OutputFileConfig outputFileConfig) {
-        return LakeSoulWriterBucket.getNew(
+        return LakeSoulArrowWriterBucket.getNew(
                 subTaskId, tableId,
-                bucketId, bucketPath, conf, bucketWriter, rollingPolicy, outputFileConfig);
+                bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
     }
 
-    @Override
-    public LakeSoulWriterBucket restoreBucket(
+    public LakeSoulArrowWriterBucket restoreBucket(
             int subTaskId,
             TableSchemaIdentity tableId,
-            BucketWriter<RowData, String> bucketWriter,
-            RollingPolicy<RowData, String> rollingPolicy,
+            BucketWriter<LakeSoulArrowWrapper, String> bucketWriter,
+            RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             LakeSoulWriterBucketState bucketState,
             OutputFileConfig outputFileConfig)
             throws IOException {
-        return LakeSoulWriterBucket.restore(subTaskId, tableId, bucketWriter, conf,
-                rollingPolicy, bucketState, outputFileConfig);
+        return LakeSoulArrowWriterBucket.restore(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
     }
 }

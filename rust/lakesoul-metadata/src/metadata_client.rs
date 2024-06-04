@@ -326,7 +326,7 @@ impl MetaDataClient {
 
         match commit_op {
             CommitOp::AppendCommit | CommitOp::MergeCommit => {
-                let new_partition_list = meta_info
+                let mut new_partition_list = meta_info
                     .list_partition
                     .iter()
                     .map(|partition_info| {
@@ -356,6 +356,7 @@ impl MetaDataClient {
                         }
                     })
                     .collect::<Result<Vec<PartitionInfo>>>()?;
+                new_partition_list.push(PartitionInfo { ..Default::default() });
                 let val = self.transaction_insert_partition_info(new_partition_list).await?;
                 let vec = self.get_all_partition_info(table_info.table_id.as_str()).await?;
                 debug!("val = {val} ,get partition list after finished: {:?}", vec);
@@ -504,12 +505,7 @@ impl MetaDataClient {
         }
     }
 
-
-    pub async fn get_data_files_by_table_name(
-        &self,
-        table_name: &str,
-        namespace: &str,
-    ) -> Result<Vec<String>> {
+    pub async fn get_data_files_by_table_name(&self, table_name: &str, namespace: &str) -> Result<Vec<String>> {
         let table_info = self.get_table_info_by_table_name(table_name, namespace).await?;
         debug!("table_info: {:?}", table_info);
         let partition_list = self.get_all_partition_info(table_info.table_id.as_str()).await?;
@@ -521,24 +517,16 @@ impl MetaDataClient {
         self.get_data_files_of_partitions(partition_list).await
     }
 
-    pub async fn get_data_files_of_partitions(
-        &self, 
-        partition_list: Vec<PartitionInfo>, 
-    ) -> Result<Vec<String>> {
+    pub async fn get_data_files_of_partitions(&self, partition_list: Vec<PartitionInfo>) -> Result<Vec<String>> {
         let mut data_files = Vec::<String>::new();
         for partition_info in &partition_list {
             let _data_file_list = self.get_data_files_of_single_partition(partition_info).await?;
             data_files.extend_from_slice(&_data_file_list);
-            
         }
         Ok(data_files)
-
     }
 
-    pub async fn get_data_files_of_single_partition(
-        &self, 
-        partition_info: &PartitionInfo, 
-    ) -> Result<Vec<String>> {
+    pub async fn get_data_files_of_single_partition(&self, partition_info: &PartitionInfo) -> Result<Vec<String>> {
         let data_commit_info_list = self.get_data_commit_info_of_single_partition(partition_info).await?;
         // let data_commit_info_list = Vec::<DataCommitInfo>::new();
         let data_file_list = data_commit_info_list
@@ -552,9 +540,7 @@ impl MetaDataClient {
             })
             .collect::<Vec<String>>();
         Ok(data_file_list)
-
     }
-
 
     async fn get_data_commit_info_of_single_partition(
         &self,

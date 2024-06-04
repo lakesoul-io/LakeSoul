@@ -15,7 +15,10 @@ use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder, Sch
 use datafusion::error::Result;
 use datafusion_common::DataFusionError::{ArrowError, External, Internal};
 
-use crate::constant::{ARROW_CAST_OPTIONS, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT};
+use crate::constant::{
+    ARROW_CAST_OPTIONS, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
+    TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
+};
 use crate::helpers::{date_str_to_epoch_days, timestamp_str_to_unix_time};
 
 /// adjust time zone to UTC
@@ -225,65 +228,82 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
             num_rows
         ])),
         DataType::Date32 => Arc::new(PrimitiveArray::<Date32Type>::from(vec![
-            value
-                .as_str()
-                // first try parsing epoch days integer (for spark)
-                .parse::<i32>()
-                .map_err(|e| External(Box::new(e)))
-                // then try parsing string date to epoch days (for flink)
-                .or(
-                    date_str_to_epoch_days(value.as_str())
-                )?;
+            // first try parsing epoch day int32 (for spark)
+            if let Ok(epoch_days) = value.as_str().parse::<i32>() {
+                epoch_days
+            } else {
+            // then try parsing string timestamp to epoch seconds (for flink)
+                date_str_to_epoch_days(value.as_str())?
+            };
             num_rows
         ])),
-        DataType::Timestamp(unit, _timezone) => {
+        DataType::Timestamp(unit, timezone) => {
             match unit {
-                TimeUnit::Second => Arc::new(PrimitiveArray::<TimestampSecondType>::from(vec![
-                    // first try parsing epoch second int64 (for spark)
-                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
-                        unix_time
-                    } else {
-                    // then try parsing string timestamp to epoch seconds (for flink)
-                        timestamp_str_to_unix_time(value, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
-                    };
-                    num_rows
-                ])),
-                TimeUnit::Millisecond =>  Arc::new(PrimitiveArray::<TimestampMillisecondType>::from(vec![
-                    // first try parsing epoch second int64 (for spark)
-                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
-                        unix_time
-                    } else {
-                    // then try parsing string timestamp to epoch seconds (for flink)
-                        timestamp_str_to_unix_time(value, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
-                    };
-                    num_rows
-                ])),
-                TimeUnit::Microsecond => Arc::new(PrimitiveArray::<TimestampMicrosecondType>::from(vec![
-                    // first try parsing epoch second int64 (for spark)
-                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
-                        unix_time
-                    } else {
-                    // then try parsing string timestamp to epoch seconds (for flink)
-                        match timestamp_str_to_unix_time(value, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
-                            Some(microsecond) => microsecond,
-                            None => return Err(Internal("microsecond is out of range".to_string()))
-                        }
-                    };
-                    num_rows
-                ])),
-                TimeUnit::Nanosecond => Arc::new(PrimitiveArray::<TimestampNanosecondType>::from(vec![
-                    // first try parsing epoch second int64 (for spark)
-                    if let  Ok(unix_time) = value.as_str().parse::<i64>() {
-                        unix_time
-                    } else {
-                    // then try parsing string timestamp to epoch seconds (for flink)
-                        match timestamp_str_to_unix_time(value, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
-                            Some(nanosecond) => nanosecond,
-                            None => return Err(Internal("nanoseconds is out of range".to_string()))
-                        }
-                    };
-                    num_rows
-                ]))
+                TimeUnit::Second => Arc::new(
+                    PrimitiveArray::<TimestampSecondType>::from(vec![
+                        if let Ok(unix_time) = value.as_str().parse::<i64>() {
+                            unix_time
+                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                            duration.num_seconds()
+                        } else {
+                            timestamp_str_to_unix_time(value, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
+                        };
+                        num_rows
+                    ])
+                    .with_timezone_opt(timezone.clone()),
+                ),
+                TimeUnit::Millisecond => Arc::new(
+                    PrimitiveArray::<TimestampMillisecondType>::from(vec![
+                        if let Ok(unix_time) = value.as_str().parse::<i64>() {
+                            unix_time
+                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                            duration.num_milliseconds()
+                        } else {
+                            // then try parsing string timestamp to epoch seconds (for flink)
+                            timestamp_str_to_unix_time(value, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
+                        };
+                        num_rows
+                    ])
+                    .with_timezone_opt(timezone.clone()),
+                ),
+                TimeUnit::Microsecond => Arc::new(
+                    PrimitiveArray::<TimestampMicrosecondType>::from(vec![
+                        if let Ok(unix_time) = value.as_str().parse::<i64>() {
+                            unix_time
+                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                            match duration.num_microseconds() {
+                                Some(microsecond) => microsecond,
+                                None => return Err(Internal("microsecond is out of range".to_string())),
+                            }
+                        } else {
+                            match timestamp_str_to_unix_time(value, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
+                                Some(microsecond) => microsecond,
+                                None => return Err(Internal("microsecond is out of range".to_string())),
+                            }
+                        };
+                        num_rows
+                    ])
+                    .with_timezone_opt(timezone.clone()),
+                ),
+                TimeUnit::Nanosecond => Arc::new(
+                    PrimitiveArray::<TimestampNanosecondType>::from(vec![
+                        if let Ok(unix_time) = value.as_str().parse::<i64>() {
+                            unix_time
+                        } else if let Ok(duration) = timestamp_str_to_unix_time(value, FLINK_TIMESTAMP_FORMAT) {
+                            match duration.num_nanoseconds() {
+                                Some(nanosecond) => nanosecond,
+                                None => return Err(Internal("nanosecond is out of range".to_string())),
+                            }
+                        } else {
+                            match timestamp_str_to_unix_time(value, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
+                                Some(nanosecond) => nanosecond,
+                                None => return Err(Internal("nanoseconds is out of range".to_string())),
+                            }
+                        };
+                        num_rows
+                    ])
+                    .with_timezone_opt(timezone.clone()),
+                ),
             }
         }
         DataType::Boolean => Arc::new(BooleanArray::from(vec![
@@ -302,5 +322,3 @@ pub fn make_default_array(datatype: &DataType, value: &String, num_rows: usize) 
         }
     })
 }
-
-

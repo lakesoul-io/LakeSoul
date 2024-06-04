@@ -29,6 +29,7 @@ import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 import org.scalatestplus.junit.JUnitRunner
 
 import java.io.File
+import java.time.{LocalDate, ZoneId}
 import java.util.{Date, Locale}
 import scala.language.implicitConversions
 
@@ -1262,6 +1263,7 @@ trait TableCreationTests
     withTempPath { dir =>
       val tableName = "test_table"
       withTable(s"$tableName") {
+        val currentDate = LocalDate.now(ZoneId.of(spark.conf.get("spark.sql.session.timeZone")))
         val df = spark.sql("select current_date() as `date`, 'data1' as data")
         df.write.mode("overwrite")
           .format("lakesoul")
@@ -1269,8 +1271,7 @@ trait TableCreationTests
           .option(LakeSoulOptions.SHORT_TABLE_NAME, tableName)
           .save(dir.toURI.toString)
         val readDF = spark.sql(s"select * from $tableName")
-        val currentDate = new Date()
-        checkAnswer(readDF, Row("data1", new Date(currentDate.getYear, currentDate.getMonth, currentDate.getDate)))
+        checkAnswer(readDF, Row("data1", new Date(currentDate.getYear - 1900, currentDate.getMonthValue - 1, currentDate.getDayOfMonth)))
       }
     }
   }

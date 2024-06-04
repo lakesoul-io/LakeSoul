@@ -88,7 +88,8 @@ public final class ArrowUtils {
 
     private static RootAllocator rootAllocator;
 
-    private static ZoneId LocalTimeZone = ZoneId.systemDefault();
+    //    private static ZoneId LocalTimeZone = ZoneId.systemDefault();
+    private static ZoneId LocalTimeZone = ZoneId.of("UTC");
 
     public static synchronized RootAllocator getRootAllocator() {
         if (rootAllocator == null) {

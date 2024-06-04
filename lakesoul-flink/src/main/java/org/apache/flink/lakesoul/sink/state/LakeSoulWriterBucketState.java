@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+
 /**
  * States for {@link LakeSoulWriterBucket}.
  */
@@ -54,7 +56,7 @@ public class LakeSoulWriterBucketState {
         if (first.isPresent()) {
             this.bucketId = first.get().getKey();
         } else {
-            this.bucketId = "";
+            this.bucketId = DYNAMIC_BUCKET;
         }
         this.bucketPath = bucketPath;
 

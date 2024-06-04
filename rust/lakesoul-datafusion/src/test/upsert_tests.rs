@@ -963,15 +963,7 @@ mod upsert_with_io_config_tests {
             None,
             builder.clone(),
             &[
-                "+-----+", 
-                "| age |", 
-                "+-----+", 
-                "| 1   |", 
-                "| 2   |", 
-                "|     |", 
-                "|     |", 
-                "|     |", 
-                "|     |",
+                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |", "|     |", "|     |", "|     |",
                 "+-----+",
             ],
         );
@@ -2297,14 +2289,8 @@ mod upsert_with_metadata_tests {
                     .map(|name| Field::new(name, DataType::Int32, true))
                     .collect::<Vec<Field>>(),
             )),
-            vec![
-                "hash1".to_string(),
-                "hash2".to_string(),
-            ],
-            vec![
-                "range1".to_string(),
-                "range2".to_string(),
-            ],
+            vec!["hash1".to_string(), "hash2".to_string()],
+            vec!["range1".to_string(), "range2".to_string()],
             client.clone(),
         )
         .await?;
@@ -2644,15 +2630,7 @@ mod upsert_with_metadata_tests {
             None,
             client.clone(),
             &[
-                "+-----+", 
-                "| age |", 
-                "+-----+", 
-                "| 1   |", 
-                "| 2   |", 
-                "|     |", 
-                "|     |", 
-                "|     |", 
-                "|     |",
+                "+-----+", "| age |", "+-----+", "| 1   |", "| 2   |", "|     |", "|     |", "|     |", "|     |",
                 "+-----+",
             ],
         )

@@ -773,6 +773,28 @@ class UpsertSuiteBase extends QueryTest
     }
   }
 
+  test("merge - different partition columns with timestamp type") {
+    spark.conf.set("spark.sql.session.timeZone", "Asia/Shanghai")
+    val ts1 = Timestamp.valueOf("1000-06-14 08:28:53.123456")
+    val ts2 = Timestamp.valueOf("1582-06-15 08:28:53.123456")
+    val ts3 = Timestamp.valueOf("1900-06-16 08:28:53.123456")
+    val ts4 = Timestamp.valueOf("2018-06-17 08:28:53.123456")
+    initTable(
+      Seq((20201101, 1, 1, ts1, ts1), (20201101, 2, 2, ts2, ts2), (20201101, 3, 3, ts3, ts3), (20201102, 4, 4, ts4, ts4))
+        .toDF("range", "hash", "value", "timestamp", "part_timestamp"),
+      "range,part_timestamp",
+      "hash")
+
+    withSQLConf(LakeSoulSQLConf.SCHEMA_AUTO_MIGRATE.key -> "true") {
+      checkUpsert(
+        Seq((20201101, 1, 11, ts1, ts1), (20201101, 3, 33, ts3, ts3), (20201101, 4, 44, ts4, ts4))
+          .toDF("range", "hash", "name", "timestamp", "part_timestamp"),
+        None,
+        Row(20201101, 1, 1, 11, ts1, ts1) :: Row(20201101, 2, 2, null, ts2, ts2) :: Row(20201101, 3, 3, 33, ts3, ts3) :: Row(20201101, 4, null, 44, ts4, ts4) :: Row(20201102, 4, 4, null, ts4, ts4) :: Nil,
+        Seq("range", "hash", "value", "name", "timestamp", "part_timestamp"))
+    }
+  }
+
   test("hash value") {
     sql("select hash(1), hash(2), hash(3), hash(4)").show()
 

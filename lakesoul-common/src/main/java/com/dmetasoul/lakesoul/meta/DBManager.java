@@ -491,7 +491,7 @@ public class DBManager {
                     } else {
                         if (middleCommitOps.contains(CommitOp.UpdateCommit) || middleCommitOps.contains(CommitOp.CompactionCommit)) {
                             partitionDescList.remove(partitionDesc);
-                            snapshotList.removeAll(partitionInfo.getSnapshotList());
+                            snapshotList.removeAll(partitionInfo.getSnapshotList().stream().map(uuid -> DBUtil.toJavaUUID(uuid).toString()).collect(Collectors.toList()));
                             continue;
                         }
                         curPartitionInfo = updateSubmitPartitionSnapshot(partitionInfo, curPartitionInfo, readPartition);

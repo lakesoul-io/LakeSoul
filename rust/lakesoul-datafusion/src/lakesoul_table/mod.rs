@@ -6,7 +6,7 @@ pub mod helpers;
 
 use std::{ops::Deref, sync::Arc};
 
-use arrow::datatypes::{SchemaRef, Schema};
+use arrow::datatypes::{Schema, SchemaRef};
 use arrow_cast::pretty::pretty_format_batches;
 use datafusion::sql::TableReference;
 use datafusion::{
@@ -131,7 +131,14 @@ impl LakeSoulTable {
         let config_builder =
             create_io_config_builder(self.client(), Some(self.table_name()), true, self.table_namespace()).await?;
         let provider = Arc::new(
-            LakeSoulTableProvider::try_new(&context.state(), self.client(), config_builder.build(), self.table_info(), false).await?,
+            LakeSoulTableProvider::try_new(
+                &context.state(),
+                self.client(),
+                config_builder.build(),
+                self.table_info(),
+                false,
+            )
+            .await?,
         );
         Ok(context.read_table(provider)?)
     }
@@ -142,7 +149,14 @@ impl LakeSoulTable {
                 .await?
                 .with_prefix(self.table_info.table_path.clone());
         Ok(Arc::new(
-            LakeSoulTableProvider::try_new(session_state, self.client(), config_builder.build(), self.table_info(), true).await?,
+            LakeSoulTableProvider::try_new(
+                session_state,
+                self.client(),
+                config_builder.build(),
+                self.table_info(),
+                true,
+            )
+            .await?,
         ))
     }
 
