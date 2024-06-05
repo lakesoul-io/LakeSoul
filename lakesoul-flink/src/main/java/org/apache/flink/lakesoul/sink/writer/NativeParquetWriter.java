@@ -47,7 +47,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
     long lastUpdateTime;
 
-    String path;
+    Path path;
 
     private long totalRows = 0;
 
@@ -72,8 +72,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         nativeWriter.setRowGroupRowNumber(this.batchSize);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
-        this.path = path.makeQualified(path.getFileSystem()).toString();
-        nativeWriter.addFile(this.path);
+        this.path = path.makeQualified(path.getFileSystem());
+        nativeWriter.addFile(this.path.toUri().toString());
 
         FlinkUtil.setFSConfigs(conf, this.nativeWriter);
         this.nativeWriter.initializeWriter();
@@ -184,7 +184,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeWriterPendingFileRecoverable(this.path, this.creationTime);
+        return new NativeWriterPendingFileRecoverable(this.path.toString(), this.creationTime);
     }
 
     @Override
