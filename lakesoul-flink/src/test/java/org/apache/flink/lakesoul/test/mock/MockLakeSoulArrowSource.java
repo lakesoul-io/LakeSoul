@@ -116,7 +116,7 @@ public class MockLakeSoulArrowSource {
         private VectorSchemaRoot mockVectorSchemaRoot(int counter, long now) {
 
             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
-            int batchSize = 1024;
+            int batchSize = 4;
             root.setRowCount(batchSize);
             for (int idx = 0; idx < schema.getFields().size(); idx++) {
                 setValue(allocator, root, root.getVector(idx), counter * 10000, batchSize);

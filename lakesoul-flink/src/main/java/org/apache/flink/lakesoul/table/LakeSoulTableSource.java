@@ -15,7 +15,7 @@ import io.substrait.proto.Plan;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.lakesoul.source.LakeSoulSource;
+import org.apache.flink.lakesoul.source.LakeSoulRowDataSource;
 import org.apache.flink.lakesoul.substrait.SubstraitFlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
@@ -294,7 +294,8 @@ public class LakeSoulTableSource
                 "");
 
         return SourceProvider.of(
-                new LakeSoulSource(this.tableId,
+                new LakeSoulRowDataSource(
+                        this.tableId,
                         this.tableRowType,
                         readFields(),
                         readFieldsAddPk(cdcColumn),
