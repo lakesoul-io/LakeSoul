@@ -2,10 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-mod util;
+use std::fmt::{Debug, Display, Formatter};
+use std::io::{Read, Seek, SeekFrom};
+use std::io::ErrorKind::NotFound;
+use std::ops::Range;
+use std::sync::Arc;
 
-use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
-use crate::lakesoul_io_config::LakeSoulIOConfig;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::error::Result;
@@ -13,17 +15,20 @@ use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 // use futures::TryStreamExt;
 use hdrs::Client;
-use object_store::path::Path;
-use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use object_store::Error::Generic;
+use object_store::path::Path;
 use parquet::data_type::AsBytes;
-use std::fmt::{Debug, Display, Formatter};
-use std::io::ErrorKind::NotFound;
-use std::io::{Read, Seek, SeekFrom};
-use std::ops::Range;
-use std::sync::Arc;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
+use url::Url;
+
+use crate::hdfs::util::{coalesce_ranges, maybe_spawn_blocking, OBJECT_STORE_COALESCE_DEFAULT};
+use crate::lakesoul_io_config::LakeSoulIOConfig;
+
+mod util;
+
 // use tokio_util::io::ReaderStream;
 
 pub struct Hdfs {
@@ -45,7 +50,7 @@ impl Hdfs {
     }
 
     async fn is_file_exist(&self, path: &Path) -> object_store::Result<bool> {
-        let t = add_leading_slash(path);
+        let t = normalize_hdfs_path(path);
         let client = self.client.clone();
         maybe_spawn_blocking(Box::new(move || {
             let meta = client.metadata(t.as_str());
@@ -82,7 +87,7 @@ impl Debug for Hdfs {
 #[async_trait]
 impl ObjectStore for Hdfs {
     async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
-        let location = add_leading_slash(location);
+        let location = normalize_hdfs_path(location);
         let mut async_write = self
             .client
             .open_file()
@@ -116,7 +121,7 @@ impl ObjectStore for Hdfs {
     ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
         // hdrs uses Unblocking underneath, so we don't have to
         // implement concurrent write
-        let location = add_leading_slash(location);
+        let location = normalize_hdfs_path(location);
         let async_write = self
             .client
             .open_file()
@@ -168,7 +173,7 @@ impl ObjectStore for Hdfs {
     }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
-        let location = add_leading_slash(location);
+        let location = normalize_hdfs_path(location);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
             let mut file = client
@@ -205,7 +210,7 @@ impl ObjectStore for Hdfs {
     }
 
     async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
-        let path = add_leading_slash(location);
+        let path = normalize_hdfs_path(location);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
             let meta = client.metadata(path.as_str()).map_err(|e| Generic {
@@ -226,7 +231,7 @@ impl ObjectStore for Hdfs {
     }
 
     async fn delete(&self, location: &Path) -> object_store::Result<()> {
-        let t = add_leading_slash(location);
+        let t = normalize_hdfs_path(location);
         let location = location.clone();
         let client = self.client.clone();
         maybe_spawn_blocking(move || match location.filename() {
@@ -254,8 +259,8 @@ impl ObjectStore for Hdfs {
     }
 
     async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = add_leading_slash(from);
-        let to = add_leading_slash(to);
+        let from = normalize_hdfs_path(from);
+        let to = normalize_hdfs_path(to);
         let mut async_read = self
             .client
             .open_file()
@@ -291,8 +296,8 @@ impl ObjectStore for Hdfs {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let from = add_leading_slash(from);
-        let to = add_leading_slash(to);
+        let from = normalize_hdfs_path(from);
+        let to = normalize_hdfs_path(to);
         let client = self.client.clone();
         maybe_spawn_blocking(move || {
             client.rename_file(from.as_str(), to.as_str()).map_err(|e| Generic {
@@ -304,7 +309,7 @@ impl ObjectStore for Hdfs {
     }
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let t = add_leading_slash(to);
+        let t = normalize_hdfs_path(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
             Err(object_store::Error::AlreadyExists {
@@ -317,7 +322,7 @@ impl ObjectStore for Hdfs {
     }
 
     async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-        let t = add_leading_slash(to);
+        let t = normalize_hdfs_path(to);
         let file_exist = self.is_file_exist(to).await?;
         if file_exist {
             Err(object_store::Error::AlreadyExists {
@@ -330,24 +335,45 @@ impl ObjectStore for Hdfs {
     }
 }
 
-fn add_leading_slash(path: &Path) -> String {
-    ["/", path.as_ref().trim_start_matches('/')].join("")
+fn normalize_hdfs_path(path: &Path) -> String {
+    escape_hdfs_path(["/", path.as_ref().trim_start_matches('/')].join("").as_str())
+}
+
+pub const HDFS_ESCAPE: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b':');
+
+fn escape_hdfs_path(path: &str) -> String {
+    utf8_percent_encode(path, HDFS_ESCAPE).to_string()
+}
+
+pub fn escape_hdfs_url(path: String) -> object_store::Result<String> {
+    let mut url = Url::parse(path.as_str()).map_err(
+        |e| Generic{store: "hdfs", source: Box::new(e)})?;
+    if url.scheme() == "hdfs" {
+        url.set_path(escape_hdfs_path(url.path()).as_str());
+        Ok(url.to_string())
+    } else {
+        Ok(path)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
+    use std::sync::Arc;
+
     use bytes::Bytes;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use futures::StreamExt;
-    use object_store::path::Path;
     use object_store::GetResult::Stream;
     use object_store::ObjectStore;
+    use object_store::path::Path;
     use rand::distributions::{Alphanumeric, DistString};
     use rand::thread_rng;
-    use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
     use url::Url;
+
+    use crate::lakesoul_io_config::{create_session_context, LakeSoulIOConfigBuilder};
 
     fn bytes_to_string(bytes: Vec<Bytes>) -> String {
         unsafe {

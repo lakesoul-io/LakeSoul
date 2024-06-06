@@ -45,6 +45,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tracing::debug;
 use url::Url;
+use crate::hdfs;
 
 #[async_trait]
 pub trait AsyncBatchWriter {
@@ -652,6 +653,7 @@ impl PartitioningAsyncWriter {
                         write_id,
                         partition
                     );
+                    let file_absolute_path = escape_hdfs_path(file_absolute_path)?;
 
                     if !partitioned_writer.contains_key(&partition_desc) {
                         let mut config = config_builder.clone().with_files(vec![file_absolute_path]).build();
@@ -730,6 +732,21 @@ impl PartitioningAsyncWriter {
             summary += files.join("\x02").as_str();
         }
         Ok(summary.into_bytes())
+    }
+}
+
+fn escape_hdfs_path(path: String) -> Result<String> {
+    #[cfg(not(feature = "hdfs"))]
+    {
+        path
+    }
+    #[cfg(feature = "hdfs")]
+    {
+        if path.starts_with("hdfs://") {
+            hdfs::escape_hdfs_url(path).map_err(|e| DataFusionError::External(Box::new(e)))
+        } else {
+            Ok(path)
+        }
     }
 }
 
