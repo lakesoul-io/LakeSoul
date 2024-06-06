@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -84,7 +85,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                     DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
                     dataFileOp.setFileOp(FileOp.add);
                     dataFileOp.setPath(file);
-                    Path path = new Path(file);
+                    Path path = new Path(URI.create(file).toString());
                     FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
                     dataFileOp.setSize(fileStatus.getLen());
                     dataFileOp.setFileExistCols(fileExistCols);
