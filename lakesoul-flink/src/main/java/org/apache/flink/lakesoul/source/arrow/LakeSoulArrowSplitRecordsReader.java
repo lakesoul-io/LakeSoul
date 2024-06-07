@@ -34,6 +34,8 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
+
 public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<LakeSoulArrowWrapper>, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulArrowSplitRecordsReader.class);
@@ -55,6 +57,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
     private final RowType tableRowType;
     private final Schema partitionSchema;
     private final TableInfo tableInfo;
+    private final boolean inferringSchema;
 
     List<String> pkColumns;
 
@@ -109,6 +112,8 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
         this.partitionColumns = partitionColumns;
+        this.inferringSchema = conf.getBoolean(INFERRING_SCHEMA);
+
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
         List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
@@ -124,6 +129,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         for (Path path : split.getFiles()) {
             reader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
+        reader.setInferringSchema(inferringSchema);
 
         List<String> nonPartitionColumns =
                 this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))

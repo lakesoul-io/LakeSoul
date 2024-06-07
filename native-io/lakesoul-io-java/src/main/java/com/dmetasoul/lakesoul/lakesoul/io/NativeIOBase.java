@@ -132,6 +132,11 @@ public class NativeIOBase implements AutoCloseable {
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_dynamic_partition(ioConfigBuilder, enable);
     }
 
+    public void setInferringSchema(boolean enable) {
+        assert ioConfigBuilder != null;
+        ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_inferring_schema(ioConfigBuilder, enable);
+    }
+
     public void setBatchSize(int batchSize) {
         assert ioConfigBuilder != null;
         ioConfigBuilder = libLakeSoulIO.lakesoul_config_builder_set_batch_size(ioConfigBuilder, batchSize);

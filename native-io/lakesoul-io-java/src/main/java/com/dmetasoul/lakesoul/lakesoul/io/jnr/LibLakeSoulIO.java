@@ -48,6 +48,8 @@ public interface LibLakeSoulIO {
 
     Pointer lakesoul_config_builder_set_dynamic_partition(Pointer builder, boolean enable);
 
+    Pointer lakesoul_config_builder_set_inferring_schema(Pointer builder, boolean enable);
+
     Pointer lakesoul_config_builder_set_batch_size(Pointer builder, int batch_size);
 
     Pointer lakesoul_config_builder_set_buffer_size(Pointer builder, int buffer_size);

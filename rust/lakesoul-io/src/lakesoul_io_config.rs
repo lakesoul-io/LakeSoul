@@ -100,6 +100,10 @@ pub struct LakeSoulIOConfig {
     // if dynamic partition
     #[derivative(Default(value = "false"))]
     pub(crate) use_dynamic_partition: bool,
+
+    // if inferring schema
+    #[derivative(Default(value = "false"))]
+    pub(crate) inferring_schema: bool,
 }
 
 impl LakeSoulIOConfig {
@@ -263,6 +267,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn set_dynamic_partition(mut self, enable: bool) -> Self {
         self.config.use_dynamic_partition = enable;
+        self
+    }
+
+    pub fn set_inferring_schema(mut self, enable: bool) -> Self {
+        self.config.inferring_schema = enable;
         self
     }
 

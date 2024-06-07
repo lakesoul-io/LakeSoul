@@ -202,6 +202,12 @@ public class LakeSoulSinkOptions {
             .defaultValue(true)
             .withDescription("If true, lakesoul sink use dynamic bucketing writer");
 
+    public static final ConfigOption<Boolean> INFERRING_SCHEMA = ConfigOptions
+            .key("lakesoul.sink.inferring_schema")
+            .booleanType()
+            .defaultValue(false)
+            .withDescription("If true, lakesoul source will infer schema from files");
+
 }
 
 

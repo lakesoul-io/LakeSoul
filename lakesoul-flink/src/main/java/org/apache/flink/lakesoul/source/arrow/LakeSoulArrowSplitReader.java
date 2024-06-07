@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Queue;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
+
 public class LakeSoulArrowSplitReader implements SplitReader<LakeSoulArrowWrapper, LakeSoulPartitionSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulArrowSplitReader.class);
