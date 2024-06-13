@@ -119,6 +119,7 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                                                                 TableInfo tableInfo,
                                                                 List<String> readStartTimestampWithTimeZone,
                                                                 String readType) {
+        System.out.println("staticSplitEnumerator");
         List<String> readEndTimestampWithTimeZone =
                 Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
                         optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));

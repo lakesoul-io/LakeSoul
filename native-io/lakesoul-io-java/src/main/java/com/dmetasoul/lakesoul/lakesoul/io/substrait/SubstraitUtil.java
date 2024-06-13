@@ -24,6 +24,9 @@ import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
+import org.apache.arrow.vector.types.IntervalUnit;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 import java.io.IOException;
@@ -194,6 +197,159 @@ public class SubstraitUtil {
         }
 
         return resultPartitionInfo;
+    }
+
+    public static Type arrowFieldToSubstraitType(Field field) {
+        Type type = null;
+        if (field.getType() instanceof ArrowType.Struct) {
+            type = TypeCreator
+                    .of(field.isNullable())
+                    .struct(field
+                            .getChildren()
+                            .stream()
+                            .map(SubstraitUtil::arrowFieldToSubstraitType)
+                            .collect(Collectors.toList())
+                    );
+        } else if (field.getType() instanceof ArrowType.List
+                || field.getType() instanceof ArrowType.LargeList
+                || field.getType() instanceof ArrowType.FixedSizeList
+        ) {
+            type = TypeCreator
+                    .of(field.isNullable())
+                    .list(arrowFieldToSubstraitType(field.getChildren().get(0)));
+        } else if (field.getType() instanceof ArrowType.Map) {
+            type = TypeCreator
+                    .of(field.isNullable())
+                    .map(
+                            arrowFieldToSubstraitType(field.getChildren().get(0)),
+                            arrowFieldToSubstraitType(field.getChildren().get(1))
+                    );
+        } else {
+            type = field.getType().accept(ArrowTypeToSubstraitTypeConverter.of(field.isNullable()));
+        }
+        return type;
+    }
+
+    public static class ArrowTypeToSubstraitTypeConverter
+            implements ArrowType.ArrowTypeVisitor<Type> {
+
+        public final TypeCreator typeCreator;
+
+        public static final ArrowTypeToSubstraitTypeConverter NULLABLE = new ArrowTypeToSubstraitTypeConverter(true);
+        public static final ArrowTypeToSubstraitTypeConverter REQUIRED = new ArrowTypeToSubstraitTypeConverter(false);
+
+        public static ArrowTypeToSubstraitTypeConverter of(boolean nullability) {
+            return nullability ? NULLABLE : REQUIRED;
+        }
+
+        public ArrowTypeToSubstraitTypeConverter(boolean nullable) {
+            typeCreator = TypeCreator.of(nullable);
+        }
+
+        @Override
+        public Type visit(ArrowType.Null aNull) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.Struct struct) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.List list) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.LargeList largeList) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.FixedSizeList fixedSizeList) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.Union union) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.Map map) {
+            return null;
+        }
+
+        @Override
+        public Type visit(ArrowType.Int anInt) {
+            return typeCreator.I32;
+        }
+
+        @Override
+        public Type visit(ArrowType.FloatingPoint floatingPoint) {
+            return typeCreator.FP32;
+        }
+
+        @Override
+        public Type visit(ArrowType.Utf8 utf8) {
+            return typeCreator.STRING;
+        }
+
+        @Override
+        public Type visit(ArrowType.LargeUtf8 largeUtf8) {
+            return typeCreator.STRING;
+        }
+
+        @Override
+        public Type visit(ArrowType.Binary binary) {
+            return typeCreator.BINARY;
+        }
+
+        @Override
+        public Type visit(ArrowType.LargeBinary largeBinary) {
+            return typeCreator.BINARY;
+        }
+
+        @Override
+        public Type visit(ArrowType.FixedSizeBinary fixedSizeBinary) {
+            return typeCreator.BINARY;
+        }
+
+        @Override
+        public Type visit(ArrowType.Bool bool) {
+            return typeCreator.BOOLEAN;
+        }
+
+        @Override
+        public Type visit(ArrowType.Decimal decimal) {
+            return typeCreator.decimal(decimal.getPrecision(), decimal.getScale());
+        }
+
+        @Override
+        public Type visit(ArrowType.Date date) {
+            return typeCreator.DATE;
+        }
+
+        @Override
+        public Type visit(ArrowType.Time time) {
+            return typeCreator.TIME;
+        }
+
+        @Override
+        public Type visit(ArrowType.Timestamp timestamp) {
+            return timestamp.getTimezone() != null ? typeCreator.TIMESTAMP_TZ : typeCreator.TIMESTAMP;
+        }
+
+        @Override
+        public Type visit(ArrowType.Interval interval) {
+            return interval.getUnit() == IntervalUnit.DAY_TIME ? typeCreator.INTERVAL_DAY : typeCreator.INTERVAL_YEAR;
+        }
+
+        @Override
+        public Type visit(ArrowType.Duration duration) {
+            return null;
+        }
     }
 }
 
