@@ -84,7 +84,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: nightly-2023-05-20
+          toolchain: stable
           default: true
       - uses: Swatinem/rust-cache@v2
         with:
@@ -93,7 +93,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release --all-features'
+          args: '--manifest-path rust/Cargo.toml --target x86_64-unknown-linux-gnu --release'
       - name: Build with Maven
         run: |
           mkdir -p rust/target/release

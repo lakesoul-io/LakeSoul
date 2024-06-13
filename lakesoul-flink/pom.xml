@@ -448,6 +448,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>org.furyio:fury-core</include>
                             <include>com.google.guava:guava</include>
                             <include>com.google.guava:failureaccess</include>
+                            <include>org.eclipse.collections:*</include>
 
                             <!-- casbin & aspectj -->
                             <include>org.casbin:jdbc-adapter</include>
@@ -483,9 +484,12 @@ SPDX-License-Identifier: Apache-2.0
                             </excludes>
                         </filter>
                         <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <artifact>*:*</artifact>
                             <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/versions/**</exclude>
                             </excludes>
                         </filter>
                     </filters>

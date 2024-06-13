@@ -19,6 +19,10 @@ struct IOConfigBuilder {
   uint8_t private_[0];
 };
 
+using c_ptrdiff_t = intptr_t;
+
+using c_size_t = uintptr_t;
+
 struct IOConfig {
   uint8_t private_[0];
 };
