@@ -141,18 +141,21 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
 
     public Collection<LakeSoulPartitionSplit> enumerateSplits() {
         List<PartitionInfo> allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
+        LOG.info("allPartitionInfo={}", allPartitionInfo);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(allPartitionInfo, partitionArrowSchema, partitionFilters);
+        LOG.info("filteredPartition={}, filter={}", filteredPartition, partitionFilters);
 
 
         ArrayList<LakeSoulPartitionSplit> splits = new ArrayList<>(16);
         for (PartitionInfo partitionInfo : filteredPartition) {
             String partitionDesc = partitionInfo.getPartitionDesc();
-            long latestTimestamp = partitionInfo.getTimestamp();
+            long latestTimestamp = partitionInfo.getTimestamp() + 1;
             this.nextStartTime = Math.max(latestTimestamp, this.nextStartTime);
 
             DataFileInfo[] dataFileInfos;
             if (partitionLatestTimestamp.containsKey(partitionDesc)) {
                 Long lastTimestamp = partitionLatestTimestamp.get(partitionDesc);
+                LOG.info("getIncrementalPartitionDataInfo, startTime={}, endTime={}", lastTimestamp + 1, latestTimestamp);
                 dataFileInfos =
                         DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, lastTimestamp + 1, latestTimestamp, "incremental");
             } else {
@@ -170,6 +173,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
             }
             partitionLatestTimestamp.put(partitionDesc, latestTimestamp);
         }
+        LOG.info("partitionLatestTimestamp={}", partitionLatestTimestamp);
 
         return splits;
     }

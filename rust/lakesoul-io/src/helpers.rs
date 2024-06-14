@@ -31,7 +31,9 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
+        TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
+        TIMESTAMP_SECOND_FORMAT,
     },
     filter::parser::Parser,
     lakesoul_io_config::LakeSoulIOConfig,
@@ -341,7 +343,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .collect::<Result<Vec<_>>>()?;
             // Resolve the schema
             let resolved_schema = infer_schema(session_state, &table_paths, Arc::clone(&file_format)).await?;
-            
+
             let target_schema = if lakesoul_io_config.inferring_schema {
                 SchemaRef::new(Schema::empty())
             } else {
