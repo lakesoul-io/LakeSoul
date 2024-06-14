@@ -191,13 +191,6 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
                 this.currentVCR = this.reader.nextResultVectorSchemaRoot();
                 skipRowCount++;
             }
-        } else {
-            if (this.reader.hasNext()) {
-                this.currentVCR = this.reader.nextResultVectorSchemaRoot();
-            } else {
-                close();
-                return;
-            }
         }
     }
 
@@ -215,15 +208,14 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         if (reader == null) {
             return null;
         }
-        LakeSoulArrowWrapper result = new LakeSoulArrowWrapper(tableInfo, currentVCR);
         if (this.reader.hasNext()) {
             this.currentVCR = this.reader.nextResultVectorSchemaRoot();
+            return new LakeSoulArrowWrapper(tableInfo, currentVCR);
         } else {
             this.reader.close();
             LOG.info("Reach end of split file {}", split);
             return null;
         }
-        return result;
     }
 
     @Override

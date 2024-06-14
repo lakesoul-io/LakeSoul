@@ -341,9 +341,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .collect::<Result<Vec<_>>>()?;
             // Resolve the schema
             let resolved_schema = infer_schema(session_state, &table_paths, Arc::clone(&file_format)).await?;
-
             
-            dbg!(&lakesoul_io_config);
             let target_schema = if lakesoul_io_config.inferring_schema {
                 SchemaRef::new(Schema::empty())
             } else {
