@@ -343,14 +343,15 @@ pub async fn listing_table_from_lakesoul_io_config(
             let resolved_schema = infer_schema(session_state, &table_paths, Arc::clone(&file_format)).await?;
 
             
-
+            dbg!(&lakesoul_io_config);
             let target_schema = if lakesoul_io_config.inferring_schema {
                 SchemaRef::new(Schema::empty())
             } else {
                 uniform_schema(lakesoul_io_config.target_schema())
             };
 
-            let table_partition_cols = lakesoul_io_config.partition_schema().fields().iter().map(|f| (f.name().clone(), f.data_type().clone())).collect::<Vec<_>>();
+            let table_partition_cols =
+                range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;
             let listing_options = ListingOptions::new(file_format.clone())
                 .with_file_extension(".parquet")
                 .with_table_partition_cols(table_partition_cols);
