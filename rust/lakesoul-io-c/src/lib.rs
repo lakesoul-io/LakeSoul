@@ -3,10 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![feature(c_size_t)]
 extern crate core;
 
-use core::ffi::{c_ptrdiff_t, c_size_t};
 use std::ffi::{c_char, c_int, c_uchar, c_void, CStr, CString};
 use std::io::Write;
 use std::ptr::NonNull;
@@ -30,6 +28,11 @@ use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSend
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
 use log::debug;
 use proto::proto::entity;
+
+#[allow(non_camel_case_types)]
+pub type c_size_t = usize;
+#[allow(non_camel_case_types)]
+pub type c_ptrdiff_t = isize;
 
 #[repr(C)]
 pub struct CResult<OpaqueT> {
