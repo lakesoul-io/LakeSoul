@@ -7,16 +7,11 @@ package org.apache.flink.lakesoul.entry.sql.flink;
 
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.lakesoul.entry.sql.Submitter;
 import org.apache.flink.lakesoul.entry.sql.common.FlinkOption;
 import org.apache.flink.lakesoul.entry.sql.common.JobType;
 import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
-import org.apache.flink.lakesoul.entry.sql.Submitter;
-
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
@@ -24,11 +19,15 @@ import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.lakesoul.entry.sql.utils.SqlSplitter;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.configuration.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.helpers.MessageFormatter;
+
+import java.io.IOException;
+import java.net.URISyntaxException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 
 public class FlinkSqlSubmitter extends Submitter {
@@ -40,7 +39,7 @@ public class FlinkSqlSubmitter extends Submitter {
     }
 
     @Override
-    public void submit() throws IOException, URISyntaxException {
+    public void submit() throws IOException, URISyntaxException, ExecutionException, InterruptedException {
         EnvironmentSettings settings = null;
         TableEnvironment tEnv = null;
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
@@ -65,10 +64,10 @@ public class FlinkSqlSubmitter extends Submitter {
         }
 
         String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
-        LOG.info("sql: \n" + sql);
-        SqlSplitter sqlSplitter = new SqlSplitter();
-        List<String> sqlList = sqlSplitter.splitSql(sql);
-        ExecuteSql.exeSql(sqlList, tEnv);
+        System.out.println(
+                MessageFormatter.format("\n======SQL Script Content from file {}:\n{}",
+                        submitOption.getSqlFilePath(), sql).getMessage());
+        ExecuteSql.executeSqlFileContent(sql, tEnv);
     }
 
     private void setCheckpoint(StreamExecutionEnvironment env) {
@@ -81,7 +80,8 @@ public class FlinkSqlSubmitter extends Submitter {
         }
         env.getCheckpointConfig().setCheckpointingMode(checkpointingMode);
         env.getCheckpointConfig().setTolerableCheckpointFailureNumber(5);
-        env.getCheckpointConfig().setExternalizedCheckpointCleanup(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+        env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+                CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
         env.getCheckpointConfig().setCheckpointStorage(flinkOption.getCheckpointPath());
         env.setRestartStrategy(RestartStrategies.failureRateRestart(
                 3, // max failures per interval
