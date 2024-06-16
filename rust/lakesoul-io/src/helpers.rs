@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow::datatypes::UInt32Type;
 use arrow_array::{RecordBatch, UInt32Array};
 use arrow_schema::{DataType, Field, Schema, SchemaBuilder, SchemaRef, TimeUnit};
-use chrono::Duration;
+use chrono::{DateTime, Duration};
 use datafusion::{
     datasource::{
         file_format::FileFormat,
@@ -130,7 +130,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             let nsecs = 0;
             format!(
                 "{}",
-                chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
+                DateTime::from_timestamp(secs, nsecs)
                     .unwrap()
                     .format(TIMESTAMP_SECOND_FORMAT)
             )
@@ -140,7 +140,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             let nsecs = u32::try_from(*s % 1000).unwrap() * 1000000;
             format!(
                 "{}",
-                chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
+                DateTime::from_timestamp(secs, nsecs)
                     .unwrap()
                     .format(TIMESTAMP_MILLSECOND_FORMAT)
             )
@@ -150,7 +150,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             let nsecs = u32::try_from(*s % 1000000).unwrap() * 1000;
             format!(
                 "{}",
-                chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
+                DateTime::from_timestamp(secs, nsecs)
                     .unwrap()
                     .format(TIMESTAMP_MICROSECOND_FORMAT)
             )
@@ -160,7 +160,7 @@ pub fn format_scalar_value(v: &ScalarValue) -> String {
             let nsecs = u32::try_from(*s % 1000000000).unwrap();
             format!(
                 "{}",
-                chrono::NaiveDateTime::from_timestamp_opt(secs, nsecs)
+                DateTime::from_timestamp(secs, nsecs)
                     .unwrap()
                     .format(TIMESTAMP_NANOSECOND_FORMAT)
             )
@@ -438,18 +438,18 @@ pub fn date_str_to_epoch_days(value: &str) -> Result<i32> {
     let datetime = date
         .and_hms_opt(12, 12, 12)
         .ok_or(Internal("invalid h/m/s".to_string()))?;
-    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
         "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
     ))?;
 
-    Ok(datetime.signed_duration_since(epoch_time).num_days() as i32)
+    Ok(datetime.signed_duration_since(epoch_time.naive_utc()).num_days() as i32)
 }
 
 pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
     let datetime = chrono::NaiveDateTime::parse_from_str(value, fmt).map_err(|e| External(Box::new(e)))?;
-    let epoch_time = chrono::NaiveDateTime::from_timestamp_millis(0).ok_or(Internal(
+    let epoch_time = DateTime::from_timestamp_millis(0).ok_or(Internal(
         "the number of milliseconds is out of range for a NaiveDateTim".to_string(),
     ))?;
 
-    Ok(datetime.signed_duration_since(epoch_time))
+    Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
 }
