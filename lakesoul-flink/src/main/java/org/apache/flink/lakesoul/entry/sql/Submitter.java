@@ -8,6 +8,7 @@ import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.concurrent.ExecutionException;
 
 public abstract class Submitter {
     protected SubmitOption submitOption;
@@ -16,6 +17,6 @@ public abstract class Submitter {
         this.submitOption = submitOption;
     }
 
-    public abstract void submit() throws IOException, URISyntaxException;
+    public abstract void submit() throws IOException, URISyntaxException, ExecutionException, InterruptedException;
 
 }

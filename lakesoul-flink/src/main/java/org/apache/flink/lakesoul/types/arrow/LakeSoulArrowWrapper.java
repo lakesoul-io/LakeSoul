@@ -26,20 +26,14 @@ public class LakeSoulArrowWrapper implements Serializable {
     private final byte[] encodedTableInfo;
 
     public LakeSoulArrowWrapper(TableInfo tableInfo, VectorSchemaRoot vectorSchemaRoot) {
-        try (
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                ArrowStreamWriter writer = new ArrowStreamWriter(vectorSchemaRoot, /*DictionaryProvider=*/null, Channels.newChannel(out));
-        ) {
-            writer.start();
-            writer.writeBatch();
-            writer.end();
-            this.encodedBatch = out.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        this.encodedBatch = encodeBatch(vectorSchemaRoot);
         this.encodedTableInfo = tableInfo.toByteArray();
     }
 
+    public LakeSoulArrowWrapper(byte[] encodedTableInfo, VectorSchemaRoot vectorSchemaRoot) {
+        this.encodedBatch = encodeBatch(vectorSchemaRoot);
+        this.encodedTableInfo = encodedTableInfo;
+    }
 
     public LakeSoulArrowWrapper(byte[] encodedTableInfo, byte[] encodedBatch) {
         this.encodedTableInfo = encodedTableInfo;
@@ -71,6 +65,19 @@ public class LakeSoulArrowWrapper implements Serializable {
         }
     }
 
+    private static byte[] encodeBatch(VectorSchemaRoot vectorSchemaRoot) {
+        try (
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                ArrowStreamWriter writer = new ArrowStreamWriter(vectorSchemaRoot, /*DictionaryProvider=*/null, Channels.newChannel(out));
+        ) {
+            writer.start();
+            writer.writeBatch();
+            writer.end();
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     public byte[] getEncodedBatch() {
         return encodedBatch;

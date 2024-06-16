@@ -11,11 +11,13 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.concurrent.ExecutionException;
 
 public class SubmitMain {
     private static final Logger LOG = LoggerFactory.getLogger(SubmitMain.class);
 
-    public static void main(String[] args) throws IOException, URISyntaxException {
+    public static void main(String[] args)
+            throws IOException, URISyntaxException, ExecutionException, InterruptedException {
         for (String arg : args) {
             LOG.info("arg: {}", arg);
         }

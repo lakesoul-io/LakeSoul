@@ -47,7 +47,6 @@ env_logger = "0.11"
 
 [features]
 hdfs = ["dep:hdrs"]
-simd = ["datafusion/simd", "arrow/simd", "arrow-array/simd"]
 default = []
 
 [target.'cfg(target_os = "windows")'.dependencies]

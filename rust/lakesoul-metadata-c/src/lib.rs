@@ -2,11 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#![feature(c_size_t)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 extern crate core;
 
-use core::ffi::c_ptrdiff_t;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_uchar, CStr, CString};
 use std::io::Write;
@@ -20,6 +18,11 @@ use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
 use proto::proto::entity;
+
+#[allow(non_camel_case_types)]
+pub type c_size_t = usize;
+#[allow(non_camel_case_types)]
+pub type c_ptrdiff_t = isize;
 
 #[repr(C)]
 pub struct CResult<OpaqueT> {

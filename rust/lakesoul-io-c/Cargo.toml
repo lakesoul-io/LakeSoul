@@ -32,7 +32,6 @@ datafusion-substrait = { workspace = true, features = ["protoc"] }
 
 [features]
 hdfs = ["lakesoul-io/hdfs"]
-simd = ["lakesoul-io/simd"]
 default = []
 
 [build-dependencies]
