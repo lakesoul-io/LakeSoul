@@ -75,19 +75,7 @@ import static org.apache.flink.lakesoul.tool.JobOptions.S3_BUCKET;
 import static org.apache.flink.lakesoul.tool.JobOptions.S3_ENDPOINT;
 import static org.apache.flink.lakesoul.tool.JobOptions.S3_PATH_STYLE_ACCESS;
 import static org.apache.flink.lakesoul.tool.JobOptions.S3_SECRET_KEY;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.COMPUTE_COLUMN_JSON;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.HASH_BUCKET_NUM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW_KIND;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.LAKESOUL_VIEW_TYPE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_EXPANDED_QUERY;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_ORIGINAL_QUERY;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WATERMARK_SPEC_JSON;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
@@ -235,6 +223,7 @@ public class FlinkUtil {
     public static CatalogBaseTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
         JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        properties.put(CATALOG_PATH.key(), tableInfo.getTablePath());
 
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
         if (TableInfoDao.isArrowKindSchema(tableSchema)) {
@@ -441,7 +430,7 @@ public class FlinkUtil {
     }
 
     public static DataFileInfo[] getTargetDataFileInfo(TableInfo tif, List<Map<String, String>> remainingPartitions) {
-        if (remainingPartitions == null || remainingPartitions.size() == 0) {
+        if (remainingPartitions == null) {
             return DataOperation.getTableDataInfo(tif.getTableId());
         } else {
             List<String> partitionDescs = remainingPartitions.stream()
