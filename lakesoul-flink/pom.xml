@@ -554,6 +554,10 @@ SPDX-License-Identifier: Apache-2.0
                             <pattern>shaded.parquet</pattern>
                             <shadedPattern>com.lakesoul.shaded.shaded.parquet</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>org.yaml.snakeyaml</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.yaml.snakeyaml</shadedPattern>
+                        </relocation>
                     </relocations>
                     <transformers>
                         <transformer
