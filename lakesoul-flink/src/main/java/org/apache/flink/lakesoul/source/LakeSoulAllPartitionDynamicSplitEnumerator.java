@@ -7,6 +7,7 @@ package org.apache.flink.lakesoul.source;
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
@@ -155,9 +156,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
             DataFileInfo[] dataFileInfos;
             if (partitionLatestTimestamp.containsKey(partitionDesc)) {
                 Long lastTimestamp = partitionLatestTimestamp.get(partitionDesc);
-                LOG.info("getIncrementalPartitionDataInfo, startTime={}, endTime={}", lastTimestamp + 1, latestTimestamp);
+                LOG.info("getIncrementalPartitionDataInfo, startTime={}, endTime={}", lastTimestamp, latestTimestamp);
                 dataFileInfos =
-                        DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, lastTimestamp + 1, latestTimestamp, "incremental");
+                        DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, lastTimestamp, latestTimestamp, "incremental");
             } else {
                 dataFileInfos =
                         DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, startTime, latestTimestamp, "incremental");

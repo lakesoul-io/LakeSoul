@@ -5,7 +5,6 @@
 package org.apache.flink.lakesoul.test.schema;
 
 import com.alibaba.fastjson.JSON;
-import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
