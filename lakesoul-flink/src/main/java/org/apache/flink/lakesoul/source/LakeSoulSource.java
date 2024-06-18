@@ -119,7 +119,6 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                                                                 TableInfo tableInfo,
                                                                 List<String> readStartTimestampWithTimeZone,
                                                                 String readType) {
-        System.out.println("staticSplitEnumerator");
         List<String> readEndTimestampWithTimeZone =
                 Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
                         optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
@@ -159,6 +158,8 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                         dataFileInfo.range_partitions()));
             }
         } else {
+            String partitionDesc = dataFileInfoList.get(0).range_partitions();
+            System.out.println(partitionDesc);
             Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo,
                             dataFileInfoList.toArray(new DataFileInfo[0]));
@@ -167,7 +168,7 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                     splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()),
                             split.getValue(),
                             0,
-                            entry.getKey()));
+                            partitionDesc));
                 }
             }
         }
