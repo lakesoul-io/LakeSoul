@@ -449,12 +449,13 @@ public class FlinkUtil {
                                                                                               DataFileInfo[] dataFileInfoArray) {
         Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         for (DataFileInfo dataFileInfo : dataFileInfoArray) {
+            String splitKey = dataFileInfo.range_partitions() + ";" + dataFileInfo.file_exist_cols();
             if (isExistHashPartition(tableInfo) && dataFileInfo.file_bucket_id() != -1) {
-                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition.computeIfAbsent(splitKey, k -> new LinkedHashMap<>())
                         .computeIfAbsent(dataFileInfo.file_bucket_id(), v -> new ArrayList<>())
                         .add(new Path(dataFileInfo.path()));
             } else {
-                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition.computeIfAbsent(splitKey, k -> new LinkedHashMap<>())
                         .computeIfAbsent(-1, v -> new ArrayList<>())
                         .add(new Path(dataFileInfo.path()));
             }
