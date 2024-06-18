@@ -14,6 +14,7 @@ import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
@@ -129,7 +130,6 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
             dataFileInfoList = new ArrayList<>();
             List<String> partDescs = new ArrayList<>();
             String partitionDescOpt = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
-            System.out.println("remainingPartitions=" + remainingPartitions);
             if (partitionDescOpt.isEmpty() && remainingPartitions != null) {
                 for (Map<String, String> part : remainingPartitions) {
                     String desc = DBUtil.formatPartitionDesc(part);
@@ -158,17 +158,15 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                         dataFileInfo.range_partitions()));
             }
         } else {
-            String partitionDesc = dataFileInfoList.get(0).range_partitions();
-            System.out.println(partitionDesc);
-            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+            Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo,
                             dataFileInfoList.toArray(new DataFileInfo[0]));
-            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+            for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()),
                             split.getValue(),
                             0,
-                            partitionDesc));
+                            entry.getKey().f0));
                 }
             }
         }

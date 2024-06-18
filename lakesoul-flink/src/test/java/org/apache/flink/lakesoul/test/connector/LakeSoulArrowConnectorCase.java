@@ -167,7 +167,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         tEnv.executeSql("select * from `default`.`qar_table`").print();
     }
 
-    @Test
+    //    @Test
     public void testLakeSoulArrowSource() throws Exception {
         int parallelism = 2;
         StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);

@@ -16,6 +16,7 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.shaded.guava30.com.google.common.collect.Maps;
@@ -164,9 +165,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
                         DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, startTime, latestTimestamp, "incremental");
             }
             if (dataFileInfos.length > 0) {
-                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+                Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                         FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo, dataFileInfos);
-                for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                     for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                         splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey(), partitionDesc));
                     }
