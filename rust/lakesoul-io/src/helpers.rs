@@ -31,8 +31,9 @@ use url::Url;
 
 use crate::{
     constant::{
-        DATE32_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING, TIMESTAMP_MICROSECOND_FORMAT,
-        TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT, TIMESTAMP_SECOND_FORMAT,
+        DATE32_FORMAT, FLINK_TIMESTAMP_FORMAT, LAKESOUL_EMPTY_STRING, LAKESOUL_NULL_STRING,
+        TIMESTAMP_MICROSECOND_FORMAT, TIMESTAMP_MILLSECOND_FORMAT, TIMESTAMP_NANOSECOND_FORMAT,
+        TIMESTAMP_SECOND_FORMAT,
     },
     filter::parser::Parser,
     lakesoul_io_config::LakeSoulIOConfig,
@@ -184,20 +185,57 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
             }
             DataType::Timestamp(unit, timezone) => match unit {
                 TimeUnit::Second => {
-                    let secs = timestamp_str_to_unix_time(val, TIMESTAMP_SECOND_FORMAT)?.num_seconds();
+                    let secs = if let Ok(unix_time) = val.parse::<i64>() {
+                        unix_time
+                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                        duration.num_seconds()
+                    } else {
+                        timestamp_str_to_unix_time(val, TIMESTAMP_SECOND_FORMAT)?.num_seconds()
+                    };
                     Ok(ScalarValue::TimestampSecond(Some(secs), timezone.clone()))
                 }
                 TimeUnit::Millisecond => {
-                    let millsecs = timestamp_str_to_unix_time(val, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds();
+                    let millsecs = if let Ok(unix_time) = val.parse::<i64>() {
+                        unix_time
+                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                        duration.num_milliseconds()
+                    } else {
+                        // then try parsing string timestamp to epoch seconds (for flink)
+                        timestamp_str_to_unix_time(val, TIMESTAMP_MILLSECOND_FORMAT)?.num_milliseconds()
+                    };
                     Ok(ScalarValue::TimestampMillisecond(Some(millsecs), timezone.clone()))
                 }
                 TimeUnit::Microsecond => {
-                    let microsecs = timestamp_str_to_unix_time(val, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds();
-                    Ok(ScalarValue::TimestampMicrosecond(microsecs, timezone.clone()))
+                    let microsecs = if let Ok(unix_time) = val.parse::<i64>() {
+                        unix_time
+                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                        match duration.num_microseconds() {
+                            Some(microsecond) => microsecond,
+                            None => return Err(Internal("microsecond is out of range".to_string())),
+                        }
+                    } else {
+                        match timestamp_str_to_unix_time(val, TIMESTAMP_MICROSECOND_FORMAT)?.num_microseconds() {
+                            Some(microsecond) => microsecond,
+                            None => return Err(Internal("microsecond is out of range".to_string())),
+                        }
+                    };
+                    Ok(ScalarValue::TimestampMicrosecond(Some(microsecs), timezone.clone()))
                 }
                 TimeUnit::Nanosecond => {
-                    let nanosecs = timestamp_str_to_unix_time(val, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds();
-                    Ok(ScalarValue::TimestampNanosecond(nanosecs, timezone.clone()))
+                    let nanosecs = if let Ok(unix_time) = val.parse::<i64>() {
+                        unix_time
+                    } else if let Ok(duration) = timestamp_str_to_unix_time(val, FLINK_TIMESTAMP_FORMAT) {
+                        match duration.num_nanoseconds() {
+                            Some(nanosecond) => nanosecond,
+                            None => return Err(Internal("nanosecond is out of range".to_string())),
+                        }
+                    } else {
+                        match timestamp_str_to_unix_time(val, TIMESTAMP_NANOSECOND_FORMAT)?.num_nanoseconds() {
+                            Some(nanosecond) => nanosecond,
+                            None => return Err(Internal("nanoseconds is out of range".to_string())),
+                        }
+                    };
+                    Ok(ScalarValue::TimestampNanosecond(Some(nanosecs), timezone.clone()))
                 }
             },
             _ => ScalarValue::try_from_string(val.to_string(), data_type),
@@ -306,7 +344,11 @@ pub async fn listing_table_from_lakesoul_io_config(
             // Resolve the schema
             let resolved_schema = infer_schema(session_state, &table_paths, Arc::clone(&file_format)).await?;
 
-            let target_schema = uniform_schema(lakesoul_io_config.target_schema());
+            let target_schema = if lakesoul_io_config.inferring_schema {
+                SchemaRef::new(Schema::empty())
+            } else {
+                uniform_schema(lakesoul_io_config.target_schema())
+            };
 
             let table_partition_cols =
                 range_partition_to_partition_cols(target_schema.clone(), lakesoul_io_config.range_partitions_slice())?;

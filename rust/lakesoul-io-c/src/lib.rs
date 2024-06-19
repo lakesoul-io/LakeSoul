@@ -237,6 +237,14 @@ pub extern "C" fn lakesoul_config_builder_set_dynamic_partition(
 }
 
 #[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_inferring_schema(
+    builder: NonNull<IOConfigBuilder>,
+    enable: bool,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).set_inferring_schema(enable))
+}
+
+#[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_batch_size(
     builder: NonNull<IOConfigBuilder>,
     batch_size: c_size_t,

@@ -40,7 +40,6 @@ enum ResultType {
     DataCommitInfo,
     TablePathIdWithOnlyPath,
     PartitionInfoWithOnlyCommitOp,
-    PartitionInfoWithoutTimestamp,
 }
 
 #[derive(FromSql, ToSql, Debug, PartialEq)]
@@ -217,11 +216,11 @@ async fn get_prepared_statement(
 
                 // Select PartitionInfo
                 DaoType::SelectPartitionVersionByTableIdAndDescAndVersion =>
-                    "select table_id, partition_desc, version, commit_op, snapshot, expression, domain
+                    "select table_id, partition_desc, version, commit_op, snapshot, timestamp, expression, domain
                     from partition_info
                     where table_id = $1::TEXT and partition_desc = $2::TEXT and version = $3::INT",
                 DaoType::SelectOnePartitionVersionByTableIdAndDesc =>
-                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (
+                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
                         select table_id,partition_desc,max(version) from partition_info
                         where table_id = $1::TEXT and partition_desc = $2::TEXT group by table_id, partition_desc) t
                         left join partition_info m on t.table_id = m.table_id
@@ -231,7 +230,7 @@ async fn get_prepared_statement(
                     from partition_info
                     where table_id = $1::TEXT and partition_desc = $2::TEXT ",
                 DaoType::ListPartitionByTableId =>
-                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain
+                    "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain
                     from (
                         select table_id,partition_desc,max(version)
                         from partition_info
@@ -549,7 +548,7 @@ pub async fn execute_query(
                     .collect::<Vec<&str>>()
                     .join("','")
                 + "'";
-            let statement = format!("select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (
+            let statement = format!("select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp, m.expression, m.domain from (
                 select table_id,partition_desc,max(version) from partition_info
                 where table_id = $1::TEXT and partition_desc in ({})
                 group by table_id,partition_desc) t
@@ -632,9 +631,8 @@ pub async fn execute_query(
         DaoType::ListPartitionByTableId
         | DaoType::ListPartitionDescByTableIdAndParList
         | DaoType::SelectPartitionVersionByTableIdAndDescAndVersion
-        | DaoType::SelectOnePartitionVersionByTableIdAndDesc => ResultType::PartitionInfoWithoutTimestamp,
-
-        DaoType::ListPartitionByTableIdAndDesc
+        | DaoType::SelectOnePartitionVersionByTableIdAndDesc
+        | DaoType::ListPartitionByTableIdAndDesc
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndTimestampRange
         | DaoType::ListPartitionVersionByTableIdAndPartitionDescAndVersionRange => ResultType::PartitionInfo,
 
@@ -744,30 +742,6 @@ pub async fn execute_query(
                         timestamp: row.get::<_, i64>(5),
                         expression: row.get::<_, Option<String>>(6).unwrap_or(String::from("")),
                         domain: row.get(7),
-                    })
-                })
-                .collect::<Result<Vec<entity::PartitionInfo>>>()?;
-            entity::JniWrapper {
-                partition_info,
-                ..Default::default()
-            }
-        }
-
-        ResultType::PartitionInfoWithoutTimestamp => {
-            let partition_info: Vec<entity::PartitionInfo> = rows
-                .iter()
-                .map(|row| {
-                    Ok(entity::PartitionInfo {
-                        table_id: row.get(0),
-                        partition_desc: row.get(1),
-                        version: row.get::<_, i32>(2),
-                        commit_op: entity::CommitOp::from_str_name(row.get(3))
-                            .ok_or(LakeSoulMetaDataError::Internal("unknown commit_op".into()))?
-                            as i32,
-                        snapshot: row_to_uuid_list(row),
-                        expression: row.get::<_, Option<String>>(5).unwrap_or(String::from("")),
-                        domain: row.get(6),
-                        ..Default::default()
                     })
                 })
                 .collect::<Result<Vec<entity::PartitionInfo>>>()?;

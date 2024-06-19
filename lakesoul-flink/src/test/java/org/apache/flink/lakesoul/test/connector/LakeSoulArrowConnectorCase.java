@@ -14,14 +14,17 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTableSinkStreamBuilder;
+import org.apache.flink.lakesoul.source.arrow.LakeSoulArrowSource;
 import org.apache.flink.lakesoul.test.AbstractTestBase;
 import org.apache.flink.lakesoul.test.LakeSoulTestUtils;
 import org.apache.flink.lakesoul.test.mock.MockLakeSoulArrowSource;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
@@ -32,7 +35,7 @@ import org.junit.Test;
 
 import java.util.*;
 
-import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
 
 public class LakeSoulArrowConnectorCase extends AbstractTestBase {
     @Test
@@ -162,5 +165,30 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         tEnv.registerCatalog("lakesoul", new LakeSoulCatalog());
         tEnv.useCatalog("lakesoul");
         tEnv.executeSql("select * from `default`.`qar_table`").print();
+    }
+
+    //    @Test
+    public void testLakeSoulArrowSource() throws Exception {
+        int parallelism = 2;
+        StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
+
+        Configuration conf = new Configuration();
+        conf.set(INFERRING_SCHEMA, true);
+        DataStreamSource<LakeSoulArrowWrapper> source = execEnv.fromSource(
+                LakeSoulArrowSource.create(
+                        "default",
+                        MockLakeSoulArrowSource.MockSourceFunction.tableName,
+                        conf
+                ),
+                WatermarkStrategy.noWatermarks(),
+                "LakeSoul Arrow Source"
+        );
+
+        String name = "Print Sink";
+        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
+
+        DataStreamSink<LakeSoulArrowWrapper> sink = source.addSink(printFunction).name(name);
+        execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
+
     }
 }

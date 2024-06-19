@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_schema::SchemaBuilder;
 use async_trait::async_trait;
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{SchemaRef, Schema};
 
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl};
@@ -66,7 +66,11 @@ impl LakeSoulListingTable {
     }
 
     pub fn compute_table_schema(file_schema: SchemaRef, config: &LakeSoulIOConfig) -> SchemaRef {
-        let target_schema = uniform_schema(config.target_schema());
+        let target_schema = if config.inferring_schema {
+            SchemaRef::new(Schema::empty())
+        } else {
+            uniform_schema(config.target_schema())
+        };
         let mut builder = SchemaBuilder::from(target_schema.fields());
         for field in file_schema.fields() {
             if target_schema.field_with_name(field.name()).is_err() {

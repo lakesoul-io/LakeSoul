@@ -7,6 +7,7 @@ package org.apache.flink.lakesoul.source;
 import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
@@ -15,6 +16,7 @@ import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.shaded.guava30.com.google.common.collect.Maps;
@@ -141,28 +143,31 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
 
     public Collection<LakeSoulPartitionSplit> enumerateSplits() {
         List<PartitionInfo> allPartitionInfo = MetaVersion.getAllPartitionInfo(tableId);
+        LOG.info("allPartitionInfo={}", allPartitionInfo);
         List<PartitionInfo> filteredPartition = SubstraitUtil.applyPartitionFilters(allPartitionInfo, partitionArrowSchema, partitionFilters);
+        LOG.info("filteredPartition={}, filter={}", filteredPartition, partitionFilters);
 
 
         ArrayList<LakeSoulPartitionSplit> splits = new ArrayList<>(16);
         for (PartitionInfo partitionInfo : filteredPartition) {
             String partitionDesc = partitionInfo.getPartitionDesc();
-            long latestTimestamp = partitionInfo.getTimestamp();
+            long latestTimestamp = partitionInfo.getTimestamp() + 1;
             this.nextStartTime = Math.max(latestTimestamp, this.nextStartTime);
 
             DataFileInfo[] dataFileInfos;
             if (partitionLatestTimestamp.containsKey(partitionDesc)) {
                 Long lastTimestamp = partitionLatestTimestamp.get(partitionDesc);
+                LOG.info("getIncrementalPartitionDataInfo, startTime={}, endTime={}", lastTimestamp, latestTimestamp);
                 dataFileInfos =
-                        DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, lastTimestamp + 1, latestTimestamp, "incremental");
+                        DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, lastTimestamp, latestTimestamp, "incremental");
             } else {
                 dataFileInfos =
                         DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, startTime, latestTimestamp, "incremental");
             }
             if (dataFileInfos.length > 0) {
-                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+                Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                         FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo, dataFileInfos);
-                for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                     for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                         splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey(), partitionDesc));
                     }
@@ -170,6 +175,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
             }
             partitionLatestTimestamp.put(partitionDesc, latestTimestamp);
         }
+        LOG.info("partitionLatestTimestamp={}", partitionLatestTimestamp);
 
         return splits;
     }

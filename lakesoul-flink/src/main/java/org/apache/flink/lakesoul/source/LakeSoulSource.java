@@ -10,14 +10,15 @@ import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import io.substrait.proto.Plan;
-import org.apache.flink.api.connector.source.*;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
-import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
 import javax.annotation.Nullable;
@@ -26,31 +27,31 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, LakeSoulPendingSplits> {
+public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartitionSplit, LakeSoulPendingSplits> {
     final TableId tableId;
 
-    final RowType projectedRowType;
+    protected final RowType projectedRowType;
 
-    final RowType rowTypeWithPk;
+    protected final RowType rowTypeWithPk;
 
-    final boolean isBounded;
+    protected final boolean isBounded;
 
-    final List<String> pkColumns;
+    protected final List<String> pkColumns;
 
-    final List<String> partitionColumns;
+    protected final List<String> partitionColumns;
 
-    final Map<String, String> optionParams;
+    protected final Map<String, String> optionParams;
 
     @Nullable
     final List<Map<String, String>> remainingPartitions;
 
     @Nullable
-    final Plan pushedFilter;
+    protected final Plan pushedFilter;
 
 
     @Nullable
     final Plan partitionFilters;
-    private final RowType tableRowType;
+    protected final RowType tableRowType;
 
     public LakeSoulSource(TableId tableId,
                           RowType tableRowType,
@@ -87,26 +88,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
     }
 
     @Override
-    public SourceReader<RowData, LakeSoulPartitionSplit> createReader(SourceReaderContext readerContext) throws Exception {
-        Configuration conf = Configuration.fromMap(optionParams);
-        conf.addAll(readerContext.getConfiguration());
-        return new LakeSoulSourceReader(
-                () -> new LakeSoulSplitReader(
-                        conf,
-                        this.tableRowType,
-                        this.projectedRowType,
-                        this.rowTypeWithPk,
-                        this.pkColumns,
-                        this.isBounded,
-                        this.optionParams.getOrDefault(LakeSoulSinkOptions.CDC_CHANGE_COLUMN, ""),
-                        this.partitionColumns,
-                        this.pushedFilter),
-                new LakeSoulRecordEmitter(),
-                readerContext.getConfiguration(),
-                readerContext);
-    }
-
-    @Override
     public SplitEnumerator<LakeSoulPartitionSplit, LakeSoulPendingSplits> createEnumerator(
             SplitEnumeratorContext<LakeSoulPartitionSplit> enumContext) {
         TableInfo tableInfo = DataOperation.dbManager().getTableInfoByNameAndNamespace(tableId.table(),
@@ -116,7 +97,8 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
                         optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
         String readType = optionParams.getOrDefault(LakeSoulOptions.READ_TYPE(), "");
         if (getBoundedness().equals(Boundedness.CONTINUOUS_UNBOUNDED)) {
-            return new LakeSoulAllPartitionDynamicSplitEnumerator(enumContext,
+            return new LakeSoulAllPartitionDynamicSplitEnumerator(
+                    enumContext,
                     new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")),
                     this.tableRowType,
                     Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "30000")),
@@ -126,24 +108,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
                     partitionColumns,
                     partitionFilters);
 
-//            String partDesc = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
-//            if (partDesc.isEmpty()) {
-//                if (remainingPartitions != null && !remainingPartitions.isEmpty()) {
-//                    // use remaining partition
-//                    if (remainingPartitions.size() > 1) {
-//                        throw new RuntimeException("Streaming read allows only one specified partition," +
-//                                " or no specified partition to incrementally read entire table");
-//                    }
-//                    partDesc = DBUtil.formatPartitionDesc(remainingPartitions.get(0));
-//                }
-//            }
-//            return new LakeSoulDynamicSplitEnumerator(enumContext,
-//                    new LakeSoulDynSplitAssigner(optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1")),
-//                    Long.parseLong(optionParams.getOrDefault(LakeSoulOptions.DISCOVERY_INTERVAL(), "30000")),
-//                    convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
-//                    tableInfo.getTableId(),
-//                    partDesc,
-//                    optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1"));
         } else {
             return staticSplitEnumerator(enumContext,
                     tableInfo,
@@ -166,7 +130,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
             dataFileInfoList = new ArrayList<>();
             List<String> partDescs = new ArrayList<>();
             String partitionDescOpt = optionParams.getOrDefault(LakeSoulOptions.PARTITION_DESC(), "");
-            System.out.println("remainingPartitions=" + remainingPartitions);
             if (partitionDescOpt.isEmpty() && remainingPartitions != null) {
                 for (Map<String, String> part : remainingPartitions) {
                     String desc = DBUtil.formatPartitionDesc(part);
@@ -175,7 +138,6 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
             } else {
                 partDescs.add(partitionDescOpt);
             }
-            System.out.println("partDescs=" + partDescs);
             for (String desc : partDescs) {
                 dataFileInfoList.addAll(Arrays.asList(DataOperation.getIncrementalPartitionDataInfo(tableInfo.getTableId(),
                         desc,
@@ -196,15 +158,15 @@ public class LakeSoulSource implements Source<RowData, LakeSoulPartitionSplit, L
                         dataFileInfo.range_partitions()));
             }
         } else {
-            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+            Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo,
                             dataFileInfoList.toArray(new DataFileInfo[0]));
-            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+            for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()),
                             split.getValue(),
                             0,
-                            entry.getKey()));
+                            entry.getKey().f0));
                 }
             }
         }

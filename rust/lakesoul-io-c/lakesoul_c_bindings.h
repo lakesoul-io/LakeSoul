@@ -94,6 +94,9 @@ IOConfigBuilder *lakesoul_config_builder_set_thread_num(IOConfigBuilder *builder
 IOConfigBuilder *lakesoul_config_builder_set_dynamic_partition(IOConfigBuilder *builder,
                                                                bool enable);
 
+IOConfigBuilder *lakesoul_config_builder_set_inferring_schema(IOConfigBuilder *builder,
+                                                              bool enable);
+
 IOConfigBuilder *lakesoul_config_builder_set_batch_size(IOConfigBuilder *builder,
                                                         c_size_t batch_size);
 

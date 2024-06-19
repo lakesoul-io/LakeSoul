@@ -38,6 +38,12 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
             <version>${revision}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.casbin</groupId>
+                    <artifactId>jdbc-adapter</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
@@ -77,14 +83,7 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>scala-reflect</artifactId>
             <version>${scala.version}</version>
         </dependency>
-
-        <!--      test deps        -->
-        <dependency>
-            <groupId>org.scalatest</groupId>
-            <artifactId>scalatest_${scala.binary.version}</artifactId>
-            <version>${scalatest.version}</version>
-            <scope>test</scope>
-        </dependency>
+        
 
         <!--        jnr-ffi deps-->
         <dependency>
@@ -100,6 +99,18 @@ SPDX-License-Identifier: Apache-2.0
                 <exclusion>
                     <groupId>org.slf4j</groupId>
                     <artifactId>slf4j-jdk14</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.protobuf</groupId>
+                    <artifactId>protobuf-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>scala-reflect</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>jackson-databind</artifactId>
                 </exclusion>
             </exclusions>
             <version>${substrait.version}</version>

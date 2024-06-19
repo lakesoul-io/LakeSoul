@@ -152,7 +152,7 @@ message TablePathId {
   string domain = 4;
 }
 
-message Uuid{
+message Uuid {
   uint64 high = 1;
   uint64 low = 2;
 }

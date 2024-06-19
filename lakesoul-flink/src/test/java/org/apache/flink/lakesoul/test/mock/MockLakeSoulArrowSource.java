@@ -61,9 +61,9 @@ public class MockLakeSoulArrowSource {
         public static final Schema schema = new Schema(
                 Arrays.asList(
                         new Field("int", FieldType.nullable(new ArrowType.Int(32, true)), null)
-//                        new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null),
+//                        , new Field("utf8", FieldType.nullable(new ArrowType.Utf8()), null)
 //                        new Field("decimal", FieldType.nullable(ArrowType.Decimal.createDecimal(10, 3, null)), null),
-//                        new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null),
+                        , new Field("boolean", FieldType.nullable(new ArrowType.Bool()), null)
 //                        new Field("date", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), null),
 //                        new Field("datetimeSec", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.SECOND, ZoneId.of("UTC").toString())), null),
 //                        new Field("datetimeMilli", FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MILLISECOND, ZoneId.of("UTC").toString())), null),
@@ -105,6 +105,7 @@ public class MockLakeSoulArrowSource {
                 // internal state updates and emission of elements are an atomic operation
                 synchronized (ctx.getCheckpointLock()) {
                     long now = System.currentTimeMillis();
+                    System.out.println("count=" + count);
                     ctx.collect(new LakeSoulArrowWrapper(mockTableInfo(now), mockVectorSchemaRoot(count, now)));
                     Thread.sleep(interval);
                     count++;
@@ -116,7 +117,7 @@ public class MockLakeSoulArrowSource {
         private VectorSchemaRoot mockVectorSchemaRoot(int counter, long now) {
 
             VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
-            int batchSize = 1024;
+            int batchSize = 4;
             root.setRowCount(batchSize);
             for (int idx = 0; idx < schema.getFields().size(); idx++) {
                 setValue(allocator, root, root.getVector(idx), counter * 10000, batchSize);

@@ -16,6 +16,7 @@ import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.core.fs.FileSystem;
@@ -445,16 +446,20 @@ public class FlinkUtil {
         }
     }
 
-    public static Map<String, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(TableInfo tableInfo,
-                                                                                              DataFileInfo[] dataFileInfoArray) {
-        Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
+    public static Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(TableInfo tableInfo,
+                                                                                                              DataFileInfo[] dataFileInfoArray) {
+        Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         for (DataFileInfo dataFileInfo : dataFileInfoArray) {
             if (isExistHashPartition(tableInfo) && dataFileInfo.file_bucket_id() != -1) {
-                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition.computeIfAbsent(
+                                Tuple2.of(dataFileInfo.range_partitions(), dataFileInfo.file_exist_cols()),
+                                k -> new LinkedHashMap<>())
                         .computeIfAbsent(dataFileInfo.file_bucket_id(), v -> new ArrayList<>())
                         .add(new Path(dataFileInfo.path()));
             } else {
-                splitByRangeAndHashPartition.computeIfAbsent(dataFileInfo.range_partitions(), k -> new LinkedHashMap<>())
+                splitByRangeAndHashPartition.computeIfAbsent(
+                                Tuple2.of(dataFileInfo.range_partitions(), dataFileInfo.file_exist_cols()),
+                                k -> new LinkedHashMap<>())
                         .computeIfAbsent(-1, v -> new ArrayList<>())
                         .add(new Path(dataFileInfo.path()));
             }

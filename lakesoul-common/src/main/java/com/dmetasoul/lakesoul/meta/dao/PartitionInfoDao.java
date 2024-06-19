@@ -195,7 +195,7 @@ public class PartitionInfoDao {
             descPlaceholders = String.join(",", Collections.nCopies(partitionDescList.size(), "?"));
         }
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.timestamp m.expression, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
                         "where table_id = ? and partition_desc in (%s) " +
                         "group by table_id,partition_desc) t " +
@@ -216,7 +216,7 @@ public class PartitionInfoDao {
             }
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
+                rsList.add(partitionInfoFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -236,7 +236,7 @@ public class PartitionInfoDao {
             return partitionInfoList.isEmpty() ? null : partitionInfoList.get(0);
         }
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.timestamp, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " +
                         "where table_id = '%s' and partition_desc = '%s' " + "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m" +
@@ -407,7 +407,7 @@ public class PartitionInfoDao {
         ResultSet rs = null;
         List<PartitionInfo> rsList = new ArrayList<>();
         String sql = String.format(
-                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.domain from (" +
+                "select m.table_id, t.partition_desc, m.version, m.commit_op, m.snapshot, m.expression, m.timestamp, m.domain from (" +
                         "select table_id,partition_desc,max(version) from partition_info " + "where table_id = '%s' " +
                         "group by table_id,partition_desc) t " +
                         "left join partition_info m on t.table_id = m.table_id and t.partition_desc = m" +
@@ -418,7 +418,7 @@ public class PartitionInfoDao {
             pstmt = conn.prepareStatement(sql);
             rs = pstmt.executeQuery();
             while (rs.next()) {
-                rsList.add(partitionInfoFromResultSetWithoutTimestamp(rs));
+                rsList.add(partitionInfoFromResultSet(rs));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -583,7 +583,7 @@ public class PartitionInfoDao {
             rs = pstmt.executeQuery();
 
             while (rs.next()) {
-                partitionInfo = partitionInfoFromResultSetWithoutTimestamp(rs);
+                partitionInfo = partitionInfoFromResultSet(rs);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -623,16 +623,4 @@ public class PartitionInfoDao {
         return partitionInfo.build();
     }
 
-    public static PartitionInfo partitionInfoFromResultSetWithoutTimestamp(ResultSet rs) throws SQLException {
-        PartitionInfo.Builder partitionInfo = PartitionInfo.newBuilder()
-                .setTableId(rs.getString("table_id"))
-                .setPartitionDesc(rs.getString("partition_desc"))
-                .setVersion(rs.getInt("version"))
-                .setCommitOp(CommitOp.valueOf(rs.getString("commit_op")));
-        Array snapshotArray = rs.getArray("snapshot");
-        partitionInfo.addAllSnapshot(Arrays.stream((UUID[]) snapshotArray.getArray()).map(DBUtil::toProtoUuid).collect(Collectors.toList()));
-        String expr = rs.getString("expression");
-        partitionInfo.setExpression(expr == null ? "" : expr);
-        return partitionInfo.build();
-    }
 }
