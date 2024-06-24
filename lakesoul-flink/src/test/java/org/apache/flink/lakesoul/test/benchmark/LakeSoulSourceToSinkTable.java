@@ -39,7 +39,6 @@ public class LakeSoulSourceToSinkTable {
      * --flink.checkpoint /tmp/chk
      */
     public static void main(String[] args) throws ExecutionException, InterruptedException {
-
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
         String sourceDBName = parameter.get("source.database.name");

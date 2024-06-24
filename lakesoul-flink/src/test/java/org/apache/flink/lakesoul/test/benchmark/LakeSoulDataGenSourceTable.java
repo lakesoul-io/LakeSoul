@@ -40,7 +40,6 @@ public class LakeSoulDataGenSourceTable {
      * --write.time 5
      */
     public static void main(String[] args) throws Exception {
-
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
         String sinkDBName = parameter.get("sink.database.name", "flink_source");

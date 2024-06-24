@@ -34,7 +34,7 @@ public class LakeSoulArrowSplitReader implements SplitReader<LakeSoulArrowWrappe
     private final Queue<LakeSoulPartitionSplit> splits;
     private final List<String> partitionColumns;
     private final RowType tableRowType;
-    private final TableInfo tableInfo;
+    private final byte[] encodedTableInfo;
     RowType projectedRowType;
 
     RowType projectedRowTypeWithPk;
@@ -50,7 +50,7 @@ public class LakeSoulArrowSplitReader implements SplitReader<LakeSoulArrowWrappe
     private LakeSoulArrowSplitRecordsReader lastSplitReader;
 
     public LakeSoulArrowSplitReader(
-            TableInfo tableInfo,
+            byte[] encodedTableInfo,
             Configuration conf,
             RowType tableRowType,
             RowType projectedRowType,
@@ -61,7 +61,7 @@ public class LakeSoulArrowSplitReader implements SplitReader<LakeSoulArrowWrappe
             List<String> partitionColumns,
             Plan filter
     ) {
-        this.tableInfo = tableInfo;
+        this.encodedTableInfo = encodedTableInfo;
         this.conf = conf;
         this.splits = new ArrayDeque<>();
         this.tableRowType = tableRowType;
@@ -80,7 +80,7 @@ public class LakeSoulArrowSplitReader implements SplitReader<LakeSoulArrowWrappe
             close();
             lastSplitReader =
                     new LakeSoulArrowSplitRecordsReader(
-                            this.tableInfo,
+                            this.encodedTableInfo,
                             this.conf,
                             Objects.requireNonNull(splits.poll()),
                             this.tableRowType,

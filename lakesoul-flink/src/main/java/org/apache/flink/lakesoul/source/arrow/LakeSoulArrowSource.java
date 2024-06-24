@@ -15,15 +15,12 @@ import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 
 import java.io.IOException;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
-
 public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
 
-    private final TableInfo tableInfo;
+    private final byte[] encodedTableInfo;
 
     public static LakeSoulArrowSource create(
             String tableNamespace,
@@ -65,7 +62,7 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
                 null,
                 null
         );
-        this.tableInfo = tableInfo;
+        this.encodedTableInfo = tableInfo.toByteArray();
     }
 
 
@@ -84,7 +81,7 @@ public class LakeSoulArrowSource extends LakeSoulSource<LakeSoulArrowWrapper> {
         conf.addAll(readerContext.getConfiguration());
         return new LakeSoulSourceReader(
                 () -> new LakeSoulArrowSplitReader(
-                        tableInfo,
+                        encodedTableInfo,
                         conf,
                         this.tableRowType,
                         this.projectedRowType,
