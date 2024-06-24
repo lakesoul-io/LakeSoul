@@ -33,6 +33,7 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
@@ -167,9 +168,10 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         tEnv.executeSql("select * from `default`.`qar_table`").print();
     }
 
-    //    @Test
-    public void testLakeSoulArrowSource() throws Exception {
+    public static void main(String[] args) throws Exception {
+
         int parallelism = 2;
+
         StreamExecutionEnvironment execEnv = LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
 
         Configuration conf = new Configuration();

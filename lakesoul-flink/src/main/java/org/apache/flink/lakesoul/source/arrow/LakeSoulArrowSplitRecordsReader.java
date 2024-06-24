@@ -84,7 +84,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
     private final Plan filter;
 
     public LakeSoulArrowSplitRecordsReader(
-            TableInfo tableInfo,
+            byte[] encodedTableInfo,
             Configuration conf,
             LakeSoulPartitionSplit split,
             RowType tableRowType,
@@ -96,7 +96,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
             List<String> partitionColumns,
             Plan filter
     ) throws Exception {
-        this.tableInfo = tableInfo;
+        this.tableInfo = TableInfo.parseFrom(encodedTableInfo);
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = new Configuration(conf);

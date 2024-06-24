@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.test.benchmark;
 
-import io.substrait.extension.SimpleExtension;
 import org.apache.commons.collections.IteratorUtils;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
@@ -15,7 +14,6 @@ import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.sql.Date;
 import java.util.List;
@@ -42,11 +40,6 @@ public class LakeSoulDataGenSourceTable {
      * --write.time 5
      */
     public static void main(String[] args) throws Exception {
-        try {
-            SimpleExtension.ExtensionCollection extensionCollection = SimpleExtension.loadDefaults();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
         String sinkDBName = parameter.get("sink.database.name", "flink_source");
