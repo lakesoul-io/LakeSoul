@@ -1,5 +1,7 @@
 package org.apache.flink.lakesoul.test;
 
+import com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil;
+import io.substrait.extension.SimpleExtension;
 import org.apache.flink.lakesoul.test.flinkSource.TestUtils;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -7,6 +9,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.TimeZone;
@@ -16,6 +19,11 @@ import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class SubstraitTest extends AbstractTestBase {
+
+    @Test
+    public void loadSubStrait() throws IOException {
+        SimpleExtension.ExtensionCollection extensionCollection = SimpleExtension.loadDefaults();
+    }
 
     @Test
     public void dateTypeTest() throws ExecutionException, InterruptedException {
