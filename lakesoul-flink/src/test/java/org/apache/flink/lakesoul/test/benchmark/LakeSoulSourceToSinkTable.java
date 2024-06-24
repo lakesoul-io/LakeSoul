@@ -4,6 +4,7 @@
 
 package org.apache.flink.lakesoul.test.benchmark;
 
+import io.substrait.extension.SimpleExtension;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
@@ -16,6 +17,7 @@ import org.apache.flink.table.api.ExplainDetail;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Catalog;
 
+import java.io.IOException;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutionException;
 
@@ -39,7 +41,11 @@ public class LakeSoulSourceToSinkTable {
      * --flink.checkpoint /tmp/chk
      */
     public static void main(String[] args) throws ExecutionException, InterruptedException {
-
+        try {
+            SimpleExtension.ExtensionCollection extensionCollection = SimpleExtension.loadDefaults();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
         ParameterTool parameter = ParameterTool.fromArgs(args);
 
         String sourceDBName = parameter.get("source.database.name");
