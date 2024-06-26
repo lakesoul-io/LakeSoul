@@ -11,14 +11,15 @@ use std::ptr::NonNull;
 use std::slice;
 use std::sync::Arc;
 
-use bytes::BufMut;
-
 use arrow::array::Array;
 pub use arrow::array::StructArray;
 use arrow::datatypes::{Schema, SchemaRef};
-use arrow::ffi::from_ffi;
 pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow::ffi::from_ffi;
+use bytes::BufMut;
 use datafusion_substrait::substrait::proto::Plan;
+use log::debug;
+use mimalloc::MiMalloc;
 use prost::Message;
 use tokio::runtime::{Builder, Runtime};
 
@@ -26,8 +27,10 @@ use lakesoul_io::helpers;
 use lakesoul_io::lakesoul_io_config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::lakesoul_reader::{LakeSoulReader, RecordBatch, Result, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::lakesoul_writer::SyncSendableMutableLakeSoulWriter;
-use log::debug;
 use proto::proto::entity;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
@@ -924,11 +927,11 @@ mod tests {
 
     use crate::{
         create_lakesoul_io_config_from_builder, create_lakesoul_reader_from_config, create_lakesoul_writer_from_config,
-        flush_and_close_writer, free_lakesoul_reader, lakesoul_config_builder_add_single_file,
-        lakesoul_config_builder_add_single_primary_key, lakesoul_config_builder_set_batch_size,
-        lakesoul_config_builder_set_max_row_group_size, lakesoul_config_builder_set_object_store_option,
-        lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num, lakesoul_reader_get_schema,
-        next_record_batch, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch, IOConfigBuilder,
+        flush_and_close_writer, free_lakesoul_reader, IOConfigBuilder,
+        lakesoul_config_builder_add_single_file, lakesoul_config_builder_add_single_primary_key,
+        lakesoul_config_builder_set_batch_size, lakesoul_config_builder_set_max_row_group_size,
+        lakesoul_config_builder_set_object_store_option, lakesoul_config_builder_set_schema, lakesoul_config_builder_set_thread_num,
+        lakesoul_reader_get_schema, next_record_batch, start_reader, tokio_runtime_builder_set_thread_num, write_record_batch,
     };
 
     fn set_object_store_kv(builder: NonNull<IOConfigBuilder>, key: &str, value: &str) -> NonNull<IOConfigBuilder> {
