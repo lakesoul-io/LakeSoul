@@ -48,4 +48,4 @@ half = "^2.1"
 tracing = "0.1.40"
 thiserror = "1.0"
 anyhow = "1.0.79"
-mimalloc = "0.1.43"
+mimalloc = { version = "0.1.43", features = ["local_dynamic_tls"] }
