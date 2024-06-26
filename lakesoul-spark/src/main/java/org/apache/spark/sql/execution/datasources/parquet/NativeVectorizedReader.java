@@ -192,6 +192,7 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
             nativeColumnVector = null;
         }
         if (columnarBatch != null) {
+            columnarBatch.close();
             columnarBatch = null;
         }
     }

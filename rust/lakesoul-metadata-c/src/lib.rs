@@ -11,6 +11,7 @@ use std::io::Write;
 use std::ptr::{null, null_mut, NonNull};
 
 use log::debug;
+use mimalloc::MiMalloc;
 use prost::bytes::BufMut;
 use prost::Message;
 
@@ -18,6 +19,9 @@ use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::SplitDesc;
 use lakesoul_metadata::{Builder, Client, MetaDataClient, PreparedStatementMap, Runtime};
 use proto::proto::entity;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[allow(non_camel_case_types)]
 pub type c_size_t = usize;
