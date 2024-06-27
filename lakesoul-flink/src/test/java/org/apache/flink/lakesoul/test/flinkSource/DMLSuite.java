@@ -89,19 +89,19 @@ public class DMLSuite extends AbstractTestBase {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
         createLakeSoulSourceNonPkWithPartitionTableUser(tEnv);
         tEnv.executeSql(
-                        "INSERT INTO user_info_2 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)")
+                        "INSERT INTO user_info_3 VALUES (2, 'Alice', 80),(3, 'Jack', 75),(3, 'Amy', 95),(4, 'Mike', 70)")
                 .await();
         List<Row>
                 results1 =
-                CollectionUtil.iteratorToList(tEnv.executeSql("select order_id from user_info_1").collect());
+                CollectionUtil.iteratorToList(tEnv.executeSql("select order_id from user_info_3").collect());
         TestUtils.checkEqualInAnyOrder(results1,
-                new String[]{"+I[2]", "+I[3]", "+I[4]"});
+                new String[]{"+I[2]", "+I[3]", "+I[3]", "+I[4]"});
         List<Row>
                 results2 =
                 CollectionUtil.iteratorToList(
-                        tEnv.executeSql("select order_id, sum(score) from user_info_1 group by order_id").collect());
+                        tEnv.executeSql("select order_id, sum(score) from user_info_3 group by order_id").collect());
         TestUtils.checkEqualInAnyOrder(results2,
-                new String[]{"+I[2, 80]", "+I[3, 75]", "+I[4, 70]"});
+                new String[]{"+I[2, 80]", "+I[3, 170]", "+I[4, 70]"});
     }
 
     @Test
@@ -339,7 +339,7 @@ public class DMLSuite extends AbstractTestBase {
 
     private void createLakeSoulSourceNonPkWithPartitionTableUser(TableEnvironment tEnvs)
             throws ExecutionException, InterruptedException {
-        String createUserSql = "create table user_info_2 (" +
+        String createUserSql = "create table user_info_3 (" +
                 "    order_id INT," +
                 "    name varchar," +
                 "    score DECIMAL" +
@@ -348,7 +348,7 @@ public class DMLSuite extends AbstractTestBase {
                 "    'format'='lakesoul'," +
                 "    'path'='" + getTempDirUri("/lakeSource/user_nonpk_partitioned") +
                 "' )";
-        tEnvs.executeSql("DROP TABLE if exists user_info_2");
+        tEnvs.executeSql("DROP TABLE if exists user_info_3");
         tEnvs.executeSql(createUserSql);
     }
 
