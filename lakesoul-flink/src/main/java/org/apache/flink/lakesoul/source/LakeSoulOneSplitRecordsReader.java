@@ -118,11 +118,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
             reader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
 
-        List<String> nonPartitionColumns =
-                this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))
-                        .collect(Collectors.toList());
-
-        if (!nonPartitionColumns.isEmpty()) {
+        if (!projectedRowTypeWithPk.getChildren().isEmpty()) {
             ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
             // native reader requires pk columns in schema
             Schema arrowSchema = ArrowUtils.toArrowSchema(projectedRowTypeWithPk);
@@ -147,11 +143,11 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
 
         LOG.info("Initializing reader for split {}, pk={}, partitions={}," +
-                        " non partition cols={}, cdc column={}, filter={}",
+                        " actual read cols={}, cdc column={}, filter={}",
                 split,
                 pkColumns,
                 partitionValues,
-                nonPartitionColumns,
+                projectedRowTypeWithPk,
                 cdcColumn,
                 filter);
         reader.initializeReader();

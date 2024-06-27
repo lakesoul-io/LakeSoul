@@ -39,7 +39,8 @@ public class TestUtils {
         TableEnvironment createTableEnv;
         if (mode.equals(BATCH_TYPE)) {
             createTableEnv = TableEnvironment.create(
-                    EnvironmentSettings.newInstance().withConfiguration(fsConfig).inBatchMode().build()
+                    EnvironmentSettings.newInstance().withConfiguration(fsConfig)
+                            .inBatchMode().build()
             );
         } else {
             Configuration config = new Configuration(fsConfig);
