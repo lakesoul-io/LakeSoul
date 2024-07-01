@@ -133,14 +133,12 @@ set_target_properties(liblakesoul_io_c PROPERTIES
 add_library(libarrow SHARED IMPORTED)
 set_target_properties(libarrow PROPERTIES
     IMPORTED_LOCATION "${PYARROW_DIR}/libarrow.so.${PYARROW_ABI_TAG}"
-    INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
-    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=0")
+    INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include")
 
 add_library(libarrow_dataset SHARED IMPORTED)
 set_target_properties(libarrow_dataset PROPERTIES
     IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_dataset.so.${PYARROW_ABI_TAG}"
     INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
-    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=0"
     INTERFACE_LINK_LIBRARIES "libarrow")
 
 add_library(libarrow_python SHARED IMPORTED)
