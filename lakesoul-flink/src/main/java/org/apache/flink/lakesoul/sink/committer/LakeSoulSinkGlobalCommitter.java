@@ -232,7 +232,7 @@ public class LakeSoulSinkGlobalCommitter
                         throw new IOException(equalOrCanCast);
                     }
                     for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
-                        if (committable.getTsMs() > schemaLastChangeTime) {
+                        if (committable.getTsMs() > schemaLastChangeTime && !dbType.equals("mongodb")) {
                             LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}", schemaLastChangeTime, committable.getTsMs());
                             throw new IOException(equalOrCanCast);
                         }
