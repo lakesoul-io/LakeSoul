@@ -18,7 +18,7 @@ LakeSoulFragment::ScanBatchesAsync(const std::shared_ptr<arrow::dataset::ScanOpt
     arrow::dataset::RecordBatchGenerator gen = [fragment = fragment] {
         auto frag = std::static_pointer_cast<LakeSoulFragment>(fragment);
         if (frag->data_reader_->IsFinished())
-            frag->CreateDataReader();
+            AsyncGeneratorEnd<std::shared_ptr<RecordBatch>>();
         return frag->data_reader_->ReadRecordBatchAsync();
     };
     arrow::Result<arrow::dataset::RecordBatchGenerator> result(std::move(gen));

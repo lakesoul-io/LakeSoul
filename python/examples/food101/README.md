@@ -8,15 +8,16 @@ We can download data from [Hugginface Food101 dataset](https://huggingface.co/da
 
 ## Import data into LakeSoul
 ```shell
-export lakesoul_jar=lakesoul-spark-2.5.1-spark-3.3.jar
-sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
+export lakesoul_jar=lakesoul-spark-2.5.3-spark-3.3.jar
+docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/"${lakesoul_jar}":/opt/spark/work-dir/jars/"${lakesoul_jar}" \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/food101:/opt/spark/work-dir/food101 \
---env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
+--env LAKESOUL_HOME=/opt/spark/work-dir/lakesoul.properties \
 bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/food101/import_data.py
 ```
+Note: lakesoul-spark jar file can be downloaded from: https://github.com/lakesoul-io/LakeSoul/releases/download/v2.5.3/lakesoul-spark-3.3-2.5.3.jar
 
 ## Vectorizing pictures in LakeSoul
 ```shell

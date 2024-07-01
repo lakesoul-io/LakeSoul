@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-### Deploy Docker compose env
+### Deploy LakeSoul Docker Compose Env
 
 ```bash
 cd docker/lakesoul-docker-compose-env

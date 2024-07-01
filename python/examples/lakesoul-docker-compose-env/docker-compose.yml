@@ -38,12 +38,3 @@ services:
       timeout: 5s
       retries: 3
     hostname: minio
-
-networks:
-  default:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.16.1.0/16
-          gateway: 10.16.1.1

@@ -36,7 +36,7 @@ if __name__ == "__main__":
     spark.sql("drop table if exists titanic_raw")
     trainDf.write.mode("append").format("lakesoul")\
         .option("rangePartitions", "split")\
-        .option("shortTableName","titanic_raw")\
+        .option("shortTableName", "titanic_raw")\
         .save(tablePath)
     print("Debug -- Show tables after importing data")
     spark.sql("show tables").show()
