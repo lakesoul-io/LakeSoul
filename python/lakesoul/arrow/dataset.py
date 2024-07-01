@@ -118,7 +118,9 @@ class Dataset(pa._dataset.Dataset):
             rank = dist.get_rank()
             world_size = dist.get_world_size()
             return rank, world_size
-        except RuntimeError:
+        except Exception as e:
+            print("An exception occurred to obtain PyTorch distributed rank: ", e)
+            print("If you are not using PyTorch's distributed runtime, just ignore this error")
             return None, None
 
     def _filter_scan_partitions(self, scan_partitions: LakeSoulScanPlanPartition, rank, world_size):
