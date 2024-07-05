@@ -14,16 +14,16 @@ download the appropriate one based on your requirements. We will publish officia
 The Python package currently only supports Linux x86_64 systems. The Python package is built based on the manylinux_2_28 image and supports CentOS 8, Debian 10, Ubuntu 18.10 and above OS versions (for specific compatibility, see [Distro compatibility](https://github.com/mayeut/pep600_compliance?tab=readme-ov-file#distro-compatibility)). If you need to run it on an earlier OS version, it is recommended to use Docker container.
 
 * For Python 3.8
-  users: [lakesoul-1.0.0b2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl)
 * For Python 3.9
-  users: [lakesoul-1.0.0b2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl)
 * For Python 3.10
-  users: [lakesoul-1.0.0b2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl)
 
 Assuming we are using Python 3.8, we can down load the wheel file as below
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
 ```
 
 ### Install python virtual enviroment
