@@ -13,7 +13,7 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/titanic:/opt/spark/work-dir/titanic \
---env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
+--env LAKESOUL_HOME=/opt/spark/work-dir/lakesoul.properties \
 bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/titanic/import_data.py
 ```
 
@@ -25,13 +25,18 @@ sudo docker run --rm -ti --net lakesoul-docker-compose-env_default \
 -v $PWD/../../python/lakesoul/:/opt/bitnami/spark/lakesoul \
 -v $PWD/lakesoul.properties:/opt/spark/work-dir/lakesoul.properties \
 -v $PWD/titanic:/opt/spark/work-dir/titanic \
---env lakesoul_home=/opt/spark/work-dir/lakesoul.properties \
+--env LAKESOUL_HOME=/opt/spark/work-dir/lakesoul.properties \
 bitnami/spark:3.3.1 spark-submit --jars /opt/spark/work-dir/jars/"${lakesoul_jar}" --driver-memory 16G --executor-memory 16G --master "local[4]" --conf spark.pyspark.python=./venv/bin/python3 /opt/spark/work-dir/titanic/feature_transform.py
 ```
 
 ## Train model on PyTorch
 ``` shell
+# make sure $PWD is python/examples
+# export necessary environment variables
+source lakesoul_env.sh
+# activate virtual environment
 conda activate lakesoul_test
+# run training
 python titanic/train.py
 ```
 
