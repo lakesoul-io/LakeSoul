@@ -38,13 +38,19 @@ public:
     int GetThreadNum() const;
     void SetThreadNum(int thread_num);
 
+    void SetRetainPartitionColumns();
+
+    void SetObjectStoreConfig(const std::string& key, const std::string& value);
+
 private:
     std::vector<std::vector<std::string>> file_urls_;
     std::vector<std::vector<std::string>> primary_keys_;
     std::vector<std::pair<std::string, std::string>> partition_info_;
     std::vector<std::shared_ptr<arrow::dataset::Fragment>> fragments_;
+    std::vector<std::pair<std::string, std::string>> object_store_configs_;
     int batch_size_ = 16;
     int thread_num_ = 1;
+    bool retain_partition_columns_ = false;
 };
 
 } // namespace lakesoul

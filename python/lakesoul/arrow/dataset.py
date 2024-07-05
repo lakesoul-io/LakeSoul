@@ -17,7 +17,8 @@ class Dataset(pa._dataset.Dataset):
                  world_size=None,
                  partitions=None,
                  retain_partition_columns=False,
-                 namespace='default'):
+                 namespace='default',
+                 object_store_configs={}):
         from ._path_utils import _configure_pyarrow_path
         _configure_pyarrow_path()
         from ._lakesoul_dataset import LakeSoulDataset
@@ -38,17 +39,20 @@ class Dataset(pa._dataset.Dataset):
         )
         arrow_schema = get_arrow_schema_by_table_name(
             table_name=lakesoul_table_name,
-            namespace=namespace,
-            exclude_partition=not retain_partition_columns,
+            namespace=namespace
         )
-        dataset = LakeSoulDataset(arrow_schema)
+        target_schema = get_arrow_schema_by_table_name(
+            table_name=lakesoul_table_name,
+            namespace=namespace,
+            exclude_partition=not retain_partition_columns
+        )
+        dataset = LakeSoulDataset(target_schema)
         filtered_scan_partitions = self._filter_scan_partitions(scan_partitions, rank, world_size)
         for scan_part in filtered_scan_partitions:
             dataset._add_file_urls(scan_part.files)
             dataset._add_primary_keys(scan_part.primary_keys)
-        if retain_partition_columns:
-            for key, value in partitions.items():
-                dataset._add_partition_key_value(key, value)
+        for key, value in partitions.items():
+            dataset._add_partition_key_value(key, value)
         if not isinstance(batch_size, int) or batch_size <= 0:
             message = "batch_size must be positive int; "
             message += "%r is invalid" % (batch_size,)
@@ -63,6 +67,9 @@ class Dataset(pa._dataset.Dataset):
             dataset._set_thread_num(multiprocessing.cpu_count())
         else:
             dataset._set_thread_num(thread_count)
+        if retain_partition_columns:
+            dataset._set_retain_partition_columns()
+        dataset._set_object_store_configs(object_store_configs)
         self._dataset = dataset
 
     def __reduce__(self):
@@ -156,7 +163,8 @@ def lakesoul_dataset(table_name,
                      world_size=None,
                      partitions=None,
                      retain_partition_columns=False,
-                     namespace='default'):
+                     namespace='default',
+                     object_store_configs={}):
     dataset = Dataset(
         table_name,
         batch_size=batch_size,
@@ -166,5 +174,6 @@ def lakesoul_dataset(table_name,
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        object_store_configs=object_store_configs
     )
     return dataset

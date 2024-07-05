@@ -1,9 +1,17 @@
 # Traing binary classification on PyTorch
 ## Introduction
 In this case, we solve a classification problem based on the LakeSoul and PyTorch framework. Assumming our current working directory is `LakeSoul/python/examples/`.
+```shell
+cd python/examples
+```
 
 ## Prepare dataset
-We can download the dataset from [Kaggle Titanic Dataset](https://www.kaggle.com/competitions/titanic). Then we put the data files in `titanic/dataset`.
+We can download the dataset from [Kaggle Titanic Dataset](https://www.kaggle.com/competitions/titanic/data). Then we put the train.csv and test.csv files in `titanic/dataset`:
+```txt
+titanic/dataset
+├── test.csv
+└── train.csv
+```
 
 ## Import data into LakeSoul
 ```shell
@@ -32,7 +40,12 @@ docker run --rm -ti --net lakesoul-docker-compose-env_default \
 
 ## Train model on PyTorch
 ``` shell
+# make sure $PWD is python/examples
+# export necessary environment variables
+source lakesoul_env.sh
+# activate virtual environment
 conda activate lakesoul_test
+# run training
 python titanic/train.py
 ```
 

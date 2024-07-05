@@ -20,7 +20,8 @@ def _read_lakesoul_data_file(table_name,
                              world_size=None,
                              partitions=None,
                              retain_partition_columns=False,
-                             namespace='default'):
+                             namespace='default',
+                             object_store_configs={}):
     import pyarrow as pa
     from ..arrow import lakesoul_dataset
     arrow_dataset = lakesoul_dataset(
@@ -32,6 +33,7 @@ def _read_lakesoul_data_file(table_name,
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        object_store_configs=object_store_configs
     )
     for batch in arrow_dataset.to_batches():
         yield pa.Table.from_batches([batch])

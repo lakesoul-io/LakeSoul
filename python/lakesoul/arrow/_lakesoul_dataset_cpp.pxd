@@ -18,6 +18,8 @@ cdef extern from "lakesoul/lakesoul_dataset.h" namespace "lakesoul" nogil:
         void AddPartitionKeyValue(const string& key, const string& value)
         void SetBatchSize(int batch_size)
         void SetThreadNum(int thread_num)
+        void SetRetainPartitionColumns()
+        void SetObjectStoreConfig(const string& key, const string& value)
 
 cdef extern from "lakesoul/lakesoul_fragment.h" namespace "lakesoul" nogil:
     cdef cppclass CLakeSoulFragment" lakesoul::LakeSoulFragment":

@@ -70,6 +70,17 @@ cdef class LakeSoulDataset(Dataset):
     def _set_thread_num(self, thread_num):
         self.lakesoul_dataset.SetThreadNum(thread_num)
 
+    def _set_retain_partition_columns(self):
+        self.lakesoul_dataset.SetRetainPartitionColumns()
+
+    def _set_object_store_configs(self, object_store_configs):
+        cdef string key_cpp_string
+        cdef string value_cpp_string
+        for key, value in object_store_configs.items():
+            key_cpp_string = key.encode('utf-8')
+            value_cpp_string = value.encode('utf-8')
+            self.lakesoul_dataset.SetObjectStoreConfig(key_cpp_string, value_cpp_string)
+
 cdef class LakeSoulFragment(Fragment):
     cdef void init(self, const shared_ptr[CFragment]& sp):
         Fragment.init(self, sp)

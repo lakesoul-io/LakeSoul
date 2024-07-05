@@ -34,23 +34,31 @@ LakeSoulDataset::ReplaceSchema(std::shared_ptr<arrow::Schema> schema) const
 arrow::Result<arrow::dataset::FragmentIterator>
 LakeSoulDataset::GetFragmentsImpl(arrow::compute::Expression predicate)
 {
-    std::vector<std::shared_ptr<arrow::dataset::Fragment>> fragments;
-    fragments.reserve(file_urls_.size());
-    for (size_t i = 0; i < file_urls_.size(); ++i) {
-        const auto files = file_urls_.at(i);
-        const auto pks = primary_keys_.at(i);
-        auto fragment = std::make_shared<LakeSoulFragment>(this->schema());
-        fragment->AddFileUrls(files);
-        fragment->AddPrimaryKeys(pks);
-        fragment->AddPartitionKeyValues(partition_info_);
-        fragment->SetBatchSize(batch_size_);
-        fragment->SetThreadNum(thread_num_);
-        fragment->CreateDataReader();
-        fragments.push_back(fragment);
+    try {
+        std::vector<std::shared_ptr<arrow::dataset::Fragment>> fragments;
+        fragments.reserve(file_urls_.size());
+        for (size_t i = 0; i < file_urls_.size(); ++i) {
+            const auto files = file_urls_.at(i);
+            const auto pks = primary_keys_.at(i);
+            auto fragment = std::make_shared<LakeSoulFragment>(this->schema());
+            fragment->AddFileUrls(files);
+            fragment->AddPrimaryKeys(pks);
+            fragment->AddPartitionKeyValues(partition_info_);
+            fragment->SetBatchSize(batch_size_);
+            fragment->SetThreadNum(thread_num_);
+            if (retain_partition_columns_) {
+                fragment->SetRetainPartitionColumns();
+            }
+            fragment->SetObjectStoreConfigs(object_store_configs_);
+            fragment->CreateDataReader();
+            fragments.push_back(fragment);
+        }
+        fragments_ = fragments;
+        arrow::Result<arrow::dataset::FragmentIterator> result(arrow::MakeVectorIterator(std::move(fragments)));
+        return result;
+    } catch (const std::exception& e) {
+        return arrow::Status::IOError(e.what());
     }
-    fragments_ = fragments;
-    arrow::Result<arrow::dataset::FragmentIterator> result(arrow::MakeVectorIterator(std::move(fragments)));
-    return result;
 }
 
 void LakeSoulDataset::AddFileUrls(const std::vector<std::string>& file_urls)
@@ -90,6 +98,14 @@ int LakeSoulDataset::GetThreadNum() const
 void LakeSoulDataset::SetThreadNum(int thread_num)
 {
     thread_num_ = thread_num >= 1 ? thread_num : 1;
+}
+
+void LakeSoulDataset::SetRetainPartitionColumns() {
+    retain_partition_columns_ = true;
+}
+
+void LakeSoulDataset::SetObjectStoreConfig(const std::string& key, const std::string& value) {
+    object_store_configs_.push_back(std::make_pair(key, value));
 }
 
 } // namespace lakesoul

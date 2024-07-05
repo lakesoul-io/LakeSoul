@@ -39,14 +39,19 @@ public:
 
     void CreateDataReader();
 
+    void SetRetainPartitionColumns();
+
+    void SetObjectStoreConfigs(const std::vector<std::pair<std::string, std::string>>& configs);
 private:
     std::shared_ptr<arrow::Schema> schema_;
     std::vector<std::string> file_urls_;
     std::vector<std::string> primary_keys_;
     std::vector<std::pair<std::string, std::string>> partition_info_;
     std::shared_ptr<lakesoul::LakeSoulDataReader> data_reader_;
+    std::vector<std::pair<std::string, std::string>> object_store_configs_;
     int batch_size_ = 16;
     int thread_num_ = 1;
+    bool retain_partition_columns_ = false;
 };
 
 } // namespace lakesoul

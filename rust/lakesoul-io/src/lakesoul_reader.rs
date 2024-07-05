@@ -17,7 +17,6 @@ pub use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 
 use futures::StreamExt;
-
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
