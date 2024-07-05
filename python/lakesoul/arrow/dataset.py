@@ -5,6 +5,9 @@
 import pyarrow as pa
 import pyarrow._dataset
 
+from ..metadata.meta_ops import *
+
+
 class Dataset(pa._dataset.Dataset):
     def __init__(self,
                  lakesoul_table_name,
@@ -14,11 +17,11 @@ class Dataset(pa._dataset.Dataset):
                  world_size=None,
                  partitions=None,
                  retain_partition_columns=False,
-                 namespace='default'):
+                 namespace='default',
+                 object_store_configs={}):
         from ._path_utils import _configure_pyarrow_path
         _configure_pyarrow_path()
         from ._lakesoul_dataset import LakeSoulDataset
-        from ..metadata.db_manager import DBManager
         self._lakesoul_table_name = lakesoul_table_name
         self._batch_size = batch_size
         self._thread_count = thread_count
@@ -28,25 +31,28 @@ class Dataset(pa._dataset.Dataset):
         self._retain_partition_columns = retain_partition_columns
         self._namespace = namespace
         rank, world_size = self._check_rank_and_world_size(rank, world_size)
-        db_manager = DBManager()
         partitions = partitions or {}
-        data_files = db_manager.get_data_files_by_table_name(
+        scan_partitions = get_scan_plan_partitions(
             table_name=lakesoul_table_name,
             partitions=partitions,
             namespace=namespace,
         )
-        arrow_schema = db_manager.get_arrow_schema_by_table_name(
+        arrow_schema = get_arrow_schema_by_table_name(
+            table_name=lakesoul_table_name,
+            namespace=namespace
+        )
+        target_schema = get_arrow_schema_by_table_name(
             table_name=lakesoul_table_name,
             namespace=namespace,
-            exclude_partition=not retain_partition_columns,
+            exclude_partition=not retain_partition_columns
         )
-        dataset = LakeSoulDataset(arrow_schema)
-        filtered_data_files = self._filter_data_files(data_files, rank, world_size)
-        for data_file in filtered_data_files:
-            dataset._add_file_url(data_file)
-        if retain_partition_columns:
-            for key, value in partitions.items():
-                dataset._add_partition_key_value(key, value)
+        dataset = LakeSoulDataset(target_schema)
+        filtered_scan_partitions = self._filter_scan_partitions(scan_partitions, rank, world_size)
+        for scan_part in filtered_scan_partitions:
+            dataset._add_file_urls(scan_part.files)
+            dataset._add_primary_keys(scan_part.primary_keys)
+        for key, value in partitions.items():
+            dataset._add_partition_key_value(key, value)
         if not isinstance(batch_size, int) or batch_size <= 0:
             message = "batch_size must be positive int; "
             message += "%r is invalid" % (batch_size,)
@@ -61,6 +67,9 @@ class Dataset(pa._dataset.Dataset):
             dataset._set_thread_num(multiprocessing.cpu_count())
         else:
             dataset._set_thread_num(thread_count)
+        if retain_partition_columns:
+            dataset._set_retain_partition_columns()
+        dataset._set_object_store_configs(object_store_configs)
         self._dataset = dataset
 
     def __reduce__(self):
@@ -116,33 +125,36 @@ class Dataset(pa._dataset.Dataset):
             rank = dist.get_rank()
             world_size = dist.get_world_size()
             return rank, world_size
-        except RuntimeError:
+        except Exception as e:
+            print("An exception occurred to obtain PyTorch distributed rank: ", e)
+            print("If you are not using PyTorch's distributed runtime, just ignore this error")
             return None, None
 
-    def _filter_data_files(self, data_files, rank, world_size):
+    def _filter_scan_partitions(self, scan_partitions: LakeSoulScanPlanPartition, rank, world_size):
         import warnings
         if rank is None:
-            return data_files
-        if len(data_files) < world_size and rank == 0:
+            return scan_partitions
+        if len(scan_partitions) < world_size and rank == 0:
             message = "LakeSoul table %r " % self._lakesoul_table_name
             message += "in namespace %r " % self._namespace
-            message += "contains too few data files; "
+            message += "contains too few partitions to scan; "
             message += "world_size = %d, " % world_size
-            message += "#data_files = %d" % len(data_files)
+            message += "#partition_num = %d" % len(scan_partitions)
             warnings.warn(message)
-        if len(data_files) % world_size != 0 and rank == 0:
+        if len(scan_partitions) % world_size != 0 and rank == 0:
             message = "LakeSoul table %r " % self._lakesoul_table_name
             message += "in namespace %r " % self._namespace
-            message += "contains %d data files, " % len(data_files)
+            message += "contains %d num of scan partitions, " % len(scan_partitions)
             message += "which is not a multiple of "
             message += "world_size %d" % world_size
             warnings.warn(message)
-        filtered_data_files = [
-            data_file
-            for i, data_file in enumerate(data_files)
+        filtered_scan_partitions = [
+            scan_part
+            for i, scan_part in enumerate(scan_partitions)
             if i % world_size == rank
         ]
-        return filtered_data_files
+        return filtered_scan_partitions
+
 
 def lakesoul_dataset(table_name,
                      batch_size=16,
@@ -151,7 +163,8 @@ def lakesoul_dataset(table_name,
                      world_size=None,
                      partitions=None,
                      retain_partition_columns=False,
-                     namespace='default'):
+                     namespace='default',
+                     object_store_configs={}):
     dataset = Dataset(
         table_name,
         batch_size=batch_size,
@@ -161,5 +174,6 @@ def lakesoul_dataset(table_name,
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        object_store_configs=object_store_configs
     )
     return dataset

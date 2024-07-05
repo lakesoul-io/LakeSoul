@@ -11,6 +11,8 @@ from ray.data.datasource.datasource import ReadTask
 from ray.data.datasource.datasource import Datasource
 from ray.data.block import BlockMetadata
 
+from ..metadata.meta_ops import *
+
 def _read_lakesoul_data_file(table_name,
                              batch_size=16,
                              thread_count=1,
@@ -18,7 +20,8 @@ def _read_lakesoul_data_file(table_name,
                              world_size=None,
                              partitions=None,
                              retain_partition_columns=False,
-                             namespace='default'):
+                             namespace='default',
+                             object_store_configs={}):
     import pyarrow as pa
     from ..arrow import lakesoul_dataset
     arrow_dataset = lakesoul_dataset(
@@ -30,6 +33,7 @@ def _read_lakesoul_data_file(table_name,
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        object_store_configs=object_store_configs
     )
     for batch in arrow_dataset.to_batches():
         yield pa.Table.from_batches([batch])
@@ -53,14 +57,12 @@ class _LakeSoulDatasourceReader(Reader):
         return None
 
     def _get_table_metadata(self):
-        from ..metadata.db_manager import DBManager
-        db_manager = DBManager()
-        data_files = db_manager.get_data_files_by_table_name(
+        data_files, pk_cols = get_data_files_and_pks_by_table_name(
             table_name=self._table_name,
             partitions=self._partitions or {},
             namespace=self._namespace,
         )
-        arrow_schema = db_manager.get_arrow_schema_by_table_name(
+        arrow_schema = get_arrow_schema_by_table_name(
             table_name=self._table_name,
             namespace=self._namespace,
             exclude_partition=not self._retain_partition_columns,

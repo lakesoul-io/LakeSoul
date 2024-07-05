@@ -9,21 +9,18 @@ Python 接口发布了 1.0 Beta 版。
 
 对于使用Python 3.8、Python 3.9和Python 3.10的用户，我们为每个版本准备了不同的wheel文件。请根据您的需求下载适当的一个。我们近期会发布正式版的包到 pypi.org.
 
-Python 包目前仅支持 Linux 系统，在 GLibc 2.17 以上均可使用（Centos 7 及以上，Ubuntu 16.04 及以上）。
+Python 包目前仅支持 Linux x86_64 系统。Python 包基于 manylinux_2_28 镜像构建，支持 CentOS 8、Debian 10、Ubuntu 18.10 及以上的 OS 版本（具体兼容性可查看[Distro compatibility](https://github.com/mayeut/pep600_compliance?tab=readme-ov-file#distro-compatibility)）。如需要在更低版本的 OS 上运行，建议使用 Docker 容器的方式执行。
 
-对于Python
-3.8用户：[lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+Python 3.8：[lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_644.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl)
 
-对于Python
-3.9用户：[lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+Python 3.9：[lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl)
 
-对于Python
-3.10用户：[lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+Python 3.10：[lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl)
 
 假设我们使用Python 3.8，我们可以按照以下方式下载wheel文件
 
 ```shell
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
 ```
 
 ### 安装 python 虚拟环境
@@ -38,6 +35,14 @@ git clone https://github.com/lakesoul-io/LakeSoul.git
 cd LakeSoul/python/examples
 # replace ${PWD} with your wheel file directory in requirements.txt
 pip install -r requirements.txt
+```
+
+### LakeSoul 环境搭建
+使用时需要参考 [LakeSoul 快速搭建运行环境](../01-Getting%20Started/01-setup-local-env.md) 文档中的方法，搭建 LakeSoul 环境，并通过 `LAKESOUL_PG_URL`, `LAKESOUL_PG_USERNAME`, `LAKESOUL_PG_PASSWORD` 这几个环境变量配置 LakeSoul 元数据库的连接信息。如果是按照文档中使用 docker compose 启动的本地测试环境，则这几个环境变量的配置为：
+```bash
+export LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified
+export LAKESOUL_PG_USERNAME=lakesoul_test
+export LAKESOUL_PG_PASSWORD=lakesoul_test
 ```
 
 ## PyTorch 使用说明

@@ -1,12 +1,11 @@
-FROM quay.io/pypa/manylinux2014_x86_64
+FROM quay.io/pypa/manylinux_2_28_x86_64:latest
 
 RUN yum update -y &&                        \
-    yum install -y devtoolset-11-gcc-c++ && \
     yum clean packages
 
-ENV PATH=/opt/rh/devtoolset-11/root/usr/bin:${PATH}
-ENV LD_LIBRARY_PATH=/opt/rh/devtoolset-11/root/usr/lib64:/opt/rh/devtoolset-11/root/usr/lib:/opt/rh/devtoolset-11/root/usr/lib64/dyninst:/opt/rh/devtoolset-11/root/usr/lib/dyninst:${LD_LIBRARY_PATH}
-ENV DEVTOOLSET_ROOTPATH=/opt/rh/devtoolset-11/root
+ENV PATH=/opt/rh/devtoolset-12/root/usr/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/rh/devtoolset-12/root/usr/lib64:/opt/rh/devtoolset-12/root/usr/lib:/opt/rh/devtoolset-12/root/usr/lib64/dyninst:/opt/rh/devtoolset-12/root/usr/lib/dyninst:${LD_LIBRARY_PATH}
+ENV DEVTOOLSET_ROOTPATH=/opt/rh/devtoolset-12/root
 
 ARG PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple/"
 ARG PIP_EXTRA_MIRRORS="https://pypi.org/simple/"

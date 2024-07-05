@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <lakesoul/lakesoul_fragment.h>
+#include <arrow/util/async_generator.h>
 
 namespace lakesoul {
 
@@ -18,7 +19,7 @@ LakeSoulFragment::ScanBatchesAsync(const std::shared_ptr<arrow::dataset::ScanOpt
     arrow::dataset::RecordBatchGenerator gen = [fragment = fragment] {
         auto frag = std::static_pointer_cast<LakeSoulFragment>(fragment);
         if (frag->data_reader_->IsFinished())
-            frag->CreateDataReader();
+            return arrow::AsyncGeneratorEnd<std::shared_ptr<arrow::RecordBatch>>();
         return frag->data_reader_->ReadRecordBatchAsync();
     };
     arrow::Result<arrow::dataset::RecordBatchGenerator> result(std::move(gen));
@@ -45,6 +46,10 @@ void LakeSoulFragment::AddFileUrl(const std::string& file_url)
 void LakeSoulFragment::AddFileUrls(const std::vector<std::string>& file_urls)
 {
     file_urls_.insert(file_urls_.end(), file_urls.begin(), file_urls.end());
+}
+
+void LakeSoulFragment::AddPrimaryKeys(const std::vector<std::string>& pks) {
+    primary_keys_.insert(primary_keys_.end(), pks.begin(), pks.end());
 }
 
 void LakeSoulFragment::AddPartitionKeyValue(const std::string& key, const std::string& value)
@@ -79,10 +84,22 @@ void LakeSoulFragment::SetThreadNum(int thread_num)
 
 void LakeSoulFragment::CreateDataReader()
 {
-    data_reader_ = std::make_shared<lakesoul::LakeSoulDataReader>(schema_, file_urls_, partition_info_);
+    data_reader_ = std::make_shared<lakesoul::LakeSoulDataReader>(schema_, file_urls_, primary_keys_, partition_info_);
     data_reader_->SetBatchSize(batch_size_);
     data_reader_->SetThreadNum(thread_num_);
+    if (retain_partition_columns_) {
+        data_reader_->SetRetainPartitionColumns();
+    }
+    data_reader_->SetObjectStoreConfigs(object_store_configs_);
     data_reader_->StartReader();
+}
+
+void LakeSoulFragment::SetRetainPartitionColumns() {
+    retain_partition_columns_ = true;
+}
+
+void LakeSoulFragment::SetObjectStoreConfigs(const std::vector<std::pair<std::string, std::string>>& configs) {
+    object_store_configs_ = configs;
 }
 
 } // namespace lakesoul

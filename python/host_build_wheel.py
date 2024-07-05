@@ -130,6 +130,15 @@ class LakeSoulWheelHostBuilder(object):
         args += ['--exclude', 'libarrow_acero.so.%s' % pa_abi_tag]
         args += ['--exclude', 'libparquet.so.%s' % pa_abi_tag]
         args += ['--exclude', 'libarrow.so.%s' % pa_abi_tag]
+        args += ['--exclude', 'libstdc++.so.6']
+        args += ['--exclude', 'libgcc_s.so.1']
+        args += ['--exclude', 'libc.so.6']
+        args += ['--exclude', 'libjvm.so']
+        args += ['--exclude', 'liblzma.so.5']
+        args += ['--exclude', 'libdl.so.2']
+        args += ['--exclude', 'libm.so.6']
+        args += ['--exclude', 'libpthread.so.0']
+        args += ['--exclude', 'librt.so.1']
         args += [self._get_wheel_path()]
         subprocess.check_call(args)
 

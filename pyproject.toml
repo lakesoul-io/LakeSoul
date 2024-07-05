@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
-requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3"]
+requires = ["setuptools >= 62.1.0", "wheel", "cython >= 0.29.31,<3", "grpcio[protobuf] ~= 1.57"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lakesoul"
-version = "1.0.0b1"
+version = "1.0.0b2"
 authors = [
   { name="LakeSoul Team", email="lakesoul-technical-discuss@lists.lfaidata.foundation" },
 ]
@@ -26,8 +26,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "pyarrow~=12.0",
-    "grpcio[protobuf]~=1.57",
+    "pyarrow==16.1.0",
+    "numpy<2.0",
+    "protobuf~=5.0",
 ]
 
 [project.urls]
@@ -52,18 +53,18 @@ all = [
 ]
 
 [tool.cibuildwheel]
-manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux2014:v1.0.0"
+manylinux-x86_64-image = "dmetasoul/lakesoul-python-wheel-build-env-manylinux_2_28:v1.0.0"
 build = "*-manylinux_x86_64"
 skip = ["cp36-*", "cp37-*", "cp311-*", "cp312-*", "pp*"]
 
 [tool.cibuildwheel.linux]
 before-build = "rm -rf {project}/cpp/build && {project}/cpp/compile.sh"
 repair-wheel-command = """\
-    auditwheel repair --plat manylinux2014_x86_64 \
+    auditwheel repair --plat manylinux_2_28_x86_64 \
                       --exclude libarrow_python.so \
-                      --exclude libarrow_dataset.so.1200 \
-                      --exclude libarrow_acero.so.1200 \
-                      --exclude libparquet.so.1200 \
-                      --exclude libarrow.so.1200 \
+                      --exclude libarrow_dataset.so.1601 \
+                      --exclude libarrow_acero.so.1601 \
+                      --exclude libparquet.so.1601 \
+                      --exclude libarrow.so.1601 \
                       -w {dest_dir} {wheel}\
     """

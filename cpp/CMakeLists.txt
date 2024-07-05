@@ -134,13 +134,13 @@ add_library(libarrow SHARED IMPORTED)
 set_target_properties(libarrow PROPERTIES
     IMPORTED_LOCATION "${PYARROW_DIR}/libarrow.so.${PYARROW_ABI_TAG}"
     INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
-    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=0")
+    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=1")
 
 add_library(libarrow_dataset SHARED IMPORTED)
 set_target_properties(libarrow_dataset PROPERTIES
     IMPORTED_LOCATION "${PYARROW_DIR}/libarrow_dataset.so.${PYARROW_ABI_TAG}"
     INTERFACE_INCLUDE_DIRECTORIES "${PYARROW_DIR}/include"
-    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=0"
+    INTERFACE_COMPILE_DEFINITIONS "_GLIBCXX_USE_CXX11_ABI=1"
     INTERFACE_LINK_LIBRARIES "libarrow")
 
 add_library(libarrow_python SHARED IMPORTED)
@@ -151,13 +151,11 @@ set_target_properties(libarrow_python PROPERTIES
 
 # Generate .py from .proto
 add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/entity_pb2.py
-                          ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated/entity_pb2_grpc.py
                    COMMAND ${CMAKE_COMMAND} -E make_directory
                            ${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
                    COMMAND ${VENV_PYTHON} -m grpc.tools.protoc
                            -I=${PROJECT_SOURCE_DIR}/../rust/proto/src
                            --python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
-                           --grpc_python_out=${PROJECT_BINARY_DIR}/python/lakesoul/metadata/generated
                            ${PROJECT_SOURCE_DIR}/../rust/proto/src/entity.proto
                    MAIN_DEPENDENCY ${PROJECT_SOURCE_DIR}/../rust/proto/src/entity.proto)
 

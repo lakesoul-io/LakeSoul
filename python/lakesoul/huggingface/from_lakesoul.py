@@ -11,7 +11,8 @@ def from_lakesoul(table_name,
                   world_size=None,
                   partitions=None,
                   retain_partition_columns=False,
-                  namespace='default'):
+                  namespace='default',
+                  object_store_configs={}):
     from ..arrow import lakesoul_dataset
     arrow_dataset = lakesoul_dataset(
         table_name,
@@ -22,6 +23,7 @@ def from_lakesoul(table_name,
         partitions=partitions,
         retain_partition_columns=retain_partition_columns,
         namespace=namespace,
+        object_store_configs=object_store_configs
     )
     def _generate_tables_from_lakesoul_table():
         import pyarrow as pa

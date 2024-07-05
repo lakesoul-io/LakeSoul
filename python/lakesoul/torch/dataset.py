@@ -13,7 +13,8 @@ class Dataset(torch.utils.data.IterableDataset):
                  world_size=None,
                  partitions=None,
                  retain_partition_columns=False,
-                 namespace='default'):
+                 namespace='default',
+                 object_store_configs={}):
         self._lakesoul_table_name = lakesoul_table_name
         self._batch_size = batch_size
         self._thread_count = thread_count
@@ -22,6 +23,7 @@ class Dataset(torch.utils.data.IterableDataset):
         self._partitions = partitions
         self._retain_partition_columns = retain_partition_columns
         self._namespace = namespace
+        self._object_store_configs = object_store_configs
 
     def __iter__(self):
         from ..arrow import lakesoul_dataset
@@ -34,5 +36,6 @@ class Dataset(torch.utils.data.IterableDataset):
             partitions=self._partitions,
             retain_partition_columns=self._retain_partition_columns,
             namespace=self._namespace,
+            object_store_configs=self._object_store_configs
         )
         yield from dataset.to_batches()

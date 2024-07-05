@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-### Deploy Docker compose env
+### Deploy LakeSoul Docker Compose Env
 
 ```bash
 cd docker/lakesoul-docker-compose-env
@@ -25,16 +25,16 @@ For users of Python 3.8, Python 3.9, and Python 3.10, we have prepared different
 download the appropriate one based on your requirements.
 
 * For Python 3.8
-  users: [lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl)
 * For Python 3.9
-  users: [lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp39-cp39-manylinux_2_28_x86_64.whl)
 * For Python 3.10
-  users: [lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl)
+  users: [lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl](https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp310-cp310-manylinux_2_28_x86_64.whl)
 
 Assuming we are using Python 3.8, we can down load the wheel file as below
 
 ```bash
-wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wget https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/python/v1.0/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
 ```
 
 ### Install python virtual enviroment
@@ -52,6 +52,16 @@ Before running the examples, please export the LakeSoul environment variables by
 
 ```bash
 source lakesoul_env.sh
+```
+The content of `lakesoul_env.sh` is the following:
+```shell
+export AWS_SECRET_ACCESS_KEY=minioadmin1
+export AWS_ACCESS_KEY_ID=minioadmin1
+export AWS_ENDPOINT=http://localhost:9000
+
+export LAKESOUL_PG_URL=jdbc:postgresql://localhost:5432/lakesoul_test?stringtype=unspecified
+export LAKESOUL_PG_USERNAME=lakesoul_test
+export LAKESOUL_PG_PASSWORD=lakesoul_test
 ```
 
 Afterwards, we can test the examples using the instructions below.

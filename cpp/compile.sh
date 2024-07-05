@@ -16,5 +16,7 @@ rm -rf $(dirname ${BASH_SOURCE[0]})/build
 cmake -S $(dirname ${BASH_SOURCE[0]})       \
       -B $(dirname ${BASH_SOURCE[0]})/build \
       -G Ninja -DCMAKE_BUILD_TYPE=Release   \
-      -DPython_EXECUTABLE=$(which python)
+      -DPython_EXECUTABLE=$(which python)   \
+      -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build $(dirname ${BASH_SOURCE[0]})/build

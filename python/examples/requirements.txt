@@ -1,5 +1,5 @@
-lakesoul @ file://${PWD}/lakesoul-1.0.0b1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-numpy
+lakesoul @ file://${PWD}/lakesoul-1.0.0b2-cp38-cp38-manylinux_2_28_x86_64.whl
+numpy<2.0
 pandas
 torch
 tqdm
@@ -9,3 +9,4 @@ datasets
 evaluate
 accelerate
 scikit-learn
+pillow

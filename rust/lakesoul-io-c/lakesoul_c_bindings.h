@@ -196,7 +196,7 @@ void free_tokio_runtime(CResult<TokioRuntime> *runtime);
 CResult<BytesResult> *apply_partition_filter(void (*callback)(int32_t, const char*),
                                              int32_t len,
                                              c_ptrdiff_t jni_wrapper_addr,
-                                             FFI_ArrowSchema *schema_addr,
+                                             c_ptrdiff_t schema_addr,
                                              int32_t filter_len,
                                              c_ptrdiff_t filter_addr);
 
