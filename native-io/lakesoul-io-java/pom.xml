@@ -83,7 +83,7 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>scala-reflect</artifactId>
             <version>${scala.version}</version>
         </dependency>
-        
+
 
         <!--        jnr-ffi deps-->
         <dependency>
@@ -607,6 +607,14 @@ SPDX-License-Identifier: Apache-2.0
                                 <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
                         </filter>
+                        <filter>
+                            <!-- 包含所有Scala相关资源 -->
+                            <artifact>**/*scala*</artifact>
+                            <includes>
+                                <include>**/*.class</include>
+                                <!-- 如果还有其他Scala相关的资源，比如*.sbt、*.scala等 -->
+                            </includes>
+                        </filter>
                     </filters>
                     <relocations>
                         <relocation>
@@ -625,25 +633,25 @@ SPDX-License-Identifier: Apache-2.0
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                         </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.flatbuf</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.flatbuf</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.memory</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.memory</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.util</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.util</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.arrow.vector</pattern>
-                            <shadedPattern>io.glutenproject.shaded.org.apache.arrow.vector</shadedPattern>
-                        </relocation>
+                        <!--                        <relocation>-->
+                        <!--                            <pattern>org.apache.arrow</pattern>-->
+                        <!--                            <shadedPattern>com.lakesoul.shaded.org.apache.arrow</shadedPattern>-->
+                        <!--                        </relocation>-->
                         <relocation>
                             <pattern>com.google.protobuf</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.fasterxml.jackson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.fasterxml.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.yaml.snakeyaml</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.yaml.snakeyaml</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.antlr</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>

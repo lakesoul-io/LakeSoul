@@ -13,10 +13,10 @@ mod insert_tests;
 mod upsert_tests;
 // mod compaction_tests;
 // mod streaming_tests;
-#[cfg(feature = "ci")]
+// #[cfg(feature = "ci")]
 mod integration_tests;
 
-#[cfg(feature = "ci")]
+// #[cfg(feature = "ci")]
 mod benchmarks;
 
 mod catalog_tests;
@@ -30,8 +30,8 @@ fn init() {
         .unwrap()
         .block_on(async {
             let client = Arc::new(MetaDataClient::from_env().await.unwrap());
-            client.meta_cleanup().await.unwrap();
-            debug!("clean metadata");
+            // client.meta_cleanup().await.unwrap();
+            // debug!("clean metadata");
         })
 }
 

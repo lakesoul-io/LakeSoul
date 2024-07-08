@@ -4,9 +4,10 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.dmetasoul.lakesoul.meta.entity.DataCommitInfo
+import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, PartitionInfo}
 import org.apache.hadoop.fs.Path
 
+import java.util
 import java.util.{Objects, UUID}
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
@@ -58,6 +59,10 @@ case class PartitionInfoScala(table_id: String, range_value: String, version: In
 object DataOperation {
 
   val dbManager = new DBManager
+
+  def getTableDataInfo(partitionList: util.List[PartitionInfo]): Array[DataFileInfo] = {
+    getTableDataInfo(MetaVersion.convertPartitionInfoScala(partitionList))
+  }
 
   def getTableDataInfo(tableId: String): Array[DataFileInfo] = {
     getTableDataInfo(MetaVersion.getAllPartitionInfoScala(tableId))

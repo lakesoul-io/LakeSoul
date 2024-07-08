@@ -189,9 +189,9 @@ object MetaVersion {
     dbManager.getAllPartitionInfo(table_id)
   }
 
-  def getAllPartitionInfoScala(table_id: String): Array[PartitionInfoScala] = {
+  def convertPartitionInfoScala(partitionList: util.List[PartitionInfo]): Array[PartitionInfoScala] = {
     val partitionVersionBuffer = new ArrayBuffer[PartitionInfoScala]()
-    val res_itr = getAllPartitionInfo(table_id).iterator()
+    val res_itr = partitionList.iterator()
     while (res_itr.hasNext) {
       val res = res_itr.next()
       partitionVersionBuffer += PartitionInfoScala(
@@ -204,6 +204,10 @@ object MetaVersion {
       )
     }
     partitionVersionBuffer.toArray
+  }
+
+  def getAllPartitionInfoScala(table_id: String): Array[PartitionInfoScala] = {
+    convertPartitionInfoScala(getAllPartitionInfo(table_id))
   }
 
   def rollbackPartitionInfoByVersion(table_id: String, range_value: String, toVersion: Int): Unit = {

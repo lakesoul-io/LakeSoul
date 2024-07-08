@@ -1,5 +1,6 @@
 package com.dmetasoul.lakesoul.lakesoul.io.substrait;
 
+import com.dmetasoul.lakesoul.lakesoul.io.DateTimeUtils;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.JnrLoader;
 import com.dmetasoul.lakesoul.lakesoul.io.jnr.LibLakeSoulIO;
@@ -12,6 +13,8 @@ import io.substrait.dsl.SubstraitBuilder;
 import io.substrait.expression.Expression;
 
 import io.substrait.expression.ExpressionCreator;
+import io.substrait.expression.FieldReference;
+import io.substrait.expression.ImmutableMapKey;
 import io.substrait.expression.proto.ExpressionProtoConverter;
 import io.substrait.extension.SimpleExtension;
 import io.substrait.plan.Plan;
@@ -28,12 +31,16 @@ import org.apache.arrow.vector.types.IntervalUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.catalyst.util.DateTimeUtils$;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -42,12 +49,18 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static io.substrait.extension.DefaultExtensionCatalog.FUNCTIONS_BOOLEAN;
+
 public class SubstraitUtil {
     public static final SimpleExtension.ExtensionCollection EXTENSIONS;
     public static final SubstraitBuilder BUILDER;
 
     public static final String CompNamespace = "/functions_comparison.yaml";
     public static final String BooleanNamespace = "/functions_boolean.yaml";
+
+    public static final Expression CONST_TRUE = ExpressionCreator.bool(false, true);
+
+    public static final Expression CONST_FALSE = ExpressionCreator.bool(false, false);
 
     private static final LibLakeSoulIO LIB;
 
@@ -74,13 +87,21 @@ public class SubstraitUtil {
     }
 
     public static Expression and(Expression left, Expression right) {
-        SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(BooleanNamespace, "and:bool");
-        return ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, left, right);
+        return makeBinary(left, right, FUNCTIONS_BOOLEAN, "and:bool", TypeCreator.NULLABLE.BOOLEAN);
+    }
+
+    public static Expression or(Expression left, Expression right) {
+        return makeBinary(left, right, FUNCTIONS_BOOLEAN, "or:bool", TypeCreator.NULLABLE.BOOLEAN);
     }
 
     public static Expression not(Expression expression) {
         SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(BooleanNamespace, "not:bool");
         return ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), TypeCreator.NULLABLE.BOOLEAN, expression);
+    }
+
+    public static Expression makeBinary(Expression left, Expression right, String namespace, String funcKey, Type type) {
+        SimpleExtension.FunctionAnchor fa = SimpleExtension.FunctionAnchor.of(namespace, funcKey);
+        return ExpressionCreator.scalarFunction(EXTENSIONS.getScalarFunction(fa), type, left, right);
     }
 
     public static io.substrait.proto.Plan substraitExprToProto(Expression e, String tableName) {
@@ -118,6 +139,14 @@ public class SubstraitUtil {
             return null;
         }
         return new PlanProtoConverter().toProto(plan);
+    }
+
+    public static String encodeBase64String(io.substrait.proto.Plan plan) {
+        return Base64.getEncoder().encodeToString(plan.toByteArray());
+    }
+
+    public static io.substrait.proto.Plan decodeBase64String(String base64) throws InvalidProtocolBufferException {
+        return io.substrait.proto.Plan.parseFrom(Base64.getDecoder().decode(base64));
     }
 
     public static List<PartitionInfo> applyPartitionFilters(List<PartitionInfo> allPartitionInfo, Schema schema, io.substrait.proto.Plan partitionFilter) {
@@ -197,6 +226,16 @@ public class SubstraitUtil {
         }
 
         return resultPartitionInfo;
+    }
+
+
+    public static FieldReference arrowFieldToSubstraitField(Field field) {
+        return FieldReference
+                .builder()
+                .type(arrowFieldToSubstraitType(field)).addSegments(
+                        ImmutableMapKey.of(ExpressionCreator.string(true, field.getName()))
+                )
+                .build();
     }
 
     public static Type arrowFieldToSubstraitType(Field field) {
@@ -350,6 +389,70 @@ public class SubstraitUtil {
         public Type visit(ArrowType.Duration duration) {
             return null;
         }
+    }
+
+    public static Expression anyToSubstraitLiteral(Type type, Object any) throws IOException {
+        if (type instanceof Type.Date) {
+            if (any instanceof Integer) {
+                return ExpressionCreator.date(false, (Integer) any);
+            } else if (any instanceof Date || any instanceof LocalDate) {
+                return ExpressionCreator.date(false, DateTimeUtils$.MODULE$.anyToDays(any));
+            }
+        }
+        if (type instanceof Type.Timestamp) {
+            if (any instanceof Long) {
+                return ExpressionCreator.timestamp(false, (Long) any);
+            } else if (any instanceof LocalDateTime || any instanceof Timestamp || any instanceof Instant) {
+                return ExpressionCreator.timestamp(false, DateTimeUtils.toMicros(any));
+            }
+        }
+        if (type instanceof Type.TimestampTZ) {
+            if (any instanceof Long) {
+                return ExpressionCreator.timestampTZ(false, (Long) any);
+            } else if (any instanceof LocalDateTime || any instanceof Timestamp || any instanceof Instant) {
+                return ExpressionCreator.timestampTZ(false, DateTimeUtils.toMicros(any));
+            }
+        }
+        if (type instanceof Type.Str || any instanceof String) {
+            return ExpressionCreator.string(false, (String) any);
+        }
+        if (type instanceof Type.Bool || any instanceof Boolean) {
+            return ExpressionCreator.bool(false, (Boolean) any);
+        }
+        if (type instanceof Type.Binary || any instanceof byte[]) {
+            return ExpressionCreator.binary(false, (byte[]) any);
+        }
+
+        if (type instanceof Type.I8 || any instanceof Byte) {
+            return ExpressionCreator.i8(false, Byte.parseByte(any.toString()));
+        }
+        if (type instanceof Type.I16 || any instanceof Short) {
+            return ExpressionCreator.i16(false, Short.parseShort(any.toString()));
+        }
+        if (type instanceof Type.I32) {
+            return ExpressionCreator.i32(false, Integer.parseInt(any.toString()));
+        }
+        if (type instanceof Type.I64) {
+            return ExpressionCreator.i64(false, Long.parseLong(any.toString()));
+        }
+        if (type instanceof Type.FP32 || any instanceof Float) {
+            return ExpressionCreator.fp32(false, (Float) any);
+        }
+        if (type instanceof Type.FP64 || any instanceof Double) {
+            return ExpressionCreator.fp64(false, (Double) any);
+        }
+        if (type instanceof Type.Decimal || any instanceof BigDecimal) {
+            int precision = 10;
+            int scale = 0;
+            if (type != null) {
+                precision = ((Type.Decimal) type).precision();
+                scale = ((Type.Decimal) type).scale();
+            }
+            return ExpressionCreator.decimal(false, (BigDecimal) any, precision, scale);
+        }
+
+
+        throw new IOException("Fail convert to SubstraitLiteral for " + any.toString());
     }
 }
 
