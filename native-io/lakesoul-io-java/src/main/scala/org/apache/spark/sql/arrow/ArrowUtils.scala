@@ -4,20 +4,23 @@
 
 package org.apache.spark.sql.arrow
 
-import scala.collection.JavaConverters._
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.complex.MapVector
-import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.json4s.jackson.JsonMethods.mapper
 
 import java.util
+import scala.collection.JavaConverters._
 
 object ArrowUtils {
 
   val rootAllocator = new RootAllocator(Long.MaxValue)
+  private val writer = mapper.writerWithDefaultPrettyPrinter
+  private val reader = mapper.readerFor(classOf[Field])
 
   // todo: support more types.
 
@@ -60,8 +63,6 @@ object ArrowUtils {
     case ArrowType.Binary.INSTANCE => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
-    case ts: ArrowType.Timestamp
-      if ts.getTimezone == null => TimestampNTZType
     case ts: ArrowType.Timestamp => TimestampType
     case ArrowType.Null.INSTANCE => NullType
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH => YearMonthIntervalType()
@@ -72,13 +73,18 @@ object ArrowUtils {
   }
 
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
-  def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String, metadata: util.Map[String, String] = null): Field = {
+  def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String, sparkFieldMetadata: Metadata, metadata: util.Map[String, String] = null): Field = {
+
+    if (sparkFieldMetadata.contains("__lakesoul_arrow_field__")) {
+      println(s"original arrow type: ${sparkFieldMetadata.getString("__lakesoul_arrow_field__")}")
+      return reader.readValue(sparkFieldMetadata.getString("__lakesoul_arrow_field__"))
+    }
 
     dt match {
       case ArrayType(elementType, containsNull) =>
         val fieldType = new FieldType(nullable, ArrowType.List.INSTANCE, null, metadata)
         new Field(name, fieldType,
-          Seq(toArrowField("element", elementType, containsNull, timeZoneId, metadata)).asJava)
+          Seq(toArrowField("element", elementType, containsNull, timeZoneId, sparkFieldMetadata, metadata)).asJava)
       case StructType(fields) =>
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null, metadata)
         new Field(name, fieldType,
@@ -89,7 +95,7 @@ object ArrowUtils {
               map.put("spark_comment", comment.get)
               map
             } else null
-            toArrowField(field.name, field.dataType, field.nullable, timeZoneId, child_metadata)
+            toArrowField(field.name, field.dataType, field.nullable, timeZoneId, sparkFieldMetadata, child_metadata)
           }.toSeq.asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
         val mapType = new FieldType(nullable, new ArrowType.Map(false), null, metadata)
@@ -100,7 +106,9 @@ object ArrowUtils {
               .add(MapVector.KEY_NAME, keyType, nullable = false)
               .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
             nullable = false,
-            timeZoneId)).asJava)
+            timeZoneId,
+            sparkFieldMetadata
+          )).asJava)
       case dataType =>
         val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null, metadata)
         new Field(name, fieldType, Seq.empty[Field].asJava)
@@ -141,7 +149,7 @@ object ArrowUtils {
         map.put("spark_comment", comment.get)
         map
       } else null
-      toArrowField(field.name, field.dataType, field.nullable, timeZoneId, metadata)
+      toArrowField(field.name, field.dataType, field.nullable, timeZoneId, field.metadata, metadata)
     }.asJava)
   }
 
@@ -149,10 +157,15 @@ object ArrowUtils {
     StructType(schema.getFields.asScala.map { field =>
       val dt = fromArrowField(field)
       val comment = field.getMetadata.get("spark_comment")
-      if (comment == null)
-        StructField(field.getName, dt, field.isNullable)
-      else
-        StructField(field.getName, dt, field.isNullable).withComment(comment)
+      val sparkField =
+        if (comment == null)
+          StructField(field.getName, dt, field.isNullable)
+        else
+          StructField(field.getName, dt, field.isNullable).withComment(comment)
+      val newMetadata = new MetadataBuilder()
+      newMetadata.withMetadata(sparkField.metadata)
+      newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
+      sparkField.copy(metadata = newMetadata.build())
     }.toSeq)
   }
 

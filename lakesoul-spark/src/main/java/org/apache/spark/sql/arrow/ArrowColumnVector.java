@@ -177,8 +177,10 @@ public class ArrowColumnVector extends ColumnVector {
       accessor = new IntervalYearAccessor((IntervalYearVector) vector);
     } else if (vector instanceof DurationVector) {
       accessor = new DurationAccessor((DurationVector) vector);
+    } else if (vector instanceof TimeSecVector) {
+      accessor = new TimeSecAccessor((TimeSecVector) vector);
     } else {
-      throw new UnsupportedOperationException();
+      throw new UnsupportedOperationException("Unsupported vector type: " + vector.getClass());
     }
   }
 
@@ -556,6 +558,21 @@ public class ArrowColumnVector extends ColumnVector {
     @Override
     final long getLong(int rowId) {
       return DurationVector.get(accessor.getDataBuffer(), rowId);
+    }
+  }
+
+  static class TimeSecAccessor extends ArrowVectorAccessor {
+
+    private final TimeSecVector accessor;
+
+    TimeSecAccessor(TimeSecVector vector) {
+      super(vector);
+      this.accessor = vector;
+    }
+
+    @Override
+    final int getInt(int rowId) {
+      return TimeSecVector.get(accessor.getDataBuffer(), rowId);
     }
   }
 }

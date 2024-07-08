@@ -44,7 +44,8 @@ object ArrowWriter {
       case (StringType, vector: VarCharVector) => new StringWriter(vector)
       case (BinaryType, vector: VarBinaryVector) => new BinaryWriter(vector)
       case (DateType, vector: DateDayVector) => new DateWriter(vector)
-      case (TimestampType, vector: TimeStampMicroTZVector) => new TimestampWriter(vector)
+      case (TimestampType, vector: TimeStampVector) => new TimestampWriter(vector)
+      case (_, vector: TimeSecVector) => new TimeSecWriter(vector)
       case (TimestampNTZType, vector: TimeStampMicroVector) => new TimestampNTZWriter(vector)
       case (ArrayType(_, _), vector: ListVector) =>
         val elementVector = createFieldWriter(vector.getDataVector())
@@ -63,7 +64,7 @@ object ArrowWriter {
       case (_: YearMonthIntervalType, vector: IntervalYearVector) => new IntervalYearWriter(vector)
       case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
       case (dt, _) =>
-        throw QueryExecutionErrors.unsupportedDataTypeError(dt.catalogString)
+        throw QueryExecutionErrors.unsupportedDataTypeError(s"${dt.catalogString} for vector ${vector.getClass}")
     }
   }
 }
@@ -262,7 +263,7 @@ private[arrow] class DateWriter(val valueVector: DateDayVector) extends ArrowFie
 }
 
 private[arrow] class TimestampWriter(
-    val valueVector: TimeStampMicroTZVector) extends ArrowFieldWriter {
+    val valueVector: TimeStampVector) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -282,6 +283,17 @@ private[arrow] class TimestampNTZWriter(
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
+  }
+}
+
+private[arrow] class TimeSecWriter(val valueVector: TimeSecVector) extends ArrowFieldWriter {
+
+  override def setNull(): Unit = {
+    valueVector.setNull(count)
+  }
+
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.setSafe(count, input.getInt(ordinal))
   }
 }
 
