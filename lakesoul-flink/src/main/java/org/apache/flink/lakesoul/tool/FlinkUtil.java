@@ -598,10 +598,10 @@ public class FlinkUtil {
             org.apache.hadoop.fs.Path nsDir = HadoopFileSystem.toHadoopPath(p.getParent());
             if (!hdfs.exists(nsDir)) {
                 hdfs.mkdirs(nsDir);
-                hdfs.setOwner(nsDir, userName, domain);
                 if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
                     hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
                 } else {
+                    hdfs.setOwner(nsDir, userName, domain);
                     hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
                 }
             }
@@ -615,10 +615,10 @@ public class FlinkUtil {
                     throw new IOException("Table dir " + tbDir + " already exists");
                 }
             }
-            hdfs.setOwner(tbDir, userName, domain);
             if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
                 hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
             } else {
+                hdfs.setOwner(tbDir, userName, domain);
                 hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             }
         }
