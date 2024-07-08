@@ -222,8 +222,12 @@ public class LakeSoulRBACTest extends LakeSoulFlinkTestBase {
         login(USER2, USER2_PASS, DOMAIN1);
         // user in same domain can read
         sql("select * from table1");
-        // user in same domain can't write
-        Assert.assertThrows(RuntimeException.class, () -> sql("insert into table1 values(2, 'foo2', 'bar2')"));
+        // user2 should be able to create another table
+        tablePath = new Path("hdfs://localhost:9000/lakesoul-test-bucket/database1/table2");
+        sql("create table if not exists table2 ( id int, foo string, bar string )"
+                + " with ('format' = 'lakesoul', 'path' = '"
+                + tablePath.toString()
+                + "')");
         login(ADMIN1, ADMIN1_PASS, DOMAIN1);
         sql("drop database if exists database1 cascade");
     }

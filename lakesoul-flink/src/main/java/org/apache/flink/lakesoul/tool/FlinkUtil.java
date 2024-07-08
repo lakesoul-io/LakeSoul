@@ -70,12 +70,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.time.ZoneId.SHORT_IDS;
-import static org.apache.flink.lakesoul.tool.JobOptions.DEFAULT_FS;
-import static org.apache.flink.lakesoul.tool.JobOptions.S3_ACCESS_KEY;
-import static org.apache.flink.lakesoul.tool.JobOptions.S3_BUCKET;
-import static org.apache.flink.lakesoul.tool.JobOptions.S3_ENDPOINT;
-import static org.apache.flink.lakesoul.tool.JobOptions.S3_PATH_STYLE_ACCESS;
-import static org.apache.flink.lakesoul.tool.JobOptions.S3_SECRET_KEY;
+import static org.apache.flink.lakesoul.tool.JobOptions.*;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.table.api.config.ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
@@ -446,8 +441,9 @@ public class FlinkUtil {
         }
     }
 
-    public static Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(TableInfo tableInfo,
-                                                                                                              DataFileInfo[] dataFileInfoArray) {
+    public static Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitDataInfosToRangeAndHashPartition(
+            TableInfo tableInfo,
+            DataFileInfo[] dataFileInfoArray) {
         Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition = new LinkedHashMap<>();
         for (DataFileInfo dataFileInfo : dataFileInfoArray) {
             if (isExistHashPartition(tableInfo) && dataFileInfo.file_bucket_id() != -1) {
@@ -583,6 +579,7 @@ public class FlinkUtil {
         if (!hasHdfsClasses()) return;
 
         FileSystem fs = p.getFileSystem();
+        System.out.println(fs.getClass());
         if ((fs instanceof HadoopFileSystem)
                 || (fs instanceof SafetyNetWrapperFileSystem
                 && ((SafetyNetWrapperFileSystem) fs).getWrappedDelegate() instanceof HadoopFileSystem)) {
@@ -595,20 +592,31 @@ public class FlinkUtil {
             LOG.info("Set dir {} permission for {}:{} with flink fs {}, hadoop fs {}", p, userName, domain,
                     hfs.getClass(), hdfs.getClass());
 
-            if (userName == null || domain == null || domain.contains("public")) return;
+            if (userName == null || domain == null)
+                return;
 
             org.apache.hadoop.fs.Path nsDir = HadoopFileSystem.toHadoopPath(p.getParent());
             if (!hdfs.exists(nsDir)) {
                 hdfs.mkdirs(nsDir);
+                hdfs.setOwner(nsDir, userName, domain);
+                if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
+                    hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
+                } else {
+                    hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
+                }
             }
-            hdfs.setOwner(nsDir, userName, domain);
-            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
             org.apache.hadoop.fs.Path tbDir = HadoopFileSystem.toHadoopPath(p);
             if (!hdfs.exists(tbDir)) {
                 hdfs.mkdirs(tbDir);
+            } else {
+                throw new IOException("Table dir " + tbDir + " already exists");
             }
             hdfs.setOwner(tbDir, userName, domain);
-            hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE));
+            if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
+                hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL));
+            } else {
+                hdfs.setPermission(tbDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE));
+            }
         }
     }
 

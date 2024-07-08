@@ -12,6 +12,7 @@ $$
             -- admins/users can read namespaces in the domains they belong to and the public domain
             CREATE POLICY read_policy ON namespace AS PERMISSIVE FOR SELECT USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
@@ -44,6 +45,7 @@ $$
             CREATE POLICY domain_only_policy ON table_info
                 USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
@@ -62,6 +64,7 @@ $$
             CREATE POLICY domain_only_policy ON table_path_id
                 USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
@@ -80,6 +83,7 @@ $$
             CREATE POLICY domain_only_policy ON table_name_id
                 USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
@@ -98,6 +102,7 @@ $$
             CREATE POLICY domain_only_policy ON data_commit_info
                 USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
@@ -116,6 +121,7 @@ $$
             CREATE POLICY domain_only_policy ON partition_info
                 USING (
                         domain = 'public'
+                    OR domain = 'lake-public'
                     OR domain = current_user
                     OR domain IN (SELECT rolname
                                   FROM pg_roles
