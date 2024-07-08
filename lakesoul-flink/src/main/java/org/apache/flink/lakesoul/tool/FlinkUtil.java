@@ -572,7 +572,7 @@ public class FlinkUtil {
         }
     }
 
-    public static void createAndSetTableDirPermission(Path p) throws IOException {
+    public static void createAndSetTableDirPermission(Path p, boolean ignoreTableDirExists) throws IOException {
         // TODO: move these to native io
         // currently we only support setting owner and permission for HDFS.
         // S3 support will be added later
@@ -609,7 +609,11 @@ public class FlinkUtil {
             if (!hdfs.exists(tbDir)) {
                 hdfs.mkdirs(tbDir);
             } else {
-                throw new IOException("Table dir " + tbDir + " already exists");
+                if (ignoreTableDirExists) {
+                    return;
+                } else {
+                    throw new IOException("Table dir " + tbDir + " already exists");
+                }
             }
             hdfs.setOwner(tbDir, userName, domain);
             if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
