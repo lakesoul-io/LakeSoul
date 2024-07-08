@@ -330,7 +330,7 @@ public class LakeSoulCatalog implements Catalog {
             try {
                 FileSystem fileSystem = new Path(path).getFileSystem();
                 Path qp = new Path(path).makeQualified(fileSystem);
-                FlinkUtil.createAndSetTableDirPermission(qp);
+                FlinkUtil.createAndSetTableDirPermission(qp, false);
                 qualifiedPath = qp.toString();
             } catch (IOException e) {
                 e.printStackTrace();

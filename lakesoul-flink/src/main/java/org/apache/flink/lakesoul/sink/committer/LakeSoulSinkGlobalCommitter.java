@@ -156,7 +156,7 @@ public class LakeSoulSinkGlobalCommitter
                 }
                 FileSystem fileSystem = new Path(identity.tableLocation).getFileSystem();
                 Path qp = new Path(identity.tableLocation).makeQualified(fileSystem);
-                FlinkUtil.createAndSetTableDirPermission(qp);
+                FlinkUtil.createAndSetTableDirPermission(qp, true);
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
                         properties, partition);
             } else {

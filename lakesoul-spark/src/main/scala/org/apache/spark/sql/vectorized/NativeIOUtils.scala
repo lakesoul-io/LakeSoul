@@ -148,22 +148,34 @@ object NativeIOUtils{
     if (!hasHdfsFileSystemClass) return
 
     val fs: FileSystem = path.getFileSystem(conf)
-    if (fs.isInstanceOf[DistributedFileSystem]) {
-      val userName = DBUtil.getUser
-      val domain = DBUtil.getDomain
-      if (userName == null || domain == "public") return
-      val hdfs = fs.asInstanceOf[DistributedFileSystem]
+    fs match {
+      case hdfs: DistributedFileSystem =>
+        val userName = DBUtil.getUser
+        val domain = DBUtil.getDomain
+        if (userName == null || domain == null) return
 
-      val nsDir = path.getParent
-      if (!hdfs.exists(nsDir)) {
-        hdfs.mkdirs(nsDir)
-        hdfs.setOwner(nsDir, userName, domain)
-        hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE))
-      }
-      if (hdfs.exists(path)) throw new IOException("Table directory already exists: " + path.toString)
-      hdfs.mkdirs(path)
-      hdfs.setOwner(path, userName, domain)
-      hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE))
+        val nsDir = path.getParent
+        if (!hdfs.exists(nsDir)) {
+          hdfs.mkdirs(nsDir)
+          hdfs.setOwner(nsDir, userName, domain)
+          if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
+            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.ALL))
+          } else {
+            hdfs.setPermission(nsDir, new FsPermission(FsAction.ALL, FsAction.ALL, FsAction.NONE))
+          }
+        }
+        if (!hdfs.exists(path)) {
+          hdfs.mkdirs(path)
+          hdfs.setOwner(path, userName, domain)
+          if (domain.equalsIgnoreCase("public") || domain.equalsIgnoreCase("lake-public")) {
+            hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.ALL))
+          } else {
+            hdfs.setPermission(path, new FsPermission(FsAction.ALL, FsAction.READ_EXECUTE, FsAction.NONE))
+          }
+        } else {
+          throw new IOException(s"Table dir $path already exists")
+        }
+      case _ =>
     }
   }
 }
