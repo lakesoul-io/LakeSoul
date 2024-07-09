@@ -76,7 +76,6 @@ object ArrowUtils {
   def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String, sparkFieldMetadata: Metadata, metadata: util.Map[String, String] = null): Field = {
 
     if (sparkFieldMetadata.contains("__lakesoul_arrow_field__")) {
-      println(s"original arrow type: ${sparkFieldMetadata.getString("__lakesoul_arrow_field__")}")
       return reader.readValue(sparkFieldMetadata.getString("__lakesoul_arrow_field__"))
     }
 
