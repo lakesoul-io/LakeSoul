@@ -10,7 +10,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.types.{TimestampType, _}
 import org.json4s.jackson.JsonMethods.mapper
 
 import java.util
@@ -114,20 +114,20 @@ object ArrowUtils {
     }
   }
 
-  def fromArrowField(field: Field): DataType = {
+  def sparkTypeFromArrowField(field: Field): DataType = {
     field.getType match {
       case _: ArrowType.Map =>
         val elementField = field.getChildren.get(0)
-        val keyType = fromArrowField(elementField.getChildren.get(0))
-        val valueType = fromArrowField(elementField.getChildren.get(1))
+        val keyType = sparkTypeFromArrowField(elementField.getChildren.get(0))
+        val valueType = sparkTypeFromArrowField(elementField.getChildren.get(1))
         MapType(keyType, valueType, elementField.getChildren.get(1).isNullable)
       case ArrowType.List.INSTANCE =>
         val elementField = field.getChildren().get(0)
-        val elementType = fromArrowField(elementField)
+        val elementType = sparkTypeFromArrowField(elementField)
         ArrayType(elementType, containsNull = elementField.isNullable)
       case ArrowType.Struct.INSTANCE =>
         val fields = field.getChildren().asScala.map { child =>
-          val dt = fromArrowField(child)
+          val dt = sparkTypeFromArrowField(child)
           val comment = child.getMetadata.get("spark_comment")
           if (comment == null)
             StructField(child.getName, dt, child.isNullable)
@@ -137,6 +137,30 @@ object ArrowUtils {
         StructType(fields.toSeq)
       case arrowType => fromArrowType(arrowType)
     }
+  }
+
+  def fromArrowField(field: Field): StructField = {
+    val dt = sparkTypeFromArrowField(field)
+    val metadata = field.getMetadata
+    val comment = metadata.get("spark_comment")
+    val sparkField =
+      if (comment == null)
+        StructField(field.getName, dt, field.isNullable)
+      else
+        StructField(field.getName, dt, field.isNullable).withComment(comment)
+    val newMetadata = new MetadataBuilder()
+    newMetadata.withMetadata(sparkField.metadata)
+    metadata.forEach((key, value) => if (key != "spark_comment") {
+      newMetadata.putString(key, value)
+    })
+    field.getType match {
+      case ti: ArrowType.Time if ti.getBitWidth == 32 =>
+        newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
+      case ts: ArrowType.Timestamp if ts.getTimezone == null =>
+        newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
+      case _ =>
+    }
+    sparkField.copy(metadata = newMetadata.build())
   }
 
   /** Maps schema from Spark to Arrow. NOTE: timeZoneId required for TimestampType in StructType */
@@ -153,19 +177,7 @@ object ArrowUtils {
   }
 
   def fromArrowSchema(schema: Schema): StructType = {
-    StructType(schema.getFields.asScala.map { field =>
-      val dt = fromArrowField(field)
-      val comment = field.getMetadata.get("spark_comment")
-      val sparkField =
-        if (comment == null)
-          StructField(field.getName, dt, field.isNullable)
-        else
-          StructField(field.getName, dt, field.isNullable).withComment(comment)
-      val newMetadata = new MetadataBuilder()
-      newMetadata.withMetadata(sparkField.metadata)
-      newMetadata.putString("__lakesoul_arrow_field__", writer.writeValueAsString(field))
-      sparkField.copy(metadata = newMetadata.build())
-    }.toSeq)
+    StructType(schema.getFields.asScala.map(fromArrowField))
   }
 
   /** Return Map with conf settings to be used in ArrowPythonRunner */

@@ -31,7 +31,7 @@ object ArrowWriter {
 
   private def createFieldWriter(vector: ValueVector): ArrowFieldWriter = {
     val field = vector.getField()
-    (ArrowUtils.fromArrowField(field), vector) match {
+    (ArrowUtils.sparkTypeFromArrowField(field), vector) match {
       case (BooleanType, vector: BitVector) => new BooleanWriter(vector)
       case (ByteType, vector: TinyIntVector) => new ByteWriter(vector)
       case (ShortType, vector: SmallIntVector) => new ShortWriter(vector)
@@ -101,10 +101,13 @@ private[arrow] abstract class ArrowFieldWriter {
   def valueVector: ValueVector
 
   def name: String = valueVector.getField().getName()
-  def dataType: DataType = ArrowUtils.fromArrowField(valueVector.getField())
+
+  def dataType: DataType = ArrowUtils.sparkTypeFromArrowField(valueVector.getField())
+
   def nullable: Boolean = valueVector.getField().isNullable()
 
   def setNull(): Unit
+
   def setValue(input: SpecializedGetters, ordinal: Int): Unit
 
   private[arrow] var count: Int = 0
@@ -206,9 +209,9 @@ private[arrow] class DoubleWriter(val valueVector: Float8Vector) extends ArrowFi
 }
 
 private[arrow] class DecimalWriter(
-    val valueVector: DecimalVector,
-    precision: Int,
-    scale: Int) extends ArrowFieldWriter {
+                                    val valueVector: DecimalVector,
+                                    precision: Int,
+                                    scale: Int) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -239,7 +242,7 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
 }
 
 private[arrow] class BinaryWriter(
-    val valueVector: VarBinaryVector) extends ArrowFieldWriter {
+                                   val valueVector: VarBinaryVector) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -263,7 +266,7 @@ private[arrow] class DateWriter(val valueVector: DateDayVector) extends ArrowFie
 }
 
 private[arrow] class TimestampWriter(
-    val valueVector: TimeStampVector) extends ArrowFieldWriter {
+                                      val valueVector: TimeStampVector) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -275,7 +278,7 @@ private[arrow] class TimestampWriter(
 }
 
 private[arrow] class TimestampNTZWriter(
-    val valueVector: TimeStampMicroVector) extends ArrowFieldWriter {
+                                         val valueVector: TimeStampMicroVector) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -298,8 +301,8 @@ private[arrow] class TimeSecWriter(val valueVector: TimeSecVector) extends Arrow
 }
 
 private[arrow] class ArrayWriter(
-    val valueVector: ListVector,
-    val elementWriter: ArrowFieldWriter) extends ArrowFieldWriter {
+                                  val valueVector: ListVector,
+                                  val elementWriter: ArrowFieldWriter) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
   }
@@ -327,8 +330,8 @@ private[arrow] class ArrayWriter(
 }
 
 private[arrow] class StructWriter(
-    val valueVector: StructVector,
-    children: Array[ArrowFieldWriter]) extends ArrowFieldWriter {
+                                   val valueVector: StructVector,
+                                   children: Array[ArrowFieldWriter]) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
     var i = 0
@@ -362,10 +365,10 @@ private[arrow] class StructWriter(
 }
 
 private[arrow] class MapWriter(
-    val valueVector: MapVector,
-    val structVector: StructVector,
-    val keyWriter: ArrowFieldWriter,
-    val valueWriter: ArrowFieldWriter) extends ArrowFieldWriter {
+                                val valueVector: MapVector,
+                                val structVector: StructVector,
+                                val keyWriter: ArrowFieldWriter,
+                                val valueWriter: ArrowFieldWriter) extends ArrowFieldWriter {
 
   override def setNull(): Unit = {}
 
@@ -375,7 +378,7 @@ private[arrow] class MapWriter(
     val keys = map.keyArray()
     val values = map.valueArray()
     var i = 0
-    while (i <  map.numElements()) {
+    while (i < map.numElements()) {
       structVector.setIndexDefined(keyWriter.count)
       keyWriter.write(keys, i)
       valueWriter.write(values, i)
