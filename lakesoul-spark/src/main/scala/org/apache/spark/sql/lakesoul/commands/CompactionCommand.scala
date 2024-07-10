@@ -60,8 +60,8 @@ case class CompactionCommand(snapshotManagement: SnapshotManagement,
     val option = new CaseInsensitiveStringMap(
       Map("basePath" -> tc.tableInfo.table_path_s.get, "isCompaction" -> "true"))
 
-    val partitionNames = readPartitionInfo.map(p => {
-      p.range_value.split("=").head
+    val partitionNames = readPartitionInfo.head.range_value.split(',').map(p => {
+      p.split('=').head
     })
 
     val scan = table.newScanBuilder(option).build()
