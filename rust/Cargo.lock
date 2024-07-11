@@ -384,15 +384,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-lock"
-version = "2.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "287272293e9d8c41773cec55e365490fe034813a2f172f502d6ddcf75b2f582b"
-dependencies = [
- "event-listener 2.5.3",
-]
-
-[[package]]
 name = "async-recursion"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1197,12 +1188,6 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "2.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
-
-[[package]]
-name = "event-listener"
 version = "5.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6032be9bd27023a771701cc49f9f053c751055f71efb2e0ae5c15809093675ba"
@@ -1218,7 +1203,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f214dc438f977e6d4e3500aaa277f5ad94ca83fbbd9b1a15713ce2344ccc5a1"
 dependencies = [
- "event-listener 5.3.1",
+ "event-listener",
  "pin-project-lite",
 ]
 
@@ -1477,18 +1462,19 @@ dependencies = [
 
 [[package]]
 name = "hdfs-sys"
-version = "0.2.0"
-source = "git+https://github.com/lakesoul-io/hdfs-sys.git?branch=main#2a6484c8e1875bf5dc380bf85d0086b3bb31f4aa"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33e2d5cefba2d51a26b44d2a493f963a32725a0f6593c91be4a610ad449c49cb"
 dependencies = [
  "cc",
+ "java-locator",
 ]
 
 [[package]]
 name = "hdrs"
-version = "0.2.0"
-source = "git+https://github.com/lakesoul-io/hdrs.git?branch=main#acebdca01cd33aa2fadbb970b87ec9aaa65b841f"
+version = "0.3.2"
+source = "git+https://github.com/lakesoul-io/hdrs.git?branch=main#5c340b796096e9cf8ca54b9040c38b7083197893"
 dependencies = [
- "async-lock",
  "blocking",
  "errno",
  "futures",
@@ -1831,6 +1817,16 @@ name = "itoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
+
+[[package]]
+name = "java-locator"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2abecabd9961c5e01405a6426687fcf1bd94a269927137e4c3cc1a7419b93fd"
+dependencies = [
+ "glob",
+ "lazy_static",
+]
 
 [[package]]
 name = "jobserver"
