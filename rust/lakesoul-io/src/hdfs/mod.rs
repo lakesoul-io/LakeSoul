@@ -12,7 +12,7 @@ use datafusion::error::Result;
 use datafusion_common::DataFusionError;
 use futures::stream::BoxStream;
 // use futures::TryStreamExt;
-use hdrs::Client;
+use hdrs::{Client, ClientBuilder};
 use object_store::path::Path;
 use object_store::Error::Generic;
 use object_store::{GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
@@ -33,11 +33,12 @@ pub struct Hdfs {
 impl Hdfs {
     pub fn try_new(host: &str, config: LakeSoulIOConfig) -> Result<Self> {
         let user = config.object_store_options.get("fs.hdfs.user");
-        let client = match user {
-            None => Client::connect(host),
-            Some(user) => Client::connect_as_user(host, user.as_str()),
-        }
-        .map_err(DataFusionError::IoError)?;
+        let client_builder = ClientBuilder::new(host);
+        let client_builder = match user {
+            None => client_builder,
+            Some(user) => client_builder.with_user(user.as_str()),
+        };
+        let client = client_builder.connect().map_err(DataFusionError::IoError)?;
 
         Ok(Self {
             client: Arc::new(client),
