@@ -145,7 +145,7 @@ pub fn get_tpch_table_schema(table: &str) -> Schema {
         "nation" => Schema::new(vec![
             Field::new("n_nationkey", DataType::Int64, false),
             Field::new("n_name", DataType::Utf8, false),
-            // Field::new("n_regionkey", DataType::Int64, false),
+            Field::new("n_regionkey", DataType::Int64, false),
             Field::new("n_comment", DataType::Utf8, false),
         ]),
 
