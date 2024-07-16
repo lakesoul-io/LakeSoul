@@ -16,6 +16,7 @@ import io.substrait.expression.ExpressionCreator;
 import io.substrait.expression.FieldReference;
 import io.substrait.expression.ImmutableMapKey;
 import io.substrait.expression.proto.ExpressionProtoConverter;
+import io.substrait.extension.DefaultExtensionCatalog;
 import io.substrait.extension.SimpleExtension;
 import io.substrait.plan.Plan;
 import io.substrait.plan.PlanProtoConverter;
@@ -27,6 +28,7 @@ import jnr.ffi.Runtime;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.c.Data;
+import org.apache.arrow.util.Preconditions;
 import org.apache.arrow.vector.types.IntervalUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -453,6 +455,13 @@ public class SubstraitUtil {
 
 
         throw new IOException("Fail convert to SubstraitLiteral for " + any.toString());
+    }
+
+    public static Expression cdcColumnMergeOnReadFilter(Field field) {
+        Preconditions.checkArgument(field.getType() instanceof ArrowType.Utf8);
+        FieldReference fieldReference = arrowFieldToSubstraitField(field);
+        Expression literal = ExpressionCreator.string(false, "delete");
+        return makeBinary(fieldReference, literal, DefaultExtensionCatalog.FUNCTIONS_COMPARISON, "not_equal:any_any", TypeCreator.REQUIRED.STRING);
     }
 }
 
