@@ -56,7 +56,7 @@ pub fn get_tbl_tpch_table_range_partitions(table: &str) -> Vec<String> {
     }
 }
 
-/// The `.tbl` file contains a trailing column
+/// The `.tbl` file contains a tailing column
 pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
     let mut schema = SchemaBuilder::from(get_tpch_table_schema(table).fields);
     schema.push(Field::new("__placeholder", DataType::Utf8, true));

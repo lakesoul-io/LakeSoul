@@ -89,4 +89,29 @@ mod integration_tests {
 
         Ok(())
     }
+
+    use lakesoul_io::lakesoul_reader::LakeSoulReader;
+
+    #[tokio::test]
+    async fn debug() -> Result<()> {
+        let config = 
+            LakeSoulIOConfigBuilder::new()
+            .with_schema(Arc::new(get_tbl_tpch_table_schema("nation")))
+            .with_files(vec!["/Users/ceng/Documents/GitHub/LakeSoul/rust/lakesoul-datafusion/default/nation/n_regionkey=0/part-4vqnoXvFFTInJqDV_0000.parquet".to_string()])
+            .with_default_column_value("n_regionkey".to_string(), "0".to_string())
+            .build();
+        let mut reader = LakeSoulReader::new(config)?;
+        reader.start().await?;
+
+        let mut row_cnt = 0;
+        while let Some(rb) = reader.next_rb().await {
+            let rb = rb.unwrap();
+            dbg!(&rb);
+            let num_rows = rb.num_rows();
+            row_cnt += num_rows;
+        }
+        dbg!(row_cnt);
+
+        Ok(())
+    }
 }

@@ -262,7 +262,7 @@ public class FlinkUtil {
 
         List<String> parKeys = partitionKeys.rangeKeys;
         HashMap<String, String> conf = new HashMap<>();
-        properties.forEach((key, value) -> conf.put(key, (String) value));
+        properties.forEach((key, value) -> conf.put(key, value.toString()));
         if (FlinkUtil.isView(tableInfo)) {
             return CatalogView.of(bd.build(), "", properties.getString(VIEW_ORIGINAL_QUERY),
                     properties.getString(VIEW_EXPANDED_QUERY), conf);
