@@ -648,11 +648,13 @@ SPDX-License-Identifier: Apache-2.0
                                 <exclude>org.apache.arrow.c.Metadata*</exclude>
                                 <exclude>org.apache.arrow.c.NativeUtil*</exclude>
                                 <exclude>org.apache.arrow.c.ReferenceCountedArrowArray*</exclude>
-                                <exclude>org.apache.arrow.c.SchemaImporter*</exclude>
                                 <exclude>org.apache.arrow.c.ArrowArrayStreamReader*</exclude>
                                 <exclude>org.apache.arrow.c.ArrayStreamExporter*</exclude>
                                 <exclude>org.apache.arrow.c.ArrayExporter*</exclude>
+                                <exclude>org.apache.arrow.c.ArrayImporter*</exclude>
+                                <exclude>org.apache.arrow.c.BufferImportTypeVisitor*</exclude>
                                 <exclude>org.apache.arrow.c.SchemaExporter*</exclude>
+                                <exclude>org.apache.arrow.c.SchemaImporter*</exclude>
                             </excludes>
                         </relocation>
                         <relocation>
