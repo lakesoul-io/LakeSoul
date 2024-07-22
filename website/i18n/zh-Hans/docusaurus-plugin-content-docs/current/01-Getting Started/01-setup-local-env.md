@@ -46,7 +46,7 @@ LakeSoul 发布 jar 包可以从 GitHub Releases 页面下载：https://github.c
 wget https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar -P $SPARK_HOME/jars
 ```
 
-如果访问 Github 有问题，也可以从如下链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-3.3-VAR::VERSION.jar
+如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark/3.3-VAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
 :::tip
 从 2.1.0 版本起，LakeSoul 自身的依赖已经通过 shade 方式打包到一个 jar 包中。之前的版本是多个 jar 包以 tar.gz 压缩包的形式发布。
@@ -94,6 +94,8 @@ spark.sql.defaultCatalog | lakesoul
 
 ### 1.4 Flink 本地环境搭建
 以当前发布最新版本为例，LakeSoul Flink jar 包下载地址为：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+
+如果访问 Github 有问题，也可以从如下链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.17-VAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 最新版本支持 flink 集群为1.17，Flink jar下载地址为：https://dlcdn.apache.org/flink/flink-1.17.2/flink-1.17.2-bin-scala_2.12.tgz
 

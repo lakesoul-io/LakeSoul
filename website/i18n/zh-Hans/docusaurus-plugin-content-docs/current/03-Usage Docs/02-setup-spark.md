@@ -30,7 +30,7 @@ spark-submit --jars "lakesoul-spark-3.3-VAR::VERSION.jar"
 
 Jar 包可以从 Github Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
-或者从国内地址下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-spark-3.3-VAR::VERSION.jar
+或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-spark/3.3-VAR::VERSION/lakesoul-spark-3.3-VAR::VERSION.jar
 
 ### 设置 Java/Scala 项目
 增加以下 Maven 依赖项:
@@ -140,6 +140,8 @@ taskmanager.memory.task.off-heap.size: 3000m
 
 ### 添加 LakeSoul Jar 到 Flink 部署的目录
 从以下地址下载 LakeSoul Flink Jar：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
+
+或者从国内地址下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.17-VAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 并将 jar 文件放在 `$FLINK_HOME/lib` 下。在此之后，您可以像往常一样启动 flink 会话集群或应用程序。
 
