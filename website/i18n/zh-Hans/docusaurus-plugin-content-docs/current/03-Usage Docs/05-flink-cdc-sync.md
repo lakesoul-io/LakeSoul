@@ -21,7 +21,7 @@ LakeSoul 自 2.1.0 版本起，实现了 Flink CDC Sink，能够支持 Table API
 ### 1. 下载 LakeSoul Flink Jar
 可以在 LakeSoul Release 页面下载：https://github.com/lakesoul-io/LakeSoul/releases/download/vVAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar。
 
-如果访问 Github 有问题，也可以通过这个链接下载：https://dmetasoul-bucket.obs.cn-southwest-2.myhuaweicloud.com/releases/lakesoul/lakesoul-flink-flink-1.17-VAR::VERSION.jar。
+如果访问 Github 有问题，也可以通过这个链接下载：https://mirrors.huaweicloud.com/repository/maven/com/dmetasoul/lakesoul-flink/1.17-VAR::VERSION/lakesoul-flink-1.17-VAR::VERSION.jar
 
 目前支持的 Flink 版本为 1.17。
 
