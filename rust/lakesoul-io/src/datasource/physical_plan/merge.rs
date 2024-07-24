@@ -49,6 +49,7 @@ impl MergeParquetExec {
             let single_exec = Arc::new(ParquetExec::new(config, predicate.clone(), metadata_size_hint));
             inputs.push(single_exec);
         }
+        // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
         let schema = SchemaRef::new(Schema::new(
             schema
                 .fields()

@@ -333,6 +333,7 @@ impl LakeSoulHashSinkExec {
         partitioned_file_path_and_row_count: Arc<Mutex<HashMap<String, (Vec<String>, u64)>>>,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
+        // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
             .schema()
             .fields()

@@ -357,6 +357,7 @@ pub async fn listing_table_from_lakesoul_io_config(
                 .with_table_partition_cols(table_partition_cols);
 
             let mut builder = SchemaBuilder::from(target_schema.fields());
+            // O(n^2), n = target_schema.fields().len()
             for field in resolved_schema.fields() {
                 if target_schema.field_with_name(field.name()).is_err() {
                     builder.push(field.clone());
