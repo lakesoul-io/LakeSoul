@@ -94,8 +94,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn debug() -> Result<()> {
-        let config = 
-            LakeSoulIOConfigBuilder::new()
+        let config = LakeSoulIOConfigBuilder::new()
             .with_schema(Arc::new(get_tbl_tpch_table_schema("nation")))
             .with_files(vec!["/Users/ceng/Documents/GitHub/LakeSoul/rust/lakesoul-datafusion/default/nation/n_regionkey=0/part-4vqnoXvFFTInJqDV_0000.parquet".to_string()])
             .with_default_column_value("n_regionkey".to_string(), "0".to_string())

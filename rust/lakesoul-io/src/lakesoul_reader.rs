@@ -584,4 +584,42 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_read_file_with_partition_column() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("order_id", DataType::Int32, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("score", DataType::Decimal128(10, 0), true),
+        ]));
+        let partition_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, true)]));
+        let reader_conf = LakeSoulIOConfigBuilder::new()
+            .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user_nonpk_partitioned/order_id=4/part-00011-989b7a5d-6ed7-4e51-a3bd-a9fa7853155d_00011.c000.parquet".to_string()])
+            // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])
+            .with_thread_num(1)
+            .with_batch_size(8192)
+            .with_schema(schema)
+            .with_partition_schema(partition_schema)
+            .with_default_column_value("order_id".to_string(), "4".to_string())
+            .set_inferring_schema(true)
+            .build();
+        let reader = LakeSoulReader::new(reader_conf)?;
+        let mut reader = ManuallyDrop::new(reader);
+        reader.start().await?;
+        static mut ROW_CNT: usize = 0;
+
+        let start = Instant::now();
+        while let Some(rb) = reader.next_rb().await {
+            dbg!(&rb);
+            let num_rows = &rb.unwrap().num_rows();
+            unsafe {
+                ROW_CNT += num_rows;
+                println!("{}", ROW_CNT);
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        println!("time cost: {:?}ms", start.elapsed().as_millis()); // ms
+
+        Ok(())
+    }
 }
