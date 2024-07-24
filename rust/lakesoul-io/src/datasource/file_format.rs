@@ -181,6 +181,7 @@ pub async fn flatten_file_scan_config(
             let file_schema = format.infer_schema(state, &store, objects).await?;
             let file_schema = {
                 let mut builder = SchemaBuilder::new();
+                // O(nm), n = number of fields, m = number of partition columns
                 for field in file_schema.fields() {
                     if !partition_schema.field_with_name(field.name()).is_ok() {
                         builder.push(field.clone());
@@ -218,6 +219,7 @@ pub fn compute_project_column_indices(
     projected_schema: SchemaRef,
     primary_keys: &[String],
 ) -> Option<Vec<usize>> {
+    // O(nm), n = number of fields, m = number of projected columns
     Some(
         schema
             .fields()

@@ -133,6 +133,7 @@ impl SortedStreamMerger {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // O(nm), n = number of stream schema fields, m = number of target schema fields
         let fields_map = streams
             .iter()
             .map(|s| {
