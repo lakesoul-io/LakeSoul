@@ -122,6 +122,7 @@ impl TableProvider for LakeSoulListingTable {
                 Ok(vec![TableProviderFilterPushDown::Unsupported; filters.len()])
             }
         } else {
+            // O(nml), n = number of filters, m = number of primary keys, l = number of columns
             filters
                 .iter()
                 .map(|f| {

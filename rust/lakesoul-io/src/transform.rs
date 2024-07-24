@@ -59,6 +59,7 @@ pub fn transform_schema(target_schema: SchemaRef, schema: SchemaRef, use_default
     if use_default {
         target_schema
     } else {
+        // O(nm) n = schema.fields().len(), m = target_schema.fields().len()
         Arc::new(Schema::new(
             target_schema
                 .fields()
@@ -84,6 +85,7 @@ pub fn transform_record_batch(
     let orig_schema = batch.schema();
     let mut transform_arrays = Vec::new();
     let mut fields = vec![];
+    // O(nm) n = orig_schema.fields().len(), m = target_schema.fields().len()
     target_schema
         .fields()
         .iter()

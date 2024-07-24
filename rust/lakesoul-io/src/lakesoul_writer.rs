@@ -213,6 +213,7 @@ impl MultiPartAsyncWriter {
         ))));
         let schema = uniform_schema(config.target_schema.0.clone());
 
+        // O(nm), n = number of fields, m = number of range partitions
         let schema_projection_excluding_range = schema
             .fields()
             .iter()
@@ -372,6 +373,7 @@ impl SortAsyncWriter {
         let exec_plan: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
             sort_exec
         } else {
+            // O(nm), n = number of target schema fields, m = number of aux sort cols
             let proj_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = config
                 .target_schema
                 .0
@@ -560,6 +562,7 @@ impl PartitioningAsyncWriter {
         let sort_exec: Arc<dyn ExecutionPlan> = if config.aux_sort_cols.is_empty() {
             sort_exec
         } else {
+            // O(nm), n = number of target schema fields, m = number of aux sort cols
             let proj_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = config
                 .target_schema
                 .0
@@ -621,6 +624,7 @@ impl PartitioningAsyncWriter {
         partitioned_file_path_and_row_count: PartitionedWriterInfo,
     ) -> Result<u64> {
         let mut data = input.execute(partition, context.clone())?;
+        // O(nm), n = number of data fields, m = number of range partitions
         let schema_projection_excluding_range = data
             .schema()
             .fields()
@@ -817,6 +821,7 @@ impl SyncSendableMutableLakeSoulWriter {
             // to exclude all aux sort cols
             let writer_schema: SchemaRef = if !config.aux_sort_cols.is_empty() {
                 let schema = config.target_schema.0.clone();
+                // O(nm), n = number of target schema fields, m = number of aux sort cols
                 let proj_indices = schema
                     .fields
                     .iter()

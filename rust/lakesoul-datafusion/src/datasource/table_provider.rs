@@ -78,6 +78,7 @@ impl LakeSoulTableProvider {
         let (range_partitions, hash_partitions) = parse_table_info_partitions(table_info.partitions.clone())?;
         let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
         let mut file_schema_projection = Vec::with_capacity(table_schema.fields().len() - range_partitions.len());
+        // O(nm), n = number of table fields, m = number of range partitions
         for (idx, field) in table_schema.fields().iter().enumerate() {
             match range_partitions.contains(field.name()) {
                 false => file_schema_projection.push(idx),
@@ -142,6 +143,7 @@ impl LakeSoulTableProvider {
     }
 
     fn is_partition_filter(&self, f: &Expr) -> bool {
+        // O(nm), n = number of expr fields, m = number of range partitions
         if let Ok(cols) = f.to_columns() {
             cols.iter().all(|col| self.range_partitions.contains(&col.name))
         } else {
@@ -302,6 +304,7 @@ impl TableProvider for LakeSoulTableProvider {
         }
 
         // extract types of partition columns
+        // O(nm), n = number of partitions, m = number of columns
         let table_partition_cols = self
             .options()
             .table_partition_cols
