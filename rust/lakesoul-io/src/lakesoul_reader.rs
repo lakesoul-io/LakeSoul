@@ -592,9 +592,7 @@ mod tests {
             Field::new("name", DataType::Utf8, true),
             Field::new("score", DataType::Decimal128(10, 0), true),
         ]));
-        let partition_schema = Arc::new(Schema::new(vec![
-            Field::new("order_id", DataType::Int32, true),
-        ]));
+        let partition_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, true)]));
         let reader_conf = LakeSoulIOConfigBuilder::new()
             .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user_nonpk_partitioned/order_id=4/part-00011-989b7a5d-6ed7-4e51-a3bd-a9fa7853155d_00011.c000.parquet".to_string()])
             // .with_files(vec!["file:/var/folders/4c/34n9w2cd65n0pyjkc3n4q7pc0000gn/T/lakeSource/user1/order_id=4/part-59guLCg5R6v4oLUT_0000.parquet".to_string()])

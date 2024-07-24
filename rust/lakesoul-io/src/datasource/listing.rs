@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_schema::SchemaBuilder;
 use async_trait::async_trait;
 
-use arrow::datatypes::{SchemaRef, Schema};
+use arrow::datatypes::{Schema, SchemaRef};
 
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl};

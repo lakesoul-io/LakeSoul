@@ -97,7 +97,7 @@ impl FileFormat for LakeSoulParquetFormat {
             .enable_pruning(state.config_options())
             .then(|| filters.cloned())
             .flatten();
-        
+
         let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
         // projection for Table instead of File
         let projection = conf.projection.clone();
@@ -121,7 +121,7 @@ impl FileFormat for LakeSoulParquetFormat {
         )
         .await?;
 
-        // merge on read files 
+        // merge on read files
         let merge_exec = Arc::new(MergeParquetExec::new(
             merged_schema.clone(),
             flatten_conf,
