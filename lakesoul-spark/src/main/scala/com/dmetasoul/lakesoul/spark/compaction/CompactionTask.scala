@@ -78,8 +78,7 @@ object CompactionTask {
               val partitionDesc = jsonObj.get("table_partition_desc").getAsString
               val tableNamespace = jsonObj.get("table_namespace").getAsString
               if (tableNamespace.equals(database) || database.equals("")) {
-                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc.replace("=",
-                  "='") + "'"
+                val rsPartitionDesc = if (partitionDesc.equals(MetaUtils.DEFAULT_RANGE_PARTITION_VALUE)) "" else partitionDesc
                 threadPool.execute(new CompactionTableInfo(tablePath, rsPartitionDesc, notificationParameter))
               }
             }
@@ -94,7 +93,12 @@ object CompactionTask {
     override def run(): Unit = {
       try {
         val table = LakeSoulTable.forPath(path)
-        table.compaction(partitionDesc)
+        val partitions = partitionDesc.split(",").map(
+          partition => {
+            partition.replace("=", "='") + "'"
+          }
+        ).mkString(" and ")
+        table.compaction(partitions)
       } catch {
         case e: Exception => throw e
       } finally {
