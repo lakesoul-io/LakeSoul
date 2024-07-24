@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 
+use arrow_schema::SchemaBuilder;
 use datafusion::datasource::file_format::{parquet::ParquetFormat, FileFormat};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::execution::context::SessionState;
@@ -96,8 +97,9 @@ impl FileFormat for LakeSoulParquetFormat {
             .enable_pruning(state.config_options())
             .then(|| filters.cloned())
             .flatten();
-
-        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf);
+        
+        let table_schema = LakeSoulListingTable::compute_table_schema(conf.file_schema.clone(), &self.conf)?;
+        // projection for Table instead of File
         let projection = conf.projection.clone();
         let target_schema = project_schema(&table_schema, projection.as_ref())?;
 
@@ -114,10 +116,12 @@ impl FileFormat for LakeSoulParquetFormat {
             self.parquet_format.clone(),
             conf,
             self.conf.primary_keys_slice(),
+            self.conf.partition_schema(),
             target_schema.clone(),
         )
         .await?;
 
+        // merge on read files 
         let merge_exec = Arc::new(MergeParquetExec::new(
             merged_schema.clone(),
             flatten_conf,
@@ -162,6 +166,7 @@ pub async fn flatten_file_scan_config(
     format: Arc<ParquetFormat>,
     conf: FileScanConfig,
     primary_keys: &[String],
+    partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
     let object_store_url = conf.object_store_url.clone();
@@ -174,6 +179,15 @@ pub async fn flatten_file_scan_config(
             let objects = &[file.object_meta.clone()];
             let file_groups = vec![vec![file.clone()]];
             let file_schema = format.infer_schema(state, &store, objects).await?;
+            let file_schema = {
+                let mut builder = SchemaBuilder::new();
+                for field in file_schema.fields() {
+                    if !partition_schema.field_with_name(field.name()).is_ok() {
+                        builder.push(field.clone());
+                    }
+                }
+                SchemaRef::new(builder.finish())
+            };
             let statistics = format
                 .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
                 .await?;

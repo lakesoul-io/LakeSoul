@@ -48,7 +48,7 @@ impl LakeSoulListingTable {
             listing_table_from_lakesoul_io_config(session_state, lakesoul_io_config.clone(), file_format, as_sink)
                 .await?;
         let file_schema = file_schema.ok_or_else(|| DataFusionError::Internal("No schema provided.".into()))?;
-        let table_schema = Self::compute_table_schema(file_schema, &lakesoul_io_config);
+        let table_schema = Self::compute_table_schema(file_schema, &lakesoul_io_config)?;
 
         Ok(Self {
             listing_table,
@@ -65,24 +65,21 @@ impl LakeSoulListingTable {
         self.listing_table.table_paths()
     }
 
-    pub fn compute_table_schema(file_schema: SchemaRef, config: &LakeSoulIOConfig) -> SchemaRef {
+    pub fn compute_table_schema(file_schema: SchemaRef, config: &LakeSoulIOConfig) -> Result<SchemaRef> {
         let target_schema = if config.inferring_schema {
             SchemaRef::new(Schema::empty())
         } else {
             uniform_schema(config.target_schema())
         };
         let mut builder = SchemaBuilder::from(target_schema.fields());
+        // O(n^2), n is the number of fields in file_schema and config.partition_schema
         for field in file_schema.fields() {
-            if target_schema.field_with_name(field.name()).is_err() {
-                builder.push(field.clone());
-            }
+            builder.try_merge(field)?;
         }
         for field in config.partition_schema().fields() {
-            if target_schema.field_with_name(field.name()).is_err() {
-                builder.push(field.clone());
-            }
+            builder.try_merge(field)?;
         }
-        Arc::new(builder.finish())
+        Ok(Arc::new(builder.finish()))
     }
 }
 
