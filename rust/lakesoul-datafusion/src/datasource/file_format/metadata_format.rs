@@ -156,6 +156,7 @@ impl FileFormat for LakeSoulMetaDataParquetFormat {
             self.parquet_format.clone(),
             conf,
             self.conf.primary_keys_slice(),
+            self.conf.partition_schema(),
             target_schema.clone(),
         )
         .await?;
