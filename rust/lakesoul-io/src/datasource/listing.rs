@@ -74,10 +74,14 @@ impl LakeSoulListingTable {
         let mut builder = SchemaBuilder::from(target_schema.fields());
         // O(n^2), n is the number of fields in file_schema and config.partition_schema
         for field in file_schema.fields() {
-            builder.try_merge(field)?;
+            if !target_schema.field_with_name(field.name()).is_ok() {
+                builder.try_merge(field)?;
+            }
         }
         for field in config.partition_schema().fields() {
-            builder.try_merge(field)?;
+            if !target_schema.field_with_name(field.name()).is_ok() {
+                builder.try_merge(field)?;
+            }
         }
         Ok(Arc::new(builder.finish()))
     }
