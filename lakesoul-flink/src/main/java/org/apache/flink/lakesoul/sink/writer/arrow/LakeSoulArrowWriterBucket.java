@@ -173,8 +173,7 @@ public class LakeSoulArrowWriterBucket {
                 dmlType,
                 sourcePartitionInfo
         ));
-        System.out.println("org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket.prepareCommit");
-        System.out.println(committables);
+        LOG.info("org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket.prepareCommit {}", committables);
         pendingFilesMap.clear();
 
         return committables;
@@ -258,9 +257,8 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-        System.out.println("closePartFile inProgressPartWriter inProgressPartWriter=" + inProgressPartWriter);
+        LOG.info("closePartFile inProgressPartWriter inProgressPartWriter {}", inProgressPartWriter);
         if (inProgressPartWriter != null) {
-            long start = System.currentTimeMillis();
             if (inProgressPartWriter instanceof NativeLakeSoulArrowWrapperWriter) {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
                         ((NativeLakeSoulArrowWrapperWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();

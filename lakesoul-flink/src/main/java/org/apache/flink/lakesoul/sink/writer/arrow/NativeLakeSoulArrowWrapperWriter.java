@@ -88,7 +88,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     @Override
     public void write(LakeSoulArrowWrapper element, long currentTime) throws IOException {
-        nativeWriter.writeIpc(element.getEncodedBatch());
+        totalRows += nativeWriter.writeIpc(element.getEncodedBatch());
     }
 
     @Override
@@ -115,7 +115,6 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
 
         HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-//        System.out.println(partitionDescAndFilesMap);
         for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
             recoverableMap.put(
                     entry.getKey(),

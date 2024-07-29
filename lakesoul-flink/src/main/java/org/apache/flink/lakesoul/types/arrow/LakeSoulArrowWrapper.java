@@ -60,7 +60,6 @@ public class LakeSoulArrowWrapper implements Serializable {
             TableInfo tableInfo = TableInfo.parseFrom(encodedTableInfo);
             consumer.accept(tableInfo, reader.getVectorSchemaRoot());
         } catch (IOException e) {
-            System.out.println("LakeSoulArrowWrapper::withDecoded error: " + e);
             throw new RuntimeException(e);
         }
     }
