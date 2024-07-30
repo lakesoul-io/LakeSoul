@@ -41,20 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CATALOG_PATH;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DELETE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DELETE_CDC;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DML_TYPE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_TIME;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.IS_BOUNDED;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.PARTITION_DELETE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SOURCE_PARTITION_INFO;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.UPDATE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning,
         SupportsOverwrite, SupportsRowLevelDelete, SupportsRowLevelUpdate {
@@ -158,10 +145,15 @@ public class LakeSoulTableSink implements DynamicTableSink, SupportsPartitioning
                 .withBucketCheckInterval(flinkConf.getLong(BUCKET_CHECK_INTERVAL)).withRollingPolicy(rollingPolicy)
                 .withOutputFileConfig(fileNameConfig).build();
         if (!primaryKeyList.isEmpty()) {
-            //redistribution by partitionKey
             LakeSoulKeyGen keyGen = new LakeSoulKeyGen(rowType, primaryKeyList.toArray(new String[0]));
             dataStream = dataStream.partitionCustom(new HashPartitioner(), keyGen::getRePartitionHash);
-            return dataStream.sinkTo(sink);
+            if (flinkConf.get(DYNAMIC_BUCKETING)) {
+                return dataStream.sinkTo(sink);
+            } else {
+                // before dynamic bucket routing in native, we rely on flink's
+                // parallelism to partition primary keys to target hash bucket
+                return dataStream.sinkTo(sink).setParallelism(flinkConf.get(HASH_BUCKET_NUM));
+            }
         } else {
             return dataStream.sinkTo(sink);
         }

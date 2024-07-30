@@ -34,7 +34,7 @@ public class LakeSoulSinkOptions {
 
     public static final String SORT_FIELD = "__sort_filed__";
 
-    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 5000000L;
+    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 1000000L;
 
     public static final Long DEFAULT_BUCKET_ROLLING_TIME = 5 * 60 * 1000L;
 

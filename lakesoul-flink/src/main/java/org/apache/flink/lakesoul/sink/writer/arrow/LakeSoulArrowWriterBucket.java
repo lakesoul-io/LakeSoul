@@ -11,21 +11,13 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
-import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
-import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
-import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
+import org.apache.flink.streaming.api.functions.sink.filesystem.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.util.Preconditions.checkNotNull;

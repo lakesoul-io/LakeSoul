@@ -25,7 +25,11 @@ import javax.annotation.Nullable;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.TimeZone;
 
 public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartitionSplit, LakeSoulPendingSplits> {
     final TableId tableId;
@@ -49,8 +53,7 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
     protected final Plan pushedFilter;
 
 
-    @Nullable
-    final Plan partitionFilters;
+    @Nullable final Plan partitionFilters;
     protected final RowType tableRowType;
 
     public LakeSoulSource(TableId tableId,
@@ -116,10 +119,11 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
         }
     }
 
-    private LakeSoulStaticSplitEnumerator staticSplitEnumerator(SplitEnumeratorContext<LakeSoulPartitionSplit> enumContext,
-                                                                TableInfo tableInfo,
-                                                                List<String> readStartTimestampWithTimeZone,
-                                                                String readType) {
+    private LakeSoulStaticSplitEnumerator staticSplitEnumerator(
+            SplitEnumeratorContext<LakeSoulPartitionSplit> enumContext,
+            TableInfo tableInfo,
+            List<String> readStartTimestampWithTimeZone,
+            String readType) {
         List<String> readEndTimestampWithTimeZone =
                 Arrays.asList(optionParams.getOrDefault(LakeSoulOptions.READ_END_TIME(), ""),
                         optionParams.getOrDefault(LakeSoulOptions.TIME_ZONE(), ""));
@@ -139,11 +143,12 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                 partDescs.add(partitionDescOpt);
             }
             for (String desc : partDescs) {
-                dataFileInfoList.addAll(Arrays.asList(DataOperation.getIncrementalPartitionDataInfo(tableInfo.getTableId(),
-                        desc,
-                        convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
-                        convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
-                        readType)));
+                dataFileInfoList.addAll(
+                        Arrays.asList(DataOperation.getIncrementalPartitionDataInfo(tableInfo.getTableId(),
+                                desc,
+                                convertTimeFormatWithTimeZone(readStartTimestampWithTimeZone),
+                                convertTimeFormatWithTimeZone(readEndTimestampWithTimeZone),
+                                readType)));
             }
         }
         int capacity = 100;
@@ -207,7 +212,6 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                 checkpoint.getDiscoverInterval(),
                 checkpoint.getLastReadTimestamp(),
                 checkpoint.getTableId(),
-//                checkpoint.getParDesc(),
                 String.valueOf(checkpoint.getHashBucketNum()),
                 this.partitionColumns,
                 this.partitionFilters
