@@ -11,13 +11,21 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
-import org.apache.flink.streaming.api.functions.sink.filesystem.*;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
+import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -105,7 +113,8 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void restoreState(LakeSoulWriterBucketState state) throws IOException {
-        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap().entrySet()) {
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap()
+                .entrySet()) {
             pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
         }
     }
@@ -150,7 +159,8 @@ public class LakeSoulArrowWriterBucket {
         inProgressPartWriter.write(element, currentTime);
     }
 
-    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush, String dmlType, String sourcePartitionInfo) throws IOException {
+    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush, String dmlType, String sourcePartitionInfo)
+            throws IOException {
         // we always close part file and do not keep in-progress file
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
@@ -161,10 +171,10 @@ public class LakeSoulArrowWriterBucket {
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst().get().get(0)).creationTime;
+                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
+                        .get().get(0)).creationTime;
 
         committables.add(new LakeSoulMultiTableSinkCommittable(
-//                getBucketId(),
                 tableId,
                 new HashMap<>(pendingFilesMap),
                 time,
@@ -173,7 +183,8 @@ public class LakeSoulArrowWriterBucket {
                 dmlType,
                 sourcePartitionInfo
         ));
-        LOG.info("org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket.prepareCommit {}", committables);
+        LOG.info("org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket.prepareCommit {}",
+                committables);
         pendingFilesMap.clear();
 
         return committables;
@@ -184,13 +195,6 @@ public class LakeSoulArrowWriterBucket {
             closePartFile();
         }
 
-        // this.pendingFiles would be cleared later, we need to make a copy
-//        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
-//        return new LakeSoulWriterBucketState(
-//                tableId,
-//                getBucketId(),
-//                bucketPath,
-//                tmpPending);
         HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> tmpPending = new HashMap<>(pendingFilesMap);
         return new LakeSoulWriterBucketState(tableId, bucketPath, tmpPending);
     }
@@ -257,16 +261,18 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-        LOG.info("closePartFile inProgressPartWriter inProgressPartWriter {}", inProgressPartWriter);
+        LOG.info("ClosePartFile {}", inProgressPartWriter);
         if (inProgressPartWriter != null) {
             if (inProgressPartWriter instanceof NativeLakeSoulArrowWrapperWriter) {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
                         ((NativeLakeSoulArrowWrapperWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
                 for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
-                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList()).addAll(entry.getValue());
+                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
+                            .addAll(entry.getValue());
                 }
             } else {
-                throw new RuntimeException("inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");
+                throw new RuntimeException(
+                        "inProgressPartWriter only support instanceof NativeLakeSoulArrowWrapperWriter");
             }
         }
     }
@@ -318,6 +324,7 @@ public class LakeSoulArrowWriterBucket {
             final RollingPolicy<LakeSoulArrowWrapper, String> rollingPolicy,
             final LakeSoulWriterBucketState bucketState,
             final OutputFileConfig outputFileConfig) throws IOException {
-        return new LakeSoulArrowWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
+        return new LakeSoulArrowWriterBucket(subTaskId, tableId, bucketWriter, rollingPolicy, bucketState,
+                outputFileConfig);
     }
 }

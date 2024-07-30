@@ -40,7 +40,6 @@ public class LakeSoulArrowWrapper implements Serializable {
         this.encodedBatch = encodedBatch;
     }
 
-
     @Override
     public String toString() {
         AtomicReference<String> result = new AtomicReference<>();
@@ -67,7 +66,8 @@ public class LakeSoulArrowWrapper implements Serializable {
     private static byte[] encodeBatch(VectorSchemaRoot vectorSchemaRoot) {
         try (
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
-                ArrowStreamWriter writer = new ArrowStreamWriter(vectorSchemaRoot, /*DictionaryProvider=*/null, Channels.newChannel(out));
+                ArrowStreamWriter writer = new ArrowStreamWriter(vectorSchemaRoot, /*DictionaryProvider=*/null,
+                        Channels.newChannel(out));
         ) {
             writer.start();
             writer.writeBatch();

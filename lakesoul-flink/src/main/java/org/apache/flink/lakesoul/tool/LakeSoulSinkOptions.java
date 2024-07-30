@@ -172,6 +172,12 @@ public class LakeSoulSinkOptions {
             .defaultValue(1024)
             .withDescription("The cursor batch size");
 
+    public static final ConfigOption<Integer> MAX_ROW_GROUP_SIZE = ConfigOptions
+            .key("lakesoul.file.max_row_group_size")
+            .intType()
+            .defaultValue(250000)
+            .withDescription("Max row group size for LakeSoul writer");
+
     public static final ConfigOption<String> SOURCE_DB_SCHEMA_TABLES = ConfigOptions
             .key("source_db.schema_tables")
             .stringType()
