@@ -21,7 +21,11 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_TIME;
 
 public class LakeSoulMultiTableSinkStreamBuilder {
 
@@ -56,33 +60,37 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
         context.conf.set(DYNAMIC_BUCKETING, false);
-        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl<RowData>(
+        LakeSoulRollingPolicyImpl<RowData> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
                 .withPartSuffix(".parquet")
                 .build();
-        LakeSoulMultiTablesSink<BinarySourceRecord, RowData> sink = LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
-                .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
-                .withRollingPolicy(rollingPolicy)
-                .withOutputFileConfig(fileNameConfig)
-                .build();
+        LakeSoulMultiTablesSink<BinarySourceRecord, RowData>
+                sink =
+                LakeSoulMultiTablesSink.forMultiTablesBulkFormat(context.conf)
+                        .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
+                        .withRollingPolicy(rollingPolicy)
+                        .withOutputFileConfig(fileNameConfig)
+                        .build();
         return stream.sinkTo(sink).name("LakeSoul MultiTable DML Sink")
                 .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
     }
 
-    public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context, DataStream<LakeSoulArrowWrapper> stream) {
-        LakeSoulRollingPolicyImpl rollingPolicy = new LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper>(
+    public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context,
+                                                                      DataStream<LakeSoulArrowWrapper> stream) {
+        LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
                 .withPartSuffix(".parquet")
                 .build();
-        LakeSoulMultiTablesSink<LakeSoulArrowWrapper, LakeSoulArrowWrapper> sink = LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)
-                .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
-                .withRollingPolicy(rollingPolicy)
-                .withOutputFileConfig(fileNameConfig)
-                .build();
-        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink")
-                .setParallelism(context.conf.getInteger(BUCKET_PARALLELISM));
+        LakeSoulMultiTablesSink<LakeSoulArrowWrapper, LakeSoulArrowWrapper>
+                sink =
+                LakeSoulMultiTablesSink.forMultiTablesArrowFormat(context.conf)
+                        .withBucketCheckInterval(context.conf.getLong(BUCKET_CHECK_INTERVAL))
+                        .withRollingPolicy(rollingPolicy)
+                        .withOutputFileConfig(fileNameConfig)
+                        .build();
+        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink");
     }
 
     public DataStreamSink<BinarySourceRecord> printStream(DataStream<BinarySourceRecord> stream, String name) {

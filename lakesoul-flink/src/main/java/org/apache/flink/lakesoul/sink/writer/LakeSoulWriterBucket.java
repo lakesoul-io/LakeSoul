@@ -13,18 +13,26 @@ import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
-import org.apache.flink.streaming.api.functions.sink.filesystem.*;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketAssigner;
+import org.apache.flink.streaming.api.functions.sink.filesystem.BucketWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
+import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
+import org.apache.flink.streaming.api.functions.sink.filesystem.RollingPolicy;
 import org.apache.flink.table.data.RowData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * A bucket is the directory organization of the output of the {@link LakeSoulMultiTablesSink}.
@@ -54,9 +62,6 @@ public class LakeSoulWriterBucket {
     private final Configuration conf;
 
     private long tsMs;
-
-//    private final List<InProgressFileWriter.PendingFileRecoverable> pendingFiles =
-//            new ArrayList<>();
 
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
             new HashMap<>();
@@ -118,10 +123,10 @@ public class LakeSoulWriterBucket {
     }
 
     private void restoreState(LakeSoulWriterBucketState state) throws IOException {
-        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap().entrySet()) {
+        for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : state.getPendingFileRecoverableMap()
+                .entrySet()) {
             pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
         }
-//        pendingFiles.addAll(state.getPendingFileRecoverableList());
     }
 
     public String getBucketId() {
@@ -142,10 +147,6 @@ public class LakeSoulWriterBucket {
 
     void merge(final LakeSoulWriterBucket bucket) throws IOException {
         checkNotNull(bucket);
-
-//        checkState(Objects.equals(bucket.bucketPath, bucketPath));
-//        pendingFiles.addAll(bucket.pendingFiles);
-
 
         bucket.closePartFile();
         for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : bucket.pendingFilesMap.entrySet()) {
@@ -168,7 +169,8 @@ public class LakeSoulWriterBucket {
         inProgressPartWriter.write(element, currentTime);
     }
 
-    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush, String dmlType, String sourcePartitionInfo) throws IOException {
+    List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush, String dmlType, String sourcePartitionInfo)
+            throws IOException {
         // we always close part file and do not keep in-progress file
         // since the native parquet writer doesn't support resume
         if (inProgressPartWriter != null) {
@@ -179,7 +181,8 @@ public class LakeSoulWriterBucket {
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst().get().get(0)).creationTime;
+                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
+                        .get().get(0)).creationTime;
 
         if (dmlType.equals(LakeSoulSinkOptions.DELETE)) {
             List<PartitionInfo> sourcePartitionInfoList = JniWrapper
@@ -192,7 +195,6 @@ public class LakeSoulWriterBucket {
             }
         }
         committables.add(new LakeSoulMultiTableSinkCommittable(
-//                getBucketId(),
                 tableId,
                 new HashMap<>(pendingFilesMap),
                 time,
@@ -211,13 +213,6 @@ public class LakeSoulWriterBucket {
             closePartFile();
         }
 
-        // this.pendingFiles would be cleared later, we need to make a copy
-//        List<InProgressFileWriter.PendingFileRecoverable> tmpPending = new ArrayList<>(pendingFiles);
-//        return new LakeSoulWriterBucketState(
-//                tableId,
-//                getBucketId(),
-//                bucketPath,
-//                tmpPending);
         return new LakeSoulWriterBucketState(tableId, bucketPath, new HashMap<>(pendingFilesMap));
     }
 
@@ -289,12 +284,12 @@ public class LakeSoulWriterBucket {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
                         ((DynamicPartitionNativeParquetWriter) inProgressPartWriter).closeForCommitWithRecoverableMap();
                 for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : pendingFileRecoverableMap.entrySet()) {
-                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList()).addAll(entry.getValue());
+                    pendingFilesMap.computeIfAbsent(entry.getKey(), bucketId -> new ArrayList())
+                            .addAll(entry.getValue());
                 }
             } else {
                 InProgressFileWriter.PendingFileRecoverable pendingFileRecoverable =
                         inProgressPartWriter.closeForCommit();
-//            pendingFiles.add(pendingFileRecoverable);
                 pendingFilesMap.computeIfAbsent(bucketId, bucketId -> new ArrayList()).add(pendingFileRecoverable);
                 inProgressPartWriter = null;
                 LOG.info("Closed part file {} for {}ms", pendingFileRecoverable.getPath(),
@@ -352,6 +347,7 @@ public class LakeSoulWriterBucket {
             final RollingPolicy<RowData, String> rollingPolicy,
             final LakeSoulWriterBucketState bucketState,
             final OutputFileConfig outputFileConfig) throws IOException {
-        return new LakeSoulWriterBucket(subTaskId, tableId, conf, bucketWriter, rollingPolicy, bucketState, outputFileConfig);
+        return new LakeSoulWriterBucket(subTaskId, tableId, conf, bucketWriter, rollingPolicy, bucketState,
+                outputFileConfig);
     }
 }

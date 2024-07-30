@@ -63,21 +63,24 @@ public class NativeIOWriter extends NativeIOBase implements AutoCloseable {
         }
     }
 
-    public void writeIpc(byte[] encodedBatch) throws IOException {
-        ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator);
-        if (reader.loadNextBatch()) {
-            ArrowArray array = ArrowArray.allocateNew(allocator);
-            ArrowSchema schema = ArrowSchema.allocateNew(allocator);
-            VectorSchemaRoot batch = reader.getVectorSchemaRoot();
-            Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
-            String errMsg = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
-            array.close();
-            schema.close();
-            if (errMsg != null && !errMsg.isEmpty()) {
-                throw new IOException("Native writer write batch failed with error: " + errMsg);
+    public int writeIpc(byte[] encodedBatch) throws IOException {
+        int batchSize = 0;
+        try (ArrowStreamReader reader = new ArrowStreamReader(new ByteArrayInputStream(encodedBatch), allocator)) {
+            if (reader.loadNextBatch()) {
+                ArrowArray array = ArrowArray.allocateNew(allocator);
+                ArrowSchema schema = ArrowSchema.allocateNew(allocator);
+                VectorSchemaRoot batch = reader.getVectorSchemaRoot();
+                batchSize = batch.getRowCount();
+                Data.exportVectorSchemaRoot(allocator, batch, provider, array, schema);
+                String errMsg = libLakeSoulIO.write_record_batch_blocked(writer, schema.memoryAddress(), array.memoryAddress());
+                array.close();
+                schema.close();
+                if (errMsg != null && !errMsg.isEmpty()) {
+                    throw new IOException("Native writer write batch failed with error: " + errMsg);
+                }
             }
         }
-        reader.close();
+        return batchSize;
     }
 
     public void write(VectorSchemaRoot batch) throws IOException {

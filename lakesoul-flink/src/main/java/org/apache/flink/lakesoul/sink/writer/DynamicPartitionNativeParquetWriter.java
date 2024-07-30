@@ -16,17 +16,23 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
-import java.io.Serializable;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter<RowData, String> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DynamicPartitionNativeParquetWriter.class);
 
     private final RowType rowType;
 
@@ -37,7 +43,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
 
     private NativeIOWriter nativeWriter;
 
-    private final int batchSize;
+    private final int maxRowGroupRows;
 
     private final long creationTime;
 
@@ -57,7 +63,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                                                Path path,
                                                long creationTime,
                                                Configuration conf) throws IOException {
-        this.batchSize = 250000; // keep same with native writer's row group row number
+        this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.rowsInBatch = 0;
         this.rowType = rowType;
@@ -79,7 +85,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
 
-        nativeWriter.setRowGroupRowNumber(this.batchSize);
+        nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
 
@@ -89,6 +95,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
 
         FlinkUtil.setFSConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
+        LOG.info("Initialized DynamicPartitionNativeParquetWriter: {}", this);
     }
 
     @Override
@@ -97,7 +104,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         this.arrowWriter.write(element);
         this.rowsInBatch++;
         this.totalRows++;
-        if (this.rowsInBatch >= this.batchSize) {
+        if (this.rowsInBatch >= this.maxRowGroupRows) {
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
             // in native writer, batch may be kept in memory for sorting,
@@ -139,13 +146,13 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         if (this.batch.getRowCount() > 0) {
             this.nativeWriter.write(this.batch);
             HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-//        System.out.println(partitionDescAndFilesMap);
             for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
                 recoverableMap.put(
                         entry.getKey(),
                         entry.getValue()
                                 .stream()
-                                .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, creationTime))
+                                .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
+                                        creationTime))
                                 .collect(Collectors.toList())
                 );
             }
@@ -160,6 +167,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                 throw new RuntimeException(e);
             }
         }
+        LOG.info("CloseForCommitWithRecoverableMap done, recoverableMap={}", recoverableMap);
         return recoverableMap;
     }
 
@@ -194,5 +202,19 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
     @Override
     public long getLastUpdateTime() {
         return this.lastUpdateTime;
+    }
+
+    @Override public String toString() {
+        return "DynamicPartitionNativeParquetWriter{" +
+                "rowType=" + rowType +
+                ", primaryKeys=" + primaryKeys +
+                ", rangeColumns=" + rangeColumns +
+                ", maxRowGroupRows=" + maxRowGroupRows +
+                ", creationTime=" + creationTime +
+                ", rowsInBatch=" + rowsInBatch +
+                ", lastUpdateTime=" + lastUpdateTime +
+                ", prefix='" + prefix + '\'' +
+                ", totalRows=" + totalRows +
+                '}';
     }
 }

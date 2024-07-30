@@ -34,7 +34,7 @@ public class LakeSoulSinkOptions {
 
     public static final String SORT_FIELD = "__sort_filed__";
 
-    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 5000000L;
+    public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 1000000L;
 
     public static final Long DEFAULT_BUCKET_ROLLING_TIME = 5 * 60 * 1000L;
 
@@ -171,6 +171,12 @@ public class LakeSoulSinkOptions {
             .intType()
             .defaultValue(1024)
             .withDescription("The cursor batch size");
+
+    public static final ConfigOption<Integer> MAX_ROW_GROUP_SIZE = ConfigOptions
+            .key("lakesoul.file.max_row_group_size")
+            .intType()
+            .defaultValue(250000)
+            .withDescription("Max row group size for LakeSoul writer");
 
     public static final ConfigOption<String> SOURCE_DB_SCHEMA_TABLES = ConfigOptions
             .key("source_db.schema_tables")
