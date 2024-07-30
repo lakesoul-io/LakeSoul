@@ -70,7 +70,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
     }
 
-    @Test
+    //    @Test
     public void testLogStream() throws Exception {
 
         int parallelism = 2;

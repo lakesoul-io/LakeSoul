@@ -333,7 +333,7 @@ public class MockLakeSoulArrowSource {
                     .setTableSchema(schema.toJson())
                     .setTablePath(getTempDirUri("/LakeSource/" + name))
                     .setPartitions(";")
-                    .setProperties("{}")
+                    .setProperties("{\"use_cdc\":\"true\"}")
                     .build();
         }
 

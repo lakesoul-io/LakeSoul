@@ -163,4 +163,14 @@ public class BatchReadSuite extends AbstractTestBase {
         tEnvs.executeSql(createOrderSql);
         tEnvs.executeSql("INSERT INTO order_noPK VALUES (1,'apple',20), (2,'tomato',10), (3,'water',15)").await();
     }
+
+    public static void main(String[] args) {
+        TableEnvironment createTableEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String testSelectNoPK = "select * from test.s_qara_78727_4hz";
+        StreamTableEnvironment tEnvs = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        tEnvs.executeSql("show databases").print();
+        TableImpl flinkTable = (TableImpl) tEnvs.sqlQuery(testSelectNoPK);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        System.out.println(results.size());
+    }
 }

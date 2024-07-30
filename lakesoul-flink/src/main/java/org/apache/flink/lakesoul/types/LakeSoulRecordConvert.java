@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.amazonaws.services.dynamodbv2.xspec.S;
 import com.ververica.cdc.connectors.mongodb.internal.MongoDBEnvelope;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Decimal;
 import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Field;
@@ -14,30 +13,17 @@ import com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.errors.DataE
 import com.ververica.cdc.debezium.utils.TemporalConversions;
 import io.debezium.data.Enum;
 import io.debezium.data.EnumSet;
-import io.debezium.data.Envelope;
-import io.debezium.data.Json;
-import io.debezium.time.MicroDuration;
+import io.debezium.data.*;
 import io.debezium.data.geometry.Geometry;
 import io.debezium.data.geometry.Point;
-import io.debezium.data.SpecialValueDecimal;
-import io.debezium.data.VariableScaleDecimal;
 import io.debezium.time.Date;
-import io.debezium.time.MicroTime;
-import io.debezium.time.MicroTimestamp;
-import io.debezium.time.NanoTime;
-import io.debezium.time.NanoTimestamp;
-import io.debezium.time.Time;
-import io.debezium.time.Timestamp;
-import io.debezium.time.Year;
-import io.debezium.time.ZonedTime;
-import io.debezium.time.ZonedTimestamp;
+import io.debezium.time.*;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.tool.LakeSoulKeyGen;
 import org.apache.flink.table.data.*;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.writer.BinaryRowWriter;
 import org.apache.flink.table.runtime.typeutils.ArrayDataSerializer;
-import org.apache.flink.table.runtime.typeutils.BinaryRowDataSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.*;
 import org.apache.flink.types.RowKind;
@@ -51,10 +37,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.CDC_CHANGE_COLUMN_DEFAULT;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.USE_CDC;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.lakesoul.types.ParseDocument.convertBSONToStruct;
 
 public class LakeSoulRecordConvert implements Serializable {
@@ -134,14 +117,14 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct bsonStruct = convertBSONToStruct(fullDocument);
                 Schema documentSchema = bsonStruct.schema();
                 RowData insert = convert(bsonStruct, documentSchema, RowKind.INSERT, sortField);
-                RowType mongoRt = toFlinkRowType(documentSchema,true);
+                RowType mongoRt = toFlinkRowType(documentSchema, true);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(mongoRt);
             } else if (op.equals("delete")) {
                 String fullDocumentValue = value.getString("fullDocumentBeforeChange");
                 Struct before = convertBSONToStruct(fullDocumentValue);
                 Schema beforSchema = before.schema();
-                RowData delete = convert(before,beforSchema,RowKind.DELETE,sortField);
+                RowData delete = convert(before, beforSchema, RowKind.DELETE, sortField);
                 RowType rt = toFlinkRowType(beforSchema, true);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
                 delete.setRowKind(RowKind.DELETE);
@@ -176,7 +159,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData insert = convert(after, afterSchema, RowKind.INSERT, sortField);
                 //boolean afterNullable = afterSchema.isOptional();
-                RowType rt = toFlinkRowType(afterSchema,false);
+                RowType rt = toFlinkRowType(afterSchema, false);
                 insert.setRowKind(RowKind.INSERT);
                 builder.setOperation("insert").setAfterRowData(insert).setAfterType(rt);
             } else if (op == Envelope.Operation.DELETE) {
@@ -184,7 +167,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 RowData delete = convert(before, beforeSchema, RowKind.DELETE, sortField);
 //                boolean nullable = beforeSchema.isOptional();
-                RowType rt = toFlinkRowType(beforeSchema,false);
+                RowType rt = toFlinkRowType(beforeSchema, false);
                 delete.setRowKind(RowKind.DELETE);
                 builder.setOperation("delete").setBeforeRowData(delete).setBeforeRowType(rt);
 
@@ -193,13 +176,13 @@ public class LakeSoulRecordConvert implements Serializable {
                 Struct before = value.getStruct(Envelope.FieldName.BEFORE);
                 RowData beforeData = convert(before, beforeSchema, RowKind.UPDATE_BEFORE, sortField);
                 //boolean beforNullable = beforeSchema.isOptional();
-                RowType beforeRT = toFlinkRowType(beforeSchema,false);
+                RowType beforeRT = toFlinkRowType(beforeSchema, false);
                 beforeData.setRowKind(RowKind.UPDATE_BEFORE);
                 Schema afterSchema = valueSchema.field(Envelope.FieldName.AFTER).schema();
                 Struct after = value.getStruct(Envelope.FieldName.AFTER);
                 RowData afterData = convert(after, afterSchema, RowKind.UPDATE_AFTER, sortField);
                 //boolean afterNullable = afterSchema.isOptional();
-                RowType afterRT = toFlinkRowType(afterSchema,false);
+                RowType afterRT = toFlinkRowType(afterSchema, false);
                 afterData.setRowKind(RowKind.UPDATE_AFTER);
                 if (partitionFieldsChanged(beforeRT, beforeData, afterRT, afterData)) {
                     // partition fields changed. we need to emit both before and after RowData
@@ -239,9 +222,9 @@ public class LakeSoulRecordConvert implements Serializable {
         for (int i = 0; i < (useCDC ? arity - 2 : arity - 1); i++) {
             Field item = fieldNames.get(i);
             colNames[i] = item.name();
-            if (isMongoDDL){
+            if (isMongoDDL) {
                 colTypes[i] = convertToLogical(item.schema(), !item.name().equals("_id"));
-            }else {
+            } else {
                 colTypes[i] = convertToLogical(item.schema(), item.schema().isOptional());
             }
         }
@@ -270,14 +253,14 @@ public class LakeSoulRecordConvert implements Serializable {
         for (Field field : schema.fields()) {
             String fieldName = field.name();
             Schema fieldype = field.schema();
-            LogicalType logicalType = convertToLogical(fieldype ,true);
+            LogicalType logicalType = convertToLogical(fieldype, true);
             RowType.RowField rowField = new RowType.RowField(fieldName, logicalType);
             rowFields.add(rowField);
         }
         return rowFields;
     }
 
-    private LogicalType primitiveLogicalType(Schema fieldSchema,boolean nullable) {
+    private LogicalType primitiveLogicalType(Schema fieldSchema, boolean nullable) {
         switch (fieldSchema.type()) {
             case BOOLEAN:
                 return new BooleanType(nullable);
@@ -331,9 +314,9 @@ public class LakeSoulRecordConvert implements Serializable {
                 return new LocalZonedTimestampType(nullable, 9);
             case Decimal.LOGICAL_NAME:
                 Map<String, String> paras = fieldSchema.parameters();
-                if (paras.get("connect.decimal.precision") == null){
+                if (paras.get("connect.decimal.precision") == null) {
                     return new DecimalType(nullable, 38, 30);
-                }else {
+                } else {
                     return new DecimalType(nullable, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
                 }
             case Date.SCHEMA_NAME:
@@ -393,7 +376,7 @@ public class LakeSoulRecordConvert implements Serializable {
         return rowDataCDC;
     }
 
-    private String getRowKindStr(RowKind rowKind) {
+    private static String getRowKindStr(RowKind rowKind) {
         String rowKindStr;
         switch (rowKind) {
             case INSERT:
@@ -414,7 +397,7 @@ public class LakeSoulRecordConvert implements Serializable {
         rowData.setField(rowData.getArity() - 1, StringData.fromString(rowKindStr));
     }
 
-    public void setCDCRowKindField(BinaryRowWriter writer, RowKind rowKind, int fieldIndex) {
+    public static void setCDCRowKindField(BinaryRowWriter writer, RowKind rowKind, int fieldIndex) {
         String rowKindStr = getRowKindStr(rowKind);
         writer.writeString(fieldIndex, StringData.fromString(rowKindStr));
     }
@@ -460,7 +443,7 @@ public class LakeSoulRecordConvert implements Serializable {
             String fieldName = field.name();
             Schema fieldSchema = schema.field(fieldName).schema();
             Object fieldValue = struct.getWithoutDefault(fieldName);
-            sqlSchemaAndFieldWrite(writer, i,fieldValue, fieldSchema, serverTimeZone);
+            sqlSchemaAndFieldWrite(writer, i, fieldValue, fieldSchema, serverTimeZone);
         }
         writer.complete();
         return row;
@@ -477,7 +460,7 @@ public class LakeSoulRecordConvert implements Serializable {
             String nestedFieldName = field.name();
             Schema nestedFieldType = nestedSchema.field(nestedFieldName).schema();
             Object nestedFieldValue = nestedStruct.getWithoutDefault(nestedFieldName);
-            sqlSchemaAndFieldWrite(nestedWriter, i, nestedFieldValue,nestedFieldType, serverTimeZone);
+            sqlSchemaAndFieldWrite(nestedWriter, i, nestedFieldValue, nestedFieldType, serverTimeZone);
         }
         nestedWriter.complete();
         RowDataSerializer rowDataSerializer = new RowDataSerializer();
@@ -497,11 +480,11 @@ public class LakeSoulRecordConvert implements Serializable {
     }
 
     private void primitiveTypeWrite(BinaryRowWriter writer, int index, Object fieldValue, Schema fieldSchema) {
-        if (fieldValue == null){
+        if (fieldValue == null) {
             writer.setNullAt(index);
-        }else if (fieldSchema.type().getName().equals("struct")){
-            convertNestedStruct(writer, index, (Struct) fieldValue,fieldSchema);
-        }else {
+        } else if (fieldSchema.type().getName().equals("struct")) {
+            convertNestedStruct(writer, index, (Struct) fieldValue, fieldSchema);
+        } else {
             switch (fieldSchema.type()) {
                 case BOOLEAN:
                     writeBoolean(writer, index, fieldValue);
@@ -527,7 +510,7 @@ public class LakeSoulRecordConvert implements Serializable {
                     writeBinary(writer, index, fieldValue);
                     break;
                 case ARRAY:
-                    writeArray(writer,index,fieldValue, fieldSchema);
+                    writeArray(writer, index, fieldValue, fieldSchema);
                     break;
 //                case STRUCT:
 //                    writeRow(writer, index, fieldValue);
@@ -555,7 +538,7 @@ public class LakeSoulRecordConvert implements Serializable {
             case MicroTimestamp.SCHEMA_NAME:
             case NanoTimestamp.SCHEMA_NAME:
             case com.ververica.cdc.connectors.shaded.org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME:
-                writeTimeStamp(writer, index, fieldValue, fieldSchema,serverTimeZone);
+                writeTimeStamp(writer, index, fieldValue, fieldSchema, serverTimeZone);
                 break;
             case Decimal.LOGICAL_NAME:
                 writeDecimal(writer, index, fieldValue, fieldSchema);
@@ -628,7 +611,7 @@ public class LakeSoulRecordConvert implements Serializable {
             }
         }
         Map<String, String> paras = schema.parameters();
-        if ( paras==null || paras.get("connect.decimal.precision") == null) {
+        if (paras == null || paras.get("connect.decimal.precision") == null) {
             return DecimalData.fromBigDecimal(bigDecimal, 38, 30);
         } else {
             return DecimalData.fromBigDecimal(bigDecimal, Integer.parseInt(paras.get("connect.decimal.precision")), Integer.parseInt(paras.get("scale")));
@@ -704,9 +687,9 @@ public class LakeSoulRecordConvert implements Serializable {
             }
             return null;
         } else if (dbzObj instanceof java.util.Date) {
-            java.util.Date date = (java.util.Date)dbzObj;
+            java.util.Date date = (java.util.Date) dbzObj;
             long timestamp = date.toInstant().toEpochMilli();
-            Instant instant = TimestampData.fromEpochMillis( timestamp).toInstant();
+            Instant instant = TimestampData.fromEpochMillis(timestamp).toInstant();
             return TimestampData.fromInstant(instant);
         }
         // fallback to zoned timestamp
@@ -733,15 +716,16 @@ public class LakeSoulRecordConvert implements Serializable {
                     "Unsupported Struct value type: " + dbzObj.getClass().getSimpleName());
         }
     }
+
     public void writeArray(BinaryRowWriter writer, int index, Object dbzObj, Schema schema) {
         if (dbzObj instanceof ArrayList) {
             ArrayList<Object> arrayList = (ArrayList<Object>) dbzObj;
             ArrayData arrayData = null;
             ArrayDataSerializer arrayDataSerializer = null;
-            switch (schema.valueSchema().type()){
+            switch (schema.valueSchema().type()) {
                 case STRING:
                     StringData[] stringDataArray = new StringData[arrayList.size()];
-                    for (int i = 0;i < arrayList.size(); i++){
+                    for (int i = 0; i < arrayList.size(); i++) {
                         Object element = arrayList.get(i);
                         stringDataArray[i] = StringData.fromString(element.toString());
                     }

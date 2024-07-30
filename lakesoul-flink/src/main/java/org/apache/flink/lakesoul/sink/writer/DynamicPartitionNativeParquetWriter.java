@@ -77,10 +77,11 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
     private void initNativeWriter() throws IOException {
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
+        System.out.println(arrowSchema);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
         nativeWriter.setRangePartitions(rangeColumns);
-        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
+        if (conf.getBoolean(LakeSoulSinkOptions.IS_MULTI_TABLE_SOURCE)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
@@ -89,7 +90,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
 
-
+        System.out.println(prefix);
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 

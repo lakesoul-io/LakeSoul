@@ -147,6 +147,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
     @Override
     public void write(IN element, Context context) throws IOException {
+        LOG.info("{}", element);
         if (element == null) {
             return;
         }
@@ -163,6 +164,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
         } catch (Exception e) {
             throw new IOException(e);
         }
+        LOG.info("{}", schemaAndRowDatas);
         for (Tuple2<TableSchemaIdentity, RowData> schemaAndRowData : schemaAndRowDatas) {
             TableSchemaIdentity identity = schemaAndRowData.f0;
             RowData rowData = schemaAndRowData.f1;
