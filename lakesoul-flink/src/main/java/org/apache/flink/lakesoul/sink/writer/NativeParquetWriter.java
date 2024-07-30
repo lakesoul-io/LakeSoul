@@ -19,6 +19,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.runtime.arrow.ArrowWriter;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -27,15 +29,18 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 public class NativeParquetWriter implements InProgressFileWriter<RowData, String> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(NativeParquetWriter.class);
 
     private final ArrowWriter<RowData> arrowWriter;
 
     private NativeIOWriter nativeWriter;
 
-    private final int batchSize;
+    private final int maxRowGroupRows;
 
     private final long creationTime;
 
@@ -57,7 +62,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
                                Path path,
                                long creationTime,
                                Configuration conf) throws IOException {
-        this.batchSize = 250000; // keep same with native writer's row group row number
+        this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.bucketID = bucketID;
         this.rowsInBatch = 0;
@@ -69,7 +74,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
-        nativeWriter.setRowGroupRowNumber(this.batchSize);
+        nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
         this.path = path.makeQualified(path.getFileSystem());
@@ -85,7 +90,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         this.arrowWriter.write(element);
         this.rowsInBatch++;
         this.totalRows++;
-        if (this.rowsInBatch >= this.batchSize) {
+        if (this.rowsInBatch >= this.maxRowGroupRows) {
             this.arrowWriter.finish();
             this.nativeWriter.write(this.batch);
             // in native writer, batch may be kept in memory for sorting,
@@ -128,7 +133,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         }
 
         @Override
-        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized) throws IOException {
+        public InProgressFileWriter.PendingFileRecoverable deserialize(int version, byte[] serialized)
+                throws IOException {
             DataInputDeserializer in = new DataInputDeserializer(serialized);
             String path = in.readUTF();
             long time = in.readLong();
@@ -217,5 +223,17 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
     @Override
     public long getLastUpdateTime() {
         return this.lastUpdateTime;
+    }
+
+    @Override public String toString() {
+        return "NativeParquetWriter{" +
+                "maxRowGroupRows=" + maxRowGroupRows +
+                ", creationTime=" + creationTime +
+                ", bucketID='" + bucketID + '\'' +
+                ", rowsInBatch=" + rowsInBatch +
+                ", lastUpdateTime=" + lastUpdateTime +
+                ", path=" + path +
+                ", totalRows=" + totalRows +
+                '}';
     }
 }

@@ -41,7 +41,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.*;
+import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.applyPartitionFilters;
+import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.not;
+import static com.dmetasoul.lakesoul.lakesoul.io.substrait.SubstraitUtil.substraitExprToProto;
 
 public class LakeSoulTableSource
         implements SupportsFilterPushDown, SupportsProjectionPushDown, ScanTableSource,
@@ -124,8 +126,6 @@ public class LakeSoulTableSource
         for (ResolvedExpression filter : filters) {
             if (SubstraitFlinkUtil.filterAllPartitionColumn(filter, partitionCols)) {
                 completePartitionFilters.add(filter);
-//            } else if (SubstraitFlinkUtil.filterContainsPartitionColumn(filter, partitionCols)) {
-//                partialPartitionFilters.add(filter);
             } else {
                 nonPartitionFilters.add(filter);
             }
@@ -133,7 +133,6 @@ public class LakeSoulTableSource
         LOG.info("completePartitionFilters: {}", completePartitionFilters);
         LOG.info("partialPartitionFilters: {}", partialPartitionFilters);
         LOG.info("nonPartitionFilters: {}", nonPartitionFilters);
-
 
         // find acceptable non partition filters
         Tuple2<Result, Expression> pushDownResultAndSubstraitExpr = SubstraitFlinkUtil.flinkExprToSubStraitExpr(
@@ -158,17 +157,19 @@ public class LakeSoulTableSource
             }
             this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
             Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
-            List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
+            List<Field>
+                    partitionFields =
+                    partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
             Schema partitionSchema = new Schema(partitionFields);
-            System.out.println("partitionSchema=" + partitionSchema);
-            List<PartitionInfo> remainingPartitionInfo = applyPartitionFilters(allPartitionInfo, partitionSchema, this.partitionFilters);
+            List<PartitionInfo>
+                    remainingPartitionInfo =
+                    applyPartitionFilters(allPartitionInfo, partitionSchema, this.partitionFilters);
             remainingPartitions = partitionInfoToPartitionMap(remainingPartitionInfo);
 
-            setModificationContextSourcePartitions(JniWrapper.newBuilder().addAllPartitionInfo(remainingPartitionInfo).build());
+            setModificationContextSourcePartitions(
+                    JniWrapper.newBuilder().addAllPartitionInfo(remainingPartitionInfo).build());
             setModificationContextPartitionFilter(this.partitionFilters);
-
-
         }
 
         return pushDownResultAndSubstraitExpr.f0;
@@ -208,11 +209,14 @@ public class LakeSoulTableSource
 
     private List<Map<String, String>> complementPartition(List<Map<String, String>> remainingPartitions) {
         List<PartitionInfo> allPartitionInfo = listPartitionInfo();
-        Set<String> remainingPartitionDesc = remainingPartitions.stream().map(DBUtil::formatPartitionDesc).collect(Collectors.toSet());
+        Set<String>
+                remainingPartitionDesc =
+                remainingPartitions.stream().map(DBUtil::formatPartitionDesc).collect(Collectors.toSet());
         List<Map<String, String>> partitions = new ArrayList<>();
         for (PartitionInfo info : allPartitionInfo) {
             String partitionDesc = info.getPartitionDesc();
-            if (!partitionDesc.equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC) && !remainingPartitionDesc.contains(partitionDesc)) {
+            if (!partitionDesc.equals(DBConfig.LAKESOUL_NON_PARTITION_TABLE_PART_DESC) &&
+                    !remainingPartitionDesc.contains(partitionDesc)) {
                 partitions.add(DBUtil.parsePartitionDesc(partitionDesc));
             }
         }
@@ -253,7 +257,8 @@ public class LakeSoulTableSource
         List<LogicalType> projectTypes =
                 Arrays.stream(fieldIndexs).mapToObj(this.tableRowType::getTypeAt).collect(Collectors.toList());
         List<String> projectNames =
-                Arrays.stream(fieldIndexs).mapToObj(this.tableRowType.getFieldNames()::get).collect(Collectors.toList());
+                Arrays.stream(fieldIndexs).mapToObj(this.tableRowType.getFieldNames()::get)
+                        .collect(Collectors.toList());
         List<String> pkNamesNotExistInReadFields = new ArrayList<>();
         List<LogicalType> pkTypesNotExistInReadFields = new ArrayList<>();
         for (String pk : pkColumns) {
@@ -332,11 +337,13 @@ public class LakeSoulTableSource
             @Nullable
             RowLevelModificationScanContext previousContext) {
         if (previousContext == null || previousContext instanceof LakeSoulRowLevelModificationScanContext) {
-            this.modificationContext = new LakeSoulRowLevelModificationScanContext(rowLevelModificationType, listPartitionInfo());
+            this.modificationContext =
+                    new LakeSoulRowLevelModificationScanContext(rowLevelModificationType, listPartitionInfo());
 
             return modificationContext;
         }
-        throw new RuntimeException("LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
+        throw new RuntimeException(
+                "LakeSoulTableSource.applyRowLevelModificationScan only supports LakeSoulRowLevelModificationScanContext");
     }
 
     public LakeSoulRowLevelModificationScanContext getModificationContext() {

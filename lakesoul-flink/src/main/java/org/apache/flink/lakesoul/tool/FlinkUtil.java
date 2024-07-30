@@ -579,7 +579,6 @@ public class FlinkUtil {
         if (!hasHdfsClasses()) return;
 
         FileSystem fs = p.getFileSystem();
-        System.out.println(fs.getClass());
         if ((fs instanceof HadoopFileSystem)
                 || (fs instanceof SafetyNetWrapperFileSystem
                 && ((SafetyNetWrapperFileSystem) fs).getWrappedDelegate() instanceof HadoopFileSystem)) {

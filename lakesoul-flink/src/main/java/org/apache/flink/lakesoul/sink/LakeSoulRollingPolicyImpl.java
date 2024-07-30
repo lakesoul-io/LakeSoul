@@ -6,12 +6,8 @@ package org.apache.flink.lakesoul.sink;
 
 import org.apache.flink.streaming.api.functions.sink.filesystem.PartFileInfo;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.CheckpointRollingPolicy;
-import org.apache.flink.table.data.RowData;
 
 import java.io.IOException;
-
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DEFAULT_BUCKET_ROLLING_TIME;
 
 public class LakeSoulRollingPolicyImpl<In> extends CheckpointRollingPolicy<In, String> {
 
@@ -25,12 +21,6 @@ public class LakeSoulRollingPolicyImpl<In> extends CheckpointRollingPolicy<In, S
         this.rollOnCheckpoint = true;
         this.rollingSize = rollingSize;
         this.rollingTime = rollingTime;
-    }
-
-    public LakeSoulRollingPolicyImpl(boolean rollOnCheckpoint) {
-        this.rollingSize = DEFAULT_BUCKET_ROLLING_SIZE;
-        this.rollingTime = DEFAULT_BUCKET_ROLLING_TIME;
-        this.rollOnCheckpoint = rollOnCheckpoint;
     }
 
     @Override

@@ -6,7 +6,6 @@ package org.apache.flink.lakesoul.sink.writer.arrow;
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOWriter;
 import org.apache.arrow.vector.types.pojo.Schema;
-import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
@@ -16,6 +15,8 @@ import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -25,24 +26,26 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.SORT_FIELD;
 
 public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<LakeSoulArrowWrapper, String> {
 
+    private static final Logger LOG = LoggerFactory.getLogger(NativeLakeSoulArrowWrapperWriter.class);
+
     private final RowType rowType;
 
-
-    private transient ListState<LakeSoulArrowWrapper> recordBatchState;
     private final List<String> primaryKeys;
+
     private final List<String> rangeColumns;
+
     private final Configuration conf;
 
     private NativeIOWriter nativeWriter;
 
-    private final int batchSize;
+    private final int maxRowGroupRows;
 
     private final long creationTime;
-
 
     long lastUpdateTime;
 
@@ -56,7 +59,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
                                             Path path,
                                             long creationTime,
                                             Configuration conf) throws IOException {
-        this.batchSize = 250000; // keep same with native writer's row group row number
+        this.maxRowGroupRows = conf.getInteger(MAX_ROW_GROUP_SIZE);
         this.creationTime = creationTime;
         this.rowType = rowType;
         this.primaryKeys = primaryKeys;
@@ -77,18 +80,19 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
 
-        nativeWriter.setRowGroupRowNumber(this.batchSize);
+        nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
 
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 
         FlinkUtil.setFSConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
+        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
     }
 
     @Override
     public void write(LakeSoulArrowWrapper element, long currentTime) throws IOException {
-        nativeWriter.writeIpc(element.getEncodedBatch());
+        totalRows += nativeWriter.writeIpc(element.getEncodedBatch());
     }
 
     @Override
@@ -111,11 +115,9 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
-        System.out.println("closeForCommitWithRecoverableMap start");
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
 
         HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-//        System.out.println(partitionDescAndFilesMap);
         for (Map.Entry<String, List<String>> entry : partitionDescAndFilesMap.entrySet()) {
             recoverableMap.put(
                     entry.getKey(),
@@ -133,7 +135,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
             throw new RuntimeException(e);
         }
 
-        System.out.println("closeForCommitWithRecoverableMap done, recoverableMap=" + recoverableMap);
+        LOG.info("CloseForCommitWithRecoverableMap done, recoverableMap={}", recoverableMap);
         return recoverableMap;
     }
 
@@ -165,5 +167,17 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
     @Override
     public long getLastUpdateTime() {
         return this.lastUpdateTime;
+    }
+
+    @Override
+    public String toString() {
+        return "NativeLakeSoulArrowWrapperWriter{" +
+                "rowType=" + rowType +
+                ", primaryKeys=" + primaryKeys +
+                ", rangeColumns=" + rangeColumns +
+                ", maxRowGroupRows=" + maxRowGroupRows +
+                ", creationTime=" + creationTime +
+                ", prefix='" + prefix + '\'' +
+                '}';
     }
 }
