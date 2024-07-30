@@ -90,7 +90,6 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
 
-        System.out.println(prefix);
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
 
