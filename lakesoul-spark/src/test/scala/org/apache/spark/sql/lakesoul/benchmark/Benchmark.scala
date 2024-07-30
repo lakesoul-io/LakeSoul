@@ -32,18 +32,18 @@ object Benchmark {
   val splitLine = " --------------------------------------------------------------- "
 
   /**
-   * param example:
-   * --mysql.hostname localhost
-   * --mysql.database.name default_init
-   * --mysql.username root
-   * --mysql.password root
-   * --mysql.port 3306
-   * --server.time.zone UTC
-   * --cdc.contract true
-   * --single.table.contract false
-   * --lakesoul.database.name lakesoul_test
-   * --lakesoul.table.name lakesoul_table
-   */
+    * param example:
+    * --mysql.hostname localhost
+    * --mysql.database.name default_init
+    * --mysql.username root
+    * --mysql.password root
+    * --mysql.port 3306
+    * --server.time.zone UTC
+    * --cdc.contract true
+    * --single.table.contract false
+    * --lakesoul.database.name lakesoul_test
+    * --lakesoul.table.name lakesoul_table
+    */
   def main(args: Array[String]): Unit = {
     val parameter = ParametersTool.fromArgs(args)
     hostname = parameter.get("mysql.hostname", hostname)
@@ -135,7 +135,7 @@ object Benchmark {
       .option("user", mysqlUserName)
       .option("password", mysqlPassword)
       .load()
-      .filter("table_schema='" + dbName +"'")
+      .filter("table_schema='" + dbName + "'")
   }
 
   def verifyQuery(spark: SparkSession, table: String): Unit = {
@@ -159,10 +159,11 @@ object Benchmark {
     val result = diff1.count() == 0 && diff2.count() == 0
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
-      println("*************diff1**************")
-      spark.createDataFrame(diff1, lakesoulDF.schema).show()
-      println("*************diff2**************")
-      spark.createDataFrame(diff2, lakesoulDF.schema).show()
+      jdbcDF.join(lakesoulDF, Seq("id")).show()
+      //      println("*************diff1**************")
+      //      spark.createDataFrame(diff1, lakesoulDF.schema).show()
+      //      println("*************diff2**************")
+      //      spark.createDataFrame(diff2, lakesoulDF.schema).show()
       println(table + " data verification ERROR!!!")
       System.exit(1)
     }
