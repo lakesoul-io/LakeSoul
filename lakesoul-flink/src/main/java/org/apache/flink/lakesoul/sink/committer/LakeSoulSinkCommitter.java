@@ -83,8 +83,8 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
                 for (String file : files) {
                     DataFileOp.Builder dataFileOp = DataFileOp.newBuilder();
                     dataFileOp.setFileOp(FileOp.add);
-                    dataFileOp.setPath(file);
                     Path path = new Path(file);
+                    dataFileOp.setPath(path.toString());
                     FileStatus fileStatus = FileSystem.get(path.toUri()).getFileStatus(path);
                     dataFileOp.setSize(fileStatus.getLen());
                     dataFileOp.setFileExistCols(fileExistCols);
