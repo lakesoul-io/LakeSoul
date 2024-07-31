@@ -59,6 +59,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
     }
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
+        context.conf.set(DYNAMIC_BUCKETING, false);
         LakeSoulRollingPolicyImpl<RowData> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
