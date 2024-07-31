@@ -137,7 +137,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime);
+        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime, this.lastUpdateTime);
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
@@ -152,7 +152,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                         entry.getValue()
                                 .stream()
                                 .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
-                                        creationTime))
+                                        creationTime, lastUpdateTime))
                                 .collect(Collectors.toList())
                 );
             }
@@ -204,7 +204,8 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "DynamicPartitionNativeParquetWriter{" +
                 "rowType=" + rowType +
                 ", primaryKeys=" + primaryKeys +

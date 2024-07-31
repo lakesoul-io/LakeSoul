@@ -27,6 +27,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     private final long creationTime;
 
+    private final long lastUpdateTime;
+
     private final String bucketId;
 
     private final boolean dynamicBucketing;
@@ -76,7 +78,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             String bucketId,
             TableSchemaIdentity identity,
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
-            long time,
+            long creationTime,
             @Nullable String commitId,
             long tsMs,
             String dmlType,
@@ -87,7 +89,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.identity = identity;
         this.pendingFilesMap = new HashMap<>();
         this.pendingFilesMap.put(bucketId, pendingFiles);
-        this.creationTime = time;
+        this.creationTime = creationTime;
+        this.lastUpdateTime = creationTime;
         this.commitId = commitId;
         this.tsMs = tsMs;
         this.dmlType = dmlType;
@@ -101,7 +104,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     public LakeSoulMultiTableSinkCommittable(
             TableSchemaIdentity identity,
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
-            long time,
+            long creationTime,
             @Nullable String commitId,
             long tsMs,
             String dmlType,
@@ -112,7 +115,35 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.bucketId = this.dynamicBucketing ? DYNAMIC_BUCKET : pendingFilesMap.keySet().stream().findFirst().get();
         this.identity = identity;
         this.pendingFilesMap = pendingFilesMap;
-        this.creationTime = time;
+        this.creationTime = creationTime;
+        this.lastUpdateTime = creationTime;
+        this.commitId = commitId;
+        this.tsMs = tsMs;
+        this.dmlType = dmlType;
+        this.sourcePartitionInfo = sourcePartitionInfo;
+    }
+
+    /**
+     * Constructor for {@link org.apache.flink.lakesoul.sink.state.LakeSoulSinkCommittableSerializer} to
+     * restore commitable states
+     */
+    public LakeSoulMultiTableSinkCommittable(
+            TableSchemaIdentity identity,
+            Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
+            long creationTime,
+            long lastUpdateTime,
+            @Nullable String commitId,
+            long tsMs,
+            String dmlType,
+            String sourcePartitionInfo
+    ) {
+        Preconditions.checkNotNull(pendingFilesMap);
+        this.dynamicBucketing = pendingFilesMap.keySet().size() != 1;
+        this.bucketId = this.dynamicBucketing ? DYNAMIC_BUCKET : pendingFilesMap.keySet().stream().findFirst().get();
+        this.identity = identity;
+        this.pendingFilesMap = pendingFilesMap;
+        this.creationTime = creationTime;
+        this.lastUpdateTime = lastUpdateTime;
         this.commitId = commitId;
         this.tsMs = tsMs;
         this.dmlType = dmlType;
@@ -165,6 +196,10 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     public long getCreationTime() {
         return creationTime;
+    }
+
+    public long getLastUpdateTime() {
+        return lastUpdateTime;
     }
 
     public TableSchemaIdentity getIdentity() {

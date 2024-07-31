@@ -162,14 +162,21 @@ public class LakeSoulArrowWriterBucket {
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
-                        .get().get(0)).creationTime;
+        long creationTime = Long.MAX_VALUE;
+        long lastUpdateTime = Long.MIN_VALUE;
+        for (List<InProgressFileWriter.PendingFileRecoverable> recoverableList : pendingFilesMap.values()) {
+            for (InProgressFileWriter.PendingFileRecoverable recoverable : recoverableList) {
+                creationTime = Math.min(creationTime, ((NativeParquetWriter.NativeWriterPendingFileRecoverable) recoverable).creationTime);
+                lastUpdateTime = Math.max(lastUpdateTime, ((NativeParquetWriter.NativeWriterPendingFileRecoverable) recoverable).lastUpdateTime);
+            }
+        }
+
 
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 tableId,
                 new HashMap<>(pendingFilesMap),
-                time,
+                creationTime,
+                lastUpdateTime,
                 UUID.randomUUID().toString(),
                 tsMs,
                 dmlType,

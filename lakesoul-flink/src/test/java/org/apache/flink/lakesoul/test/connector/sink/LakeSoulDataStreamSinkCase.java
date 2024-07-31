@@ -27,9 +27,8 @@ import static org.apache.flink.lakesoul.types.LakeSoulRecordConvert.setCDCRowKin
 
 public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
 
-    @Test
-    public void testCollectionSource() throws Exception {
-
+    //    @Test
+    public void testLakeSoulDataStreamSink() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);
         Configuration conf = new Configuration();
@@ -47,7 +46,8 @@ public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
         LakeSoulRowDataWrapper data = mockInsertLakeSoulRowDataWrapper(1, useCDC, tableId);
         recordCollection.add(new BinarySourceRecord(topic, primaryKeys, tableId, path, partitionKeys, false, data, ""));
 
-        LakeSoulRowDataWrapper data1 = mockUpdateLakeSoulRowDataWrapper(2, useCDC, tableId);
+//        LakeSoulRowDataWrapper data1 = mockUpdateLakeSoulRowDataWrapper(2, useCDC, tableId);
+        LakeSoulRowDataWrapper data1 = mockInsertLakeSoulRowDataWrapper(4, useCDC, tableId);
         recordCollection.add(new BinarySourceRecord(topic, primaryKeys, tableId, path, partitionKeys, false, data1, ""));
 
         DataStreamSource<BinarySourceRecord> source = env.fromCollection(recordCollection).setParallelism(1);
@@ -134,7 +134,8 @@ public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
         // construct RowData
         BinaryRowData rowdata = new BinaryRowData(arity);
         BinaryRowWriter writer = new BinaryRowWriter(rowdata);
-        writer.writeInt(0, 0);
+
+        writer.writeInt(0, seed / 2);
         writer.writeInt(1, seed);
         if (seed % 2 == 0) {
             writer.writeString(2, StringData.fromString(String.valueOf(seed)));

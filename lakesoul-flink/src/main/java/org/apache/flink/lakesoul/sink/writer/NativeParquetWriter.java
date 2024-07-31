@@ -129,6 +129,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
                     (NativeParquetWriter.NativeWriterPendingFileRecoverable) obj;
             out.writeUTF(recoverable.path);
             out.writeLong(recoverable.creationTime);
+            out.writeLong(recoverable.lastUpdateTime);
             return out.getCopyOfBuffer();
         }
 
@@ -137,8 +138,9 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
                 throws IOException {
             DataInputDeserializer in = new DataInputDeserializer(serialized);
             String path = in.readUTF();
-            long time = in.readLong();
-            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, time);
+            long creationTime = in.readLong();
+            long lastUpdateTime = in.readLong();
+            return new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, creationTime, lastUpdateTime);
         }
     }
 
@@ -147,9 +149,12 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
 
         public long creationTime;
 
-        public NativeWriterPendingFileRecoverable(String path, long creationTime) {
+        public long lastUpdateTime;
+
+        public NativeWriterPendingFileRecoverable(String path, long creationTime, long lastUpdateTime) {
             this.path = path;
             this.creationTime = creationTime;
+            this.lastUpdateTime = lastUpdateTime;
         }
 
         @Override
@@ -190,7 +195,7 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeWriterPendingFileRecoverable(this.path.toString(), this.creationTime);
+        return new NativeWriterPendingFileRecoverable(this.path.toString(), this.creationTime, this.lastUpdateTime);
     }
 
     @Override
@@ -225,7 +230,8 @@ public class NativeParquetWriter implements InProgressFileWriter<RowData, String
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "NativeParquetWriter{" +
                 "maxRowGroupRows=" + maxRowGroupRows +
                 ", creationTime=" + creationTime +

@@ -92,6 +92,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
     @Override
     public void write(LakeSoulArrowWrapper element, long currentTime) throws IOException {
+        lastUpdateTime = currentTime;
         totalRows += nativeWriter.writeIpc(element.getEncodedBatch());
     }
 
@@ -111,7 +112,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime);
+        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime, this.lastUpdateTime);
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
@@ -123,7 +124,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
                     entry.getKey(),
                     entry.getValue()
                             .stream()
-                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, creationTime))
+                            .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path, creationTime, lastUpdateTime))
                             .collect(Collectors.toList())
             );
         }
