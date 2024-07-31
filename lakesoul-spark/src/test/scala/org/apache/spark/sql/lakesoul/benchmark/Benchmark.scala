@@ -159,6 +159,8 @@ object Benchmark {
     val result = diff1.count() == 0 && diff2.count() == 0
     if (!result) {
       println(printLine + table + " result: " + result + printLine)
+      println(s"jdbcDF.schema ${jdbcDF.schema}")
+      println(s"lakesoulDF.schema ${lakesoulDF.schema}")
       jdbcDF.join(lakesoulDF, Seq("id"), "left_outer").show()
       //      println("*************diff1**************")
       //      spark.createDataFrame(diff1, lakesoulDF.schema).show()
