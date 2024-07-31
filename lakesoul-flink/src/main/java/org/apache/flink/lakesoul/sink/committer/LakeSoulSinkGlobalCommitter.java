@@ -14,6 +14,7 @@ import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -120,11 +121,12 @@ public class LakeSoulSinkGlobalCommitter
         int index = 0;
         String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
 
-        for (Map.Entry<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> entry :
-                globalCommittable.getGroupedCommittable()
-                        .entrySet()) {
-            TableSchemaIdentity identity = entry.getKey().f0;
-            List<LakeSoulMultiTableSinkCommittable> lakeSoulMultiTableSinkCommittable = entry.getValue();
+        for (Tuple2<TableSchemaIdentity, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable :
+                globalCommittable.getGroupedCommittable()) {
+            LOG.info("Committing globalCommittable.getGroupedCommittable(): {}", groupedCommittable);
+            TableSchemaIdentity identity = groupedCommittable.f0;
+            List<LakeSoulMultiTableSinkCommittable> committableList = groupedCommittable.f1;
+
             String tableName = identity.tableId.table();
             String tableNamespace = identity.tableId.schema();
             if (tableNamespace == null) {
@@ -231,7 +233,7 @@ public class LakeSoulSinkGlobalCommitter
                     if (equalOrCanCast.contains("Change of Partition Column") || equalOrCanCast.contains("Change of Primary Key Column")) {
                         throw new IOException(equalOrCanCast);
                     }
-                    for (LakeSoulMultiTableSinkCommittable committable : lakeSoulMultiTableSinkCommittable) {
+                    for (LakeSoulMultiTableSinkCommittable committable : committableList) {
                         if (committable.getTsMs() > schemaLastChangeTime) {
                             LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}", schemaLastChangeTime, committable.getTsMs());
                             throw new IOException(equalOrCanCast);
@@ -240,7 +242,7 @@ public class LakeSoulSinkGlobalCommitter
                 }
             }
 
-            committer.commit(lakeSoulMultiTableSinkCommittable);
+            committer.commit(committableList);
         }
         return Collections.emptyList();
     }

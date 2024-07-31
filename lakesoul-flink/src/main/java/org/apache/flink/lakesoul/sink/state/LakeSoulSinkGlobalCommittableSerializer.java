@@ -5,6 +5,7 @@
 package org.apache.flink.lakesoul.sink.state;
 
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.core.io.SimpleVersionedSerialization;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
@@ -75,11 +76,12 @@ public class LakeSoulSinkGlobalCommittableSerializer
     private void serializeV1(LakeSoulMultiTableSinkGlobalCommittable globalCommittable,
                              DataOutputView dataOutputView)
             throws IOException {
-        Map<Tuple2<TableSchemaIdentity, String>, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable =
-                globalCommittable.getGroupedCommittable();
+        List<Tuple2<TableSchemaIdentity, List<LakeSoulMultiTableSinkCommittable>>> groupedCommittable = globalCommittable.getGroupedCommittable();
         assert groupedCommittable != null;
         List<LakeSoulMultiTableSinkCommittable> committableList =
-                groupedCommittable.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+                groupedCommittable.stream().flatMap(t2 ->
+                        t2.f1.stream()
+                ).collect(Collectors.toList());
         dataOutputView.writeInt(committableList.size());
         for (LakeSoulMultiTableSinkCommittable committable : committableList) {
             SimpleVersionedSerialization.writeVersionAndSerialize(committableSerializer, committable, dataOutputView);
