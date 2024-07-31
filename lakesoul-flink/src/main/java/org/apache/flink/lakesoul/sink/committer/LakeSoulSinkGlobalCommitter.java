@@ -219,11 +219,7 @@ public class LakeSoulSinkGlobalCommitter
                                 msgSchema,
                                 identity.useCDC,
                                 identity.cdcColumn);
-                        if (dbType.equals("mongodb")) {
-                            dbManager.updateTableSchema(tableInfo.getTableId(), ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
-                        } else {
-                            dbManager.updateTableSchema(tableInfo.getTableId(), msgSchema.toJson());
-                        }
+                        dbManager.updateTableSchema(tableInfo.getTableId(), ArrowUtils.toArrowSchema(mergeStructType, "UTC").toJson());
                         if (JSONObject.parseObject(tableInfo.getProperties()).containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
                             dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
                         }

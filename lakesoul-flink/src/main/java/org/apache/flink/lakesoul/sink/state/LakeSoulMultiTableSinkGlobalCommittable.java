@@ -36,7 +36,7 @@ public class LakeSoulMultiTableSinkGlobalCommittable implements Serializable {
                         lastTuple = groupedCommittable.get(groupedCommittable.size() - 1);
                 if (lastTuple.f0.equals(committable.getIdentity())) {
                     LakeSoulMultiTableSinkCommittable lastCommittable = lastTuple.f1.get(lastTuple.f1.size() - 1);
-                    if (lastCommittable.getCreationTime() == committable.getCreationTime()) {
+                    if (isBounded || lastCommittable.getCreationTime() == committable.getCreationTime()) {
                         lastCommittable.merge(committable);
                     } else {
                         lastTuple.f1.add(committable);
