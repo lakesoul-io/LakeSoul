@@ -139,13 +139,12 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
     protected abstract List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(IN element) throws Exception;
 
-    protected long getDataDmlTsMs(IN element) {
+    protected long getSourceTsMs(IN element) {
         return Long.MAX_VALUE;
     }
 
     @Override
     public void write(IN element, Context context) throws IOException {
-        LOG.info("{}", element);
         if (element == null) {
             return;
         }
@@ -156,24 +155,23 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                 processingTimeService.getCurrentProcessingTime());
 
         List<Tuple2<TableSchemaIdentity, RowData>> schemaAndRowDatas;
-        long dataDmlTsMs = getDataDmlTsMs(element);
+        long srcTsMs = getSourceTsMs(element);
         try {
             schemaAndRowDatas = extractTableSchemaAndRowData(element);
         } catch (Exception e) {
             throw new IOException(e);
         }
-        LOG.info("{}", schemaAndRowDatas);
         for (Tuple2<TableSchemaIdentity, RowData> schemaAndRowData : schemaAndRowDatas) {
             TableSchemaIdentity identity = schemaAndRowData.f0;
             RowData rowData = schemaAndRowData.f1;
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
             if (conf.get(DYNAMIC_BUCKETING)) {
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), srcTsMs);
             } else {
                 final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), srcTsMs);
             }
             recordsOutCounter.inc();
         }

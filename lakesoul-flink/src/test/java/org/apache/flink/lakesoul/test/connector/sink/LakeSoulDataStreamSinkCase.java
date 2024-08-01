@@ -73,7 +73,8 @@ public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
                 .newBuilder()
                 .setTableId(tableId)
                 .setAfterType(genRowType(seed, useCDC))
-                .setAfterRowData(genRowData(seed, useCDC, RowKind.INSERT));
+                .setAfterRowData(genRowData(seed, useCDC, RowKind.INSERT))
+                .setSrcTsMs(System.currentTimeMillis());
         return builder.build();
     }
 
@@ -85,7 +86,8 @@ public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
                 .setBeforeRowType(genRowType(seed - 1, useCDC))
                 .setBeforeRowData(genRowData(seed - 1, useCDC, RowKind.UPDATE_BEFORE))
                 .setAfterType(genRowType(seed, useCDC))
-                .setAfterRowData(genRowData(seed, useCDC, RowKind.UPDATE_AFTER));
+                .setAfterRowData(genRowData(seed, useCDC, RowKind.UPDATE_AFTER))
+                .setSrcTsMs(System.currentTimeMillis());
         return builder.build();
     }
 

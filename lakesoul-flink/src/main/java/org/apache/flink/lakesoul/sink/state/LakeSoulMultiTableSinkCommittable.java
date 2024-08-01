@@ -27,7 +27,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
 
     private final long creationTime;
 
-    private final long lastUpdateTime;
+    private final long latestUpdateTime;
 
     private final String bucketId;
 
@@ -41,7 +41,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
     @Nullable
     private final String commitId;
 
-    private final long tsMs;
+    private final long latestSrcTsMs;
 
     private final String dmlType;
 
@@ -55,7 +55,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
             TableSchemaIdentity identity,
-            long tsMs,
+            long latestSrcTsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -64,7 +64,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 pendingFiles,
                 creationTime,
                 UUID.randomUUID().toString(),
-                tsMs,
+                latestSrcTsMs,
                 dmlType,
                 sourcePartitionInfo
         );
@@ -80,7 +80,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             @Nullable List<InProgressFileWriter.PendingFileRecoverable> pendingFiles,
             long creationTime,
             @Nullable String commitId,
-            long tsMs,
+            long latestSrcTsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -90,9 +90,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.pendingFilesMap = new HashMap<>();
         this.pendingFilesMap.put(bucketId, pendingFiles);
         this.creationTime = creationTime;
-        this.lastUpdateTime = creationTime;
+        this.latestUpdateTime = creationTime;
         this.commitId = commitId;
-        this.tsMs = tsMs;
+        this.latestSrcTsMs = latestSrcTsMs;
         this.dmlType = dmlType;
         this.sourcePartitionInfo = sourcePartitionInfo;
     }
@@ -106,7 +106,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
             long creationTime,
             @Nullable String commitId,
-            long tsMs,
+            long latestSrcTsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -116,9 +116,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.identity = identity;
         this.pendingFilesMap = pendingFilesMap;
         this.creationTime = creationTime;
-        this.lastUpdateTime = creationTime;
+        this.latestUpdateTime = creationTime;
         this.commitId = commitId;
-        this.tsMs = tsMs;
+        this.latestSrcTsMs = latestSrcTsMs;
         this.dmlType = dmlType;
         this.sourcePartitionInfo = sourcePartitionInfo;
     }
@@ -131,9 +131,9 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
             TableSchemaIdentity identity,
             Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap,
             long creationTime,
-            long lastUpdateTime,
+            long latestUpdateTime,
             @Nullable String commitId,
-            long tsMs,
+            long latestSrcTsMs,
             String dmlType,
             String sourcePartitionInfo
     ) {
@@ -143,16 +143,16 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         this.identity = identity;
         this.pendingFilesMap = pendingFilesMap;
         this.creationTime = creationTime;
-        this.lastUpdateTime = lastUpdateTime;
+        this.latestUpdateTime = latestUpdateTime;
         this.commitId = commitId;
-        this.tsMs = tsMs;
+        this.latestSrcTsMs = latestSrcTsMs;
         this.dmlType = dmlType;
         this.sourcePartitionInfo = sourcePartitionInfo;
     }
 
 
-    public long getTsMs() {
-        return tsMs;
+    public long getLatestSrcTsMs() {
+        return latestSrcTsMs;
     }
 
     public boolean hasPendingFile() {
@@ -198,8 +198,8 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
         return creationTime;
     }
 
-    public long getLastUpdateTime() {
-        return lastUpdateTime;
+    public long getLatestUpdateTime() {
+        return latestUpdateTime;
     }
 
     public TableSchemaIdentity getIdentity() {
@@ -219,7 +219,7 @@ public class LakeSoulMultiTableSinkCommittable implements Serializable, Comparab
                 ", identity=" + identity +
                 ", pendingFilesMap=" + pendingFilesMap +
                 ", commitId='" + commitId + '\'' +
-                ", tsMs=" + tsMs +
+                ", tsMs=" + latestSrcTsMs +
                 ", dmlType='" + dmlType + '\'' +
                 '}';
     }

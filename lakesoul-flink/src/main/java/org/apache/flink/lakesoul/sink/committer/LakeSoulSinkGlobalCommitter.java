@@ -11,7 +11,6 @@ import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
-import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -124,9 +123,9 @@ public class LakeSoulSinkGlobalCommitter
         for (Map.Entry<TableSchemaIdentity, List<LakeSoulMultiTableSinkCommittable>> groupedCommittable :
                 globalCommittable.getGroupedCommittable().entrySet()) {
             TableSchemaIdentity identity = groupedCommittable.getKey();
-            Long lastUpdateTime = Long.MIN_VALUE;
+            Long latestSrcTsMs = Long.MIN_VALUE;
             for (LakeSoulMultiTableSinkCommittable committable : groupedCommittable.getValue()) {
-                lastUpdateTime = Math.max(lastUpdateTime, committable.getLastUpdateTime());
+                latestSrcTsMs = Math.max(latestSrcTsMs, committable.getLatestSrcTsMs());
             }
 
             String tableName = identity.tableId.table();
@@ -172,9 +171,9 @@ public class LakeSoulSinkGlobalCommitter
                         .setProperties(properties.toJSONString());
                 Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
                 if (last == null) {
-                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
-                } else if (last.f0 < lastUpdateTime) {
-                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
+                } else if (last.f0 < latestSrcTsMs) {
+                    finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
                 }
             } else {
                 DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
@@ -191,9 +190,9 @@ public class LakeSoulSinkGlobalCommitter
                 Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
                 TableInfo.Builder builder = tableInfo.toBuilder().setTableSchema(msgSchema.toJson());
                 if (last == null) {
-                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
-                } else if (last.f0 < lastUpdateTime) {
-                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
+                } else if (last.f0 < latestSrcTsMs) {
+                    finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
                 }
 
             }

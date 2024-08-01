@@ -10,7 +10,6 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.lakesoul.sink.writer.NativeBucketWriter;
 import org.apache.flink.lakesoul.sink.writer.NativeParquetWriter;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.streaming.api.functions.sink.filesystem.InProgressFileWriter;
@@ -87,8 +86,9 @@ public class LakeSoulSinkCommittableSerializer
             }
 
             dataOutputView.writeLong(committable.getCreationTime());
+            dataOutputView.writeLong(committable.getLatestUpdateTime());
             dataOutputView.writeUTF(committable.getCommitId());
-            dataOutputView.writeLong(committable.getTsMs());
+            dataOutputView.writeLong(committable.getLatestSrcTsMs());
             dataOutputView.writeUTF(committable.getDmlType());
             dataOutputView.writeUTF(committable.getSourcePartitionInfo());
         } else {
@@ -103,8 +103,9 @@ public class LakeSoulSinkCommittableSerializer
     private LakeSoulMultiTableSinkCommittable deserializeV1(DataInputView dataInputView) throws IOException {
         Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileMap = new HashMap<>();
         String commitId = null;
-        long time = Long.MIN_VALUE;
-        long dataTsMs = Long.MAX_VALUE;
+        long creationTime = Long.MIN_VALUE;
+        long latestUpdateTime = Long.MIN_VALUE;
+        long latestSrcTsMs = Long.MAX_VALUE;
         String dmlType = null;
         String sourcePartitionInfo = "";
         if (dataInputView.readBoolean()) {
@@ -121,9 +122,10 @@ public class LakeSoulSinkCommittableSerializer
                     }
                     pendingFileMap.put(bucketId, pendingFiles);
                 }
-                time = dataInputView.readLong();
+                creationTime = dataInputView.readLong();
+                latestUpdateTime = dataInputView.readLong();
                 commitId = dataInputView.readUTF();
-                dataTsMs = dataInputView.readLong();
+                latestSrcTsMs = dataInputView.readLong();
                 dmlType = dataInputView.readUTF();
                 sourcePartitionInfo = dataInputView.readUTF();
             }
@@ -134,7 +136,7 @@ public class LakeSoulSinkCommittableSerializer
 //        String bucketId = dataInputView.readUTF();
 
         return new LakeSoulMultiTableSinkCommittable(
-                identity, pendingFileMap, time, commitId, dataTsMs, dmlType, sourcePartitionInfo);
+                identity, pendingFileMap, creationTime, latestUpdateTime, commitId, latestSrcTsMs, dmlType, sourcePartitionInfo);
     }
 
     private static void validateMagicNumber(DataInputView in) throws IOException {

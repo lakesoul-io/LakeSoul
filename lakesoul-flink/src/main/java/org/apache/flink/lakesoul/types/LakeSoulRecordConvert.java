@@ -101,7 +101,7 @@ public class LakeSoulRecordConvert implements Serializable {
         return false;
     }
 
-    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long tsMs, long sortField) throws Exception {
+    public LakeSoulRowDataWrapper toLakeSoulDataType(Schema sch, Struct value, TableId tableId, long srcTsMs, long sortField) throws Exception {
         LakeSoulRowDataWrapper.Builder builder = LakeSoulRowDataWrapper.newBuilder().setTableId(tableId)
                 .setUseCDC(useCDC).setCDCColumn(cdcColumn);
         boolean isMongoDDL = true;
@@ -195,7 +195,7 @@ public class LakeSoulRecordConvert implements Serializable {
                 }
             }
         }
-        return builder.setTsMs(tsMs).build();
+        return builder.setSrcTsMs(srcTsMs).build();
     }
 
     public RowType toFlinkRowTypeCDC(RowType rowType) {
