@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul.benchmark
 
 import com.dmetasoul.lakesoul.spark.ParametersTool
+import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -161,6 +162,7 @@ object Benchmark {
       println(printLine + table + " result: " + result + printLine)
       println(s"jdbcDF.schema ${jdbcDF.schema}")
       println(s"lakesoulDF.schema ${lakesoulDF.schema}")
+      println(lakesoulDF.queryExecution)
       jdbcDF.join(lakesoulDF, Seq("id"), "left_outer").show()
       //      println("*************diff1**************")
       //      spark.createDataFrame(diff1, lakesoulDF.schema).show()

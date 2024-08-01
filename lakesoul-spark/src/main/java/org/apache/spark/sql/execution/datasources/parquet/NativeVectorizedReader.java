@@ -228,12 +228,9 @@ public class NativeVectorizedReader extends SpecificParquetRecordReaderBase<Obje
         close();
         NativeIOReader reader = new NativeIOReader();
         GlutenUtils.setArrowAllocator(reader);
-        System.out.println(filePathList);
         for (String path : filePathList) {
             reader.addFile(path);
         }
-        System.out.println(primaryKeys);
-        System.out.println(filter);
         if (primaryKeys != null) {
             reader.setPrimaryKeys(primaryKeys);
         }
