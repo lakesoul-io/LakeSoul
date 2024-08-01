@@ -165,34 +165,33 @@ object LakeSoulDataSource extends Logging {
   }
 
   /**
-   * For LakeSoulTableRel, we allow certain magic to be performed through the paths that are provided by users.
-   * Normally, a user specified path should point to the root of a LakeSoulTableRel. However, some users
-   * are used to providing specific partition values through the path, because of how expensive it
-   * was to perform partition discovery before. We treat these partition values as logical partition
-   * filters, if a table does not exist at the provided path.
-   *
-   * In addition, we allow users to provide time travel specifications through the path. This is
-   * provided after an `@` symbol after a path followed by a time specification in
-   * `yyyyMMddHHmmssSSS` format, or a version number preceded by a `v`.
-   *
-   * This method parses these specifications and returns these modifiers only if a path does not
-   * really exist at the provided path. We first parse out the time travel specification, and then
-   * the partition filters. For example, a path specified as:
-   * /some/path/partition=1@v1234
-   * will be parsed into `/some/path` with filters `partition=1` and a time travel spec of version
-   * 1234.
-   *
-   * @return A tuple of the root path of the LakeSoulTableRel, partition filters, and time travel options
-   */
+    * For LakeSoulTableRel, we allow certain magic to be performed through the paths that are provided by users.
+    * Normally, a user specified path should point to the root of a LakeSoulTableRel. However, some users
+    * are used to providing specific partition values through the path, because of how expensive it
+    * was to perform partition discovery before. We treat these partition values as logical partition
+    * filters, if a table does not exist at the provided path.
+    *
+    * In addition, we allow users to provide time travel specifications through the path. This is
+    * provided after an `@` symbol after a path followed by a time specification in
+    * `yyyyMMddHHmmssSSS` format, or a version number preceded by a `v`.
+    *
+    * This method parses these specifications and returns these modifiers only if a path does not
+    * really exist at the provided path. We first parse out the time travel specification, and then
+    * the partition filters. For example, a path specified as:
+    * /some/path/partition=1@v1234
+    * will be parsed into `/some/path` with filters `partition=1` and a time travel spec of version
+    * 1234.
+    *
+    * @return A tuple of the root path of the LakeSoulTableRel, partition filters, and time travel options
+    */
   def parsePathIdentifier(spark: SparkSession,
-                          path: String): (Path, Seq[(String, String)]) = {
+                          path: Path): (Path, Seq[(String, String)]) = {
 
-    val hadoopPath = new Path(path)
-    val rootPath = LakeSoulUtils.findTableRootPath(spark, hadoopPath).getOrElse {
-      throw LakeSoulErrors.tableNotExistsException(path)
+    val rootPath = LakeSoulUtils.findTableRootPath(spark, path).getOrElse {
+      throw LakeSoulErrors.tableNotExistsException(path.toString)
     }
 
-    val partitionFilters = if (rootPath != hadoopPath) {
+    val partitionFilters = if (rootPath != path) {
       logInfo(
         """
           |WARNING: loading partitions directly with lakesoul is not recommended.
@@ -202,7 +201,7 @@ object LakeSoulDataSource extends Logging {
           |INCORRECT: spark.read.format("lakesoul").load("/data/part=1")
         """.stripMargin)
 
-      val fragment = hadoopPath.toString.substring(rootPath.toString.length() + 1)
+      val fragment = path.toString.substring(rootPath.toString.length() + 1)
       try {
         PartitionUtils.parsePathFragmentAsSeq(fragment)
       } catch {
@@ -218,9 +217,9 @@ object LakeSoulDataSource extends Logging {
 
 
   /**
-   * Verifies that the provided partition filters are valid and returns the corresponding
-   * expressions.
-   */
+    * Verifies that the provided partition filters are valid and returns the corresponding
+    * expressions.
+    */
   def verifyAndCreatePartitionFilters(userPath: String,
                                       snapshot: Snapshot,
                                       partitionFilters: Seq[(String, String)]): Seq[Expression] = {

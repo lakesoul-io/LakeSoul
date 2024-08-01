@@ -65,6 +65,15 @@ public class BinarySourceRecord {
         this.isDDLRecord = isDDL;
     }
 
+    /**
+     * extract data from debezium mysql record https://debezium.io/documentation/reference/stable/connectors/mysql.html
+     *
+     * @param sourceRecord
+     * @param convert
+     * @param basePath
+     * @return
+     * @throws Exception
+     */
     public static BinarySourceRecord fromMysqlSourceRecord(SourceRecord sourceRecord,
                                                            LakeSoulRecordConvert convert,
                                                            String basePath) throws Exception {
@@ -83,7 +92,7 @@ public class BinarySourceRecord {
             Field sourceField = valueSchema.field(Envelope.FieldName.SOURCE);
             long binlogFileIndex = 0;
             long binlogPosition = 0;
-            long tsMs = 0;
+            long dbzTsMs = 0;
             Struct source = value.getStruct(Envelope.FieldName.SOURCE);
             if (sourceField != null && source != null) {
                 if (sourceField.schema().field("file") != null) {
@@ -96,12 +105,12 @@ public class BinarySourceRecord {
                     binlogPosition = (Long) source.getWithoutDefault("pos");
                 }
                 if (sourceField.schema().field("ts_ms") != null) {
-                    tsMs = (Long) source.getWithoutDefault("ts_ms");
+                    dbzTsMs = (Long) source.getWithoutDefault("ts_ms");
                 }
             }
             // sortField has been deprecated
             long sortField = (binlogFileIndex << 32) + binlogPosition;
-            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, tsMs, sortField);
+            LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, dbzTsMs, sortField);
             String tablePath;
             if (tableId.schema() == null) {
                 tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();

@@ -159,21 +159,22 @@ public class LakeSoulSinkGlobalCommitter
                 }
                 FileSystem fileSystem = new Path(identity.tableLocation).getFileSystem();
                 Path path = new Path(identity.tableLocation).makeQualified(fileSystem);
+                String tablePath = path.toString();
                 FlinkUtil.createAndSetTableDirPermission(path, true);
 
                 TableInfo.Builder builder = TableInfo.newBuilder()
                         .setTableId(tableId)
                         .setTableNamespace(tableNamespace)
                         .setTableName(tableName)
-                        .setTablePath(path.toString())
+                        .setTablePath(tablePath)
                         .setTableSchema(msgSchema.toJson())
                         .setPartitions(partition)
                         .setProperties(properties.toJSONString());
-                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tableId);
+                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
                 if (last == null) {
-                    finalTableInfoMap.put(tableId, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
                 } else if (last.f0 < lastUpdateTime) {
-                    finalTableInfoMap.put(tableId, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
                 }
             } else {
                 DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
@@ -186,13 +187,13 @@ public class LakeSoulSinkGlobalCommitter
                     throw new IOException("Change of partition key column of table " + tableName + " is forbidden");
                 }
 
-                String tableId = tableInfo.getTableId();
-                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tableId);
+                String tablePath = tableInfo.getTablePath();
+                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
                 TableInfo.Builder builder = tableInfo.toBuilder().setTableSchema(msgSchema.toJson());
                 if (last == null) {
-                    finalTableInfoMap.put(tableId, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
                 } else if (last.f0 < lastUpdateTime) {
-                    finalTableInfoMap.put(tableId, Tuple2.of(lastUpdateTime, builder.build()));
+                    finalTableInfoMap.put(tablePath, Tuple2.of(lastUpdateTime, builder.build()));
                 }
 
             }
@@ -200,8 +201,8 @@ public class LakeSoulSinkGlobalCommitter
         LOG.info("finalTableInfoMap: {}", finalTableInfoMap);
 
         for (Map.Entry<String, Tuple2<Long, TableInfo>> entry : finalTableInfoMap.entrySet()) {
-            String tableId = entry.getKey();
-            TableInfo origTableInfo = dbManager.getTableInfoByTableId(tableId);
+            String tablePath = entry.getKey();
+            TableInfo origTableInfo = dbManager.getTableInfoByPath(tablePath);
             TableInfo finalTableInfo = entry.getValue().f1;
             if (origTableInfo == null) {
                 dbManager.createNewTable(
@@ -214,6 +215,7 @@ public class LakeSoulSinkGlobalCommitter
                         finalTableInfo.getPartitions()
                 );
             } else {
+                String tableId = origTableInfo.getTableId();
                 StructType origSchema;
                 if (TableInfoDao.isArrowKindSchema(origTableInfo.getTableSchema())) {
                     Schema arrowSchema = Schema.fromJSON(origTableInfo.getTableSchema());

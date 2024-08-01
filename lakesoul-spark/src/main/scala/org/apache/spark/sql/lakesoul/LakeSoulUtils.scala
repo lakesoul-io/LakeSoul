@@ -75,6 +75,8 @@ object LakeSoulUtils extends PredicateHelper {
     while (current_path != null) {
       if (LakeSoulSourceUtils.isLakeSoulTableExists(current_path.toString)) {
         return Option(current_path)
+      } else if (LakeSoulSourceUtils.isLakeSoulTableExists(current_path.toUri.toString)) {
+        return Option(current_path)
       }
       current_path = current_path.getParent
     }

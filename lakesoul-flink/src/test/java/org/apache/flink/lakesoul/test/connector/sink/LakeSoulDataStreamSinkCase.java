@@ -27,8 +27,9 @@ import static org.apache.flink.lakesoul.types.LakeSoulRecordConvert.setCDCRowKin
 
 public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
 
-    //    @Test
+    @Test
     public void testLakeSoulDataStreamSink() throws Exception {
+        new LakeSoulCatalog().cleanForTest();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.getConfig().registerTypeWithKryoSerializer(BinarySourceRecord.class, BinarySourceRecordSerializer.class);
         Configuration conf = new Configuration();
