@@ -137,6 +137,7 @@ object DataOperation {
     metaPartitionInfoScala.setPartitionDesc(partition_info.range_value)
     metaPartitionInfoScala.addAllSnapshot(JavaConverters.bufferAsJavaList(partition_info.read_files.map(DBUtil.toProtoUuid).toBuffer))
     val dataCommitInfoList = dbManager.getTableSinglePartitionDataInfo(metaPartitionInfoScala.build).asScala.toArray
+    println(dataCommitInfoList.mkString("Array(", ", ", ")"))
     for (metaDataCommitInfo <- dataCommitInfoList) {
       val fileOps = metaDataCommitInfo.getFileOpsList.asScala.toArray
       for (file <- fileOps) {
