@@ -230,6 +230,7 @@ public class LakeSoulSinkGlobalCommitter
                                 sparkSchema,
                                 partitionKeys.rangeKeys,
                                 partitionKeys.primaryKeys);
+                LOG.info("{}", equalOrCanCastTuple3);
                 String equalOrCanCast = equalOrCanCastTuple3._1();
                 boolean schemaChanged = (boolean) equalOrCanCastTuple3._2();
                 StructType mergeStructType = equalOrCanCastTuple3._3();
@@ -273,12 +274,10 @@ public class LakeSoulSinkGlobalCommitter
                     if (equalOrCanCast.contains("Change of Partition Column") || equalOrCanCast.contains("Change of Primary Key Column")) {
                         throw new IOException(equalOrCanCast);
                     }
-//                    for (LakeSoulMultiTableSinkCommittable committable : committableList) {
-//                        if (committable.getTsMs() > schemaLastChangeTime) {
-//                            LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}", schemaLastChangeTime, committable.getTsMs());
-//                            throw new IOException(equalOrCanCast);
-//                        }
-//                    }
+                    if (entry.getValue().f0 > schemaLastChangeTime) {
+                        LOG.error("incompatible cast data created and delayThreshold time: {}, dml create time: {}", schemaLastChangeTime, entry.getValue().f0);
+                        throw new IOException(equalOrCanCast);
+                    }
                 }
             }
         }
