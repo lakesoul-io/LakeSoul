@@ -486,9 +486,9 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
     }
   }
 
-  //  test("read") {
-  //    sql("show create table TestBinarySourceRecordSink").show(false)
-  //    sql("desc TestBinarySourceRecordSink").show()
-  //    sql("select * from TestBinarySourceRecordSink").show()
-  //  }
+  test("read") {
+    sql("show create table TestBinarySourceRecordSink").show(false)
+    sql("desc TestBinarySourceRecordSink").show()
+    sql("select * from TestBinarySourceRecordSink").show()
+  }
 }

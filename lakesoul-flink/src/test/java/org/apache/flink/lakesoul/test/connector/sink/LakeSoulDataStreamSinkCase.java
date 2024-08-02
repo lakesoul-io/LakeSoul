@@ -46,7 +46,7 @@ public class LakeSoulDataStreamSinkCase extends AbstractTestBase {
         TableId tableId = new TableId(LakeSoulCatalog.CATALOG_NAME, "default", tableName);
         LakeSoulRowDataWrapper data = mockInsertLakeSoulRowDataWrapper(1, useCDC, tableId);
         recordCollection.add(new BinarySourceRecord(topic, primaryKeys, tableId, path, partitionKeys, false, data, ""));
-
+        Thread.sleep(100);
 //        LakeSoulRowDataWrapper data1 = mockUpdateLakeSoulRowDataWrapper(2, useCDC, tableId);
         LakeSoulRowDataWrapper data1 = mockInsertLakeSoulRowDataWrapper(4, useCDC, tableId);
         recordCollection.add(new BinarySourceRecord(topic, primaryKeys, tableId, path, partitionKeys, false, data1, ""));

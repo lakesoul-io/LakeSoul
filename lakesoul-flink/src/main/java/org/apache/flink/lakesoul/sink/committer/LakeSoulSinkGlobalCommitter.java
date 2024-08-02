@@ -169,10 +169,10 @@ public class LakeSoulSinkGlobalCommitter
                         .setTableSchema(msgSchema.toJson())
                         .setPartitions(partition)
                         .setProperties(properties.toJSONString());
-                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
-                if (last == null) {
+                Tuple2<Long, TableInfo> latest = finalTableInfoMap.get(tablePath);
+                if (latest == null) {
                     finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
-                } else if (last.f0 < latestSrcTsMs) {
+                } else if (latest.f0 < latestSrcTsMs) {
                     finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
                 }
             } else {
@@ -187,11 +187,11 @@ public class LakeSoulSinkGlobalCommitter
                 }
 
                 String tablePath = tableInfo.getTablePath();
-                Tuple2<Long, TableInfo> last = finalTableInfoMap.get(tablePath);
+                Tuple2<Long, TableInfo> latest = finalTableInfoMap.get(tablePath);
                 TableInfo.Builder builder = tableInfo.toBuilder().setTableSchema(msgSchema.toJson());
-                if (last == null) {
+                if (latest == null) {
                     finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
-                } else if (last.f0 < latestSrcTsMs) {
+                } else if (latest.f0 < latestSrcTsMs) {
                     finalTableInfoMap.put(tablePath, Tuple2.of(latestSrcTsMs, builder.build()));
                 }
 
