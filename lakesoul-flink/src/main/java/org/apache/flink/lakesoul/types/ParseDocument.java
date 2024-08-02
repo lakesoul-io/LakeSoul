@@ -12,16 +12,27 @@ import org.bson.types.Decimal128;
 
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 
+import static org.apache.flink.lakesoul.types.LakeSoulRecordConvert.hashMap;
 public class ParseDocument {
+
+
     public static Struct convertBSONToStruct(String value) {
+        HashMap<String, Object> tempHashMap = new HashMap<>(hashMap);
         Document bsonDocument = Document.parse(value);
         SchemaBuilder structSchemaBuilder = SchemaBuilder.struct();
-        Struct struct = new Struct(buildSchema(bsonDocument, structSchemaBuilder));
+        bsonDocument.keySet().forEach(tempHashMap::remove);
+        buildSchema(bsonDocument, structSchemaBuilder);
+        tempHashMap.forEach((k, v) -> {
+            if (v instanceof Schema) {
+                structSchemaBuilder.field(k, (Schema) v);
+            }
+        });
+        Struct struct = new Struct(structSchemaBuilder.build());
         fillStructValues(bsonDocument, struct);
-
         return struct;
     }
 
@@ -29,15 +40,27 @@ public class ParseDocument {
         for (Map.Entry<String, Object> entry : bsonDocument.entrySet()) {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
-            if (value instanceof Document) {
-                SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
-                structSchemaBuilder.field(fieldName, buildSchema((Document) value, nestedStructSchemaBuilder));
-            }  else if (value instanceof List) {
-                List<?> arrayList = (List<?>) value;
-                Schema arraySchema = getSchemaForArrayList(arrayList);
-                structSchemaBuilder.field(fieldName, arraySchema);
+            if (value == null ){
+                hashMap.putIfAbsent(fieldName, null);
+                if (hashMap.get(fieldName) != null){
+                    Schema schemaFromMap = (Schema) hashMap.get(fieldName);
+                    structSchemaBuilder.field(fieldName, schemaFromMap);
+                }
             } else {
-                structSchemaBuilder.field(fieldName, getSchemaForValue(value));
+                if (value instanceof Document) {
+                    SchemaBuilder nestedStructSchemaBuilder = SchemaBuilder.struct();
+                    Schema schema = buildSchema((Document) value, nestedStructSchemaBuilder);
+                    structSchemaBuilder.field(fieldName, schema);
+                    hashMap.put(fieldName, schema);
+                }  else if (value instanceof List) {
+                    List<?> arrayList = (List<?>) value;
+                    Schema arraySchema = getSchemaForArrayList(arrayList);
+                    structSchemaBuilder.field(fieldName, arraySchema);
+                    hashMap.put(fieldName, arraySchema);
+                } else {
+                    structSchemaBuilder.field(fieldName, getSchemaForValue(value));
+                    hashMap.put(fieldName,getSchemaForValue(value));
+                }
             }
         }
         return structSchemaBuilder.build();
@@ -56,24 +79,26 @@ public class ParseDocument {
         for (Map.Entry<String, Object> entry : bsonDocument.entrySet()) {
             String fieldName = entry.getKey();
             Object value = entry.getValue();
-            if (value instanceof Document) {
-                Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
-                fillStructValues((Document) value, nestedStruct);
-                struct.put(fieldName, nestedStruct);
-            } else if (value instanceof List) {
-                List<?> arrayList = (List<?>) value;
-                struct.put(fieldName, arrayList);
-            } else if (value instanceof Decimal128) {
-                BigDecimal decimalValue = new BigDecimal(value.toString());
-                struct.put(fieldName, decimalValue);
-            } else if (value instanceof Binary) {
-                Binary binaryData = (Binary) value;
-                struct.put(fieldName,binaryData.getData());
-            } else if (value instanceof BsonTimestamp) {
-                BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
-                struct.put(fieldName,bsonTimestamp.getValue());
-            } else {
-                struct.put(fieldName,value);
+            if (value != null){
+                if (value instanceof Document) {
+                    Struct nestedStruct = new Struct(struct.schema().field(fieldName).schema());
+                    fillStructValues((Document) value, nestedStruct);
+                    struct.put(fieldName, nestedStruct);
+                } else if (value instanceof List) {
+                    List<?> arrayList = (List<?>) value;
+                    struct.put(fieldName, arrayList);
+                } else if (value instanceof Decimal128) {
+                    BigDecimal decimalValue = new BigDecimal(value.toString());
+                    struct.put(fieldName, decimalValue);
+                } else if (value instanceof Binary) {
+                    Binary binaryData = (Binary) value;
+                    struct.put(fieldName,binaryData.getData());
+                } else if (value instanceof BsonTimestamp) {
+                    BsonTimestamp bsonTimestamp = (BsonTimestamp) value;
+                    struct.put(fieldName,bsonTimestamp.getValue());
+                } else {
+                    struct.put(fieldName,value);
+                }
             }
         }
     }

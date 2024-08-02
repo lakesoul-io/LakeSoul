@@ -67,6 +67,8 @@ public class LakeSoulRecordConvert implements Serializable {
 
     List<String> partitionFields;
 
+    static HashMap<String, Object> hashMap = new HashMap<>();
+
 
     public LakeSoulRecordConvert(Configuration conf, String serverTimeZone) {
         this(conf, serverTimeZone, Collections.emptyList());
