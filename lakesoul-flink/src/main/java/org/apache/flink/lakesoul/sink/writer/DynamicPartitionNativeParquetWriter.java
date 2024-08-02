@@ -77,10 +77,11 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
     private void initNativeWriter() throws IOException {
         ArrowUtils.setLocalTimeZone(FlinkUtil.getLocalTimeZone(conf));
         Schema arrowSchema = ArrowUtils.toArrowSchema(rowType);
+        System.out.println(arrowSchema);
         nativeWriter = new NativeIOWriter(arrowSchema);
         nativeWriter.setPrimaryKeys(primaryKeys);
         nativeWriter.setRangePartitions(rangeColumns);
-        if (conf.getBoolean(LakeSoulSinkOptions.isMultiTableSource)) {
+        if (conf.getBoolean(LakeSoulSinkOptions.IS_MULTI_TABLE_SOURCE)) {
             nativeWriter.setAuxSortColumns(Collections.singletonList(SORT_FIELD));
         }
         nativeWriter.setHashBucketNum(conf.getInteger(LakeSoulSinkOptions.HASH_BUCKET_NUM));
@@ -88,7 +89,6 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         nativeWriter.setRowGroupRowNumber(this.maxRowGroupRows);
         batch = VectorSchemaRoot.create(arrowSchema, nativeWriter.getAllocator());
         arrowWriter = ArrowUtils.createRowDataArrowWriter(batch, rowType);
-
 
         nativeWriter.withPrefix(this.prefix);
         nativeWriter.useDynamicPartition(true);
@@ -137,7 +137,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime);
+        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime, this.lastUpdateTime);
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
@@ -152,7 +152,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                         entry.getValue()
                                 .stream()
                                 .map(path -> new NativeParquetWriter.NativeWriterPendingFileRecoverable(path,
-                                        creationTime))
+                                        creationTime, lastUpdateTime))
                                 .collect(Collectors.toList())
                 );
             }
@@ -204,7 +204,8 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "DynamicPartitionNativeParquetWriter{" +
                 "rowType=" + rowType +
                 ", primaryKeys=" + primaryKeys +

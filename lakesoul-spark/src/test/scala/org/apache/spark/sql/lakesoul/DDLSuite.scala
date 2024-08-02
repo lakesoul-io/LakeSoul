@@ -417,9 +417,9 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
 
   test("Call Statement") {
     withTable("lakesoul_test") {
-            val call = spark.sessionState.sqlParser.parsePlan("CALL cat.system.func(c1 => 'name=name1', c2 => map('2',3), c3 => true,c4 => TIMESTAMP '2013-01-01',c5=>3L,c6=>1.0D,c7=>ARRAY(1,3))")
-            val s = call.asInstanceOf[CallStatement]
-            assert(s.args.length == 7)
+      val call = spark.sessionState.sqlParser.parsePlan("CALL cat.system.func(c1 => 'name=name1', c2 => map('2',3), c3 => true,c4 => TIMESTAMP '2013-01-01',c5=>3L,c6=>1.0D,c7=>ARRAY(1,3))")
+      val s = call.asInstanceOf[CallStatement]
+      assert(s.args.length == 7)
     }
   }
 
@@ -484,5 +484,11 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         assert(sql("SELECT * FROM lakesoul_test").collect()(0) == Row("1", "a"))
       }
     }
+  }
+
+  test("read") {
+    sql("show create table TestBinarySourceRecordSink").show(false)
+    sql("desc TestBinarySourceRecordSink").show()
+    sql("select * from TestBinarySourceRecordSink").show()
   }
 }

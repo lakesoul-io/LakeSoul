@@ -32,6 +32,7 @@ public class LakeSoulSinkOptions {
 
     public static final String CDC_CHANGE_COLUMN_DEFAULT = "rowKinds";
 
+    @Deprecated
     public static final String SORT_FIELD = "__sort_filed__";
 
     public static final Long DEFAULT_BUCKET_ROLLING_SIZE = 1000000L;
@@ -110,7 +111,8 @@ public class LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(false)
             .withDescription("use cdc column ");
-    public static final ConfigOption<Boolean> isMultiTableSource = ConfigOptions
+    @Deprecated
+    public static final ConfigOption<Boolean> IS_MULTI_TABLE_SOURCE = ConfigOptions
             .key("Multi_Table_Source")
             .booleanType()
             .defaultValue(false)

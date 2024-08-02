@@ -4,7 +4,6 @@
 
 package org.apache.flink.lakesoul.types;
 
-import com.alibaba.fastjson.JSONObject;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -15,19 +14,19 @@ public class LakeSoulRowDataWrapper {
     private final RowData after;
     private final RowType beforeType;
     private final RowType afterType;
-    private final long tsMs;
+    private final long srcTsMs;
     private final boolean useCDC;
     private final String cdcColumn;
 
     public LakeSoulRowDataWrapper(TableId tableId, String op, RowData before, RowData after, RowType beforeType,
-                                  RowType afterType, long rsMs, boolean useCDC, String cdcColumn) {
+                                  RowType afterType, long srcTsMs, boolean useCDC, String cdcColumn) {
         this.tableId = tableId;
         this.op = op;
         this.before = before;
         this.after = after;
         this.beforeType = beforeType;
         this.afterType = afterType;
-        this.tsMs = rsMs;
+        this.srcTsMs = srcTsMs;
         this.useCDC = useCDC;
         this.cdcColumn = cdcColumn;
     }
@@ -56,8 +55,8 @@ public class LakeSoulRowDataWrapper {
         return op;
     }
 
-    public long getTsMs() {
-        return tsMs;
+    public long getSrcTsMs() {
+        return srcTsMs;
     }
 
     public boolean getUseCDC() {
@@ -77,7 +76,7 @@ public class LakeSoulRowDataWrapper {
                 ", after=" + after +
                 ", beforeType=" + beforeType +
                 ", afterType=" + afterType +
-                ", tsMs=" + tsMs +
+                ", srcTsMs=" + srcTsMs +
                 ", useCDC=" + useCDC +
                 ", cdcColumn=" + cdcColumn +
                 '}';
@@ -94,7 +93,7 @@ public class LakeSoulRowDataWrapper {
         RowData after;
         RowType beforeType;
         RowType afterType;
-        long tsMs;
+        long srcTsMs;
         boolean useCDC;
         String cdcColumn;
 
@@ -128,8 +127,8 @@ public class LakeSoulRowDataWrapper {
             return this;
         }
 
-        public Builder setTsMs(long tsMs) {
-            this.tsMs = tsMs;
+        public Builder setSrcTsMs(long srcTsMs) {
+            this.srcTsMs = srcTsMs;
             return this;
         }
 
@@ -145,7 +144,7 @@ public class LakeSoulRowDataWrapper {
 
         public LakeSoulRowDataWrapper build() {
             return new LakeSoulRowDataWrapper(this.tableId, this.op, this.before, this.after, this.beforeType,
-                    this.afterType, this.tsMs, useCDC, cdcColumn);
+                    this.afterType, this.srcTsMs, useCDC, cdcColumn);
         }
     }
 }

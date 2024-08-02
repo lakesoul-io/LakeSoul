@@ -12,8 +12,6 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.sink.LakeSoulMultiTablesSink;
 import org.apache.flink.lakesoul.sink.state.LakeSoulMultiTableSinkCommittable;
 import org.apache.flink.lakesoul.sink.state.LakeSoulWriterBucketState;
-import org.apache.flink.lakesoul.sink.writer.arrow.LakeSoulArrowWriterBucket;
-import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableSchemaIdentity;
 import org.apache.flink.metrics.Counter;
@@ -141,7 +139,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
 
     protected abstract List<Tuple2<TableSchemaIdentity, RowData>> extractTableSchemaAndRowData(IN element) throws Exception;
 
-    protected long getDataDmlTsMs(IN element) {
+    protected long getSourceTsMs(IN element) {
         return Long.MAX_VALUE;
     }
 
@@ -157,7 +155,7 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                 processingTimeService.getCurrentProcessingTime());
 
         List<Tuple2<TableSchemaIdentity, RowData>> schemaAndRowDatas;
-        long dataDmlTsMs = getDataDmlTsMs(element);
+        long srcTsMs = getSourceTsMs(element);
         try {
             schemaAndRowDatas = extractTableSchemaAndRowData(element);
         } catch (Exception e) {
@@ -169,11 +167,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
             TableSchemaWriterCreator creator = getOrCreateTableSchemaWriterCreator(identity);
             if (conf.get(DYNAMIC_BUCKETING)) {
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, DYNAMIC_BUCKET, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), srcTsMs);
             } else {
                 final String bucketId = creator.bucketAssigner.getBucketId(rowData, bucketerContext);
                 final LakeSoulWriterBucket bucket = getOrCreateBucketForBucketId(identity, bucketId, creator);
-                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), dataDmlTsMs);
+                bucket.write(rowData, processingTimeService.getCurrentProcessingTime(), srcTsMs);
             }
             recordsOutCounter.inc();
         }

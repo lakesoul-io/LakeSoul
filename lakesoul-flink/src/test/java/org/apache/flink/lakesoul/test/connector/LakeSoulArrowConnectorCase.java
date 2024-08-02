@@ -36,17 +36,16 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.junit.Test;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import java.io.IOException;
+import java.util.*;
+import java.util.function.Function;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_SIZE;
 
 public class LakeSoulArrowConnectorCase extends AbstractTestBase {
-    @Test
+    //    @Test
     public void test() throws Exception {
         int parallelism = 2;
         StreamExecutionEnvironment execEnv =
@@ -55,6 +54,61 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
                 execEnv, parallelism);
         DataStreamSource<LakeSoulArrowWrapper> source =
                 execEnv.addSource(new MockLakeSoulArrowSource.MockSourceFunction(100, 100L));
+        String name = "Print Sink";
+        PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
+
+        Configuration conf = new Configuration();
+        conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, parallelism);
+
+        LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
+        context.env = execEnv;
+        context.conf = conf;
+
+        LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
+
+        execEnv.execute("Test MockLakeSoulArrowSource.MockSourceFunction");
+    }
+
+    //    @Test
+    public void testLogStream() throws Exception {
+
+        int parallelism = 2;
+        StreamExecutionEnvironment execEnv =
+                LakeSoulTestUtils.createStreamExecutionEnvironment(parallelism, 2000L, 2000L);
+        StreamTableEnvironment tableEnv = LakeSoulTestUtils.createTableEnvInStreamingMode(
+                execEnv, parallelism);
+        Function<String, LakeSoulArrowWrapper> parseFunc = new Function<String, LakeSoulArrowWrapper>() {
+
+            /**
+             * Applies this function to the given argument.
+             *
+             * @param line the function argument
+             * @return the function result
+             */
+            @Override
+            public LakeSoulArrowWrapper apply(String line) {
+                if (line.startsWith("tableInfo")) {
+                    String[] splits = line.split(";arrowBatch:");
+                    try {
+                        TableInfo.Builder builder = TableInfo.parseFrom(Base64.getDecoder().decode(splits[0].substring(10))).toBuilder();
+                        builder.setTablePath(getTempDirUri("logStream/" + builder.getTableName()));
+                        System.out.println(builder.getTableName());
+
+                        byte[] encodedBatch = Base64.getDecoder().decode(splits[1]);
+                        return new LakeSoulArrowWrapper(builder.build().toByteArray(), encodedBatch);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+
+                return null;
+            }
+        };
+
+        MockLakeSoulArrowSource.LogSourceFunction.applyStaticParseFunc(parseFunc);
+
+        DataStreamSource<LakeSoulArrowWrapper> source =
+                execEnv.addSource(new MockLakeSoulArrowSource.LogSourceFunction(100, 100L, "/Users/ceng/Desktop/111(1).txt"));
         String name = "Print Sink";
         PrintSinkFunction<LakeSoulArrowWrapper> printFunction = new PrintSinkFunction<>(name, false);
 

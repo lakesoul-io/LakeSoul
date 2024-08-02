@@ -72,7 +72,6 @@ pub struct BatchPartitioner {
 }
 
 struct BatchPartitionerState {
-    // random_state: ahash::RandomState,
     range_exprs: Vec<Arc<dyn PhysicalExpr>>,
     hash_exprs: Vec<Arc<dyn PhysicalExpr>>,
     num_partitions: usize,

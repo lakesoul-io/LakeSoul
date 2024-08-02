@@ -496,6 +496,7 @@ impl PartitioningAsyncWriter {
     pub fn try_new(task_context: Arc<TaskContext>, config: LakeSoulIOConfig, runtime: Arc<Runtime>) -> Result<Self> {
         let _ = runtime.enter();
         let schema = config.target_schema.0.clone();
+
         let receiver_stream_builder = RecordBatchReceiverStream::builder(schema.clone(), 8);
         let tx = receiver_stream_builder.tx();
         let recv_exec = ReceiverStreamExec::new(receiver_stream_builder, schema.clone());
@@ -507,13 +508,27 @@ impl PartitioningAsyncWriter {
 
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
+        let mut writer_config = config.clone();
+        if !config.aux_sort_cols.is_empty() {
+            let schema = config.target_schema.0.clone();
+            // O(nm), n = number of target schema fields, m = number of aux sort cols
+            let proj_indices = schema
+                .fields
+                .iter()
+                .filter(|f| !config.aux_sort_cols.contains(f.name()))
+                .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+                .collect::<Result<Vec<usize>>>()?;
+            let writer_schema = Arc::new(schema.project(proj_indices.borrow())?);
+            writer_config.target_schema = IOSchema(uniform_schema(writer_schema));
+        }
+
         let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         for i in 0..partitioning_exec.output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
                 i,
                 task_context.clone(),
-                config.clone().into(),
+                writer_config.clone().into(),
                 Arc::new(config.range_partitions.clone()),
                 write_id.clone(),
                 partitioned_file_path_and_row_count.clone(),
@@ -544,8 +559,8 @@ impl PartitioningAsyncWriter {
             .chain(config.primary_keys.iter())
             // add aux sort cols to sort expr
             .chain(config.aux_sort_cols.iter())
-            .map(|pk| {
-                let col = Column::new_with_schema(pk.as_str(), &config.target_schema.0)?;
+            .map(|sort_column| {
+                let col = Column::new_with_schema(sort_column.as_str(), &config.target_schema.0)?;
                 Ok(PhysicalSortExpr {
                     expr: Arc::new(col),
                     options: SortOptions::default(),
@@ -836,7 +851,11 @@ impl SyncSendableMutableLakeSoulWriter {
             let mut writer_config = config.clone();
             let writer: Box<dyn AsyncBatchWriter + Send> = if config.use_dynamic_partition {
                 let task_context = create_session_context(&mut writer_config)?.task_ctx();
-                Box::new(PartitioningAsyncWriter::try_new(task_context, config, runtime.clone())?)
+                Box::new(PartitioningAsyncWriter::try_new(
+                    task_context,
+                    writer_config,
+                    runtime.clone(),
+                )?)
             } else if !config.primary_keys.is_empty() {
                 // sort primary key table
 
@@ -1003,8 +1022,9 @@ mod tests {
         let col = Arc::new(Int64Array::from_iter_values([3, 2, 3])) as ArrayRef;
         let col1 = Arc::new(Int64Array::from_iter_values([5, 3, 2])) as ArrayRef;
         let col2 = Arc::new(Int64Array::from_iter_values([3, 2, 1])) as ArrayRef;
-        let to_write = RecordBatch::try_from_iter([("col", col), ("col1", col1), ("col2", col2)])?;
+        let to_write = RecordBatch::try_from_iter([("col", col), ("col2", col2), ("col1", col1)])?;
         let temp_dir = tempfile::tempdir()?;
+        let prefix = tempfile::tempdir()?.into_path().into_os_string().into_string().unwrap();
         let path = temp_dir
             .into_path()
             .join("test.parquet")
@@ -1012,13 +1032,15 @@ mod tests {
             .into_string()
             .unwrap();
         let writer_conf = LakeSoulIOConfigBuilder::new()
-            .with_files(vec![path.clone()])
+            // .with_files(vec![path.clone()])
             .with_thread_num(2)
             .with_batch_size(256)
             .with_max_row_group_size(2)
             .with_schema(to_write.schema())
-            .with_primary_keys(vec!["col".to_string()])
+            // .with_primary_keys(vec!["col".to_string()])
             .with_aux_sort_column("col2".to_string())
+            .set_dynamic_partition(true)
+            .with_prefix(prefix)
             .build();
 
         let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;

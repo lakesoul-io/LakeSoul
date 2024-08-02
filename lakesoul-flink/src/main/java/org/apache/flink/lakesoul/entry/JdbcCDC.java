@@ -65,7 +65,7 @@ public class JdbcCDC {
         host = parameter.get(SOURCE_DB_HOST.key());
         port = parameter.getInt(SOURCE_DB_PORT.key(), MysqlDBManager.DEFAULT_MYSQL_PORT);
         //Postgres Oracle
-        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres") ) {
+        if (dbType.equalsIgnoreCase("oracle") || dbType.equalsIgnoreCase("postgres")) {
             schemaList = parameter.get(SOURCE_DB_SCHEMA_LIST.key()).split(",");
             String[] tables = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
             tableList = new String[tables.length];
@@ -74,10 +74,10 @@ public class JdbcCDC {
             }
             splitSize = parameter.getInt(SOURCE_DB_SPLIT_SIZE.key(), SOURCE_DB_SPLIT_SIZE.defaultValue());
         }
-        if (dbType.equalsIgnoreCase("sqlserver") ){
+        if (dbType.equalsIgnoreCase("sqlserver")) {
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
-        if ( dbType.equalsIgnoreCase("mongodb")){
+        if (dbType.equalsIgnoreCase("mongodb")) {
             batchSize = parameter.getInt(BATCH_SIZE.key(), BATCH_SIZE.defaultValue());
             tableList = parameter.get(SOURCE_DB_SCHEMA_TABLES.key()).split(",");
         }
@@ -99,11 +99,11 @@ public class JdbcCDC {
         conf.set(SOURCE_DB_PORT, port);
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
-        conf.set(SOURCE_DB_TYPE,dbType);
+        conf.set(SOURCE_DB_TYPE, dbType);
 
         // parameters for mutil tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
-        conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
+        conf.set(LakeSoulSinkOptions.IS_MULTI_TABLE_SOURCE, true);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);

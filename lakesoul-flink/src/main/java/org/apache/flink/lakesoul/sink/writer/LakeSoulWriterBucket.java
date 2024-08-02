@@ -61,7 +61,7 @@ public class LakeSoulWriterBucket {
     private final String uniqueId;
     private final Configuration conf;
 
-    private long tsMs;
+    private long latestSrcTsMs;
 
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
             new HashMap<>();
@@ -163,7 +163,7 @@ public class LakeSoulWriterBucket {
                     getBucketId(),
                     tsMs);
             inProgressPartWriter = rollPartFile(currentTime);
-            this.tsMs = tsMs;
+            this.latestSrcTsMs = Math.max(this.latestSrcTsMs, tsMs);
         }
 
         inProgressPartWriter.write(element, currentTime);
@@ -180,9 +180,14 @@ public class LakeSoulWriterBucket {
         }
 
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
-        long time = pendingFilesMap.isEmpty() ? Long.MIN_VALUE :
-                ((NativeParquetWriter.NativeWriterPendingFileRecoverable) pendingFilesMap.values().stream().findFirst()
-                        .get().get(0)).creationTime;
+        long creationTime = Long.MAX_VALUE;
+        long lastUpdateTime = Long.MIN_VALUE;
+        for (List<InProgressFileWriter.PendingFileRecoverable> recoverableList : pendingFilesMap.values()) {
+            for (InProgressFileWriter.PendingFileRecoverable recoverable : recoverableList) {
+                creationTime = Math.min(creationTime, ((NativeParquetWriter.NativeWriterPendingFileRecoverable) recoverable).creationTime);
+                lastUpdateTime = Math.max(lastUpdateTime, ((NativeParquetWriter.NativeWriterPendingFileRecoverable) recoverable).lastUpdateTime);
+            }
+        }
 
         if (dmlType.equals(LakeSoulSinkOptions.DELETE)) {
             List<PartitionInfo> sourcePartitionInfoList = JniWrapper
@@ -197,9 +202,10 @@ public class LakeSoulWriterBucket {
         committables.add(new LakeSoulMultiTableSinkCommittable(
                 tableId,
                 new HashMap<>(pendingFilesMap),
-                time,
+                creationTime,
+                lastUpdateTime,
                 UUID.randomUUID().toString(),
-                tsMs,
+                latestSrcTsMs,
                 dmlType,
                 sourcePartitionInfo
         ));

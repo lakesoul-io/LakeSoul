@@ -31,14 +31,14 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 case class LakeSoulTableV2(spark: SparkSession,
-                           path_orig: Path,
+                           pathOrig: Path,
                            catalogTable: Option[CatalogTable] = None,
                            tableIdentifier: Option[String] = None,
                            userDefinedFileIndex: Option[LakeSoulFileIndexV2] = None,
                            var mergeOperatorInfo: Option[Map[String, String]] = None)
   extends Table with SupportsWrite with SupportsRead with SupportsPartitionManagement {
 
-  val path: Path = SparkUtil.makeQualifiedTablePath(path_orig)
+  val path: Path = SparkUtil.makeQualifiedTablePath(pathOrig)
 
   val namespace: String =
     tableIdentifier match {
@@ -58,7 +58,7 @@ case class LakeSoulTableV2(spark: SparkSession,
       // Fast path for reducing path munging overhead
       (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
-      LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
+      LakeSoulDataSource.parsePathIdentifier(spark, path)
     }
   }
 

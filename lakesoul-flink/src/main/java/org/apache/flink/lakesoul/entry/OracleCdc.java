@@ -73,7 +73,7 @@ public class OracleCdc {
         }
         Configuration conf = new Configuration();
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
-        conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
+        conf.set(LakeSoulSinkOptions.IS_MULTI_TABLE_SOURCE, true);
         conf.set(SOURCE_PARALLELISM, sourceParallelism);
         conf.set(BUCKET_PARALLELISM, bucketParallelism);
         conf.set(SERVER_TIME_ZONE, serverTimezone);

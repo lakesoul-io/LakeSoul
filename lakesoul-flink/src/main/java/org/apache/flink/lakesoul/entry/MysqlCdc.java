@@ -74,9 +74,9 @@ public class MysqlCdc {
         conf.set(WAREHOUSE_PATH, databasePrefixPath);
         conf.set(SERVER_TIME_ZONE, serverTimezone);
 
-        // parameters for mutil tables dml sink
+        // parameters for multi tables dml sink
         conf.set(LakeSoulSinkOptions.USE_CDC, true);
-        conf.set(LakeSoulSinkOptions.isMultiTableSource, true);
+        conf.set(LakeSoulSinkOptions.IS_MULTI_TABLE_SOURCE, true);
         conf.set(LakeSoulSinkOptions.WAREHOUSE_PATH, databasePrefixPath);
         conf.set(LakeSoulSinkOptions.SOURCE_PARALLELISM, sourceParallelism);
         conf.set(LakeSoulSinkOptions.BUCKET_PARALLELISM, bucketParallelism);
