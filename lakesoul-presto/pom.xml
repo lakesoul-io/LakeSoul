@@ -94,6 +94,11 @@
             <artifactId>guava</artifactId>
             <version>32.0.0-jre</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+        </dependency>
     </dependencies>
 
     <build>
