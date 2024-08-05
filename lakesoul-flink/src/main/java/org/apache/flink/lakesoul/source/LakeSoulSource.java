@@ -163,15 +163,15 @@ public abstract class LakeSoulSource<OUT> implements Source<OUT, LakeSoulPartiti
                         dataFileInfo.range_partitions()));
             }
         } else {
-            Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+            Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                     FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo,
                             dataFileInfoList.toArray(new DataFileInfo[0]));
-            for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+            for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                 for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                     splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()),
                             split.getValue(),
                             0,
-                            entry.getKey().f0));
+                            entry.getKey()));
                 }
             }
         }
