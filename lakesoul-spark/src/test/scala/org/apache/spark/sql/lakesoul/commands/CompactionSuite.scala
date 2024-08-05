@@ -27,7 +27,6 @@ class CompactionSuite extends QueryTest
 
   override def sparkConf: SparkConf = {
     super.sparkConf
-      .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
       .set("spark.network.timeout", "10000000")
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)

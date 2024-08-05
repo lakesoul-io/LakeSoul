@@ -685,7 +685,6 @@ trait TableCreationTests
 
   test("CTAS a managed table with the existing empty directory") {
     val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
-    println(tableLoc.getAbsolutePath)
     try {
       tableLoc.mkdirs()
       withTable("tab1") {

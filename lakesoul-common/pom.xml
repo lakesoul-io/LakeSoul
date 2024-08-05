@@ -332,7 +332,6 @@ SPDX-License-Identifier: Apache-2.0
             <version>3.22.0</version>
         </dependency>
 
-
         <!-- jnr-ffi deps-->
         <dependency>
             <groupId>com.github.jnr</groupId>
@@ -342,7 +341,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-client-api</artifactId>
-            <version>3.3.6</version>
+            <version>3.4.0</version>
             <scope>${local.scope}</scope>
         </dependency>
     </dependencies>

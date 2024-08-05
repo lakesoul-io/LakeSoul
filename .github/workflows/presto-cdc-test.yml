@@ -100,7 +100,7 @@ jobs:
           echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
           echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)" >> $GITHUB_ENV
           echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
-          echo "PRESTO_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-jar-with-dependencies.jar/g')" >> $GITHUB_ENV
+          echo "PRESTO_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto)" >> $GITHUB_ENV
           echo "PRESTO_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-presto | sed -e 's/.jar/-tests.jar/g')" >> $GITHUB_ENV
       - name: Copy built jar to work-dir
         run: |
