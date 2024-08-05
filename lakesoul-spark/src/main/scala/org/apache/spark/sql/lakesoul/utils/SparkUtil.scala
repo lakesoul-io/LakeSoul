@@ -53,7 +53,17 @@ object SparkUtil {
 
   def makeQualifiedTablePath(tablePath: Path): Path = {
     val spark = SparkSession.active
-    tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
+    val uri = tablePath.toUri.toString
+    if (uri.startsWith("file:///")) {
+      tablePath
+    } else if (uri.startsWith("file:/")) {
+      // make local file path always starts with file:///
+      tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(
+        new Path(uri.substring(5))
+      )
+    } else {
+      tablePath.getFileSystem(spark.sessionState.newHadoopConf()).makeQualified(tablePath)
+    }
   }
 
   def makeQualifiedPath(tablePath: String): Path = {

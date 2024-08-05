@@ -24,7 +24,7 @@ class CompactionDoNotChangeResult {
 
     import spark.implicits._
 
-    val tableName = SparkUtil.makeQualifiedTablePath(new Path(Utils.createTempDir().getCanonicalPath)).toString
+    val tableName = SparkUtil.makeQualifiedTablePath(new Path(Utils.createTempDir().getCanonicalPath)).toUri.toString
     try {
       val allData = TestUtils.getData2(5000, onlyOnePartition)
         .toDF("hash", "name", "age", "range")

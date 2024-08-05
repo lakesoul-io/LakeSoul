@@ -63,7 +63,7 @@ class ReadSuite extends QueryTest
   test("test snapshot read with OnePartition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
           .toDF("range", "hash", "op")
           .write
@@ -112,7 +112,7 @@ class ReadSuite extends QueryTest
   test("test snapshot read with MultiPartition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
           .toDF("id", "range", "hash", "op")
           .write
@@ -160,7 +160,7 @@ class ReadSuite extends QueryTest
   test("test snapshot read without Partition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
           .toDF("range", "hash", "op")
           .write
@@ -202,7 +202,7 @@ class ReadSuite extends QueryTest
   test("test incremental read with OnePartition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         withSQLConf(
           LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
           Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
@@ -261,7 +261,7 @@ class ReadSuite extends QueryTest
   test("test incremental read with MultiPartition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
           .toDF("id", "range", "hash", "op")
           .write
@@ -308,7 +308,7 @@ class ReadSuite extends QueryTest
   test("test incremental read without Partition") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         withSQLConf(
           LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
           Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
@@ -358,7 +358,7 @@ class ReadSuite extends QueryTest
     override def run(): Unit = {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
             .toDF("id", "range", "hash", "op")
             .write
@@ -395,7 +395,7 @@ class ReadSuite extends QueryTest
     override def run(): Unit = {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           Seq((1, "range1", "hash1-1", "insert"), (2, "range2", "hash2-1", "insert"))
             .toDF("id", "range", "hash", "op")
             .write
@@ -432,7 +432,7 @@ class ReadSuite extends QueryTest
     override def run(): Unit = {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           Seq((1, "range1", "hash1-1", "insert"))
             .toDF("id", "range", "hash", "op")
             .write

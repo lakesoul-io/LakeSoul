@@ -161,7 +161,7 @@ object SnapshotManagement {
 
   def forTable(spark: SparkSession, tableName: TableIdentifier): SnapshotManagement = {
     val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(tableName)
-    apply(new Path(path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toString)))
+    apply(new Path(path.getOrElse(SparkUtil.getDefaultTablePath(tableName).toUri.toString)))
   }
 
   def forTable(dataPath: File): SnapshotManagement = {
@@ -176,7 +176,7 @@ object SnapshotManagement {
 
   def apply(path: String, namespace: String): SnapshotManagement = {
     try {
-      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
       snapshotManagementCache.get(qualifiedPath, () => {
         AnalysisHelper.allowInvokingTransformsInAnalyzer {
           new SnapshotManagement(qualifiedPath, namespace)
@@ -190,7 +190,7 @@ object SnapshotManagement {
 
   //no cache just for snapshot
   def apply(path: String, partitionDesc: String, partitionVersion: Long): SnapshotManagement = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
       sm.updateSnapshotForVersion(partitionDesc, 0, partitionVersion, ReadType.SNAPSHOT_READ)
@@ -201,7 +201,7 @@ object SnapshotManagement {
   }
 
   def apply(path: String, partitionDesc: String, startPartitionVersion: Long, endPartitionVersion: Long, readType: String): SnapshotManagement = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulSourceUtils.isLakeSoulTableExists(qualifiedPath)) {
       val sm = apply(qualifiedPath)
       sm.updateSnapshotForVersion(partitionDesc, startPartitionVersion, endPartitionVersion, readType)
@@ -212,7 +212,7 @@ object SnapshotManagement {
   }
 
   def invalidateCache(path: String): Unit = {
-    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val qualifiedPath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     snapshotManagementCache.invalidate(qualifiedPath)
   }
 

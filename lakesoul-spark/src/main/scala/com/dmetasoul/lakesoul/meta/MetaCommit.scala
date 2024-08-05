@@ -30,7 +30,7 @@ object MetaCommit extends Logging {
 
     tableInfo.setTableId(table_info.table_id)
     tableInfo.setTableNamespace(table_info.namespace)
-    tableInfo.setTablePath(table_info.table_path.toString)
+    tableInfo.setTablePath(table_info.table_path.toUri.toString)
     tableInfo.setTableSchema(table_info.table_schema)
     tableInfo.setPartitions(DBUtil.formatTableInfoPartitionsField(table_info.hash_column, table_info.range_column))
     val json = new JSONObject()
@@ -75,7 +75,7 @@ object MetaCommit extends Logging {
     }
     if (!result) {
       throw LakeSoulErrors.commitFailedReachLimit(
-        meta_info.table_info.table_path.toString,
+        meta_info.table_info.table_path.toUri.toString,
         "",
         MetaUtils.MAX_COMMIT_ATTEMPTS)
     }

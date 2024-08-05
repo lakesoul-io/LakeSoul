@@ -74,7 +74,7 @@ trait TableCreationTests
   }
 
   protected def getDefaultTablePath(tableName: String): String = {
-    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toString
+    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toUri.toString
   }
 
   protected def getPartitioningColumns(tableName: String): Seq[String] = {
@@ -150,7 +150,7 @@ trait TableCreationTests
               .saveAsTable(tbl)
 
             checkDatasetUnorderly(spark.table(tbl).as[(Long, String)], 1L -> "a")
-            assert(getTablePath(tbl) === new Path(dir.toURI).toString.stripSuffix("/"),
+            assert(getTablePath(tbl) === SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString.stripSuffix("/"),
               "Table path is wrong")
             assert(getPartitioningColumns(tbl) === cols, "Partitioning columns don't match")
           }
@@ -171,7 +171,7 @@ trait TableCreationTests
               .saveAsTable(tbl)
 
             checkDatasetUnorderly(spark.table(tbl).as[(Long, String)])
-            assert(getTablePath(tbl) === new Path(dir.toURI).toString.stripSuffix("/"),
+            assert(getTablePath(tbl) === SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString.stripSuffix("/"),
               "Table path is wrong")
             assert(getPartitioningColumns(tbl) === cols, "Partitioning columns don't match")
           }
@@ -685,6 +685,7 @@ trait TableCreationTests
 
   test("CTAS a managed table with the existing empty directory") {
     val tableLoc = new File(getDefaultTablePath("tab1").stripPrefix("file:"))
+    println(tableLoc.getAbsolutePath)
     try {
       tableLoc.mkdirs()
       withTable("tab1") {
@@ -778,7 +779,7 @@ trait TableCreationTests
 
         val path = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(TableIdentifier("t", Some("default")))
         assert(path.isDefined)
-        assert(path.get == SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString)
+        assert(path.get == SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toUri.toString)
 
         val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
         val ident = toIdentifier("t")
@@ -805,7 +806,7 @@ trait TableCreationTests
         val ident = toIdentifier("t1")
         val location = catalog.getTableLocation(ident)
         assert(location.isDefined)
-        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString)
 
         Seq((1, 2)).toDF("a", "b")
           .write.format("lakesoul").mode("append").save(location.get)
@@ -835,7 +836,7 @@ trait TableCreationTests
           val ident = toIdentifier("t")
           val location = catalog.getTableLocation(ident)
           assert(location.isDefined)
-          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
+          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
           val snapshotManagement = getSnapshotManagement(new Path(location.get))
@@ -870,7 +871,7 @@ trait TableCreationTests
           val ident = toIdentifier("t1")
           val location = catalog.getTableLocation(ident)
           assert(location.isDefined)
-          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
+          assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString)
 
           // Query the data and the metadata directly via the SnapshotManagement
           val snapshotManagement = getSnapshotManagement(new Path(location.get))
@@ -1038,7 +1039,7 @@ trait TableCreationTests
             .option(LakeSoulOptions.SHORT_TABLE_NAME, "tt")
             .save(path)
 
-          val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).snapshot.getTableInfo.short_table_name
+          val shortName = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).snapshot.getTableInfo.short_table_name
           assert(shortName.isDefined && shortName.get.equals("tt"))
 
           checkAnswer(sql(s"select i,p from $testDatabase.tt"), Seq((1, "a"), (2, "b")).toDF("i", "p"))
@@ -1062,7 +1063,7 @@ trait TableCreationTests
             .format("lakesoul")
             .save(path)
 
-          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString)
           var shortName = sm.snapshot.getTableInfo.short_table_name
           assert(shortName.isEmpty)
           sql(s"create table tt using lakesoul location '$path'")
@@ -1107,7 +1108,7 @@ trait TableCreationTests
             .format("lakesoul")
             .save(path)
 
-          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+          val sm = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString)
 
           var shortName = sm.snapshot.getTableInfo.short_table_name
           assert(shortName.isEmpty)
@@ -1158,7 +1159,7 @@ trait TableCreationTests
           .hashBucketNum(1)
           .create()
 
-        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals("tt"))
         assert(tableInfo.range_partition_columns.equals(Seq("i")))
         assert(tableInfo.hash_partition_columns.equals(Seq("p")))
@@ -1197,7 +1198,7 @@ trait TableCreationTests
         val catalog = spark.sessionState.catalogManager.currentCatalog.asInstanceOf[LakeSoulCatalog]
         val table = catalog.loadTable(toIdentifier("test_table"))
         assert(table.properties.get("lakesoul_cdc_change_column") == "change_kind")
-        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
         assert(tableInfo.short_table_name.get.equals(tableName))
         assert(tableInfo.range_partition_columns.equals(Seq("date")))
         assert(tableInfo.hash_partition_columns.equals(Seq("id")))
@@ -1237,7 +1238,7 @@ trait TableCreationTests
           .tableProperty("lakesoul_cdc_change_column" -> "change_kind")
           .create()
 
-        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
         tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }
@@ -1253,7 +1254,7 @@ trait TableCreationTests
           .format("lakesoul")
           .option("lakesoul_cdc_change_column", "change_kind")
           .save(path)
-        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString).getTableInfoOnly
+        val tableInfo = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString).getTableInfoOnly
         tableInfo.configuration should contain("lakesoul_cdc_change_column" -> "change_kind")
       })
     }

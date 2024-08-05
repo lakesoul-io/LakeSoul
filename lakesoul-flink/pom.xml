@@ -165,7 +165,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.mongodb</groupId>
             <artifactId>bson</artifactId>
-            <version>4.3.4</version>
+            <version>4.7.2</version>
             <scope>${local.scope}</scope>
         </dependency>
         <dependency>
@@ -282,6 +282,16 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.furyio</groupId>
             <artifactId>fury-core</artifactId>
             <version>0.4.1</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.checkerframework</groupId>
+                    <artifactId>checker-qual</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -427,10 +437,10 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
                             <include>org.apache.arrow:*</include>
+                            <include>org.eclipse.collections:*</include>
                             <include>org.apache.parquet:*</include>
                             <include>org.apache.yetus:*</include>
-                            <include>io.netty:netty-buffer</include>
-                            <include>io.netty:netty-common</include>
+                            <include>io.netty:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
@@ -481,16 +491,19 @@ SPDX-License-Identifier: Apache-2.0
                     </artifactSet>
                     <filters>
                         <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/versions/**</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
                             <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
                             <excludes>
                                 <exclude>org/apache/flink/shaded/guava30/**</exclude>
                                 <exclude>META-INF/maven/com.google.guava/**</exclude>
-                            </excludes>
-                        </filter>
-                        <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
-                            <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
                         </filter>
                     </filters>

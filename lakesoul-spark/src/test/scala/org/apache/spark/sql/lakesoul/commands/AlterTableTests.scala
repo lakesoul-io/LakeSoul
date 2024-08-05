@@ -1134,7 +1134,7 @@ trait AlterTableByNameTests extends AlterTableTests {
 
         sql("ALTER TABLE lakesoul_test ADD COLUMNS (v3 long, v4 double)")
 
-        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toString)
+        val snapshotManagement = SnapshotManagement(SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString)
         assert(snapshotManagement.updateSnapshot().getTableInfo.schema == new StructType()
           .add("v1", "integer").add("v2", "string")
           .add("v3", "long").add("v4", "double"))
@@ -1205,7 +1205,7 @@ trait AlterTableByPathTests extends AlterTableLakeSoulTestBase {
   override protected def getSnapshotManagement(identifier: String): SnapshotManagement = {
     SnapshotManagement(
       SparkUtil.makeQualifiedTablePath(new Path(identifier.split("\\.")
-        .last.stripPrefix("`").stripSuffix("`"))).toString)
+        .last.stripPrefix("`").stripSuffix("`"))).toUri.toString)
   }
 
   override protected def ddlTest(testName: String)(f: String => Unit): Unit = {

@@ -70,8 +70,8 @@ object FlinkWriteDataCheck {
     val spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    val lakeSoulTablePath = SparkUtil.makeQualifiedTablePath(new Path(lakeSoulPath)).toString
-    val csvTablePath = SparkUtil.makeQualifiedTablePath(new Path(csvPath)).toString
+    val lakeSoulTablePath = SparkUtil.makeQualifiedTablePath(new Path(lakeSoulPath)).toUri.toString
+    val csvTablePath = SparkUtil.makeQualifiedTablePath(new Path(csvPath)).toUri.toString
 
     val lakeSoulDF = LakeSoulTable.forPath(lakeSoulTablePath).toDF
     val csvDF = spark.read.schema(lakeSoulDF.schema).format("parquet").load(csvTablePath)

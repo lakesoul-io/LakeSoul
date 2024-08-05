@@ -55,7 +55,7 @@ class CDCSuite
   }
 
   protected def getDefaultTablePath(tableName: String): String = {
-    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toString
+    SparkUtil.getDefaultTablePath(TableIdentifier(tableName, Some("default"))).toUri.toString
   }
 
   protected def getPartitioningColumns(tableName: String): Seq[String] = {
@@ -77,7 +77,7 @@ class CDCSuite
     test(s"test cdc with MultiPartitionMergeScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           withSQLConf(
             LakeSoulSQLConf.NATIVE_IO_ENABLE.key -> nativeIOEnabled) {
             Seq(("range1", "hash1", "insert"), ("range2", "hash2", "insert"), ("range3", "hash2", "insert"), ("range4", "hash2", "insert"), ("range4", "hash4", "insert"), ("range3", "hash3", "insert"))
@@ -105,7 +105,7 @@ class CDCSuite
     test(s"test cdc with OnePartitionMergeBucketScan(native_io_enabled=$nativeIOEnabled) ") {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           withSQLConf(
             LakeSoulSQLConf.NATIVE_IO_ENABLE.key -> nativeIOEnabled) {
             Seq(("range1", "hash1", "insert"), ("range1", "hash2", "insert"), ("range1", "hash3", "insert"), ("range1", "hash4", "insert"), ("range1", "hash5", "insert"))
@@ -133,7 +133,7 @@ class CDCSuite
     test(s"test cdc with MultiPartitionMergeBucketScan(native_io_enabled=$nativeIOEnabled)") {
       withTable("tt") {
         withTempDir(dir => {
-          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+          val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
           withSQLConf(
             LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true",
             LakeSoulSQLConf.NATIVE_IO_ENABLE.key -> nativeIOEnabled) {
@@ -167,7 +167,7 @@ class CDCSuite
   test("test cdc with snapshot") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         withSQLConf(
           LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
           Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))
@@ -218,7 +218,7 @@ class CDCSuite
   test("test cdc with incremental") {
     withTable("tt") {
       withTempDir(dir => {
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
         withSQLConf(
           LakeSoulSQLConf.BUCKET_SCAN_MULTI_PARTITION_ENABLE.key -> "true") {
           Seq(("range1", "hash1-1", "insert"), ("range2", "hash2-1", "insert"))

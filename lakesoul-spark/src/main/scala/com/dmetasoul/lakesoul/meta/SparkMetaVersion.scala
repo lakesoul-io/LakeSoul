@@ -84,7 +84,7 @@ object SparkMetaVersion {
   }
 
   def getTableInfo(namespace: String, table_path: String): TableInfo = {
-    val path = SparkUtil.makeQualifiedPath(table_path).toString
+    val path = SparkUtil.makeQualifiedPath(table_path).toUri.toString
     val info = dbManager.getTableInfoByPath(path)
     if (info == null) {
       return null

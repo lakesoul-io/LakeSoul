@@ -58,7 +58,7 @@ case class LakeSoulTableV2(spark: SparkSession,
       // Fast path for reducing path munging overhead
       (SparkUtil.makeQualifiedTablePath(new Path(catalogTable.get.location)), Nil)
     } else {
-      LakeSoulDataSource.parsePathIdentifier(spark, path.toString)
+      LakeSoulDataSource.parsePathIdentifier(spark, path.toUri.toString)
     }
   }
 
@@ -102,7 +102,7 @@ case class LakeSoulTableV2(spark: SparkSession,
       }
     }
     base.put(TableCatalog.PROP_PROVIDER, "lakesoul")
-    base.put(TableCatalog.PROP_LOCATION, CatalogUtils.URIToString(path.toUri))
+    base.put(TableCatalog.PROP_LOCATION, path.toUri.toString)
     //    Option(snapshot.getTableInfo.description).foreach(base.put(TableCatalog.PROP_COMMENT, _))
     base
   }
