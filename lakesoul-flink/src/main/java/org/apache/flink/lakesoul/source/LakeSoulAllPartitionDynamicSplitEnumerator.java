@@ -165,9 +165,9 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator implements SplitEnumerat
                         DataOperation.getIncrementalPartitionDataInfo(tableId, partitionDesc, startTime, latestTimestamp, "incremental");
             }
             if (dataFileInfos.length > 0) {
-                Map<Tuple2<String, String>, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
+                Map<String, Map<Integer, List<Path>>> splitByRangeAndHashPartition =
                         FlinkUtil.splitDataInfosToRangeAndHashPartition(tableInfo, dataFileInfos);
-                for (Map.Entry<Tuple2<String, String>, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
+                for (Map.Entry<String, Map<Integer, List<Path>>> entry : splitByRangeAndHashPartition.entrySet()) {
                     for (Map.Entry<Integer, List<Path>> split : entry.getValue().entrySet()) {
                         splits.add(new LakeSoulPartitionSplit(String.valueOf(split.hashCode()), split.getValue(), 0, split.getKey(), partitionDesc));
                     }

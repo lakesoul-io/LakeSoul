@@ -128,7 +128,7 @@ public class MysqlCdc {
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = conf;
+        context.conf = (Configuration) env.getConfiguration();
         LakeSoulMultiTableSinkStreamBuilder
                 builder =
                 new LakeSoulMultiTableSinkStreamBuilder(mySqlSource, context, lakeSoulRecordConvert);
