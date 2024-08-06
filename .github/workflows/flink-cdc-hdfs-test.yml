@@ -141,6 +141,10 @@ jobs:
           python 1_create_table.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
+          sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
           cd ./script/benchmark
@@ -155,6 +159,10 @@ jobs:
           python3 3_add_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -173,6 +181,10 @@ jobs:
         run: |
           cd ./script/benchmark
           docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v $HADOOP_HOME:/opt/hadoop --env HADOOP_HOME=/opt/hadoop -v ${PWD}/work-dir:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 4G --executor-memory 4G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.dmetasoul.lakesoul.native.io.enable=true --jars /opt/spark/work-dir/$SPARK_JAR_NAME,/opt/spark/work-dir/mysql-connector-java-8.0.30.jar --class org.apache.spark.sql.lakesoul.benchmark.Benchmark --master local[4] /opt/spark/work-dir/$SPARK_TEST_JAR_NAME
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
+          sleep 30s
       - name: Flink source to sink data accuracy verification task
         run: |
           cd ./script/benchmark
@@ -183,6 +195,10 @@ jobs:
           python3 6_drop_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |

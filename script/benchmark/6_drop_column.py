@@ -37,6 +37,16 @@ connect = pymysql.connect(host=host,
 
 cur = connect.cursor()
 
+default_sql_1 = """alter table default_init_1 drop column extra_1"""
+default_sql_2 = """alter table default_init_1 drop column extra_2"""
+default_sql_3 = """alter table default_init_1 drop column extra_3"""
+print(default_sql_1)
+cur.execute(default_sql_1)
+print(default_sql_2)
+cur.execute(default_sql_2)
+print(default_sql_3)
+cur.execute(default_sql_3)
+
 sql_1 = """alter table random_table_%s drop column extra_1"""
 sql_2 = """alter table random_table_%s drop column extra_2"""
 sql_3 = """alter table random_table_%s drop column extra_3"""

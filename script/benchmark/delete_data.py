@@ -39,7 +39,12 @@ connect = pymysql.connect(host=host,
 cur = connect.cursor()
 
 sql_default = """delete from default_init limit %s""" % delete_num
+print(sql_default)
 cur.execute(sql_default)
+
+sql_default_1 = """delete from default_init_1 limit %s""" % delete_num
+print(sql_default_1)
+cur.execute(sql_default_1)
 
 sql_1 = """delete from random_table_%s limit %s"""
 

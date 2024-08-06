@@ -36,7 +36,11 @@ connect = pymysql.connect(host=host,
 
 cur = connect.cursor()
 
+default_sql = """alter table default_init_1 modify column extra_1 float default NULL, modify column extra_2 varchar(255) default NULL"""
 sql = """alter table random_table_%s modify column extra_1 float default NULL, modify column extra_2 varchar(255) default NULL"""
+
+print(default_sql)
+cur.execute(default_sql)
 
 for i in range(table_num):
     exec_sql = sql % str(i)
