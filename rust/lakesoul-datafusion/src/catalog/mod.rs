@@ -39,7 +39,7 @@ pub(crate) async fn create_table(client: MetaDataClientRef, table_name: &str, co
             table_id: format!("table_{}", uuid::Uuid::new_v4()),
             table_name: table_name.to_string(),
             table_path: format!(
-                "file:{}/default/{}",
+                "file://{}/default/{}",
                 env::current_dir()
                     .unwrap()
                     .to_str()

@@ -471,7 +471,7 @@ object LakeSoulTable {
     if (path.equals("")) {
       SnapshotManagement.clearCache()
     } else {
-      val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
       if (!LakeSoulSourceUtils.isLakeSoulTableExists(p)) {
         println("table not in lakesoul. Please check table path")
         return
@@ -517,7 +517,7 @@ object LakeSoulTable {
     * Create a LakeSoulTableRel for the data at the given `path` using the given SparkSession.
     */
   def forPath(sparkSession: SparkSession, path: String): LakeSoulTable = {
-    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p))
@@ -527,7 +527,7 @@ object LakeSoulTable {
   }
 
   def forPath(sparkSession: SparkSession, path: String, partitionDesc: String, partitionVersion: Int): LakeSoulTable = {
-    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       new LakeSoulTable(sparkSession.read.format(LakeSoulSourceUtils.SOURCENAME).load(p),
         SnapshotManagement(p, partitionDesc, partitionVersion))
@@ -544,7 +544,7 @@ object LakeSoulTable {
     val timeZoneID = if (timeZone.equals("") || !TimeZone.getAvailableIDs.contains(timeZone)) TimeZone.getDefault.getID else timeZone
     val startTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(startTimeStamp)
     val endTime = TimestampFormatter.apply(TimeZone.getTimeZone(timeZoneID)).parse(endTimeStamp)
-    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+    val p = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
     if (LakeSoulUtils.isLakeSoulTable(sparkSession, new Path(p))) {
       if (endTime < 0) {
         println("No version found in Table before time")

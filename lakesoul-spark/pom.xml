@@ -58,6 +58,12 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.dmetasoul</groupId>
             <artifactId>lakesoul-common</artifactId>
             <version>${revision}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.dmetasoul</groupId>
@@ -83,6 +89,14 @@ SPDX-License-Identifier: Apache-2.0
                 <exclusion>
                     <groupId>io.netty</groupId>
                     <artifactId>netty-common</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.antlr</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -211,7 +225,7 @@ SPDX-License-Identifier: Apache-2.0
             <exclusions>
                 <exclusion>
                     <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>jackson-core</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -225,6 +239,10 @@ SPDX-License-Identifier: Apache-2.0
                 <exclusion>
                     <groupId>com.google.protobuf</groupId>
                     <artifactId>protobuf-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.core</groupId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -284,7 +302,7 @@ SPDX-License-Identifier: Apache-2.0
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-aws</artifactId>
-            <version>3.3.3</version>
+            <version>3.3.6</version>
             <scope>provided</scope>
         </dependency>
 
@@ -296,49 +314,49 @@ SPDX-License-Identifier: Apache-2.0
         </dependency>
 
         <!-- for test only. we don't rely on gluten during package and runtime -->
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>backends-velox</artifactId>
-            <version>${gluten.version}</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>gluten-core</artifactId>
-            <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>io.glutenproject</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
-                </exclusion>
-            </exclusions>
-            <scope>${local.scope}</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>gluten-core</artifactId>
-            <version>${gluten.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>io.glutenproject</groupId>
-                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>
-                </exclusion>
-            </exclusions>
-            <classifier>tests</classifier>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>gluten-data</artifactId>
-            <version>${gluten.version}</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.glutenproject</groupId>
-            <artifactId>spark-sql-columnar-shims-common</artifactId>
-            <version>${gluten.version}</version>
-            <scope>${local.scope}</scope>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>backends-velox</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>${local.scope}</scope>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>gluten-core</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <exclusions>-->
+<!--                <exclusion>-->
+<!--                    <groupId>io.glutenproject</groupId>-->
+<!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
+<!--                </exclusion>-->
+<!--            </exclusions>-->
+<!--            <scope>${local.scope}</scope>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>gluten-core</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <exclusions>-->
+<!--                <exclusion>-->
+<!--                    <groupId>io.glutenproject</groupId>-->
+<!--                    <artifactId>spark-sql-columnar-shims-spark32</artifactId>-->
+<!--                </exclusion>-->
+<!--            </exclusions>-->
+<!--            <classifier>tests</classifier>-->
+<!--            <scope>test</scope>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>gluten-data</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>${local.scope}</scope>-->
+<!--        </dependency>-->
+<!--        <dependency>-->
+<!--            <groupId>io.glutenproject</groupId>-->
+<!--            <artifactId>spark-sql-columnar-shims-common</artifactId>-->
+<!--            <version>${gluten.version}</version>-->
+<!--            <scope>${local.scope}</scope>-->
+<!--        </dependency>-->
         <!-- currently this jar is missing on maven repo -->
 <!--        <dependency>-->
 <!--            <groupId>io.glutenproject</groupId>-->
@@ -473,6 +491,7 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
                             <include>org.apache.arrow:*</include>
+                            <include>org.eclipse.collections:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
@@ -497,9 +516,12 @@ SPDX-License-Identifier: Apache-2.0
                     </artifactSet>
                     <filters>
                         <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <artifact>*:*</artifact>
                             <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/versions/**</exclude>
                             </excludes>
                         </filter>
                     </filters>
@@ -539,6 +561,38 @@ SPDX-License-Identifier: Apache-2.0
                         <relocation>
                             <pattern>com.google.protobuf</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.protobuf</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>dev.failsafe</pattern>
+                            <shadedPattern>com.lakesoul.shaded.dev.failsafe</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.aspectj</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.aspectj</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.checkerframework</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.checkerframework</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>io.substrait</pattern>
+                            <shadedPattern>com.lakesoul.shaded.io.substrait</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.stringtemplate</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.stringtemplate</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.abego</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.abego</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.ow2.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.objectweb.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>

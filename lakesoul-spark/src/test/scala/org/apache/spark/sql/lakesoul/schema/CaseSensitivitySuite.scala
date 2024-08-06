@@ -47,7 +47,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set range partition columns with option - rangePartitions") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
       Seq((1, "a"), (2, "b")).toDF("Key", "val").write
         .option("rangePartitions", "key")
         .format("lakesoul").mode("append").save(path)
@@ -69,7 +69,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set range partition columns with partitionBy") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
       Seq((1, "a"), (2, "b")).toDF("Key", "val").write
         .partitionBy("key")
         .format("lakesoul").mode("append").save(path)
@@ -90,7 +90,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set range partition columns - rangePartitions has higher priority than partitionBy") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
       Seq((1, "a"), (2, "b")).toDF("Key", "val").write
         .option("rangePartitions", "val")
         .partitionBy("key")
@@ -113,7 +113,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set hash partition columns with option- hashPartitions and hashBucketNum") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       val e1 = intercept[AnalysisException] {
         Seq((1, "a"), (2, "d")).toDF("key", "val").write
@@ -160,7 +160,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set hash partition columns") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write
         .partitionBy("key")
@@ -215,7 +215,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set partition columns - case sensitive") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
         Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write
@@ -246,7 +246,7 @@ class CaseSensitivitySuite extends QueryTest
   test("set partition columns - case insensitive") {
     withTempDir { tempDir =>
       val p = tempDir.getCanonicalPath
-      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toString
+      val path = SparkUtil.makeQualifiedTablePath(new Path(p)).toUri.toString
 
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
         Seq((1, "a", "1"), (2, "b", "2")).toDF("key", "val", "hash").write

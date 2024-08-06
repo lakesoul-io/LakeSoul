@@ -47,7 +47,7 @@ object KafkaStream {
       val tableName = info._1
       val schema = info._2.json
       val path = warehouse + "/" + namespace + "/" + tableName
-      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
       val tableExists = dbManager.isTableExistsByTableName(tableName, namespace)
       if (!tableExists) {
         val tableId = KAFKA_TABLE_PREFIX + UUID.randomUUID().toString
@@ -154,7 +154,7 @@ object KafkaStream {
 
       for (topic <- topicAndSchema.keySet) {
         val path = warehouse + "/" + namespace + "/" + topic
-        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(path)).toString
+        val tablePath = SparkUtil.makeQualifiedTablePath(new Path(path)).toUri.toString
         val topicDF = batchDF.filter(col("topic").equalTo(topic))
         if (!topicDF.rdd.isEmpty()) {
           val rows = topicDF.withColumn("payload", from_json(col("value"), topicAndSchema.get(topic).get))

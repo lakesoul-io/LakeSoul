@@ -102,14 +102,14 @@ class LakeSoulTableSuite extends QueryTest
   test("isLakeSoulTable - path") {
     withTempDir { dir =>
       testData.write.format("lakesoul").save(dir.getAbsolutePath)
-      assert(LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString))
+      assert(LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toUri.toString))
     }
   }
 
   test("isLakeSoulTable - with non-LakeSoul table path") {
     withTempDir { dir =>
       testData.write.format("parquet").mode("overwrite").save(dir.getAbsolutePath)
-      assert(!LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toString))
+      assert(!LakeSoulUtils.isLakeSoulTable(SparkUtil.makeQualifiedTablePath(new Path(dir.getAbsolutePath)).toUri.toString))
     }
   }
 

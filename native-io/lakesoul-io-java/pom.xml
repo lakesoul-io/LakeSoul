@@ -25,13 +25,12 @@ SPDX-License-Identifier: Apache-2.0
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
-        <arrow.version>12.0.0</arrow.version>
+        <arrow.version>15.0.2</arrow.version>
         <scalatest.version>3.1.0</scalatest.version>
         <substrait.version>0.28.0</substrait.version>
         <protobuf.version>3.22.0</protobuf.version>
         <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
     </properties>
-
 
     <dependencies>
         <dependency>
@@ -49,21 +48,58 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
             <version>${arrow.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-memory-netty</artifactId>
             <version>${arrow.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-buffer</artifactId>
+            <version>4.1.112.Final</version>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-memory-core</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
             <version>${arrow.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-c-data</artifactId>
             <version>${arrow.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- scala deps -->
@@ -110,7 +146,7 @@ SPDX-License-Identifier: Apache-2.0
                 </exclusion>
                 <exclusion>
                     <groupId>com.fasterxml.jackson.core</groupId>
-                    <artifactId>jackson-databind</artifactId>
+                    <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
             <version>${substrait.version}</version>
@@ -129,6 +165,10 @@ SPDX-License-Identifier: Apache-2.0
             <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <exclusions>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
                 <exclusion>
                     <groupId>org.apache.arrow</groupId>
                     <artifactId>*</artifactId>
@@ -602,18 +642,13 @@ SPDX-License-Identifier: Apache-2.0
                             </excludes>
                         </filter>
                         <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
+                            <artifact>org.apache.spark:spark-core_2.12</artifact>
                             <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
+                                <exclude>org/sparkproject/jetty/**</exclude>
+                                <exclude>META-INF/maven/org.eclipse.jetty/**</exclude>
+                                <exclude>jetty-dir.css</exclude>
+                                <exclude>META-INF/services/org.eclipse.jetty.http.HttpFieldPreEncoder</exclude>
                             </excludes>
-                        </filter>
-                        <filter>
-                            <!-- 包含所有Scala相关资源 -->
-                            <artifact>**/*scala*</artifact>
-                            <includes>
-                                <include>**/*.class</include>
-                                <!-- 如果还有其他Scala相关的资源，比如*.sbt、*.scala等 -->
-                            </includes>
                         </filter>
                     </filters>
                     <relocations>
@@ -622,8 +657,12 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.scala.</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>org.apache.spark.sql</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.spark.sql</shadedPattern>
+                            <pattern>com.zaxxer.hikari</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.zaxxer.hikari</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.postgresql</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.ow2.asm</pattern>
@@ -666,12 +705,60 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.com.fasterxml.jackson</shadedPattern>
                         </relocation>
                         <relocation>
+                            <pattern>org.json4s</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.json4s</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.commons</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.commons</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>dev.failsafe</pattern>
+                            <shadedPattern>com.lakesoul.shaded.dev.failsafe</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.aspectj</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.aspectj</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.checkerframework</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.checkerframework</shadedPattern>
+                        </relocation>
+                        <relocation>
                             <pattern>org.yaml.snakeyaml</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.yaml.snakeyaml</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.antlr</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.antlr</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>io.netty</pattern>
+                            <shadedPattern>com.lakesoul.shaded.io.netty</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.alibaba.fastjson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>com.google.flatbuffers</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.spark</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>io.substrait</pattern>
+                            <shadedPattern>com.lakesoul.shaded.io.substrait</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.stringtemplate</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.stringtemplate</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.abego</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.abego</shadedPattern>
                         </relocation>
                     </relocations>
                 </configuration>

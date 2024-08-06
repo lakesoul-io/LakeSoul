@@ -96,7 +96,7 @@ public abstract class AbstractTestBase {
 
     /*
      * @path: a subdir name under temp dir, e.g. /lakesoul_table
-     * @return: file://PLATFORM_TMP_DIR/path
+     * @return: file:///PLATFORM_TMP_DIR/path
      */
     public static String getTempDirUri(String path) {
         String tmp = System.getProperty("java.io.tmpdir");
