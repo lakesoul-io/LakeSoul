@@ -23,7 +23,6 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <presto.version>0.282</presto.version>
         <local.scope>provided</local.scope>
-        <mysql.version>8.1.0</mysql.version>
     </properties>
 
     <dependencies>
@@ -64,13 +63,6 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>com.facebook.presto</groupId>
-            <artifactId>presto-jdbc</artifactId>
-            <version>${presto.version}</version>
-            <scope>${local.scope}</scope>
-        </dependency>
-
-        <dependency>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-column</artifactId>
             <version>1.12.2</version>
@@ -83,22 +75,16 @@
         </dependency>
 
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
-            <scope>compile</scope>
-            <version>${mysql.version}</version>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+            <scope>${local.scope}</scope>
         </dependency>
 
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
             <version>32.0.0-jre</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.hadoop</groupId>
-            <artifactId>hadoop-client-api</artifactId>
-            <version>3.4.0</version>
-            <scope>${local.scope}</scope>
         </dependency>
     </dependencies>
 
