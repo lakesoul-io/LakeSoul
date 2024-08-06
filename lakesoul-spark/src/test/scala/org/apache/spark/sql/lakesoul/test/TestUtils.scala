@@ -202,7 +202,7 @@ trait LakeSoulTestBeforeAndAfterEach extends BeforeAndAfterEach {
 
   var snapshotManagement: SnapshotManagement = _
 
-  protected def tempPath: String = SparkUtil.makeQualifiedTablePath(new Path(tempDir.getCanonicalPath)).toString
+  protected def tempPath: String = SparkUtil.makeQualifiedTablePath(new Path(tempDir.getCanonicalPath)).toUri.toString
 
   protected def readLakeSoulTable(path: String): DataFrame = {
     spark.read.format("lakesoul").load(path)

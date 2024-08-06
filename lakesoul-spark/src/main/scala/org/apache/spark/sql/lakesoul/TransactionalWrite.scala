@@ -35,7 +35,7 @@ trait TransactionalWrite {
   protected var hasWritten = false
 
   protected def getCommitter(outputPath: Path): DelayedCommitProtocol =
-    new DelayedCommitProtocol("lakesoul", outputPath.toString, None)
+    new DelayedCommitProtocol("lakesoul", outputPath.toUri.toString, None)
 
   /**
     * Normalize the schema of the query, and return the QueryExecution to execute. The output
@@ -127,7 +127,7 @@ trait TransactionalWrite {
     val hashPartitionSchema = tableInfo.hash_partition_schema
     var outputPath = SparkUtil.makeQualifiedTablePath(tableInfo.table_path)
     if (isCompaction) {
-      outputPath = SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toString + "/compact_" + System.currentTimeMillis()))
+      outputPath = SparkUtil.makeQualifiedTablePath(new Path(tableInfo.table_path.toUri.toString + "/compact_" + System.currentTimeMillis()))
     }
     val dc = if (isCompaction) {
       val cdcCol = snapshot.getTableInfo.configuration.get(LakeSoulTableProperties.lakeSoulCDCChangePropKey)
@@ -182,7 +182,7 @@ trait TransactionalWrite {
 
     SQLExecution.withNewExecutionId(queryExecution) {
       val outputSpec = LakeSoulFileWriter.OutputSpec(
-        outputPath.toString,
+        outputPath.toUri.toString,
         Map.empty,
         output)
 

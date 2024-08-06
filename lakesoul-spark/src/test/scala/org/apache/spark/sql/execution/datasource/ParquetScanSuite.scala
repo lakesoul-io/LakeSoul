@@ -65,7 +65,7 @@ class ParquetScanSuite extends QueryTest
 
   test("It should use MultiPartitionMergeScan when reading multi partition") {
     withTempDir(dir => {
-      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toString
+      val tablePath = SparkUtil.makeQualifiedTablePath(new Path(dir.getCanonicalPath)).toUri.toString
       Seq((20201101, 1, 1), (20201101, 2, 2), (20201101, 3, 3), (20201102, 1, 1))
         .toDF("range", "hash", "value")
         .write

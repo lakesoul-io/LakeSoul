@@ -103,6 +103,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-formats</artifactId>
             <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
             <type>pom</type>
         </dependency>
         <dependency>
@@ -130,6 +131,7 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-sqlserver-cdc</artifactId>
             <version>${cdc.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
@@ -140,36 +142,43 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-oracle-cdc</artifactId>
             <version>${cdc.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-postgres-cdc</artifactId>
             <version>${cdc.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>com.ververica</groupId>
             <artifactId>flink-sql-connector-mongodb-cdc</artifactId>
             <version>${cdc.version}</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-mongodb</artifactId>
             <version>1.0.1-1.17</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.mongodb</groupId>
             <artifactId>bson</artifactId>
-            <version>4.3.4</version>
+            <version>4.7.2</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.doris</groupId>
             <artifactId>flink-doris-connector-1.17</artifactId>
             <version>1.5.0</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-jdbc</artifactId>
             <version>3.1.1-1.17</version>
+            <scope>${local.scope}</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.flink</groupId>
@@ -273,6 +282,16 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.furyio</groupId>
             <artifactId>fury-core</artifactId>
             <version>0.4.1</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.checkerframework</groupId>
+                    <artifactId>checker-qual</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -326,6 +345,18 @@ SPDX-License-Identifier: Apache-2.0
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-hadoop-fs</artifactId>
             <version>${flink.version}</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.3.2</version>
+            <scope>${local.scope}</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>3.3.2</version>
             <scope>${local.scope}</scope>
         </dependency>
     </dependencies>
@@ -413,19 +444,15 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>com.dmetasoul:lakesoul-flink</include>
                             <include>com.ververica:flink-sql-connector-mysql-cdc</include>
-                            <include>com.ververica:flink-sql-connector-postgres-cdc</include>
-                            <include>com.ververica:flink-sql-connector-oracle-cdc</include>
-                            <include>org.apache.flink:flink-connector-jdbc</include>
-                            <include>org.apache.flink:flink-doris-connector-1.17</include>
                             <include>com.dmetasoul:lakesoul-common</include>
                             <include>com.dmetasoul:lakesoul-io-java</include>
                             <include>com.github.jnr:*</include>
                             <include>org.ow2.asm:*</include>
                             <include>org.apache.arrow:*</include>
+                            <include>org.eclipse.collections:*</include>
                             <include>org.apache.parquet:*</include>
                             <include>org.apache.yetus:*</include>
-                            <include>io.netty:netty-buffer</include>
-                            <include>io.netty:netty-common</include>
+                            <include>io.netty:*</include>
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
@@ -476,16 +503,19 @@ SPDX-License-Identifier: Apache-2.0
                     </artifactSet>
                     <filters>
                         <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/versions/**</exclude>
+                            </excludes>
+                        </filter>
+                        <filter>
                             <artifact>com.ververica:flink-sql-connector-mysql-cdc</artifact>
                             <excludes>
                                 <exclude>org/apache/flink/shaded/guava30/**</exclude>
                                 <exclude>META-INF/maven/com.google.guava/**</exclude>
-                            </excludes>
-                        </filter>
-                        <filter>
-                            <artifact>org.apache.arrow:arrow-c-data</artifact>
-                            <excludes>
-                                <exclude>org/apache/arrow/c/jni/JniLoader.class</exclude>
                             </excludes>
                         </filter>
                     </filters>
@@ -555,8 +585,56 @@ SPDX-License-Identifier: Apache-2.0
                             <shadedPattern>com.lakesoul.shaded.shaded.parquet</shadedPattern>
                         </relocation>
                         <relocation>
+                            <pattern>com.fasterxml.jackson</pattern>
+                            <shadedPattern>com.lakesoul.shaded.com.fasterxml.jackson</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.json4s</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.json4s</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>dev.failsafe</pattern>
+                            <shadedPattern>com.lakesoul.shaded.dev.failsafe</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.aspectj</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.aspectj</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.checkerframework</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.checkerframework</shadedPattern>
+                        </relocation>
+                        <relocation>
                             <pattern>org.yaml.snakeyaml</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.yaml.snakeyaml</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.antlr</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>io.substrait</pattern>
+                            <shadedPattern>com.lakesoul.shaded.io.substrait</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.stringtemplate</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.stringtemplate</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.abego</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.abego</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.antlr</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.ow2.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.objectweb.asm</pattern>
+                            <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
                         </relocation>
                     </relocations>
                     <transformers>

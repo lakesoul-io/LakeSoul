@@ -145,7 +145,7 @@ trait ImplicitMetadataOperation extends Logging {
       tc.updateTableInfo(
         TableInfo(
           namespace = table_info.namespace,
-          table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toString),
+          table_path_s = Option(SparkUtil.makeQualifiedTablePath(new Path(table_info.table_path_s.get)).toUri.toString),
           table_id = table_info.table_id,
           table_schema = ArrowUtils.toArrowSchema(dataSchema).toJson,
           range_column = normalizedRangePartitionCols.mkString(LAKESOUL_RANGE_PARTITION_SPLITTER),

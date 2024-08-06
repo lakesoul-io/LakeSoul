@@ -19,7 +19,7 @@ import org.apache.spark.sql.lakesoul.catalog.{LakeSoulCatalog, LakeSoulTableV2}
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.rules.LakeSoulRelation
 import org.apache.spark.sql.lakesoul.sources.{LakeSoulBaseRelation, LakeSoulSourceUtils}
-import org.apache.spark.sql.lakesoul.utils.TableInfo
+import org.apache.spark.sql.lakesoul.utils.{SparkUtil, TableInfo}
 import org.apache.spark.sql.sources.{EqualTo, Filter, Not}
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
@@ -73,7 +73,7 @@ object LakeSoulUtils extends PredicateHelper {
   def findTableRootPath(spark: SparkSession, path: Path): Option[Path] = {
     var current_path = path
     while (current_path != null) {
-      if (LakeSoulSourceUtils.isLakeSoulTableExists(current_path.toString)) {
+      if (LakeSoulSourceUtils.isLakeSoulTableExists(SparkUtil.makeQualifiedTablePath(current_path).toUri.toString)) {
         return Option(current_path)
       }
       current_path = current_path.getParent

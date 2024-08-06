@@ -78,7 +78,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
           TableIdentifier("lakesoul_test", Some("default")))
         assert(location.isDefined)
-        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString)
 
         Seq((1L, "a")).toDF("a", "b")
           .write.format("lakesoul").mode("append").save(location.get)
@@ -231,7 +231,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         val location = LakeSoulSourceUtils.getLakeSoulPathByTableIdentifier(
           TableIdentifier("lakesoul_test", Some("default")))
         assert(location.isDefined)
-        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toString)
+        assert(location.get == SparkUtil.makeQualifiedPath(dir.getAbsolutePath).toUri.toString)
 
         val schema = new StructType()
           .add("x",
@@ -437,7 +437,7 @@ abstract class DDLTestBase extends QueryTest with SQLTestUtils {
         sql(s"CREATE TABLE lakesoul_test USING lakesoul LOCATION '$path'")
 
         verifyDescribeTable("lakesoul_test")
-        verifyDescribeTable(s"lakesoul.`$path`")
+        verifyDescribeTable(s"lakesoul.`${SparkUtil.makeQualifiedPath(path)}`")
       }
     }
   }

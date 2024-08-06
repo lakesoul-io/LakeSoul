@@ -8,26 +8,22 @@ use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
-
 use async_trait::async_trait;
-
-use datafusion::common::{project_schema, FileTypeWriterOptions, Statistics, ToDFSchema};
-use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::{execution::context::SessionState, logical_expr::Expr};
+use datafusion::common::{FileTypeWriterOptions, project_schema, Statistics, ToDFSchema};
 use datafusion::datasource::file_format::FileFormat;
-use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableUrl, PartitionedFile};
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileScanConfig, FileSinkConfig};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
-
+use datafusion::logical_expr::expr::Sort;
 use datafusion::optimizer::utils::conjunction;
 use datafusion::physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
-use datafusion::{execution::context::SessionState, logical_expr::Expr};
-
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 

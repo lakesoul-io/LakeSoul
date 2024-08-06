@@ -114,7 +114,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
     DataSourceUtils.checkFieldNames(new ParquetFileFormat(), tableDesc.schema)
     CreateTableCommand(
       withDb,
-      existingLocation.map(SparkUtil.makeQualifiedPath(_).toString),
+      existingLocation.map(SparkUtil.makeQualifiedPath(_).toUri.toString),
       operation.mode,
       sourceQuery,
       operation,
@@ -138,7 +138,7 @@ class LakeSoulCatalog(val spark: SparkSession) extends TableCatalog
         spark,
         new Path(ident.name()),
         None,
-        Some(Identifier.of(ident.namespace(), tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString)).toString)
+        Some(Identifier.of(ident.namespace(), tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString)).toString)
       )
     } else if (isNameIdentifier(ident)) {
       val tablePath = SparkMetaVersion.getTablePathFromShortTableName(ident.name, ident.namespace().mkString("."))
@@ -615,7 +615,7 @@ object LakeSoulCatalog {
   def listTables(namespaces: Array[String]): Array[Identifier] = {
     SparkMetaVersion.listTables(namespaces).asScala.map(tablePath => {
       val tableInfo = SparkMetaVersion.getTableInfo(tablePath)
-      Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toString))
+      Identifier.of(namespaces, tableInfo.short_table_name.getOrElse(tableInfo.table_path.toUri.toString))
     }).toArray
   }
 

@@ -277,7 +277,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: maven-test-report-artifact-spark-2
+          name: maven-test-report-artifact-spark-3
           path: lakesoul-spark/target/site
           retention-days: 5
           if-no-files-found: error
@@ -432,7 +432,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: maven-test-report-artifact-flink-1
+          name: maven-test-report-artifact-flink-2
           path: lakesoul-flink/target/site
           retention-days: 5
           if-no-files-found: error

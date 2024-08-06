@@ -68,12 +68,12 @@ case class CreateTableCommand(var table: CatalogTable,
       assert(existingTablePath.isDefined)
       val existingPath = existingTablePath.get
       table.storage.locationUri match {
-        case Some(location) if SparkUtil.makeQualifiedPath(location.getPath).toString != existingPath =>
+        case Some(location) if SparkUtil.makeQualifiedPath(location.getPath).toUri.toString != existingPath =>
           val tableName = table.identifier.quotedString
           throw new AnalysisException(
             s"The location of the existing table $tableName is " +
               s"`$existingPath`. It doesn't match the specified location " +
-              s"`${SparkUtil.makeQualifiedPath(location.getPath).toString}`.")
+              s"`${SparkUtil.makeQualifiedPath(location.getPath).toUri.toString}`.")
         case _ =>
           table.copy(storage = table.storage.copy(locationUri = Some(new URI(existingPath))))
       }
@@ -103,7 +103,7 @@ case class CreateTableCommand(var table: CatalogTable,
       table.storage.properties ++ externalOptions,
       sparkSession.sessionState.conf)
 
-    val snapshotManagement = SnapshotManagement(modifiedPath.toString, table.database)
+    val snapshotManagement = SnapshotManagement(modifiedPath.toUri.toString, table.database)
 
     // don't support replace table
     operation match {

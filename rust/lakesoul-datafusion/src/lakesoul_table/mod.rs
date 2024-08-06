@@ -94,11 +94,9 @@ impl LakeSoulTable {
         .build()?;
         let dataframe = DataFrame::new(sess_ctx.state(), logical_plan);
 
-        let results = dataframe
-            // .explain(true, false)?
+        dataframe
             .collect()
             .await?;
-        // dbg!(&results);
 
         Ok(())
     }

@@ -24,6 +24,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_common::DataFusionError::{External, ObjectStore};
 use datafusion_substrait::substrait::proto::Plan;
 use derivative::Derivative;
+use log::info;
 use object_store::aws::AmazonS3Builder;
 use object_store::{ClientOptions, RetryConfig};
 use url::{ParseError, Url};
@@ -495,11 +496,13 @@ pub fn create_session_context_with_planner(
         .cloned();
     if let Some(fs) = default_fs {
         config.default_fs = fs.clone();
+        info!("NativeIO register default fs {}", fs);
         register_object_store(&fs, config, &runtime)?;
     };
 
     if !config.prefix.is_empty() {
         let prefix = config.prefix.clone();
+        info!("NativeIO register prefix fs {}", prefix);
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
@@ -512,6 +515,8 @@ pub fn create_session_context_with_planner(
         .map(|file_name| register_object_store(&file_name, config, &runtime))
         .collect::<Result<Vec<String>>>()?;
     config.files = normalized_filenames;
+    info!("NativeIO normalized file names: {:?}", config.files);
+    info!("NativeIO final config: {:?}", config);
 
     // create session context
     let mut state = if let Some(planner) = planner {
