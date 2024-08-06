@@ -171,7 +171,7 @@ public class LakeSoulArrowConnectorCase extends AbstractTestBase {
         DataStreamSource<LakeSoulArrowWrapper> source = env.fromCollection(arrowBatches);
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = conf;
+        context.conf = (Configuration) env.getConfiguration();
 
         LakeSoulMultiTableSinkStreamBuilder.buildArrowSink(context, source);
 

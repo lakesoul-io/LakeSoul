@@ -126,7 +126,7 @@ public class OracleCdc {
 
         LakeSoulMultiTableSinkStreamBuilder.Context context = new LakeSoulMultiTableSinkStreamBuilder.Context();
         context.env = env;
-        context.conf = conf;
+        context.conf = (Configuration) env.getConfiguration();
         LakeSoulMultiTableSinkStreamBuilder builder = new LakeSoulMultiTableSinkStreamBuilder(oracleChangeEventSource, context, lakeSoulRecordConvert);
         DataStreamSource<BinarySourceRecord> source = builder.buildMultiTableSource("Oracle Source");
         DataStream<BinarySourceRecord> stream = builder.buildHashPartitionedCDCStream(source);
