@@ -10,7 +10,7 @@ create table `default_init`
 (
     `id`     int            NOT NULL,
     `col_1`  bigint         NOT NULL,
-    `col_2`  binary(1) NOT NULL,
+    `col_2`  binary(1)      NOT NULL,
     `col_3`  blob           NOT NULL,
     `col_4`  char(1)        NOT NULL,
     `col_5`  date           NOT NULL,
@@ -40,7 +40,7 @@ create table `default_init_1`
 (
     `id`     int            NOT NULL,
     `col_1`  bigint         NOT NULL,
-    `col_2`  binary(1) NOT NULL,
+    `col_2`  binary(1)      NOT NULL,
     `col_3`  blob           NOT NULL,
     `col_4`  char(1)        NOT NULL,
     `col_5`  date           NOT NULL,

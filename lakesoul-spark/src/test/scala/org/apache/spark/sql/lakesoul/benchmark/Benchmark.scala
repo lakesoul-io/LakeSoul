@@ -28,6 +28,7 @@ object Benchmark {
   var url: String = "jdbc:mysql://" + hostname + ":" + mysqlPort + "/" + dbName + "?allowPublicKeyRetrieval=true&useSSL=false&useUnicode=true&characterEncoding=utf-8&serverTimezone=" + serverTimeZone
 
   val DEFAULT_INIT_TABLE = "default_init"
+  val DEFAULT_INIT_TABLE_1 = "default_init_1"
   val printLine = " ******** "
   val splitLine = " --------------------------------------------------------------- "
 
@@ -148,7 +149,7 @@ object Benchmark {
       .option("password", mysqlPassword).load()
     var lakesoulDF = spark.sql("select * from " + table).drop("rowKinds")
 
-    if (table.equals(DEFAULT_INIT_TABLE)) {
+    if (table.equals(DEFAULT_INIT_TABLE) || table.equals(DEFAULT_INIT_TABLE_1)) {
       jdbcDF = changeDF(jdbcDF)
       lakesoulDF = changeDF(lakesoulDF)
     }
