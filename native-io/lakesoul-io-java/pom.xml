@@ -27,7 +27,7 @@ SPDX-License-Identifier: Apache-2.0
         <maven.compiler.target>8</maven.compiler.target>
         <arrow.version>15.0.2</arrow.version>
         <scalatest.version>3.1.0</scalatest.version>
-        <substrait.version>0.28.0</substrait.version>
+        <substrait.version>0.30.0</substrait.version>
         <protobuf.version>3.22.0</protobuf.version>
         <protobuf.plugin.version>0.6.1</protobuf.plugin.version>
     </properties>
@@ -630,6 +630,9 @@ SPDX-License-Identifier: Apache-2.0
                         <includes>
                             <include>**</include>
                         </includes>
+                        <excludes>
+                            <exclude>org.apache.spark:*</exclude>
+                        </excludes>
                     </artifactSet>
                     <filters>
                         <filter>
@@ -646,6 +649,7 @@ SPDX-License-Identifier: Apache-2.0
                             <excludes>
                                 <exclude>org/sparkproject/jetty/**</exclude>
                                 <exclude>META-INF/maven/org.eclipse.jetty/**</exclude>
+                                <exclude>META-INF/maven/org.spark-project.spark/**</exclude>
                                 <exclude>jetty-dir.css</exclude>
                                 <exclude>META-INF/services/org.eclipse.jetty.http.HttpFieldPreEncoder</exclude>
                             </excludes>
@@ -743,10 +747,6 @@ SPDX-License-Identifier: Apache-2.0
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>
                             <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.spark</pattern>
-                            <shadedPattern>com.lakesoul.shaded.org.apache.spark</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>io.substrait</pattern>

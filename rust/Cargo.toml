@@ -14,6 +14,9 @@ members = [
 resolver = "2"
 
 [profile.release]
+strip = true
+opt-level = "z"
+lto = true
 
 [workspace.dependencies]
 datafusion = { git = "https://github.com/lakesoul-io/arrow-datafusion.git", branch = "datafusion-33-parquet-prefetch" }
