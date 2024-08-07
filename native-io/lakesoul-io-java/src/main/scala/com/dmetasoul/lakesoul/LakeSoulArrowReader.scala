@@ -5,13 +5,8 @@
 package com.dmetasoul.lakesoul
 
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOReader
-import org.apache.arrow.c.{ArrowArray, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.c.{ArrowArray, CDataDictionaryProvider, Data}
 import org.apache.arrow.vector.VectorSchemaRoot
-
-import java.io.IOException
-import scala.concurrent.duration.DurationInt
-import scala.concurrent.{Await, Future, Promise}
-import scala.util.Success
 
 case class LakeSoulArrowReader(reader: NativeIOReader,
                                timeout: Int = 10000) extends AutoCloseable {
