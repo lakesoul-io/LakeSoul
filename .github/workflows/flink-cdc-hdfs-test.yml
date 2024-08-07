@@ -61,6 +61,7 @@ jobs:
           wget https://repo1.maven.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.17.1/flink-s3-fs-hadoop-1.17.1.jar -O $HOME/flink-s3-fs-hadoop-1.17.1.jar
           wget https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.12.3/parquet-hadoop-bundle-1.12.3.jar -O $HOME/parquet-hadoop-bundle-1.12.3.jar
           wget https://repo1.maven.org/maven2/org/apache/flink/flink-parquet/1.17.1/flink-parquet-1.17.1.jar -O $HOME/flink-parquet-1.17.1.jar
+          wget https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.1.1-1.17/flink-connector-jdbc-3.1.1-1.17.jar -O $HOME/flink-connector-jdbc-3.1.1-1.17.jar
           wget https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar -O $HOME/assertj-core-3.23.1.jar
       - name: Install Protoc
         uses: arduino/setup-protoc@v2

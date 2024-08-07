@@ -87,6 +87,7 @@ services:
       - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
       - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
       - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
+      - "$HOME/flink-connector-jdbc-3.1.1-1.17.jar:/opt/flink/lib/flink-connector-jdbc-3.1.1-1.17.jar"
       - "$HOME/assertj-core-3.23.1.jar:/opt/flink/lib/assertj-core-3.23.1.jar"
 
   taskmanager:
@@ -120,6 +121,7 @@ services:
       - "$HOME/flink-s3-fs-hadoop-1.17.1.jar:/opt/flink/plugins/s3/flink-s3-fs-hadoop-1.17.1.jar"
       - "$HOME/flink-parquet-1.17.1.jar:/opt/flink/lib/flink-parquet-1.17.1.jar"
       - "$HOME/parquet-hadoop-bundle-1.12.3.jar:/opt/flink/lib/parquet-hadoop-bundle-1.12.3.jar"
+      - "$HOME/flink-connector-jdbc-3.1.1-1.17.jar:/opt/flink/lib/flink-connector-jdbc-3.1.1-1.17.jar"
       - "$HOME/assertj-core-3.23.1.jar:/opt/flink/lib/assertj-core-3.23.1.jar"
 
 networks:
