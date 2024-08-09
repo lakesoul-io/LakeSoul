@@ -92,7 +92,7 @@ public class LakeSoulMultiTableSinkStreamBuilder {
                         .withRollingPolicy(rollingPolicy)
                         .withOutputFileConfig(fileNameConfig)
                         .build();
-        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink");
+        return stream.sinkTo(sink).name("LakeSoul MultiTable Arrow Sink").setParallelism(1);
     }
 
     public DataStreamSink<BinarySourceRecord> printStream(DataStream<BinarySourceRecord> stream, String name) {
