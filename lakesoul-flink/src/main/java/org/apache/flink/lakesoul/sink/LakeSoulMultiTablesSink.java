@@ -25,6 +25,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -83,17 +84,19 @@ public class LakeSoulMultiTablesSink<IN, OUT> implements
     // StatefulGlobalTwoPhaseCommittingSinkAdapter
     @Override
     public Optional<Committer<LakeSoulMultiTableSinkCommittable>> createCommitter() throws IOException {
-        return Optional.of(new Committer<LakeSoulMultiTableSinkCommittable>() {
-            @Override
-            public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
-                    throws IOException, InterruptedException {
-                return Collections.emptyList();
-            }
-
-            @Override
-            public void close() throws Exception {
-            }
-        });
+        return Optional.empty();
+//        return Optional.of(new Committer<LakeSoulMultiTableSinkCommittable>() {
+//            @Override
+//            public List<LakeSoulMultiTableSinkCommittable> commit(List<LakeSoulMultiTableSinkCommittable> committables)
+//                    throws IOException, InterruptedException {
+//                System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(System.currentTimeMillis()) + " org.apache.flink.api.connector.sink.Committer.commit: " + committables);
+//                return Collections.emptyList();
+//            }
+//
+//            @Override
+//            public void close() throws Exception {
+//            }
+//        });
     }
 
     @Override

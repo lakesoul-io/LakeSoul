@@ -103,6 +103,9 @@ IOConfigBuilder *lakesoul_config_builder_set_batch_size(IOConfigBuilder *builder
 IOConfigBuilder *lakesoul_config_builder_set_max_row_group_size(IOConfigBuilder *builder,
                                                                 c_size_t max_row_group_size);
 
+IOConfigBuilder *lakesoul_config_builder_set_max_row_group_num_values(IOConfigBuilder *builder,
+                                                                      c_size_t max_row_group_num_values);
+
 IOConfigBuilder *lakesoul_config_builder_set_buffer_size(IOConfigBuilder *builder,
                                                          c_size_t buffer_size);
 

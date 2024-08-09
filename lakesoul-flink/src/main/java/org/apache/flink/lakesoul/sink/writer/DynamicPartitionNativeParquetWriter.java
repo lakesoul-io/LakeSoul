@@ -124,23 +124,11 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
 
     @Override
     public PendingFileRecoverable closeForCommit() throws IOException {
-        this.arrowWriter.finish();
-        this.nativeWriter.write(this.batch);
-        HashMap<String, List<String>> partitionDescAndFilesMap = this.nativeWriter.flush();
-        this.arrowWriter.reset();
-        this.rowsInBatch = 0;
-        this.batch.clear();
-        this.batch.close();
-        try {
-            this.nativeWriter.close();
-            initNativeWriter();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        return new NativeParquetWriter.NativeWriterPendingFileRecoverable(this.prefix, this.creationTime);
+        throw new UnsupportedOperationException();
     }
 
     public Map<String, List<PendingFileRecoverable>> closeForCommitWithRecoverableMap() throws IOException {
+        long timer = System.currentTimeMillis();
         this.arrowWriter.finish();
         Map<String, List<PendingFileRecoverable>> recoverableMap = new HashMap<>();
         if (this.batch.getRowCount() > 0) {
@@ -167,7 +155,7 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
                 throw new RuntimeException(e);
             }
         }
-        LOG.info("CloseForCommitWithRecoverableMap done, recoverableMap={}", recoverableMap);
+        LOG.info("CloseForCommitWithRecoverableMap done, costTime={}ms, recoverableMap={}", System.currentTimeMillis() - timer, recoverableMap);
         return recoverableMap;
     }
 
@@ -204,7 +192,8 @@ public class DynamicPartitionNativeParquetWriter implements InProgressFileWriter
         return this.lastUpdateTime;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return "DynamicPartitionNativeParquetWriter{" +
                 "rowType=" + rowType +
                 ", primaryKeys=" + primaryKeys +

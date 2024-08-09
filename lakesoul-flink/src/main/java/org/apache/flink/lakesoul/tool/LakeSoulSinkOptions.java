@@ -50,7 +50,6 @@ public class LakeSoulSinkOptions {
     public static final String VIEW_ORIGINAL_QUERY = "original_query";
     public static final String VIEW_EXPANDED_QUERY = "expand_query";
 
-
     public static final ConfigOption<String> CATALOG_PATH = ConfigOptions
             .key("path")
             .stringType()
@@ -178,6 +177,12 @@ public class LakeSoulSinkOptions {
             .defaultValue(250000)
             .withDescription("Max row group size for LakeSoul writer");
 
+    public static final ConfigOption<Integer> MAX_ROW_GROUP_VALUE_NUMBER = ConfigOptions
+            .key("lakesoul.file.max_row_group_value_number")
+            .intType()
+            .defaultValue(-1)
+            .withDescription("Max row group value number for LakeSoul writer");
+
     public static final ConfigOption<String> SOURCE_DB_SCHEMA_TABLES = ConfigOptions
             .key("source_db.schema_tables")
             .stringType()
@@ -207,6 +212,12 @@ public class LakeSoulSinkOptions {
             .booleanType()
             .defaultValue(true)
             .withDescription("If true, lakesoul sink use dynamic bucketing writer");
+
+    public static final ConfigOption<Integer> SINK_RESTART_TIMES = ConfigOptions
+            .key("lakesoul.sink.restart_times")
+            .intType()
+            .defaultValue(0)
+            .withDescription("record restart time for adaptable handling sink configuration");
 
     public static final ConfigOption<Boolean> INFERRING_SCHEMA = ConfigOptions
             .key("lakesoul.sink.inferring_schema")

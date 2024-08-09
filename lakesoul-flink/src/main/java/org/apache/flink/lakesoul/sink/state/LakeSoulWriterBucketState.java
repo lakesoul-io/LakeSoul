@@ -33,6 +33,8 @@ public class LakeSoulWriterBucketState {
 
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap;
 
+    private final int restartTimes;
+
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             String bucketId,
@@ -44,12 +46,22 @@ public class LakeSoulWriterBucketState {
         this.bucketPath = bucketPath;
         this.pendingFileRecoverableMap = new HashMap<>();
         this.pendingFileRecoverableMap.put(bucketId, pendingFileRecoverableList);
+        restartTimes = 0;
     }
 
     public LakeSoulWriterBucketState(
             TableSchemaIdentity identity,
             Path bucketPath,
             HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap
+    ) {
+        this(identity, bucketPath, pendingFileRecoverableMap, 0);
+    }
+
+    public LakeSoulWriterBucketState(
+            TableSchemaIdentity identity,
+            Path bucketPath,
+            HashMap<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap,
+            int restartTimes
     ) {
         this.identity = identity;
         Optional<Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>>> first = pendingFileRecoverableMap.entrySet().stream().findFirst();
@@ -61,6 +73,7 @@ public class LakeSoulWriterBucketState {
         this.bucketPath = bucketPath;
 
         this.pendingFileRecoverableMap = pendingFileRecoverableMap;
+        this.restartTimes = restartTimes;
     }
 
     public String getBucketId() {
@@ -69,6 +82,10 @@ public class LakeSoulWriterBucketState {
 
     public Path getBucketPath() {
         return bucketPath;
+    }
+
+    public int getRestartTimes() {
+        return restartTimes;
     }
 
     @Override

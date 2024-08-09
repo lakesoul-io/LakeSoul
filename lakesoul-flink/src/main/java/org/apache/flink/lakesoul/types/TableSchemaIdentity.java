@@ -82,7 +82,7 @@ public final class TableSchemaIdentity implements Serializable {
     public String toString() {
         return "TableSchemaIdentity{" +
                 "tableId=" + tableId +
-                ", rowType=" + rowType +
+//                ", rowType=" + rowType +
                 ", tableLocation='" + tableLocation + '\'' +
                 ", primaryKeys=" + primaryKeys +
                 ", partitionKeyList=" + partitionKeyList +

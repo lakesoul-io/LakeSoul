@@ -99,6 +99,7 @@ public class LakeSoulSinkGlobalCommitter
     @Override
     public LakeSoulMultiTableSinkGlobalCommittable combine(List<LakeSoulMultiTableSinkCommittable> committables)
             throws IOException {
+        LOG.info("LakeSoulSinkGlobalCommitter.combine: {}", committables);
         return LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkCommittable(committables, isBounded);
     }
 
@@ -113,9 +114,10 @@ public class LakeSoulSinkGlobalCommitter
     @Override
     public List<LakeSoulMultiTableSinkGlobalCommittable> commit(
             List<LakeSoulMultiTableSinkGlobalCommittable> globalCommittables) throws IOException, InterruptedException {
+        long timer = System.currentTimeMillis();
+        LOG.info("LakeSoulSinkGlobalCommitter.commit: {}", globalCommittables);
         LakeSoulMultiTableSinkGlobalCommittable globalCommittable =
                 LakeSoulMultiTableSinkGlobalCommittable.fromLakeSoulMultiTableSinkGlobalCommittable(globalCommittables, isBounded);
-        LOG.info("Committing: {}", globalCommittable);
 
         int index = 0;
         String dbType = this.conf.getString(SOURCE_DB_TYPE, "");
@@ -137,7 +139,7 @@ public class LakeSoulSinkGlobalCommitter
             StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
-            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
+//            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
                 String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
@@ -242,6 +244,8 @@ public class LakeSoulSinkGlobalCommitter
 
             committer.commit(lakeSoulMultiTableSinkCommittable);
         }
+
+        LOG.info("LakeSoulSinkGlobalCommitter.commit costTime={} ms", String.format("%06d", System.currentTimeMillis() - timer));
         return Collections.emptyList();
     }
 
@@ -251,5 +255,6 @@ public class LakeSoulSinkGlobalCommitter
     @Override
     public void endOfInput() {
         // do nothing
+        LOG.info("LakeSoulSinkGlobalCommitter.endOfInput");
     }
 }
