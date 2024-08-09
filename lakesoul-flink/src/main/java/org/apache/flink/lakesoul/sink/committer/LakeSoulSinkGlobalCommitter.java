@@ -141,7 +141,7 @@ public class LakeSoulSinkGlobalCommitter
             StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
-            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
+//            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
             if (tableInfo == null) {
                 if (!conf.getBoolean(AUTO_SCHEMA_CHANGE)) {
                     throw new SuppressRestartsException(

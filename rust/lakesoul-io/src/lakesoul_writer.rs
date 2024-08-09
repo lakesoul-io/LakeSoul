@@ -209,7 +209,7 @@ impl MultiPartAsyncWriter {
         // get underlying multipart uploader
         let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
         let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-            16 * 1024 * 1024, // 16kb
+            128 * 1024 * 1024, // 16kb
         ))));
         let schema = uniform_schema(config.target_schema.0.clone());
 
@@ -225,14 +225,21 @@ impl MultiPartAsyncWriter {
             .collect::<Vec<_>>();
         let writer_schema = project_schema(&schema, Some(&schema_projection_excluding_range))?;
 
+        let max_row_group_size = if config.max_row_group_size * schema.fields().len() > config.max_row_group_num_values {
+            config.batch_size.max(config.max_row_group_num_values / schema.fields().len())
+        } else {
+            config.max_row_group_size
+        };
         let arrow_writer = ArrowWriter::try_new(
             in_mem_buf.clone(),
             writer_schema,
             Some(
                 WriterProperties::builder()
-                    .set_max_row_group_size(config.max_row_group_size)
+                    .set_max_row_group_size(max_row_group_size)
                     .set_write_batch_size(config.batch_size)
                     .set_compression(Compression::SNAPPY)
+                
+                    // .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
                     .build(),
             ),
         )?;
@@ -313,7 +320,7 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
         // close arrow writer to flush remaining rows
         let mut this = *self;
         let arrow_writer = this.arrow_writer;
-        arrow_writer.close()?;
+        let _metadata = arrow_writer.close()?;
         let mut v = this
             .in_mem_buf
             .0
@@ -908,10 +915,12 @@ mod tests {
     use crate::lakesoul_writer::{AsyncBatchWriter, MultiPartAsyncWriter, SyncSendableMutableLakeSoulWriter};
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::record_batch::RecordBatch;
-    use arrow_array::Array;
+    use arrow_array::{Array, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::error::Result;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+    use rand::distributions::DistString;
+    use tokio::time::Instant;
     use std::fs::File;
     use std::sync::Arc;
     use tokio::runtime::Builder;
@@ -1181,5 +1190,78 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    fn create_batch(num_columns: usize, num_rows: usize, str_len:usize) -> RecordBatch {
+        let mut rng = rand::thread_rng();
+        let iter = (0..num_columns)
+            .into_iter()
+            .map(|i| (
+                format!("col_{}",i), 
+                Arc::new(
+                StringArray::from(
+                    (0..num_rows)
+                    .into_iter()
+                    .map(|_| rand::distributions::Alphanumeric.sample_string(&mut rng, str_len))
+                    .collect::<Vec<_>>())
+                ) as ArrayRef, 
+                true))
+            .collect::<Vec<_>>();
+        RecordBatch::try_from_iter_with_nullable(iter).unwrap()
+    }
+
+    #[test]
+    fn test_writer_of_large_columns() -> Result<()> {
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let num_batch = 39;
+        let num_rows = 100;
+        let num_columns = 2000;
+        let str_len = 4;
+
+        let to_write = create_batch(num_columns, num_rows, str_len);
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir
+            .into_path()
+            .join("test.parquet")
+            .into_os_string()
+            .into_string()
+            .unwrap();
+        dbg!(&path);
+        let writer_conf = LakeSoulIOConfigBuilder::new()
+            .with_files(vec![path.clone()])
+            .with_thread_num(2)
+            .with_batch_size(num_rows)
+            .with_max_row_group_size(2000)
+            // .with_max_row_group_num_values(4_00_000)
+            .with_schema(to_write.schema())
+            // .with_primary_keys(vec!["col".to_string()])
+            // .with_aux_sort_column("col2".to_string())
+            .build();
+
+        let writer = SyncSendableMutableLakeSoulWriter::try_new(writer_conf, runtime)?;
+
+        let start = Instant::now();
+        for _ in 0..num_batch {
+            let once_start = Instant::now();
+            writer.write_batch(create_batch(num_columns, num_rows, str_len))?;
+            // println!("write batch once cost: {}", once_start.elapsed().as_millis());
+        }
+        let flush_start = Instant::now();
+        writer.flush_and_close()?;
+        println!("flush cost: {}", flush_start.elapsed().as_millis());
+        println!("num_batch={}, num_columns={}, num_rows={}, str_len={}, cost_mills={}", num_batch, num_columns, num_rows, str_len, start.elapsed().as_millis());
+
+        let file = File::open(path.clone())?;
+        let mut record_batch_reader = ParquetRecordBatchReader::try_new(file, 100_000).unwrap();
+
+        let actual_batch = record_batch_reader
+            .next()
+            .expect("No batch found")
+            .expect("Unable to get batch");
+
+        assert_eq!(to_write.schema(), actual_batch.schema());
+        assert_eq!(num_columns, actual_batch.num_columns());
+        assert_eq!(num_rows * num_batch, actual_batch.num_rows());
+        Ok(())
     }
 }

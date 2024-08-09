@@ -262,6 +262,17 @@ pub extern "C" fn lakesoul_config_builder_set_max_row_group_size(
     )
 }
 
+
+#[no_mangle]
+pub extern "C" fn lakesoul_config_builder_set_max_row_group_num_values(
+    builder: NonNull<IOConfigBuilder>,
+    max_row_group_num_values: c_size_t,
+) -> NonNull<IOConfigBuilder> {
+    convert_to_opaque(
+        from_opaque::<IOConfigBuilder, LakeSoulIOConfigBuilder>(builder).with_max_row_group_num_values(max_row_group_num_values),
+    )
+}
+
 #[no_mangle]
 pub extern "C" fn lakesoul_config_builder_set_buffer_size(
     builder: NonNull<IOConfigBuilder>,

@@ -24,6 +24,8 @@ pub static TIMESTAMP_MILLSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f";
 pub static TIMESTAMP_MICROSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6f";
 pub static TIMESTAMP_NANOSECOND_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9f";
 
+pub static NUM_COLUMN_OPTIMIZE_THRESHOLD: usize = 200;
+
 lazy_static! {
     pub static ref ARROW_CAST_OPTIONS: CastOptions<'static> = CastOptions::default();
 }
