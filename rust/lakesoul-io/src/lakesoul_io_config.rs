@@ -71,6 +71,9 @@ pub struct LakeSoulIOConfig {
     // write row group max row num
     #[derivative(Default(value = "250000"))]
     pub(crate) max_row_group_size: usize,
+    // write row group max num of values
+    #[derivative(Default(value = "2147483647"))]
+    pub(crate) max_row_group_num_values: usize,
     #[derivative(Default(value = "1"))]
     pub(crate) prefetch_size: usize,
     #[derivative(Default(value = "false"))]
@@ -203,6 +206,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_max_row_group_size(mut self, max_row_group_size: usize) -> Self {
         self.config.max_row_group_size = max_row_group_size;
+        self
+    }
+
+    pub fn with_max_row_group_num_values(mut self, max_row_group_num_values: usize) -> Self {
+        self.config.max_row_group_num_values = max_row_group_num_values;
         self
     }
 

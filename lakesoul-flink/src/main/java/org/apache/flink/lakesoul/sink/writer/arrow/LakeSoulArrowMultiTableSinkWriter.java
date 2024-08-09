@@ -28,8 +28,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKET;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTableSinkWriter<LakeSoulArrowWrapper, LakeSoulArrowWrapper> {
@@ -97,8 +96,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                     getRollingPolicy(),
                     getOutputFileConfig());
             activeArrowBuckets.put(identity, bucket);
-            LOG.info("Create new bucket {}, {}",
-                    identity, bucketPath);
+            LOG.info("Create new bucket {}, {}", identity, bucketPath);
         }
         return bucket;
     }
@@ -111,6 +109,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
             LOG.info("initializeState restoring state: {}", state);
 
             TableSchemaIdentity identity = state.getIdentity();
+            conf.set(SINK_RESTART_TIMES, state.getRestartTimes() + 1);
             BucketWriter<LakeSoulArrowWrapper, String> bucketWriter = new NativeArrowBucketWriter(identity.rowType, identity.primaryKeys, identity.partitionKeyList, conf);
             LakeSoulArrowWriterBucket restoredBucket =
                     arrowBucketFactory.restoreBucket(
@@ -145,6 +144,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
             LakeSoulWriterBucketState state = bucket.snapshotState();
             states.add(state);
         }
+        LOG.info("snapshotState: checkpointId={}, states={}", checkpointId, states);
 
         return states;
     }
@@ -159,6 +159,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     @Override
     public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+        long timer = System.currentTimeMillis();
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
         String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
@@ -175,6 +176,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                 committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
             }
         }
+        LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit done, costTime={}ms, subTaskId={}, flush={}, {}", String.format("%06d", System.currentTimeMillis() - timer), getSubTaskId(), flush, committables);
 
         return committables;
     }

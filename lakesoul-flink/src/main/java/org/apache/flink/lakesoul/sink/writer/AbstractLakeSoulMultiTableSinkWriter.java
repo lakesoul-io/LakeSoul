@@ -227,7 +227,11 @@ public abstract class AbstractLakeSoulMultiTableSinkWriter<IN, OUT>
                     bucketFactory.getNewBucket(
                             subTaskId,
                             creator.identity,
-                            bucketId, bucketPath, bucketWriter, rollingPolicy, outputFileConfig);
+                            bucketId,
+                            bucketPath,
+                            bucketWriter,
+                            rollingPolicy,
+                            outputFileConfig);
             activeBuckets.put(Tuple2.of(identity, bucketId), bucket);
             LOG.info("Create new bucket {}, {}, {}",
                     identity, bucketId, bucketPath);
