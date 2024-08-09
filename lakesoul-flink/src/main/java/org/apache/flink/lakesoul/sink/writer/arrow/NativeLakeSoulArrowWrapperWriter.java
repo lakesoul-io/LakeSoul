@@ -90,7 +90,7 @@ public class NativeLakeSoulArrowWrapperWriter implements InProgressFileWriter<La
 
         FlinkUtil.setFSConfigs(conf, nativeWriter);
         nativeWriter.initializeWriter();
-//        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
+        LOG.info("Initialized NativeLakeSoulArrowWrapperWriter: {}", this);
     }
 
     @Override

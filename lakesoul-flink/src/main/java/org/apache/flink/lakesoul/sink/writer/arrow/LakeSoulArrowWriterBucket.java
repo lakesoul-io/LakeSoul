@@ -263,7 +263,7 @@ public class LakeSoulArrowWriterBucket {
     }
 
     private void closePartFile() throws IOException {
-//        LOG.info("ClosePartFile {}", inProgressPartWriter);
+        LOG.info("ClosePartFile {}", inProgressPartWriter);
         if (inProgressPartWriter != null) {
             if (inProgressPartWriter instanceof NativeLakeSoulArrowWrapperWriter) {
                 Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFileRecoverableMap =
