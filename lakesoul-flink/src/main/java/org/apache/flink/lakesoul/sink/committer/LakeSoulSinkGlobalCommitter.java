@@ -161,7 +161,6 @@ public class LakeSoulSinkGlobalCommitter
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
                         properties, partition);
             } else {
-                LOG.info("Try to update table: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
                 DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
                 if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size() ||
                         !new HashSet<>(partitionKeys.primaryKeys).containsAll(identity.primaryKeys)) {
@@ -197,6 +196,7 @@ public class LakeSoulSinkGlobalCommitter
                     schemaChangeFound = equalOrCanCast.equals(DataTypeCastUtils.CAN_CAST());
                 }
                 if (schemaChangeFound) {
+                    LOG.info("Try to update table: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
                     LOG.warn("Schema change found, origin schema = {}, changed schema = {}",
                             origSchema.json(),
                             msgSchema.toJson());

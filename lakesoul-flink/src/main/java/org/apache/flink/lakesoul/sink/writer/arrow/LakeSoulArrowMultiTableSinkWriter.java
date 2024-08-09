@@ -159,6 +159,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
 
     @Override
     public List<LakeSoulMultiTableSinkCommittable> prepareCommit(boolean flush) throws IOException {
+        long timer = System.currentTimeMillis();
         List<LakeSoulMultiTableSinkCommittable> committables = new ArrayList<>();
         String dmlType = this.conf.getString(LakeSoulSinkOptions.DML_TYPE);
         String sourcePartitionInfo = this.conf.getString(LakeSoulSinkOptions.SOURCE_PARTITION_INFO);
@@ -175,8 +176,8 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
                 committables.addAll(entry.getValue().prepareCommit(flush, dmlType, sourcePartitionInfo));
             }
         }
-        LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit, subTaskId={}, flush={}, {}", getSubTaskId(), flush, committables);
-        
+        LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit done, costTime={}ms, subTaskId={}, flush={}, {}", String.format("%06d", System.currentTimeMillis() - timer), getSubTaskId(), flush, committables);
+
         return committables;
     }
 

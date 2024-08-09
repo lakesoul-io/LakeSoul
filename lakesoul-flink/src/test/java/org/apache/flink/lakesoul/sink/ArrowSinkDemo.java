@@ -30,6 +30,9 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.CollectionUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,22 +41,30 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.MAX_ROW_GROUP_VALUE_NUMBER;
 
 public class ArrowSinkDemo {
-    static long checkpointInterval = 5000;
+    static long checkpointInterval = 10000;
+    static int tableNum = 8;
+
 
     public static void main(String[] args) throws Exception {
 
 //         read data
 
-//        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
-//        tEnv.registerCatalog("lakesoul", new LakeSoulCatalog());
-//        tEnv.useCatalog("lakesoul");
-//        tEnv.executeSql("select count(*) from `default`.`qar_table`").print();
-//        System.exit(0);
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        tEnv.registerCatalog("lakesoul", new LakeSoulCatalog());
+        tEnv.useCatalog("lakesoul");
+        long total = 0;
+        for (int i = 0; i < tableNum; i++) {
+            List<Row> collect = CollectionUtil.iteratorToList(tEnv.executeSql("select count(*) as `rows` from `default`.`qar_table_" + i + "`").collect());
+            total += (long) collect.get(0).getField(0);
+        }
+        System.out.println(total);
+        System.exit(0);
 
         new LakeSoulCatalog().cleanForTest();
 
@@ -69,37 +80,39 @@ public class ArrowSinkDemo {
 
         int cols = 2000;
         int batchSize = 3000;
-        int batchPerSecond = 10;
+        int batchPerSecond = 5 * tableNum;
         int parallelism = 2;
 
-        int batchPerTask = 50;
-
-
-        List<Field> fields = new ArrayList<>();
-        for (int i = 0; i < cols; i++) {
-            fields.add(new Field("f_i32_" + i, FieldType.nullable(new ArrowType.Int(32, true)), null));
-        }
-        fields.add(new Field("date", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
-        fields.add(new Field("fltNum", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
-        fields.add(new Field("tailNum", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
-        Schema arrowSchema = new Schema(fields);
+        int batchPerTask = 80;
 
         // TableInfo object can be reused
-        TableInfo sinkTableInfo = TableInfo
-                .newBuilder()
-                .setTableId("NOT_USED")
-                .setTableNamespace("default")
-                .setTableName("qar_table")
-                .setTableSchema(arrowSchema.toJson())
-                .setTablePath("file:///tmp/test_arrow_sink")
-                .setPartitions(DBUtil.formatTableInfoPartitionsField(
-                        // no primary field
-                        Collections.emptyList(),
-                        // partition fields
-                        Arrays.asList("date", "fltNum", "tailNum")))
-                .setProperties("{}")
-                .build();
-
+        List<TableInfo> sinkTableInfo = new ArrayList<>();
+        for (int i = 0; i < tableNum; i++) {
+            List<Field> fields = new ArrayList<>();
+            for (int j = 0; j < cols; j++) {
+                fields.add(new Field("f_i32_" + i + "_" + j, FieldType.nullable(new ArrowType.Int(32, true)), null));
+            }
+            fields.add(new Field("date", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
+            fields.add(new Field("fltNum", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
+            fields.add(new Field("tailNum", FieldType.nullable(ArrowType.Utf8.INSTANCE), null));
+            Schema arrowSchema = new Schema(fields);
+            TableInfo tableInfo = TableInfo
+                    .newBuilder()
+                    .setTableId("NOT_USED")
+                    .setTableNamespace("default")
+                    .setTableName("qar_table_" + i)
+                    .setTableSchema(arrowSchema.toJson())
+                    .setTablePath("file:///tmp/test_arrow_sink_" + i)
+                    .setPartitions(DBUtil.formatTableInfoPartitionsField(
+                            // no primary field
+                            Collections.emptyList(),
+                            // partition fields
+                            Arrays.asList("date", "fltNum", "tailNum")))
+                    .setProperties("{}")
+                    .build();
+            sinkTableInfo.add(tableInfo);
+        }
+        
         DataStreamSource<LakeSoulArrowWrapper>
                 source =
                 env.addSource(new ArrowDataGenSource(sinkTableInfo, cols, batchSize, batchPerSecond, batchPerTask))
@@ -131,17 +144,17 @@ public class ArrowSinkDemo {
         int cols;
         int batchSize;
         int batchPerSecond;
-        String arrowSchema;
-        byte[] tableInfoEncoded;
+        List<String> arrowSchema;
+        List<byte[]> tableInfoEncoded;
         private volatile transient boolean isRunning;
         private transient int outputSoFar = 0;
 
-        public ArrowDataGenSource(TableInfo sinkTableInfo, int cols, int batchSize, int batchPerSecond, int total) {
+        public ArrowDataGenSource(List<TableInfo> sinkTableInfo, int cols, int batchSize, int batchPerSecond, int total) {
             this.cols = cols;
             this.batchSize = batchSize;
             this.batchPerSecond = batchPerSecond;
-            arrowSchema = sinkTableInfo.getTableSchema();
-            tableInfoEncoded = sinkTableInfo.toByteArray();
+            arrowSchema = sinkTableInfo.stream().map(TableInfo::getTableSchema).collect(Collectors.toList());
+            tableInfoEncoded = sinkTableInfo.stream().map(TableInfo::toByteArray).collect(Collectors.toList());
             count = total;
         }
 
@@ -151,12 +164,16 @@ public class ArrowSinkDemo {
             batchRate = Math.max(1, batchRate);
             LOG.info("Batch rate: {}", batchRate);
             long nextReadTime = System.currentTimeMillis();
-            Schema schema = Schema.fromJSON(arrowSchema);
+            List<Schema> schema = new ArrayList<>();
+            for (String s : arrowSchema) {
+                Schema fromJSON = Schema.fromJSON(s);
+                schema.add(fromJSON);
+            }
             while (isRunning) {
                 for (int i = 0; i < batchRate; i++) {
                     if (isRunning) {
                         synchronized (ctx.getCheckpointLock()) {
-                            LakeSoulArrowWrapper generateArrow = generateArrow(schema);
+                            LakeSoulArrowWrapper generateArrow = generateArrow(schema.get(outputSoFar % tableNum), outputSoFar);
                             outputSoFar++;
                             if (count > 0) {
                                 count--;
@@ -192,13 +209,14 @@ public class ArrowSinkDemo {
             LOG.info("Closing, generated {} batches", outputSoFar);
         }
 
-        private LakeSoulArrowWrapper generateArrow(Schema schema) {
+        private LakeSoulArrowWrapper generateArrow(Schema schema, int outputSoFar) {
+            int tableIdx = outputSoFar % tableNum;
             try (
                     BufferAllocator allocator = ArrowUtils.getRootAllocator();
                     VectorSchemaRoot arrowBatch = VectorSchemaRoot.create(schema, allocator)
             ) {
                 for (int i = 0; i < cols; i++) {
-                    IntVector intVector = (IntVector) arrowBatch.getVector("f_i32_" + i);
+                    IntVector intVector = (IntVector) arrowBatch.getVector("f_i32_" + tableIdx + "_" + i);
                     intVector.allocateNew(batchSize);
                     for (int j = 0; j < batchSize; j++) {
                         intVector.set(j, i + j);
@@ -215,7 +233,7 @@ public class ArrowSinkDemo {
 //                        break;
 //                    case 1:
 //                        date = "2024-07-02".getBytes();
-//                        fltNum = "1235".getBytes();
+//                        fltNum = "12 5".getBytes();
 //                        tailNum = "B4568".getBytes();
 //                        break;
 //                    case 2:
@@ -240,7 +258,7 @@ public class ArrowSinkDemo {
                     tailNumVector.set(j, tailNum);
                 }
                 arrowBatch.setRowCount(batchSize);
-                return new LakeSoulArrowWrapper(tableInfoEncoded, arrowBatch);
+                return new LakeSoulArrowWrapper(tableInfoEncoded.get(tableIdx), arrowBatch);
             }
         }
 
