@@ -139,7 +139,6 @@ public class LakeSoulSinkGlobalCommitter
             StructType sparkSchema = ArrowUtils.fromArrowSchema(msgSchema);
 
             TableInfo tableInfo = dbManager.getTableInfoByNameAndNamespace(tableName, tableNamespace);
-//            LOG.info("Committing: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
             if (tableInfo == null) {
                 String tableId = TABLE_ID_PREFIX + UUID.randomUUID();
                 String partition = DBUtil.formatTableInfoPartitionsField(identity.primaryKeys,
@@ -162,6 +161,7 @@ public class LakeSoulSinkGlobalCommitter
                 dbManager.createNewTable(tableId, tableNamespace, tableName, identity.tableLocation, msgSchema.toJson(),
                         properties, partition);
             } else {
+                LOG.info("Try to update table: {}, {}, {}, {} {}", tableNamespace, tableName, isCdc, msgSchema, tableInfo);
                 DBUtil.TablePartitionKeys partitionKeys = DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
                 if (partitionKeys.primaryKeys.size() != identity.primaryKeys.size() ||
                         !new HashSet<>(partitionKeys.primaryKeys).containsAll(identity.primaryKeys)) {

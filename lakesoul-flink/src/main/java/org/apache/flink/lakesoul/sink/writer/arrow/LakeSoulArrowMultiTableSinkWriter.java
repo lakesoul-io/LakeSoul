@@ -176,11 +176,7 @@ public class LakeSoulArrowMultiTableSinkWriter extends AbstractLakeSoulMultiTabl
             }
         }
         LOG.info("LakeSoulArrowMultiTableSinkWriter.prepareCommit, subTaskId={}, flush={}, {}", getSubTaskId(), flush, committables);
-
-//        if (flush) {
-//            LOG.info("printStackTrace");
-//            new Exception().printStackTrace(System.out);
-//        }
+        
         return committables;
     }
 

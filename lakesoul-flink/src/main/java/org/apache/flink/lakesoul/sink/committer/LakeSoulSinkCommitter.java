@@ -53,7 +53,7 @@ public class LakeSoulSinkCommitter implements Committer<LakeSoulMultiTableSinkCo
 
         DBManager lakeSoulDBManager = new DBManager();
         for (LakeSoulMultiTableSinkCommittable committable : committables) {
-//            LOG.info("Committing {}", committable);
+            LOG.info("Committing {}", committable);
             for (Map.Entry<String, List<InProgressFileWriter.PendingFileRecoverable>> entry : committable.getPendingFilesMap().entrySet()) {
                 List<InProgressFileWriter.PendingFileRecoverable> pendingFiles = entry.getValue();
 
