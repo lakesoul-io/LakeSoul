@@ -63,6 +63,8 @@ public class LakeSoulWriterBucket {
 
     private long tsMs;
 
+    private int restartTimes;
+
     private final Map<String, List<InProgressFileWriter.PendingFileRecoverable>> pendingFilesMap =
             new HashMap<>();
 
@@ -96,6 +98,7 @@ public class LakeSoulWriterBucket {
 
         this.uniqueId = UUID.randomUUID().toString();
         this.partCounter = 0;
+        this.restartTimes = 0;
     }
 
     /**
@@ -127,6 +130,7 @@ public class LakeSoulWriterBucket {
                 .entrySet()) {
             pendingFilesMap.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).addAll(entry.getValue());
         }
+        restartTimes = state.getRestartTimes();
     }
 
     public String getBucketId() {

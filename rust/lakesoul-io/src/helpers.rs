@@ -496,3 +496,15 @@ pub fn timestamp_str_to_unix_time(value: &str, fmt: &str) -> Result<Duration> {
 
     Ok(datetime.signed_duration_since(epoch_time.naive_utc()))
 }
+
+pub fn column_with_name_and_name2index<'a>(schema: &'a SchemaRef, name: &str, name_to_index: &Option<HashMap<String, usize>>) -> Option<(usize, &'a Field)> {
+    if let Some(name_to_index) = name_to_index {
+        if let Some(index) = name_to_index.get(name) {
+            Some((*index, schema.field(*index)))
+        } else {
+            None
+        }
+    } else {
+        schema.column_with_name(name)
+    }
+}
