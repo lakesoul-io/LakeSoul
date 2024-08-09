@@ -40,6 +40,23 @@ sql_1 = """alter table random_table_%s add column extra_1 int default NULL"""
 sql_2 = """alter table random_table_%s add column extra_2 double default NULL"""
 sql_3 = """alter table random_table_%s add column extra_3 varchar(100) default NULL"""
 
+default_sql_1 = """alter table default_init_1 add column extra_1 int default NULL"""
+default_sql_2 = """alter table default_init_1 add column extra_2 double default NULL"""
+default_sql_3 = """alter table default_init_1 add column extra_3 varchar(100) default NULL"""
+
+print(default_sql_1)
+cur.execute(default_sql_1)
+connect.commit()
+
+print(default_sql_2)
+cur.execute(default_sql_2)
+connect.commit()
+
+print(default_sql_3)
+cur.execute(default_sql_3)
+connect.commit()
+
+
 for i in range(table_num):
     exec_sql = sql_1 % str(i)
     print(exec_sql)

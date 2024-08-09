@@ -93,12 +93,16 @@ object CompactionTask {
     override def run(): Unit = {
       try {
         val table = LakeSoulTable.forPath(path)
-        val partitions = partitionDesc.split(",").map(
-          partition => {
-            partition.replace("=", "='") + "'"
-          }
-        ).mkString(" and ")
-        table.compaction(partitions)
+        if (partitionDesc == "") {
+          table.compaction()
+        } else {
+          val partitions = partitionDesc.split(",").map(
+            partition => {
+              partition.replace("=", "='") + "'"
+            }
+          ).mkString(" and ")
+          table.compaction(partitions)
+        }
       } catch {
         case e: Exception => throw e
       } finally {
