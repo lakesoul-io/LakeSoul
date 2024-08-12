@@ -107,6 +107,12 @@ jobs:
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: '3.3.6'
+      - name: Modify HDFS User Group Mapping
+        run: |
+          sed -i '/^<\/configuration>/i <property><name>hadoop.proxyuser.spark.hosts</name><value>*</value></property><property><name>hadoop.proxyuser.spark.groups</name><value>*</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
+          $HADOOP_HOME/sbin/stop-dfs.sh
+          $HADOOP_HOME/sbin/start-dfs.sh
+          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
       - name: Modify HDFS Host
         run: |
           sed -i 's/localhost/172.17.0.1/g' $HADOOP_HOME/etc/hadoop/core-site.xml
@@ -123,7 +129,7 @@ jobs:
       - name: Start compaction task
         run: |
           cd ./script/benchmark/work-dir
-          nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v $HADOOP_HOME:/opt/hadoop --env HADOOP_HOME=/opt/hadoop -v ${PWD}:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --driver-memory 2G --executor-memory 2G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp  --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --conf spark.dmetasoul.lakesoul.native.io.enable=true --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask --master local[4] /opt/spark/work-dir/$SPARK_JAR_NAME --threadpool.size=10 --database="" > compaction.log 2>&1 &
+          nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v $HADOOP_HOME:/opt/hadoop --env HADOOP_HOME=/opt/hadoop -v ${PWD}:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --proxy-user flink --driver-memory 2G --executor-memory 2G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp  --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --conf spark.dmetasoul.lakesoul.native.io.enable=true --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask --master local[4] /opt/spark/work-dir/$SPARK_JAR_NAME --threadpool.size=10 --database="" > compaction.log 2>&1 &
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path hdfs://172.17.0.1:9000/lakesoul-test-bucket/data/ --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/chk --flink.savepoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
