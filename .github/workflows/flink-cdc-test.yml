@@ -227,4 +227,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lakesoul-compaction-log
-          path: ${PWD}/script/benchmark/work-dir/compaction.log
+          path: ./script/benchmark/work-dir/compaction.log
+          retention-days: 3
+          if-no-files-found: error
