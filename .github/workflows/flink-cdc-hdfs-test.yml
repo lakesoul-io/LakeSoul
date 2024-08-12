@@ -110,9 +110,6 @@ jobs:
       - name: Modify HDFS User Group Mapping
         run: |
           sed -i '/^<\/configuration>/i <property><name>hadoop.proxyuser.spark.hosts</name><value>*</value></property><property><name>hadoop.proxyuser.spark.groups</name><value>*</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
-          $HADOOP_HOME/sbin/stop-dfs.sh
-          $HADOOP_HOME/sbin/start-dfs.sh
-          $HADOOP_HOME/bin/hadoop fs -chmod -R 777 /
       - name: Modify HDFS Host
         run: |
           sed -i 's/localhost/172.17.0.1/g' $HADOOP_HOME/etc/hadoop/core-site.xml
