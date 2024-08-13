@@ -37,6 +37,8 @@ connect = pymysql.connect(host=host,
 
 cur = connect.cursor()
 
+cur.execute("drop table if exists default_init")
+cur.execute("drop table if exists default_init_1")
 for i in range(table_num):
     cur.execute("drop table if exists random_table_%s" % str(i))
 

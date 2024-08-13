@@ -13,4 +13,5 @@ password=$(cat ./properties | grep -v '^#' | grep password= | awk -F'=' '{print 
 db=$(cat ./properties | grep -v '^#' | grep db= | awk -F'=' '{print $2}')
 
 ./mysql_random_data_insert --no-progress -u "$user" -p"$password" --max-threads=10 "$db" default_init "$row_num";
+./mysql_random_data_insert --no-progress -u "$user" -p"$password" --max-threads=10 "$db" default_init_1 "$row_num";
 for ((i = 0; i < $table_num; i++)); do ./mysql_random_data_insert --no-progress -u "$user" -p"$password" --max-threads=10 "$db" random_table_"$i" "$row_num"; done

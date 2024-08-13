@@ -107,6 +107,9 @@ jobs:
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: '3.3.6'
+      - name: Modify HDFS User Group Mapping
+        run: |
+          sed -i '/^<\/configuration>/i <property><name>hadoop.proxyuser.spark.hosts</name><value>*</value></property><property><name>hadoop.proxyuser.spark.groups</name><value>*</value></property>' $HADOOP_HOME/etc/hadoop/core-site.xml
       - name: Modify HDFS Host
         run: |
           sed -i 's/localhost/172.17.0.1/g' $HADOOP_HOME/etc/hadoop/core-site.xml
@@ -120,6 +123,10 @@ jobs:
           docker compose pull -q
           docker compose up -d
           sleep 30s
+      - name: Start compaction task
+        run: |
+          cd ./script/benchmark/work-dir
+          nohup docker run --cpus 2 -m 5000m --net lakesoul-docker-compose-env_default --rm -t -v $HADOOP_HOME:/opt/hadoop --env HADOOP_HOME=/opt/hadoop -v ${PWD}:/opt/spark/work-dir --env lakesoul_home=/opt/spark/work-dir/lakesoul.properties bitnami/spark:3.3.1 spark-submit --proxy-user flink --driver-memory 2G --executor-memory 2G --conf spark.driver.memoryOverhead=1500m --conf spark.executor.memoryOverhead=1500m --conf spark.hadoop.fs.s3.buffer.dir=/tmp --conf spark.hadoop.fs.s3a.buffer.dir=/tmp  --conf spark.hadoop.fs.s3a.fast.upload.buffer=disk --conf spark.hadoop.fs.s3a.fast.upload=true --conf spark.dmetasoul.lakesoul.native.io.enable=true --class com.dmetasoul.lakesoul.spark.compaction.CompactionTask --master local[4] /opt/spark/work-dir/$SPARK_JAR_NAME --threadpool.size=10 --database="" > compaction.log 2>&1 &
       - name: Start flink mysql cdc task-1
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.entry.MysqlCdc /opt/flink/work-dir/$FLINK_JAR_NAME --source_db.host mysql --source_db.port 3306 --source_db.db_name test_cdc --source_db.user root --source_db.password root --source.parallelism 2 --sink.parallelism 4 --use.cdc true --warehouse_path hdfs://172.17.0.1:9000/lakesoul-test-bucket/data/ --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/chk --flink.savepoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/svp --job.checkpoint_interval 5000 --server_time_zone UTC
@@ -131,15 +138,21 @@ jobs:
       - name: Start flink DataGenSource without primary key task-3
         run: |
           docker exec -t -u flink lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulDataGenSourceTable -C file:///opt/flink/work-dir/$FLINK_JAR_NAME /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --sink.database.name flink --sink.table.name sink_table --job.checkpoint_interval 10000 --server_time_zone UTC --warehouse.path hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink/ --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink/chk --sink.parallel 2 --data.size 1000 --write.time 5
-      - name: Download mysql driver jar
+      - name: Download task dependency jar
         run: |
           cd ./script/benchmark/work-dir
           if [ ! -e mysql-connector-java-8.0.30.jar ]; then wget -q https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar; fi
+          if [ ! -e flink-connector-jdbc-3.1.1-1.17.jar ]; then wget -q https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.1.1-1.17/flink-connector-jdbc-3.1.1-1.17.jar; fi
+          if [ ! -e assertj-core-3.23.1.jar ]; then wget -q https://repo1.maven.org/maven2/org/assertj/assertj-core/3.23.1/assertj-core-3.23.1.jar; fi
       - name: Create table and insert data
         run: |
           cd ./script/benchmark
           python 1_create_table.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -156,6 +169,10 @@ jobs:
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
           sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
+          sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
           cd ./script/benchmark
@@ -168,6 +185,10 @@ jobs:
         run: |
           cd ./script/benchmark
           python3 4_update_data.py
+          sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -183,6 +204,10 @@ jobs:
           python3 6_drop_column.py
           python3 delete_data.py
           docker exec -i lakesoul-docker-compose-env-mysql-1 bash /2_insert_table_data.sh
+          sleep 30s
+      - name: Start flink engine data check task
+        run: |
+          docker exec -t lakesoul-docker-compose-env-jobmanager-1 flink run -d -c org.apache.flink.lakesoul.test.benchmark.LakeSoulFlinkDataCheck -C file:///opt/flink/work-dir/$FLINK_JAR_NAME -C file:///opt/flink/work-dir/mysql-connector-java-8.0.30.jar -C file:///opt/flink/work-dir/flink-connector-jdbc-3.1.1-1.17.jar -C file:///opt/flink/work-dir/assertj-core-3.23.1.jar /opt/flink/work-dir/$FLINK_TEST_JAR_NAME --mysql.hostname mysql --mysql.database.name test_cdc --mysql.table.name default_init_1 --mysql.username root --mysql.password root --mysql.port 3306 --server.time.zone UTC --single.table.contract true --lakesoul.database.name test_cdc --lakesoul.table.name default_init_1 --flink.checkpoint hdfs://172.17.0.1:9000/lakesoul-test-bucket/flink-engine/chk
           sleep 30s
       - name: Mysql cdc data accuracy verification task
         run: |
@@ -208,4 +233,11 @@ jobs:
           name: flink-cluster-log
           path: flink-session-cluster.log
           retention-days: 5
+          if-no-files-found: error
+      - name: Upload Compaction Log
+        uses: actions/upload-artifact@v4
+        with:
+          name: lakesoul-compaction-log
+          path: ./script/benchmark/work-dir/compaction.log
+          retention-days: 3
           if-no-files-found: error
