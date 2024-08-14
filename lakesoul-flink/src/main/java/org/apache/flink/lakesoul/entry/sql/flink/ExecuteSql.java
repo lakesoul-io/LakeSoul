@@ -6,13 +6,18 @@
 package org.apache.flink.lakesoul.entry.sql.flink;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.table.api.TableEnvironment;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamStatementSet;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.delegation.Parser;
-import org.apache.flink.table.operations.BeginStatementSetOperation;
+import org.apache.flink.table.operations.CreateTableASOperation;
 import org.apache.flink.table.operations.ModifyOperation;
 import org.apache.flink.table.operations.Operation;
+import org.apache.flink.table.operations.QueryOperation;
+import org.apache.flink.table.operations.command.AddJarOperation;
 import org.apache.flink.table.operations.command.SetOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,10 +25,6 @@ import org.slf4j.helpers.MessageFormatter;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.regex.Pattern;
-
-import static org.apache.flink.configuration.ExecutionOptions.RUNTIME_MODE;
 
 public class ExecuteSql {
 
@@ -34,12 +35,23 @@ public class ExecuteSql {
 
     private static final String COMMENT_PATTERN = "(--.*)|(((\\/\\*)+?[\\w\\W]+?(\\*\\/)+))";
 
-    public static void executeSqlFileContent(String script, TableEnvironment tableEnv)
-            throws ExecutionException, InterruptedException {
+    public static void executeSqlFileContent(String script, StreamTableEnvironment tableEnv,
+                                             StreamExecutionEnvironment env)
+            throws Exception {
         List<String> statements = parseStatements(script);
         Parser parser = ((TableEnvironmentInternal) tableEnv).getParser();
+
+        StreamStatementSet statementSet = tableEnv.createStatementSet();
+
         for (String statement : statements) {
-            Operation operation = parser.parse(statement).get(0);
+            Operation operation;
+            try {
+                operation = parser.parse(statement).get(0);
+            } catch (Exception e) {
+                System.out.println("Parse statement " + statement + " failed: ");
+                System.out.println(ExceptionUtils.getRootCauseMessage(e));
+                throw e;
+            }
             if (operation instanceof SetOperation) {
                 SetOperation setOperation = (SetOperation) operation;
                 if (setOperation.getKey().isPresent() && setOperation.getValue().isPresent()) {
@@ -56,21 +68,29 @@ public class ExecuteSql {
                     System.out.println(MessageFormatter.format("All configs: {}",
                             tableEnv.getConfig().getConfiguration()).getMessage());
                 }
-            } else if (operation instanceof ModifyOperation || operation instanceof BeginStatementSetOperation) {
+            } else if (operation instanceof CreateTableASOperation) {
+                String message = String.format("CTAS statement is not supported: %s", statement);
+                System.out.println(message);
+                throw new RuntimeException(message);
+            } else if (operation instanceof ModifyOperation) {
                 System.out.println(MessageFormatter.format("\n======Executing insertion:\n{}", statement).getMessage());
-                // execute insertion and do not wait for results for stream mode
-                if (tableEnv.getConfig().get(RUNTIME_MODE) == RuntimeExecutionMode.BATCH) {
-                    tableEnv.executeSql(statement).await();
-                } else {
-                    tableEnv.executeSql(statement);
-                }
+                // add insertion to statement set
+                statementSet.addInsertSql(statement);
+            } else if ((operation instanceof QueryOperation) || (operation instanceof AddJarOperation)) {
+                LOG.warn("SQL Statement {} is ignored", statement);
             } else {
-                // for all show/select/alter/create catalog/use, etc. statements
+                // for all show/alter/create catalog/use but not select statements
                 // execute and print results
                 System.out.println(MessageFormatter.format("\n======Executing:\n{}", statement).getMessage());
                 tableEnv.executeSql(statement).print();
             }
         }
+        statementSet.attachAsDataStream();
+        Configuration conf = (Configuration) env.getConfiguration();
+
+        // try get k8s cluster name
+        String k8sClusterID = conf.getString("kubernetes.cluster-id", "");
+        env.execute(k8sClusterID.isEmpty() ? null : k8sClusterID + "-job");
     }
 
     public static List<String> parseStatements(String script) {
@@ -81,7 +101,6 @@ public class ExecuteSql {
         List<String> statements = new ArrayList<String>();
 
         StringBuilder current = null;
-        boolean statementSet = false;
         for (String line : formatted.split("\n")) {
             String trimmed = line.trim();
             if (StringUtils.isBlank(trimmed)) {
@@ -90,17 +109,16 @@ public class ExecuteSql {
             if (current == null) {
                 current = new StringBuilder();
             }
-            if (trimmed.startsWith("EXECUTE STATEMENT SET")) {
-                statementSet = true;
+            if (trimmed.startsWith("BEGIN STATEMENT SET") || trimmed.equals("END;")) {
+                // we do not directly execute user's statement set
+                // instead extract all insert statements out
+                continue;
             }
             current.append(trimmed);
             current.append("\n");
             if (trimmed.endsWith(STATEMENT_DELIMITER)) {
-                if (!statementSet || trimmed.equals("END;")) {
-                    statements.add(current.toString());
-                    current = null;
-                    statementSet = false;
-                }
+                statements.add(current.toString());
+                current = null;
             }
         }
         return statements;

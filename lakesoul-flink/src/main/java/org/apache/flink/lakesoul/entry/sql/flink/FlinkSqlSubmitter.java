@@ -39,35 +39,33 @@ public class FlinkSqlSubmitter extends Submitter {
     }
 
     @Override
-    public void submit() throws IOException, URISyntaxException, ExecutionException, InterruptedException {
+    public void submit() throws Exception {
         EnvironmentSettings settings = null;
-        TableEnvironment tEnv = null;
+        StreamTableEnvironment tEnv = null;
         if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
             settings = EnvironmentSettings
                     .newInstance()
                     .inStreamingMode()
                     .build();
 
-            Configuration conf = new Configuration();
-            conf.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(conf);
-            this.setCheckpoint(env);
-            tEnv = StreamTableEnvironment.create(env, settings);
         } else if (submitOption.getJobType().equals(JobType.BATCH.getType())) {
             settings = EnvironmentSettings.newInstance()
                     .inBatchMode()
                     .build();
-            tEnv = TableEnvironment.create(settings);
-
         } else {
-            throw new RuntimeException("jobType is not supported");
+            throw new RuntimeException("jobType is not supported: " + submitOption.getJobType());
         }
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        if (submitOption.getJobType().equals(JobType.STREAM.getType())) {
+            this.setCheckpoint(env);
+        }
+        tEnv = StreamTableEnvironment.create(env, settings);
 
         String sql = FileUtil.readHDFSFile(submitOption.getSqlFilePath());
         System.out.println(
                 MessageFormatter.format("\n======SQL Script Content from file {}:\n{}",
                         submitOption.getSqlFilePath(), sql).getMessage());
-        ExecuteSql.executeSqlFileContent(sql, tEnv);
+        ExecuteSql.executeSqlFileContent(sql, tEnv, env);
     }
 
     private void setCheckpoint(StreamExecutionEnvironment env) {

@@ -17,7 +17,7 @@ public class SubmitMain {
     private static final Logger LOG = LoggerFactory.getLogger(SubmitMain.class);
 
     public static void main(String[] args)
-            throws IOException, URISyntaxException, ExecutionException, InterruptedException {
+            throws Exception {
         for (String arg : args) {
             LOG.info("arg: {}", arg);
         }
