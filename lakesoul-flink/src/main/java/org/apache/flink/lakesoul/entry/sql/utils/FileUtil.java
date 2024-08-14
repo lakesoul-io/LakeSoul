@@ -24,15 +24,14 @@ public class FileUtil {
         URI uri = new URI(sqlFilePath);
         Path path = new Path(sqlFilePath);
         if (!FileSystem.get(uri).exists(path)) {
-            LOG.error("Cannot find sql file at " + sqlFilePath);
+            LOG.error("Cannot find sql file at {}", sqlFilePath);
             throw new IOException("Cannot find sql file at " + sqlFilePath);
         }
-        LOG.info("Reading sql file from hdfs: " + sqlFilePath);
+        LOG.info("Reading sql file from path: {}", sqlFilePath);
         FileSystem fs = FileSystem.get(path.toUri());
         String sql = new BufferedReader(new InputStreamReader(fs.open(path)))
                 .lines().collect(Collectors.joining("\n"));
-        String replaceDefaultKeywordFromZeppelinStr = replaceDefaultKeywordFromZeppelin(sql);
-        return replaceDefaultKeywordFromZeppelinStr;
+        return replaceDefaultKeywordFromZeppelin(sql);
 
     }
 

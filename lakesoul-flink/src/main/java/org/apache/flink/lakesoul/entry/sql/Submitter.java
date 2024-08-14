@@ -17,6 +17,6 @@ public abstract class Submitter {
         this.submitOption = submitOption;
     }
 
-    public abstract void submit() throws IOException, URISyntaxException, ExecutionException, InterruptedException;
+    public abstract void submit() throws Exception;
 
 }
