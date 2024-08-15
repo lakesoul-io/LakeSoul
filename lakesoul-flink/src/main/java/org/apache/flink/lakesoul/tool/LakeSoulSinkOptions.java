@@ -217,7 +217,7 @@ public class LakeSoulSinkOptions {
     public static final ConfigOption<Boolean> AUTO_SCHEMA_CHANGE = ConfigOptions
             .key("lakesoul.sink.auto_schema_change")
             .booleanType()
-            .defaultValue(true)
+            .defaultValue(false)
             .withDescription("If true, lakesoul sink will auto change sink table's schema");
 }
 
