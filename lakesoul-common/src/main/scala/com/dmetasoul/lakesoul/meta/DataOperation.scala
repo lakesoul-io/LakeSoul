@@ -5,7 +5,8 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, PartitionInfo}
-import org.apache.hadoop.fs.Path
+
+import java.net.URI
 
 import java.util
 import java.util.{Objects, UUID}
@@ -36,7 +37,14 @@ object BucketingUtils {
 case class DataFileInfo(range_partitions: String, path: String, file_op: String, size: Long,
                         modification_time: Long = -1L, file_exist_cols: String = "") {
 
-  lazy val file_bucket_id: Int = BucketingUtils.getBucketId(new Path(path).getName)
+  def getName(pathStr: String): String = {
+    val uri = new URI(pathStr)
+    val path = uri.getPath
+    val slash = path.lastIndexOf("/")
+    path.substring(slash + 1)
+  }
+
+  lazy val file_bucket_id: Int = BucketingUtils.getBucketId(getName(path))
     .getOrElse(sys.error(s"Invalid bucket file $path"))
 
   override def hashCode(): Int = {

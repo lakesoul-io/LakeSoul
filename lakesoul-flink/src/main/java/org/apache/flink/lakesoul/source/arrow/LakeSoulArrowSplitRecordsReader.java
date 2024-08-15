@@ -19,7 +19,6 @@ import org.apache.flink.lakesoul.source.LakeSoulPartitionSplit;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
 import org.apache.flink.lakesoul.types.arrow.LakeSoulArrowWrapper;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.runtime.arrow.ArrowReader;
 import org.apache.flink.table.runtime.arrow.ArrowUtils;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
@@ -31,6 +30,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.INFERRING_SCHEMA;
 
 public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<LakeSoulArrowWrapper>, AutoCloseable {
@@ -50,8 +50,6 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
     private final long skipRecords;
 
     private final Set<String> finishedSplit;
-    private final List<String> partitionColumns;
-    private final RowType tableRowType;
     private final Schema partitionSchema;
     private final TableInfo tableInfo;
     private final boolean inferringSchema;
@@ -72,15 +70,6 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
 
     private VectorSchemaRoot currentVCR;
 
-    // record index in current arrow batch (currentVCR)
-    private int curRecordIdx = 0;
-
-    // arrow batch -> row, returned by native reader
-    private ArrowReader curArrowReader;
-
-    // arrow batch -> row, with requested schema
-    private ArrowReader curArrowReaderRequestedSchema;
-
     private final Plan filter;
 
     public LakeSoulArrowSplitRecordsReader(
@@ -100,7 +89,6 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = new Configuration(conf);
-        this.tableRowType = tableRowType;
         this.projectedRowType = projectedRowType;
         this.projectedRowTypeWithPk = projectedRowTypeWithPk;
         this.pkColumns = pkColumns;
@@ -108,7 +96,6 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
         this.isBounded = isBounded;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
-        this.partitionColumns = partitionColumns;
         this.inferringSchema = conf.getBoolean(INFERRING_SCHEMA);
 
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
@@ -127,6 +114,7 @@ public class LakeSoulArrowSplitRecordsReader implements RecordsWithSplitIds<Lake
             reader.addFile(FlinkUtil.makeQualifiedPath(path).toString());
         }
         reader.setInferringSchema(inferringSchema);
+        reader.setBatchSize(conf.get(BATCH_SIZE));
 
         List<String> nonPartitionColumns =
                 this.projectedRowType.getFieldNames().stream().filter(name -> !this.partitionValues.containsKey(name))

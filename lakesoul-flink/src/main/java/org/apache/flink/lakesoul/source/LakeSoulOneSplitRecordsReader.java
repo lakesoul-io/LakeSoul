@@ -31,6 +31,8 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BATCH_SIZE;
+
 public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowData>, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeSoulOneSplitRecordsReader.class);
@@ -48,8 +50,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
     private final long skipRecords;
 
     private final Set<String> finishedSplit;
-    private final List<String> partitionColumns;
-    private final RowType tableRowType;
     private final Schema partitionSchema;
 
     List<String> pkColumns;
@@ -93,7 +93,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.split = split;
         this.skipRecords = split.getSkipRecord();
         this.conf = new Configuration(conf);
-        this.tableRowType = tableRowType;
         this.projectedRowType = projectedRowType;
         this.projectedRowTypeWithPk = projectedRowTypeWithPk;
         this.pkColumns = pkColumns;
@@ -101,7 +100,6 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         this.isBounded = isBounded;
         this.cdcColumn = cdcColumn;
         this.finishedSplit = Collections.singleton(splitId);
-        this.partitionColumns = partitionColumns;
         Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
         List<Field> partitionFields = partitionColumns.stream().map(tableSchema::findField).collect(Collectors.toList());
 
@@ -128,6 +126,7 @@ public class LakeSoulOneSplitRecordsReader implements RecordsWithSplitIds<RowDat
         }
 
         reader.setPartitionSchema(partitionSchema);
+        reader.setBatchSize(conf.get(BATCH_SIZE));
 
         if (!cdcColumn.isEmpty()) {
             int cdcField = projectedRowTypeWithPk.getFieldIndex(cdcColumn);
