@@ -59,6 +59,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromIntToBigInt() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new IntType());
         RowType.RowField afterField = new RowType.RowField("a", new BigIntType());
 
@@ -79,6 +80,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromIntToBigIntWithoutAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new IntType());
         RowType.RowField afterField = new RowType.RowField("a", new BigIntType());
 
@@ -99,6 +101,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromBigIntToInt() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new BigIntType());
         RowType.RowField afterField = new RowType.RowField("a", new IntType());
 
@@ -119,6 +122,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromBigIntToTinyIntWithAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new BigIntType());
         RowType.RowField afterField = new RowType.RowField("a", new TinyIntType());
 
@@ -139,6 +143,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromFloatToDouble() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
         RowType.RowField afterField = new RowType.RowField("a", new DoubleType());
 
@@ -159,6 +164,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromFloatToDoubleWithoutAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
         RowType.RowField afterField = new RowType.RowField("a", new DoubleType());
 
@@ -179,6 +185,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testAddColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new FloatType());
         RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField afterFieldB = new RowType.RowField("b", new IntType());
@@ -208,6 +215,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testDropColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType());
         RowType.RowField afterField = new RowType.RowField("a", new FloatType());
@@ -238,6 +246,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
         Map<String, String> options = new HashMap<>();
         options.put(LakeSoulSinkOptions.CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
         options.put(LakeSoulSinkOptions.LOGICALLY_DROP_COLUM.key(), "true");
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType());
         RowType.RowField afterField = new RowType.RowField("a", new FloatType());
@@ -269,6 +278,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromDoubleToFloat() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new DoubleType());
         RowType.RowField afterField = new RowType.RowField("a", new FloatType());
 
@@ -289,6 +299,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testFromDoubleToFloatWithAllowance() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeField = new RowType.RowField("a", new DoubleType());
         RowType.RowField afterField = new RowType.RowField("a", new FloatType());
 
@@ -309,6 +320,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testChangeDatatypeOfPartitionColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType());
         RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());
@@ -342,6 +354,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testChangeOfPartitionColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType());
         RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());
@@ -375,6 +388,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testChangeDatatypeOfPrimaryKeyColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType(false));
         RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());
@@ -410,6 +424,7 @@ public class SchemaMigrationTest extends AbstractTestBase {
     public void testChangeOfPrimaryKeyColumn() throws IOException, ExecutionException, InterruptedException {
         Map<String, String> options = new HashMap<>();
         options.put(CATALOG_PATH.key(), tempFolder.newFolder("test_sink").getAbsolutePath());
+        options.put(LakeSoulSinkOptions.AUTO_SCHEMA_CHANGE.key(), "true");
         RowType.RowField beforeFieldA = new RowType.RowField("a", new FloatType());
         RowType.RowField beforeFieldB = new RowType.RowField("b", new IntType(false));
         RowType.RowField afterFieldA = new RowType.RowField("a", new FloatType());

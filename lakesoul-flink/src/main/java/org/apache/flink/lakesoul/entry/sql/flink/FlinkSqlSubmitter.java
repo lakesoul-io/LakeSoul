@@ -4,10 +4,8 @@
 
 package org.apache.flink.lakesoul.entry.sql.flink;
 
-
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.lakesoul.entry.sql.Submitter;
 import org.apache.flink.lakesoul.entry.sql.common.FlinkOption;
 import org.apache.flink.lakesoul.entry.sql.common.JobType;
@@ -15,20 +13,14 @@ import org.apache.flink.lakesoul.entry.sql.common.SubmitOption;
 import org.apache.flink.lakesoul.entry.sql.utils.FileUtil;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.helpers.MessageFormatter;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-
 
 public class FlinkSqlSubmitter extends Submitter {
     private static final Logger LOG = LoggerFactory.getLogger(FlinkSqlSubmitter.class);
@@ -87,5 +79,4 @@ public class FlinkSqlSubmitter extends Submitter {
                 Time.of(20, TimeUnit.SECONDS) // delay
         ));
     }
-
 }

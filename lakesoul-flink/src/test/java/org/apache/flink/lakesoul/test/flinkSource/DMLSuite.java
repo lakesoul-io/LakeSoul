@@ -322,6 +322,41 @@ public class DMLSuite extends AbstractTestBase {
         TestUtils.checkEqualInAnyOrder(results, new String[]{"+I[2, Alice, 80]", "+I[4, Bob, 110]"});
     }
 
+    @Test
+    public void testPKTypes() throws ExecutionException, InterruptedException {
+        TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        String createUserSql = "create table test_pk_types (" +
+                "    id1 DECIMAL(10, 5)," +
+                "    id2 DATE," +
+                "    id3 TIMESTAMP_LTZ(6)," +
+                "    v STRING," +
+                "CONSTRAINT `PK_pk` PRIMARY KEY (`id1`, `id2`, `id3`) NOT ENFORCED" +
+                ")" +
+                " WITH (" +
+                "    'connector'='lakesoul'," +
+                "    'hashBucketNum'='2'," +
+                "    'use_cdc'='true'," +
+                "    'path'='" + getTempDirUri("/lakeSource/test_pk_types") +
+                "' )";
+        tEnv.executeSql("DROP TABLE if exists test_pk_types");
+        tEnv.executeSql(createUserSql);
+        tEnv.executeSql("INSERT INTO test_pk_types VALUES " +
+                        "(CAST(2 as DECIMAL(10, 5)), DATE '2024-01-01', TIMESTAMP '2024-02-03 01:01:01.123456', 'value1')," +
+                        "(CAST('1234.56' as DECIMAL(10, 5)), DATE '2024-02-01', TIMESTAMP '2024-03-03 01:01:01.123456', 'value2')," +
+                        "(CAST(55.78 as DECIMAL(10, 5)), DATE '2024-01-03', TIMESTAMP '2024-02-04 01:01:01.123456', 'value3')," +
+                        "(CAST('123' as DECIMAL(10, 5)), DATE '2024-05-01', TIMESTAMP '2024-02-05 01:01:01.123456', 'value4')")
+                .await();
+        String testSelect = "select * from test_pk_types";
+        TableImpl flinkTable = (TableImpl) tEnv.sqlQuery(testSelect);
+        List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
+        TestUtils.checkEqualInAnyOrder(results, new String[]{
+                "+I[2.00000, 2024-01-01, 2024-02-02T17:01:01.123456Z, value1]",
+                "+I[123.00000, 2024-05-01, 2024-02-04T17:01:01.123456Z, value4]",
+                "+I[55.78000, 2024-01-03, 2024-02-03T17:01:01.123456Z, value3]",
+                "+I[1234.56000, 2024-02-01, 2024-03-02T17:01:01.123456Z, value2]"
+        });
+    }
+
     private void createLakeSoulSourceNonPkTableUser(TableEnvironment tEnvs)
             throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info_2 (" +

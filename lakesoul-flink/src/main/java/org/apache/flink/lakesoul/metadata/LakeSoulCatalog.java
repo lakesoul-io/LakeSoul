@@ -331,7 +331,7 @@ public class LakeSoulCatalog implements Catalog {
                 FileSystem fileSystem = new Path(path).getFileSystem();
                 Path qp = new Path(path).makeQualified(fileSystem);
                 FlinkUtil.createAndSetTableDirPermission(qp, false);
-                qualifiedPath = qp.toString();
+                qualifiedPath = qp.toUri().toString();
             } catch (IOException e) {
                 e.printStackTrace();
                 LOG.error("Set table dir {} permission failed.", path, e);
