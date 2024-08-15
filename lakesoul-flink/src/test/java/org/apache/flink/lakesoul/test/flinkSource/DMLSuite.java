@@ -12,7 +12,9 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutionException;
 
 import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
@@ -325,6 +327,7 @@ public class DMLSuite extends AbstractTestBase {
     @Test
     public void testPKTypes() throws ExecutionException, InterruptedException {
         TableEnvironment tEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        tEnv.getConfig().setLocalTimeZone(TimeZone.getTimeZone("Asia/Shanghai").toZoneId());
         String createUserSql = "create table test_pk_types (" +
                 "    id1 DECIMAL(10, 5)," +
                 "    id2 DATE," +
