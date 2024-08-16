@@ -147,6 +147,31 @@ public class DDLSuite extends AbstractTestBase {
         });
     }
 
+    @Test
+    public void typeValidationTest() {
+        validateTablePKType("TIMESTAMP(9)", true);
+        validateTablePKType("TIMESTAMP(9)", false);
+        validateTablePKType("ARRAY<STRING>", true);
+        validateTablePKType("MAP<STRING, STRING>", true);
+        validateTablePKType("ROW<n0 STRING, n1 STRING>", true);
+    }
+
+    private void validateTablePKType(String type, boolean isPK) {
+        StreamTableEnvironment streamTableEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
+        Assert.assertThrows("type validation failed", TableException.class, () -> {
+            streamTableEnv.executeSql("drop table if exists test_table");
+            streamTableEnv.executeSql("create table test_table (\n" +
+                    String.format("  `pk` %s %s \n", type, isPK ? "PRIMARY KEY NOT ENFORCED" : "") +
+                    ")\n" +
+                    "with (\n" +
+                    "  'connector' = 'lakesoul',\n" +
+                    "  'path' = 'file:///tmp/test_table',\n" +
+                    "  'hashBucketNum' = '1'\n" +
+                    ");"
+            );
+        });
+    }
+
     private void createLakeSoulSourceTableUser(TableEnvironment tEnvs) throws ExecutionException, InterruptedException {
         String createUserSql = "create table user_info (" +
                 "    order_id INT," +

@@ -13,7 +13,6 @@ import io.debezium.data.Envelope;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.lakesoul.tool.FlinkUtil;
-import org.apache.flink.table.data.TimestampData;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -87,7 +86,7 @@ public class BinarySourceRecord {
             Struct source = value.getStruct(Envelope.FieldName.SOURCE);
             if (sourceField != null && source != null) {
                 if (sourceField.schema().field("file") != null) {
-                    String fileName = (String)source.getWithoutDefault("file");
+                    String fileName = (String) source.getWithoutDefault("file");
                     if (StringUtils.isNotBlank(fileName)) {
                         binlogFileIndex = Long.parseLong(fileName.substring(fileName.lastIndexOf(".") + 1));
                     }
@@ -102,12 +101,13 @@ public class BinarySourceRecord {
             long sortField = (binlogFileIndex << 32) + binlogPosition;
             LakeSoulRowDataWrapper data = convert.toLakeSoulDataType(valueSchema, value, tableId, tsMs, sortField);
             String tablePath;
-            if (tableId.schema()==null){
+            if (tableId.schema() == null) {
                 tablePath = new Path(new Path(basePath, tableId.catalog()), tableId.table()).toString();
-            }else {
+            } else {
                 tablePath = new Path(new Path(basePath, tableId.schema()), tableId.table()).toString();
             }
-            return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId, FlinkUtil.makeQualifiedPath(tablePath).toString(),
+            return new BinarySourceRecord(sourceRecord.topic(), primaryKeys, tableId,
+                    FlinkUtil.makeQualifiedPath(tablePath).toString(),
                     Collections.emptyList(), false, data, null);
         }
     }
