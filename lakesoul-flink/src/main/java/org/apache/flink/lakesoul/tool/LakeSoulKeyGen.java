@@ -58,7 +58,6 @@ public class LakeSoulKeyGen implements Serializable {
     }
 
     public static long getHash(LogicalType type, Object field, long seed) {
-
         switch (type.getTypeRoot()) {
             case CHAR:
             case VARCHAR:
@@ -106,7 +105,7 @@ public class LakeSoulKeyGen implements Serializable {
             case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 TimestampData timestampData = (TimestampData) field;
-                long value = timestampData.getMillisecond() + timestampData.getNanoOfMillisecond() / 1000;
+                long value = timestampData.getMillisecond() * 1000 + timestampData.getNanoOfMillisecond() / 1000;
                 seed = Murmur3HashFunction.hash(value, LongType, seed);
                 break;
             default:

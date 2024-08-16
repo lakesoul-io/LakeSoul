@@ -40,19 +40,14 @@ import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.factories.Factory;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.TimestampType;
+import org.apache.flink.table.types.logical.ZonedTimestampType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import java.util.*;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_HASH_PARTITION_SPLITTER;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
@@ -275,7 +270,8 @@ public class LakeSoulCatalog implements Catalog {
         checkNotNull(tablePath);
         checkNotNull(table);
         TableSchema schema = table.getSchema();
-        Optional<UniqueConstraint> primaryKeyColumns = schema.getPrimaryKey();
+        schema.getTableColumns().forEach(this::validateType);
+
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(CATALOG_NAME, tablePath.getDatabaseName());
         }
@@ -284,6 +280,8 @@ public class LakeSoulCatalog implements Catalog {
                 throw new TableAlreadyExistException(CATALOG_NAME, tablePath);
             } else return;
         }
+
+        Optional<UniqueConstraint> primaryKeyColumns = schema.getPrimaryKey();
         String primaryKeys = primaryKeyColumns.map(
                         uniqueConstraint -> String.join(LAKESOUL_HASH_PARTITION_SPLITTER,
                                 uniqueConstraint.getColumns()))
@@ -317,7 +315,7 @@ public class LakeSoulCatalog implements Catalog {
         List<String> partitionKeys = Collections.emptyList();
         if (table instanceof ResolvedCatalogTable) {
             partitionKeys = ((ResolvedCatalogTable) table).getPartitionKeys();
-            validatePrimaryAndPartitionKeys(primaryKeyColumns, partitionKeys);
+            validatePrimaryAndPartitionKeys(primaryKeyColumns, partitionKeys, schema);
             String path = null;
             if (tableOptions.containsKey(TABLE_PATH)) {
                 path = tableOptions.get(TABLE_PATH);
@@ -593,18 +591,44 @@ public class LakeSoulCatalog implements Catalog {
     }
 
     private void validatePrimaryAndPartitionKeys(Optional<UniqueConstraint> primaryKeyColumns,
-                                                 List<String> partitionKeys) {
+                                                 List<String> partitionKeys,
+                                                 TableSchema tableSchema) {
         primaryKeyColumns.map(uniqueConstraint -> {
-            Set<String> result = uniqueConstraint.getColumns().stream()
-                    .distinct()
-                    .filter(partitionKeys::contains)
-                    .collect(Collectors.toSet());
-            if (!result.isEmpty()) {
-                throw new RuntimeException(
-                        String.format("Primray columns (%s) and partition columns (%s) cannot overlap",
-                                uniqueConstraint.getColumns(), partitionKeys));
-            }
+            uniqueConstraint.getColumns().forEach(column -> {
+                if (partitionKeys.contains(column)) {
+                    throw new CatalogException(
+                            String.format("Primray columns (%s) and partition columns (%s) cannot overlap",
+                                    uniqueConstraint.getColumns(), partitionKeys));
+                }
+                validatePrimaryKeyType(tableSchema.getTableColumn(column).get());
+            });
             return 0;
         });
+    }
+
+    private void validateType(TableColumn tableColumn) {
+        if (tableColumn.getType().getLogicalType() instanceof TimestampType) {
+            TimestampType timestampType = (TimestampType) tableColumn.getType().getLogicalType();
+            if (timestampType.getPrecision() > 6) {
+                throw new CatalogException("LakeSoul does not support column `" +
+                        tableColumn.getName() +
+                        "` with timestamp precision > 6");
+            }
+        }
+    }
+
+    private void validatePrimaryKeyType(TableColumn tableColumn) {
+        LogicalType type = tableColumn.getType().getLogicalType();
+        switch (type.getTypeRoot()) {
+            case TIMESTAMP_WITH_TIME_ZONE:
+            case MAP:
+            case MULTISET:
+            case ARRAY:
+            case ROW:
+                throw new CatalogException("LakeSoul does not support primary key `" +
+                        tableColumn.getName() +
+                        "` with type: " +
+                        type.asSerializableString());
+        }
     }
 }
