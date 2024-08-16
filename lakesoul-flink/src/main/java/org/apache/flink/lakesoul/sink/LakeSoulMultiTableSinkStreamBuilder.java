@@ -21,11 +21,7 @@ import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_CHECK_INTERVAL;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.BUCKET_PARALLELISM;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.DYNAMIC_BUCKETING;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_SIZE;
-import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.FILE_ROLLING_TIME;
+import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
 public class LakeSoulMultiTableSinkStreamBuilder {
 
@@ -60,6 +56,9 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public DataStreamSink<BinarySourceRecord> buildLakeSoulDMLSink(DataStream<BinarySourceRecord> stream) {
         context.conf.set(DYNAMIC_BUCKETING, false);
+        if (!context.conf.contains(AUTO_SCHEMA_CHANGE)) {
+            context.conf.set(AUTO_SCHEMA_CHANGE, true);
+        }
         LakeSoulRollingPolicyImpl<RowData> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()
@@ -78,6 +77,9 @@ public class LakeSoulMultiTableSinkStreamBuilder {
 
     public static DataStreamSink<LakeSoulArrowWrapper> buildArrowSink(Context context,
                                                                       DataStream<LakeSoulArrowWrapper> stream) {
+        if (!context.conf.contains(AUTO_SCHEMA_CHANGE)) {
+            context.conf.set(AUTO_SCHEMA_CHANGE, true);
+        }
         LakeSoulRollingPolicyImpl<LakeSoulArrowWrapper> rollingPolicy = new LakeSoulRollingPolicyImpl<>(
                 context.conf.getLong(FILE_ROLLING_SIZE), context.conf.getLong(FILE_ROLLING_TIME));
         OutputFileConfig fileNameConfig = OutputFileConfig.builder()

@@ -167,10 +167,10 @@ public class LakeSoulSinkOptions {
             .withDescription("mongodb database");
 
     public static final ConfigOption<Integer> BATCH_SIZE = ConfigOptions
-            .key("batchSize")
+            .key("lakesoul.io.batch.size")
             .intType()
             .defaultValue(1024)
-            .withDescription("The cursor batch size");
+            .withDescription("The batch size for lakesoul native io");
 
     public static final ConfigOption<Integer> MAX_ROW_GROUP_SIZE = ConfigOptions
             .key("lakesoul.file.max_row_group_size")
@@ -214,6 +214,11 @@ public class LakeSoulSinkOptions {
             .defaultValue(false)
             .withDescription("If true, lakesoul source will infer schema from files");
 
+    public static final ConfigOption<Boolean> AUTO_SCHEMA_CHANGE = ConfigOptions
+            .key("lakesoul.sink.auto_schema_change")
+            .booleanType()
+            .defaultValue(false)
+            .withDescription("If true, lakesoul sink will auto change sink table's schema");
 }
 
 

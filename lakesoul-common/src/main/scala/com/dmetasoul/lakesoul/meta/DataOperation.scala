@@ -5,7 +5,8 @@
 package com.dmetasoul.lakesoul.meta
 
 import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, PartitionInfo}
-import org.apache.hadoop.fs.Path
+
+import java.net.URI
 
 import java.util
 import java.util.{Objects, UUID}

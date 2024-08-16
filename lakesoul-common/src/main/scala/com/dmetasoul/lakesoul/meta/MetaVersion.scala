@@ -8,7 +8,6 @@ import com.alibaba.fastjson.JSONObject
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo
 
 import java.util
-import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
