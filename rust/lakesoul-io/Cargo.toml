@@ -45,10 +45,16 @@ anyhow = { workspace = true, features = [] }
 prost = { workspace = true }
 env_logger = "0.11"
 hex = "0.4"
+dhat = { version="0.3.3", optional = true }
+
+[profile.release]
+debug = true
 
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
+dhat-heap = ["dep:dhat"]    # if you are doing heap profiling
+dhat-ad-hoc = []  # if you are doing ad hoc profiling
 
 [target.'cfg(target_os = "windows")'.dependencies]
 datafusion-substrait = { workspace = true }
