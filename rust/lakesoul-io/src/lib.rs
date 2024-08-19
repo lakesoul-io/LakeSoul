@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-mod async_writer;
+pub mod async_writer;
 pub mod datasource;
 pub mod filter;
 pub mod hash_utils;
