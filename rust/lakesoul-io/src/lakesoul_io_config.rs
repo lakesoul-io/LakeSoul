@@ -2,16 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::anyhow;
 use arrow::error::ArrowError;
 use arrow_schema::{Schema, SchemaRef};
-use datafusion::datasource::object_store::ObjectStoreUrl;
 pub use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::{QueryPlanner, SessionState};
+use datafusion::execution::memory_pool::FairSpillPool;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
@@ -108,6 +107,9 @@ pub struct LakeSoulIOConfig {
     // if inferring schema
     #[derivative(Default(value = "false"))]
     pub(crate) inferring_schema: bool,
+
+    #[derivative(Default(value = "None"))]
+    pub(crate) memory_limit: Option<usize>,
 }
 
 impl LakeSoulIOConfig {
@@ -216,6 +218,11 @@ impl LakeSoulIOConfigBuilder {
 
     pub fn with_prefetch_size(mut self, prefetch_size: usize) -> Self {
         self.config.prefetch_size = prefetch_size;
+        self
+    }
+
+    pub fn with_memory_limit(mut self, memory_limit: usize) -> Self {
+        self.config.memory_limit = Some(memory_limit);
         self
     }
 
@@ -492,9 +499,17 @@ pub fn create_session_context_with_planner(
     sess_conf.options_mut().optimizer.prefer_hash_join = false; //if true, panicked at 'range end out of bounds'
     sess_conf.options_mut().execution.parquet.pushdown_filters = config.parquet_filter_pushdown;
     sess_conf.options_mut().execution.target_partitions = 1;
+    // sess_conf.options_mut().execution.sort_in_place_threshold_bytes = 16 * 1024;
+    sess_conf.options_mut().execution.sort_spill_reservation_bytes = 2 * 1024 * 1024;
     // sess_conf.options_mut().catalog.default_catalog = "lakesoul".into();
 
-    let runtime = RuntimeEnv::new(RuntimeConfig::new())?;
+    let mut runtime_conf = RuntimeConfig::new();
+    if let Some(pool_size) = config.memory_limit {
+        dbg!(pool_size);
+        let memory_pool = FairSpillPool::new(pool_size);
+        runtime_conf = runtime_conf.with_memory_pool(Arc::new(memory_pool));
+    }
+    let runtime = RuntimeEnv::new(runtime_conf)?;
 
     // firstly parse default fs if exist
     let default_fs = config
@@ -514,6 +529,7 @@ pub fn create_session_context_with_planner(
         let normalized_prefix = register_object_store(&prefix, config, &runtime)?;
         config.prefix = normalized_prefix;
     }
+    dbg!(&config.prefix);
 
     // register object store(s) for input/output files' path
     // and replace file names with default fs concatenated if exist
