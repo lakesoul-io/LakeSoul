@@ -8,24 +8,31 @@ use std::sync::Arc;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::{
     execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{ExecutionMode, PlanProperties};
 use datafusion_common::Result;
-
 use crate::default_column_stream::empty_schema_stream::EmptySchemaStream;
 
 #[derive(Debug)]
 pub struct EmptySchemaScanExec {
     count: usize,
     empty_schema: SchemaRef,
+    cache: PlanProperties,
 }
 
 impl EmptySchemaScanExec {
     pub fn new(count: usize) -> Self {
+        let empty_schema = SchemaRef::new(Schema::empty());
         Self {
             count,
-            empty_schema: SchemaRef::new(Schema::empty()),
+            empty_schema: empty_schema.clone(),
+            cache: PlanProperties::new(
+            EquivalenceProperties::new(empty_schema),
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+            )
         }
     }
 }
@@ -37,6 +44,10 @@ impl DisplayAs for EmptySchemaScanExec {
 }
 
 impl ExecutionPlan for EmptySchemaScanExec {
+    fn name(&self) -> &str {
+        "EmptySchemaScanExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -45,15 +56,11 @@ impl ExecutionPlan for EmptySchemaScanExec {
         self.empty_schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 

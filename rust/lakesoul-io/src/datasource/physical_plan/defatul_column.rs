@@ -6,9 +6,10 @@ use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
 use arrow_schema::SchemaRef;
+use datafusion::physical_plan::PlanProperties;
 use datafusion::{
-    execution::TaskContext,
-    physical_expr::PhysicalSortExpr,
+    execution::TaskContext
+    ,
     physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream},
 };
 use datafusion_common::{DataFusionError, Result};
@@ -20,6 +21,7 @@ pub struct DefaultColumnExec {
     input: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
     default_column_value: Arc<HashMap<String, String>>,
+    cache: PlanProperties,
 }
 
 impl DefaultColumnExec {
@@ -28,10 +30,12 @@ impl DefaultColumnExec {
         target_schema: SchemaRef,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
+        let properties = input.properties().clone();
         Ok(Self {
             input,
             target_schema,
             default_column_value,
+            cache: properties,
         })
     }
 }
@@ -43,6 +47,10 @@ impl DisplayAs for DefaultColumnExec {
 }
 
 impl ExecutionPlan for DefaultColumnExec {
+    fn name(&self) -> &str {
+        "DefaultColumnExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -51,15 +59,11 @@ impl ExecutionPlan for DefaultColumnExec {
         self.target_schema.clone()
     }
 
-    fn output_partitioning(&self) -> datafusion::physical_plan::Partitioning {
-        datafusion::physical_plan::Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
@@ -74,8 +78,8 @@ impl ExecutionPlan for DefaultColumnExec {
             )));
         }
 
-        let mut streams = Vec::with_capacity(self.input.output_partitioning().partition_count());
-        for i in 0..self.input.output_partitioning().partition_count() {
+        let mut streams = Vec::with_capacity(self.cache.output_partitioning().partition_count());
+        for i in 0..self.cache.output_partitioning().partition_count() {
             let stream = self.input.execute(i, context.clone())?;
             streams.push(stream);
         }

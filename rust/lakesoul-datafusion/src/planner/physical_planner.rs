@@ -86,13 +86,11 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                                 .concat()
                                 .as_slice(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
                             let hash_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.primary_keys(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
 
@@ -101,7 +99,6 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             let range_partitioning_expr = column_names_to_physical_expr(
                                 lakesoul_table.range_partitions(),
                                 input_dfschema,
-                                &input_schema,
                                 session_state,
                             )?;
                             let sort_exec = Arc::new(SortExec::new(sort_expr, physical_input));
@@ -116,7 +113,7 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
 
                         provider.insert_into(session_state, physical_input, false).await
                     }
-                    Err(e) => return Err(DataFusionError::External(Box::new(e))),
+                    Err(e) => Err(DataFusionError::External(Box::new(e))),
                 }
             }
             LogicalPlan::Statement(statement) => {
@@ -146,10 +143,9 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
         &self,
         expr: &Expr,
         input_dfschema: &DFSchema,
-        input_schema: &Schema,
         session_state: &SessionState,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         self.default_planner
-            .create_physical_expr(expr, input_dfschema, input_schema, session_state)
+            .create_physical_expr(expr, input_dfschema, session_state)
     }
 }

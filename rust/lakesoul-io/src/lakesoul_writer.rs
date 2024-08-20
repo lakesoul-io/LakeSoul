@@ -12,32 +12,33 @@ use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use atomic_refcell::AtomicRefCell;
+use bytes::Bytes;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::error::Result;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::expressions::{col, Column};
-use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr, PhysicalSortExpr};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::{RecordBatchReceiverStream, RecordBatchReceiverStreamBuilder};
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream};
-use datafusion_common::DataFusionError::Internal;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream,
+};
+use datafusion_common::DataFusionError::{ArrowError, Internal, ParquetError};
 use datafusion_common::{project_schema, DataFusionError};
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use object_store::buffered::BufWriter;
 use object_store::path::Path;
-use object_store::{MultipartId, ObjectStore};
-use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
+use parquet::arrow::async_writer::AsyncFileWriter;
+use parquet::arrow::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
 use rand::distributions::DistString;
 use std::any::Any;
 use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::io::ErrorKind::AddrInUse;
-use std::io::Write;
 use std::sync::Arc;
-use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
@@ -57,22 +58,32 @@ pub trait AsyncBatchWriter {
     fn schema(&self) -> SchemaRef;
 }
 
+#[derive(Clone)]
+pub struct BufferedWriter(Arc<Mutex<BufWriter>>);
+
+impl AsyncFileWriter for BufferedWriter {
+    fn write(&mut self, bs: Bytes) -> BoxFuture<'_, parquet::errors::Result<()>> {
+        async move {
+            let mut write = self.0.lock().await;
+            write.write(bs).await
+        }.boxed()
+    }
+
+    fn complete(&mut self) -> BoxFuture<'_, parquet::errors::Result<()>> {
+        async move {
+            let mut write = self.0.lock().await;
+            write.complete().await
+        }.boxed()
+    }
+}
+
 /// An async writer using object_store's multi-part upload feature for cloud storage.
-/// This writer uses a `VecDeque<u8>` as `std::io::Write` for arrow-rs's ArrowWriter.
-/// Everytime when a new RowGroup is flushed, the length of the VecDeque would grow.
-/// At this time, we pass the VecDeque as `bytes::Buf` to `AsyncWriteExt::write_buf` provided
-/// by object_store, which would drain and copy the content of the VecDeque so that we could reuse it.
-/// The `CloudMultiPartUpload` itself would try to concurrently upload parts, and
-/// all parts will be committed to cloud storage by shutdown the `AsyncWrite` object.
 pub struct MultiPartAsyncWriter {
-    in_mem_buf: InMemBuf,
     task_context: Arc<TaskContext>,
     schema: SchemaRef,
-    writer: Box<dyn AsyncWrite + Unpin + Send>,
-    multi_part_id: MultipartId,
-    arrow_writer: ArrowWriter<InMemBuf>,
+    buffered_writer: BufferedWriter,
+    async_writer: AsyncArrowWriter<BufferedWriter>,
     _config: LakeSoulIOConfig,
-    object_store: Arc<dyn ObjectStore>,
     path: Path,
     absolute_path: String,
     num_rows: u64,
@@ -98,41 +109,22 @@ pub struct PartitioningAsyncWriter {
     err: Option<DataFusionError>,
 }
 
-/// A VecDeque which is both std::io::Write and bytes::Buf
-#[derive(Clone)]
-struct InMemBuf(Arc<AtomicRefCell<VecDeque<u8>>>);
-
-impl Write for InMemBuf {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut v = self.0.try_borrow_mut().map_err(|_| std::io::Error::from(AddrInUse))?;
-        v.extend(buf);
-        Ok(buf.len())
-    }
-
-    #[inline]
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    #[inline]
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut v = self.0.try_borrow_mut().map_err(|_| std::io::Error::from(AddrInUse))?;
-        v.extend(buf);
-        Ok(())
-    }
-}
-
 pub struct ReceiverStreamExec {
     receiver_stream_builder: AtomicRefCell<Option<RecordBatchReceiverStreamBuilder>>,
     schema: SchemaRef,
+    cache: PlanProperties,
 }
 
 impl ReceiverStreamExec {
     pub fn new(receiver_stream_builder: RecordBatchReceiverStreamBuilder, schema: SchemaRef) -> Self {
         Self {
             receiver_stream_builder: AtomicRefCell::new(Some(receiver_stream_builder)),
-            schema,
+            schema: schema.clone(),
+            cache: PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                ExecutionMode::Bounded,
+            ),
         }
     }
 }
@@ -144,12 +136,16 @@ impl Debug for ReceiverStreamExec {
 }
 
 impl DisplayAs for ReceiverStreamExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "ReceiverStreamExec")
     }
 }
 
 impl ExecutionPlan for ReceiverStreamExec {
+    fn name(&self) -> &str {
+        "ReceiverStreamExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -158,15 +154,11 @@ impl ExecutionPlan for ReceiverStreamExec {
         Arc::clone(&self.schema)
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
 
@@ -179,7 +171,7 @@ impl ExecutionPlan for ReceiverStreamExec {
             .receiver_stream_builder
             .borrow_mut()
             .take()
-            .ok_or(DataFusionError::Internal("empty receiver stream".to_string()))?;
+            .ok_or(Internal("empty receiver stream".to_string()))?;
         Ok(builder.build())
     }
 }
@@ -189,10 +181,7 @@ impl MultiPartAsyncWriter {
         if config.files.is_empty() {
             return Err(Internal("wrong number of file names provided for writer".to_string()));
         }
-        let file_name = &config
-            .files
-            .last()
-            .ok_or(DataFusionError::Internal("wrong file name".to_string()))?;
+        let file_name = &config.files.last().ok_or(Internal("wrong file name".to_string()))?;
 
         // local style path should have already been handled in create_session_context,
         // so we don't have to deal with ParseError::RelativeUrlWithoutBase here
@@ -207,10 +196,6 @@ impl MultiPartAsyncWriter {
         }?;
 
         // get underlying multipart uploader
-        let (multipart_id, async_writer) = object_store.put_multipart(&path).await?;
-        let in_mem_buf = InMemBuf(Arc::new(AtomicRefCell::new(VecDeque::<u8>::with_capacity(
-            16 * 1024 * 1024, // 16kb
-        ))));
         let schema = uniform_schema(config.target_schema.0.clone());
 
         // O(nm), n = number of fields, m = number of range partitions
@@ -225,27 +210,24 @@ impl MultiPartAsyncWriter {
             .collect::<Vec<_>>();
         let writer_schema = project_schema(&schema, Some(&schema_projection_excluding_range))?;
 
-        let arrow_writer = ArrowWriter::try_new(
-            in_mem_buf.clone(),
-            writer_schema,
+        let buffered_writer = BufferedWriter(Arc::new(Mutex::new(BufWriter::new(object_store, path.clone()))));
+        let async_writer = AsyncArrowWriter::try_new(
+            buffered_writer.clone(),
+            writer_schema.clone(),
             Some(
                 WriterProperties::builder()
-                    .set_max_row_group_size(config.max_row_group_size)
                     .set_write_batch_size(config.batch_size)
-                    .set_compression(Compression::SNAPPY)
+                    .set_max_row_group_size(config.max_row_group_size)
                     .build(),
             ),
         )?;
 
         Ok(MultiPartAsyncWriter {
-            in_mem_buf,
             task_context,
-            schema,
-            writer: async_writer,
-            multi_part_id: multipart_id,
-            arrow_writer,
+            schema: writer_schema,
+            buffered_writer,
+            async_writer,
             _config: config.clone(),
-            object_store,
             path,
             absolute_path: file_name.to_string(),
             num_rows: 0,
@@ -257,31 +239,18 @@ impl MultiPartAsyncWriter {
         Self::try_new_with_context(&mut config, task_context).await
     }
 
-    async fn write_batch(
-        batch: RecordBatch,
-        arrow_writer: &mut ArrowWriter<InMemBuf>,
-        in_mem_buf: &mut InMemBuf,
-        // underlying writer
-        writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
-    ) -> Result<()> {
-        arrow_writer.write(&batch)?;
-        let mut v = in_mem_buf
-            .0
-            .try_borrow_mut()
-            .map_err(|e| Internal(format!("{:?}", e)))?;
-        if v.len() > 0 {
-            MultiPartAsyncWriter::write_part(writer, &mut v).await
-        } else {
-            Ok(())
-        }
+    async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        self.async_writer.write(&batch).await.map_err(ParquetError)
     }
 
-    pub async fn write_part(
-        writer: &mut Box<dyn AsyncWrite + Unpin + Send>,
-        in_mem_buf: &mut VecDeque<u8>,
-    ) -> Result<()> {
-        writer.write_all_buf(in_mem_buf).await?;
+    async fn flush_and_close(self) -> Result<()> {
+        self.async_writer.close().await.map_err(ParquetError)?;
         Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let mut write = self.buffered_writer.0.lock().await;
+        write.abort().await.map_err(DataFusionError::ObjectStore)
     }
 
     pub fn nun_rows(&self) -> u64 {
@@ -306,34 +275,19 @@ impl AsyncBatchWriter for MultiPartAsyncWriter {
     async fn write_record_batch(&mut self, batch: RecordBatch) -> Result<()> {
         let batch = uniform_record_batch(batch)?;
         self.num_rows += batch.num_rows() as u64;
-        MultiPartAsyncWriter::write_batch(batch, &mut self.arrow_writer, &mut self.in_mem_buf, &mut self.writer).await
+        self.write_batch(batch).await
     }
 
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<u8>> {
         // close arrow writer to flush remaining rows
-        let mut this = *self;
-        let arrow_writer = this.arrow_writer;
-        arrow_writer.close()?;
-        let mut v = this
-            .in_mem_buf
-            .0
-            .try_borrow_mut()
-            .map_err(|e| Internal(format!("{:?}", e)))?;
-        if v.len() > 0 {
-            MultiPartAsyncWriter::write_part(&mut this.writer, &mut v).await?;
-        }
-        // shutdown multi-part async writer to complete the upload
-        this.writer.flush().await?;
-        this.writer.shutdown().await?;
+        let this = *self;
+        this.flush_and_close().await?;
         Ok(vec![])
     }
 
     async fn abort_and_close(self: Box<Self>) -> Result<Vec<u8>> {
-        let this = *self;
-        this.object_store
-            .abort_multipart(&this.path, &this.multi_part_id)
-            .await
-            .map_err(DataFusionError::ObjectStore)?;
+        let mut this = *self;
+        this.abort().await?;
         Ok(vec![])
     }
 
@@ -508,7 +462,7 @@ impl PartitioningAsyncWriter {
         let write_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
 
         let partitioned_file_path_and_row_count = Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
-        for i in 0..partitioning_exec.output_partitioning().partition_count() {
+        for i in 0..partitioning_exec.properties().output_partitioning().partition_count() {
             let sink_task = tokio::spawn(Self::pull_and_sink(
                 partitioning_exec.clone(),
                 i,
@@ -826,7 +780,7 @@ impl SyncSendableMutableLakeSoulWriter {
                     .fields
                     .iter()
                     .filter(|f| !config.aux_sort_cols.contains(f.name()))
-                    .map(|f| schema.index_of(f.name().as_str()).map_err(DataFusionError::ArrowError))
+                    .map(|f| schema.index_of(f.name().as_str()).map_err(|e| ArrowError(e, None)))
                     .collect::<Result<Vec<usize>>>()?;
                 Arc::new(schema.project(proj_indices.borrow())?)
             } else {

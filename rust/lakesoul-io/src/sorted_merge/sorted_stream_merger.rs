@@ -201,7 +201,7 @@ impl SortedStreamMerger {
                         let rows = match self.row_converters[idx].convert_columns(&cols) {
                             Ok(rows) => rows,
                             Err(e) => {
-                                return Poll::Ready(Err(ArrowError(e)));
+                                return Poll::Ready(Err(ArrowError(e, None)));
                             }
                         };
 
@@ -260,7 +260,7 @@ impl SortedStreamMerger {
         loop {
             match self.range_combiner.poll_result() {
                 RangeCombinerResult::Err(e) => {
-                    return Poll::Ready(Some(Err(ArrowError(e))));
+                    return Poll::Ready(Some(Err(ArrowError(e, None))));
                 }
                 RangeCombinerResult::None => {
                     return Poll::Ready(None);
@@ -285,7 +285,9 @@ impl SortedStreamMerger {
                         }
                     }
                 }
-                RangeCombinerResult::RecordBatch(batch) => return Poll::Ready(Some(batch.map_err(ArrowError))),
+                RangeCombinerResult::RecordBatch(batch) => {
+                    return Poll::Ready(Some(batch.map_err(|e| ArrowError(e, None))))
+                }
             }
         }
     }

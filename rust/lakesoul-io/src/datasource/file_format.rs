@@ -16,14 +16,16 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_expr::PhysicalSortRequirement;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
-use datafusion_common::{project_schema, FileType, Result, Statistics};
+use datafusion_common::{project_schema, DataFusionError, GetExt, Result, Statistics};
 
 use object_store::{ObjectMeta, ObjectStore};
 
-use async_trait::async_trait;
-
 use crate::datasource::{listing::LakeSoulListingTable, physical_plan::MergeParquetExec};
 use crate::lakesoul_io_config::LakeSoulIOConfig;
+use async_trait::async_trait;
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
+use datafusion::datasource::file_format::parquet::ParquetFormatFactory;
+use datafusion_common::parsers::CompressionTypeVariant;
 
 /// LakeSoul `FileFormat` implementation for supporting Apache Parquet
 ///
@@ -62,6 +64,23 @@ impl FileFormat for LakeSoulParquetFormat {
         self
     }
 
+    fn get_ext(&self) -> String {
+        ParquetFormatFactory::new().get_ext()
+    }
+
+    fn get_ext_with_compression(
+        &self,
+        file_compression_type: &FileCompressionType,
+    ) -> Result<String> {
+        let ext = self.get_ext();
+        match file_compression_type.get_variant() {
+            CompressionTypeVariant::UNCOMPRESSED => Ok(ext),
+            _ => Err(DataFusionError::Internal(
+                "Parquet FileFormat does not support compression.".into(),
+            )),
+        }
+    }
+
     async fn infer_schema(
         &self,
         state: &SessionState,
@@ -94,7 +113,7 @@ impl FileFormat for LakeSoulParquetFormat {
         // will not prune data based on the statistics.
         let predicate = self
             .parquet_format
-            .enable_pruning(state.config_options())
+            .enable_pruning()
             .then(|| filters.cloned())
             .flatten();
 
@@ -126,7 +145,7 @@ impl FileFormat for LakeSoulParquetFormat {
             merged_schema.clone(),
             flatten_conf,
             predicate,
-            self.parquet_format.metadata_size_hint(state.config_options()),
+            self.parquet_format.metadata_size_hint(),
             self.conf.clone(),
         )?);
 
@@ -154,10 +173,6 @@ impl FileFormat for LakeSoulParquetFormat {
         self.parquet_format
             .create_writer_physical_plan(input, state, conf, order_requirements)
             .await
-    }
-
-    fn file_type(&self) -> FileType {
-        FileType::PARQUET
     }
 }
 
@@ -196,7 +211,6 @@ pub async fn flatten_file_scan_config(
             let limit = conf.limit;
             let table_partition_cols = conf.table_partition_cols.clone();
             let output_ordering = conf.output_ordering.clone();
-            let infinite_source = conf.infinite_source;
             let config = FileScanConfig {
                 object_store_url: object_store_url.clone(),
                 file_schema,
@@ -206,7 +220,6 @@ pub async fn flatten_file_scan_config(
                 limit,
                 table_partition_cols,
                 output_ordering,
-                infinite_source,
             };
             flatten_configs.push(config);
         }

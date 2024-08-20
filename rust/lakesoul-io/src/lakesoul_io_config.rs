@@ -16,7 +16,6 @@ use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_expr::Expr;
 use datafusion::optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion::optimizer::push_down_filter::PushDownFilter;
-use datafusion::optimizer::push_down_projection::PushDownProjection;
 use datafusion::optimizer::rewrite_disjunctive_predicate::RewriteDisjunctivePredicate;
 use datafusion::optimizer::simplify_expressions::SimplifyExpressions;
 use datafusion::optimizer::unwrap_cast_in_comparison::UnwrapCastInComparison;
@@ -349,7 +348,7 @@ pub fn register_s3_object_store(url: &Url, config: &LakeSoulIOConfig, runtime: &
     if bucket.is_none() {
         return Err(DataFusionError::ArrowError(ArrowError::InvalidArgumentError(
             "missing fs.s3a.bucket".to_string(),
-        )));
+        ), None));
     }
 
     let retry_config = RetryConfig::default();
@@ -476,7 +475,6 @@ pub fn create_session_context_with_planner(
     let mut sess_conf = SessionConfig::default()
         .with_batch_size(config.batch_size)
         .with_parquet_pruning(true)
-        .with_prefetch(config.prefetch_size)
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(true);
 
@@ -541,7 +539,6 @@ pub fn create_session_context_with_planner(
         .with_analyzer_rules(vec![Arc::new(TypeCoercion {})])
         .with_optimizer_rules(vec![
             Arc::new(PushDownFilter {}),
-            Arc::new(PushDownProjection {}),
             Arc::new(SimplifyExpressions {}),
             Arc::new(UnwrapCastInComparison {}),
             Arc::new(RewriteDisjunctivePredicate {}),
